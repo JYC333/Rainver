@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -23,46 +22,25 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const MEM_A = "33333333-3333-4333-8333-333333333333";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[memory-retrieval-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "content_access_logs", "memory_entries", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   // A multi-member (household) space so project gating is meaningful; a personal
   // space would grant its sole member access to every project.
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Test Space', 'household', now(), now())`,
     [SPACE],
   );
   for (const id of [OWNER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
@@ -70,7 +48,7 @@ beforeEach(async () => {
   }
   // project_members(space_id, user_id) FKs to space_memberships(space_id, user_id).
   for (const id of [OWNER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [randomUUID(), SPACE, id],
@@ -81,7 +59,7 @@ beforeEach(async () => {
 const PROJECT = "44444444-4444-4444-8444-444444444444";
 
 async function insertProject(ownerUserId: string | null): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'Proj', 'active', now(), now())`,
     [PROJECT, SPACE, ownerUserId],
@@ -89,7 +67,7 @@ async function insertProject(ownerUserId: string | null): Promise<void> {
 }
 
 async function addProjectMember(userId: string): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, $4, 'member', 'active', now(), now())`,
     [randomUUID(), SPACE, PROJECT, userId],
@@ -119,18 +97,18 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
   };
   const names = Object.keys(cols);
   const placeholders = names.map((_, i) => `$${i + 1}`);
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (${names.join(", ")}) VALUES (${placeholders.join(", ")})`,
     names.map((n) => cols[n]),
   );
 }
 
 function searchService(): RetrievalSearchService {
-  return new RetrievalSearchService(pool!, memoryRetrievalRegistry);
+  return new RetrievalSearchService(db.pool, memoryRetrievalRegistry);
 }
 
 async function reindex(): Promise<void> {
-  await new RetrievalProjectionService(pool!, memoryRetrievalRegistry).reindex(SPACE, "memory_entry", MEM_A);
+  await new RetrievalProjectionService(db.pool, memoryRetrievalRegistry).reindex(SPACE, "memory_entry", MEM_A);
 }
 
 describe("Memory project gating (real Postgres)", () => {
@@ -144,7 +122,7 @@ describe("Memory project gating (real Postgres)", () => {
   }
 
   it("hides project memory from a non-member, reveals it to a member and to the owner", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertProject(OWNER);
     await insertMemory({
       scope_type: "project",
@@ -164,7 +142,7 @@ describe("Memory project gating (real Postgres)", () => {
   });
 
   it("applies the same project gate to create-safety", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertProject(OWNER);
     await insertMemory({
       scope_type: "project",
@@ -184,7 +162,7 @@ describe("Memory project gating (real Postgres)", () => {
   });
 
   it("does not project-gate memory with no project_id", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ project_id: null, owner_user_id: OWNER, visibility: "space_shared" });
     await reindex();
 
@@ -196,7 +174,7 @@ describe("Memory project gating (real Postgres)", () => {
 
 describe("Memory create-safety retrieval (real Postgres)", () => {
   it("returns exists for the owner of a duplicate-titled private memory", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ visibility: "private", owner_user_id: OWNER });
     await reindex();
 
@@ -214,7 +192,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
   });
 
   it("drops another user's private memory during revalidation", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ visibility: "private", owner_user_id: OWNER });
     await reindex();
 
@@ -230,7 +208,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
   });
 
   it("matches a summary-access memory for a non-owner but redacts the snippet", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ visibility: "space_shared", access_level: "summary", owner_user_id: OWNER });
     await reindex();
 
@@ -246,7 +224,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
   });
 
   it("flags probable_duplicate via lexical content match when the title differs", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ title: "Beverage note", content: "Prefers oat milk flat white in the morning." });
     await reindex();
 
@@ -262,11 +240,11 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
   });
 
   it("excludes an archived memory and reindex drops its projection", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ visibility: "space_shared" });
     await reindex();
     // Archive it, then reindex: loadCanonical returns null and the projection is dropped.
-    await pool.query("UPDATE memory_entries SET status = 'archived' WHERE id = $1", [MEM_A]);
+    await db.pool.query("UPDATE memory_entries SET status = 'archived' WHERE id = $1", [MEM_A]);
     await reindex();
 
     const out = await searchService().assessCreateSafety({
@@ -277,14 +255,14 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
     });
 
     expect(out.matches).toHaveLength(0);
-    const remaining = await pool.query(
+    const remaining = await db.pool.query(
       "SELECT count(*)::int AS n FROM retrieval_objects WHERE object_type = 'memory_entry'",
     );
     expect(remaining.rows[0].n).toBe(0);
   });
 
   it("logs returned create-safety matches as create_safety_hit and bumps the counter", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ visibility: "space_shared", owner_user_id: OWNER });
     await reindex();
 
@@ -295,7 +273,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
       title: "Coffee preferences",
     });
 
-    const logs = await pool.query(
+    const logs = await db.pool.query(
       "SELECT access_type, viewer_user_id, reason FROM content_access_logs WHERE resource_type = 'memory' AND resource_id = $1",
       [MEM_A],
     );
@@ -305,7 +283,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
       viewer_user_id: OTHER,
       reason: "retrieval create-safety",
     });
-    const counter = await pool.query("SELECT access_count FROM memory_entries WHERE id = $1", [MEM_A]);
+    const counter = await db.pool.query("SELECT access_count FROM memory_entries WHERE id = $1", [MEM_A]);
     expect(counter.rows[0].access_count).toBe(1);
   });
 });

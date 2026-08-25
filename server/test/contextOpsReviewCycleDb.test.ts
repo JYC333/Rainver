@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import type { RetrievalBriefResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle";
@@ -19,48 +18,27 @@ const TARGET = "00000000-0000-4000-8000-000000000105";
 
 const LONG = "This object has enough searchable operational content to avoid being classified as thin.";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[context-ops-review-cycle-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["content_access_logs", "memory_entries", "artifacts", "proposals", "object_relations", "claims", "retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Context Review Cycle DB', 'personal', now(), now())`,
     [SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('context-review-owner', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, USER],
@@ -68,7 +46,7 @@ beforeEach(async () => {
 });
 
 async function seedKnowledge(): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: ALPHA_1,
     spaceId: SPACE,
     title: "Alpha Concept",
@@ -76,7 +54,7 @@ async function seedKnowledge(): Promise<void> {
     ownerUserId: USER,
     createdByUserId: USER,
   });
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: ALPHA_2,
     spaceId: SPACE,
     title: "Alpha Concept",
@@ -84,7 +62,7 @@ async function seedKnowledge(): Promise<void> {
     ownerUserId: USER,
     createdByUserId: USER,
   });
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: THIN,
     spaceId: SPACE,
     title: "Tiny",
@@ -92,7 +70,7 @@ async function seedKnowledge(): Promise<void> {
     ownerUserId: USER,
     createdByUserId: USER,
   });
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: LINKER,
     spaceId: SPACE,
     title: "Linker Page",
@@ -100,7 +78,7 @@ async function seedKnowledge(): Promise<void> {
     ownerUserId: USER,
     createdByUserId: USER,
   });
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: TARGET,
     spaceId: SPACE,
     title: "Target Page",
@@ -108,11 +86,11 @@ async function seedKnowledge(): Promise<void> {
     ownerUserId: USER,
     createdByUserId: USER,
   });
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 }
 
 async function seedRecentBrief(): Promise<string> {
-  return persistRetrievalBriefArtifact(pool!, {
+  return persistRetrievalBriefArtifact(db.pool, {
     spaceId: SPACE,
     ownerUserId: USER,
     query: "Where are the claim gaps?",
@@ -157,11 +135,11 @@ async function seedRecentBrief(): Promise<string> {
 
 describe("Context Review Cycle (real Postgres)", () => {
   it("persists maintenance, diagnostics, claim packet, and Context Review Cycle report without canonical writes", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge();
     const briefArtifactId = await seedRecentBrief();
 
-    const result = await runContextReviewCycle(pool, {
+    const result = await runContextReviewCycle(db.pool, {
       spaceId: SPACE,
       userId: USER,
       request: {
@@ -189,7 +167,7 @@ describe("Context Review Cycle (real Postgres)", () => {
     expect(result.claim_candidates.proposal_id).toBeTruthy();
     expect(result.claim_candidates.candidate_count).toBeGreaterThan(0);
 
-    const artifacts = await pool.query<{ artifact_type: string; n: string }>(
+    const artifacts = await db.pool.query<{ artifact_type: string; n: string }>(
       `SELECT artifact_type, count(*) AS n
          FROM artifacts
         WHERE space_id = $1
@@ -203,7 +181,7 @@ describe("Context Review Cycle (real Postgres)", () => {
     expect(artifactCounts.claim_candidate_packet).toBe(1);
     expect(artifactCounts.context_review_cycle_report).toBe(1);
 
-    const proposals = await pool.query<{ proposal_type: string; n: string }>(
+    const proposals = await db.pool.query<{ proposal_type: string; n: string }>(
       `SELECT proposal_type, count(*) AS n
          FROM proposals
         WHERE space_id = $1
@@ -215,7 +193,7 @@ describe("Context Review Cycle (real Postgres)", () => {
     expect(proposalCounts.retrieval_diagnostics_packet).toBe(1);
     expect(proposalCounts.claim_candidate_packet).toBe(1);
 
-    const packet = await pool.query<{ metadata_json: Record<string, unknown> }>(
+    const packet = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
       `SELECT metadata_json
          FROM artifacts
         WHERE id = $1 AND space_id = $2 AND artifact_type = 'claim_candidate_packet'`,
@@ -229,8 +207,8 @@ describe("Context Review Cycle (real Postgres)", () => {
     expect(sourceArtifactIds).toContain(result.retrieval_maintenance.artifact_id);
     expect(sourceArtifactIds).toContain(result.diagnostics.artifact_id);
 
-    const claimRows = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM claims WHERE space_id = $1`, [SPACE]);
-    const relationRows = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations WHERE space_id = $1`, [SPACE]);
+    const claimRows = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM claims WHERE space_id = $1`, [SPACE]);
+    const relationRows = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations WHERE space_id = $1`, [SPACE]);
     expect(claimRows.rows[0]!.n).toBe("0");
     expect(relationRows.rows[0]!.n).toBe("0");
   });

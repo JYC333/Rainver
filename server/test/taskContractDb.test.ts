@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgTaskRepository } from "../src/modules/tasks/repository";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
@@ -9,42 +8,25 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[task-contract-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["tasks", "space_memberships", "users", "spaces"], { cascade: true });
+  if (!db.available) return;
+  await resetTables(db.pool, ["tasks", "space_memberships", "users", "spaces"], { cascade: true });
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Task Contract Owner', 'active', $2, $2)`,
     [OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Task Contract Space', 'personal', $2, $3, $3)`,
     [SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, OWNER, now],
@@ -53,8 +35,8 @@ beforeEach(async () => {
 
 describe("task contract persistence (real Postgres)", () => {
   it("creates and updates the A1 contract fields through the repository boundary", async () => {
-    if (!available || !pool) return;
-    const repository = new PgTaskRepository(pool);
+    if (!db.available) return;
+    const repository = new PgTaskRepository(db.pool);
     const created = await repository.createTask(identity, {
       title: "Initial contract",
       acceptance_criteria_json: { checks: [{ type: "output_schema" }] },
@@ -92,15 +74,15 @@ describe("task contract persistence (real Postgres)", () => {
   });
 
   it("rejects task statuses outside the canonical lifecycle vocabulary", async () => {
-    if (!available || !pool) return;
-    const repository = new PgTaskRepository(pool);
+    if (!db.available) return;
+    const repository = new PgTaskRepository(db.pool);
     await expect(repository.createTask(identity, { title: "Ghost state", status: "waiting_for_review" })).rejects.toMatchObject({
       statusCode: 422,
     });
 
     const now = new Date().toISOString();
     await expect(
-      pool.query(
+      db.pool.query(
         `INSERT INTO tasks (id, space_id, title, status, created_at, updated_at)
          VALUES ($1,$2,'Ghost state','waiting_for_review',$3,$3)`,
         [randomUUID(), SPACE, now],

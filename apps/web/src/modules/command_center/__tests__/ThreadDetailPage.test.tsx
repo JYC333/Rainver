@@ -15,6 +15,7 @@ vi.mock('../../../api/client', () => ({
   hostsApi: {
     listThreads: vi.fn(), list: vi.fn(), dispatch: vi.fn(), listRuntimeAdapters: vi.fn(),
     listMessages: vi.fn(), listEvents: vi.fn(), cancel: vi.fn(), resumeQueue: vi.fn(), withdrawMessage: vi.fn(),
+    listProviderBindings: vi.fn().mockResolvedValue({ items: [] }),
   },
   projectFoldersApi: { list: vi.fn(), get: vi.fn() },
   runsApi: { list: vi.fn() },

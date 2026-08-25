@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { resolveResearchReportReferences } from "../src/modules/projectResearch/reportReferenceResolver";
 import { assignReportReferenceIds } from "../src/modules/projectResearch/reportReferenceNumbering";
@@ -16,38 +15,21 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[report-reference-resolver-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["extracted_evidence", "source_items", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
   for (const user of [OWNER, OTHER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,
       [randomUUID(), SPACE, user, now],
@@ -59,7 +41,7 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 async function insertSourceItem(input: { id: string; createdBy: string; visibility?: string; owner?: string }): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, created_by_user_id, visibility, item_type, title, metadata_json,
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
@@ -70,7 +52,7 @@ async function insertSourceItem(input: { id: string; createdBy: string; visibili
 
 async function insertEvidence(input: { id: string; sourceItemId?: string | null; visibility?: string; owner?: string; sourceAuthor?: string; title?: string }): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO extracted_evidence (
        id, space_id, owner_user_id, visibility, source_item_id, source_object_type, evidence_type, title,
        source_author, extraction_method, trust_level, status, created_at, updated_at
@@ -85,13 +67,13 @@ function referenceContent(evidenceId: string): Record<string, unknown> {
 
 describe("research report evidence reference resolution (real Postgres)", () => {
   it("resolves a full evidence id to its source item metadata", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const sourceItemId = randomUUID();
     const evidenceId = randomUUID();
     await insertSourceItem({ id: sourceItemId, createdBy: OWNER });
     await insertEvidence({ id: evidenceId, sourceItemId });
 
-    const result = await resolveResearchReportReferences(pool!, identity, referenceContent(evidenceId));
+    const result = await resolveResearchReportReferences(db.pool, identity, referenceContent(evidenceId));
     expect(result.resolved).toEqual([{
       id: "ref-1", availability: "available", title: "Paper A", authors: ["Ada"], year: 2025,
       library_path: `/library/items/${sourceItemId}`,
@@ -99,31 +81,31 @@ describe("research report evidence reference resolution (real Postgres)", () => 
   });
 
   it("resolves a truncated evidence id prefix when it is unambiguous", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const sourceItemId = randomUUID();
     const evidenceId = "7dd00364-3232-4a62-a147-48afc68c9354";
     await insertSourceItem({ id: sourceItemId, createdBy: OWNER });
     await insertEvidence({ id: evidenceId, sourceItemId });
 
-    const result = await resolveResearchReportReferences(pool!, identity, referenceContent("7dd00364"));
+    const result = await resolveResearchReportReferences(db.pool, identity, referenceContent("7dd00364"));
     expect(result.resolved[0]).toMatchObject({ availability: "available", title: "Paper A" });
   });
 
   it("reports an ambiguous evidence id prefix as unavailable", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await insertEvidence({ id: "9a9a9a9a-0000-4000-8000-000000000001" });
     await insertEvidence({ id: "9a9a9a9a-0000-4000-8000-000000000002" });
 
-    const result = await resolveResearchReportReferences(pool!, identity, referenceContent("9a9a9a9a"));
+    const result = await resolveResearchReportReferences(db.pool, identity, referenceContent("9a9a9a9a"));
     expect(result.resolved).toEqual([{ id: "ref-1", availability: "unavailable" }]);
   });
 
   it("does not disclose evidence the viewer cannot read", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const evidenceId = randomUUID();
     await insertEvidence({ id: evidenceId, visibility: "private", owner: OTHER });
 
-    const result = await resolveResearchReportReferences(pool!, identity, {
+    const result = await resolveResearchReportReferences(db.pool, identity, {
       findings: [{ references: [{ evidence_id: evidenceId, doi: "10.0000/private" }] }], sources: [], ideas: [],
     });
     expect(result.resolved).toEqual([{ id: "ref-1", availability: "unavailable" }]);
@@ -132,7 +114,7 @@ describe("research report evidence reference resolution (real Postgres)", () => 
   });
 
   it("numbers references per article with lettered excerpts and resolves them grouped", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const sourceA = randomUUID();
     const sourceB = randomUUID();
     await insertSourceItem({ id: sourceA, createdBy: OWNER });
@@ -144,7 +126,7 @@ describe("research report evidence reference resolution (real Postgres)", () => 
     await insertEvidence({ id: evidenceA2, sourceItemId: sourceA, title: "Excerpt A2" });
     await insertEvidence({ id: evidenceB1, sourceItemId: sourceB, title: "Excerpt B1" });
 
-    const numbered = await assignReportReferenceIds(pool!, SPACE, {
+    const numbered = await assignReportReferenceIds(db.pool, SPACE, {
       findings: [
         // "11111111" is a truncated model citation; numbering must normalize it.
         { claim: "c1", support: "s", references: [{ evidence_id: "11111111" }, { evidence_id: evidenceA2 }] },
@@ -162,7 +144,7 @@ describe("research report evidence reference resolution (real Postgres)", () => 
       { evidence_id: evidenceA2, reference_id: "ref-1b" },
     ]);
 
-    const result = await resolveResearchReportReferences(pool!, identity, numbered);
+    const result = await resolveResearchReportReferences(db.pool, identity, numbered);
     expect(result.resolved).toEqual([
       {
         id: "ref-1", availability: "available", title: "Paper A", authors: ["Ada"], year: 2025,
@@ -180,13 +162,13 @@ describe("research report evidence reference resolution (real Postgres)", () => 
   });
 
   it("does not fall back to evidence metadata when its source item is not readable", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const sourceItemId = randomUUID();
     const evidenceId = randomUUID();
     await insertSourceItem({ id: sourceItemId, createdBy: OTHER, visibility: "private", owner: OTHER });
     await insertEvidence({ id: evidenceId, sourceItemId, sourceAuthor: "Grace" });
 
-    const result = await resolveResearchReportReferences(pool!, identity, referenceContent(evidenceId));
+    const result = await resolveResearchReportReferences(db.pool, identity, referenceContent(evidenceId));
     expect(result.resolved).toEqual([{ id: "ref-1", availability: "unavailable" }]);
     expect(JSON.stringify(result)).not.toContain("Key finding");
     expect(JSON.stringify(result)).not.toContain("Grace");

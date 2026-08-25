@@ -12,6 +12,9 @@ import { PgHostRuntimeProviderBindingRepository } from "./runtimeProviderBinding
 export interface ResolvedHostProviderBinding {
   provider_id: string | null;
   model: string | null;
+  /** Kept beside the model, never folded into it: a model id can contain
+   *  brackets of its own, so the pair is not recoverable from one string. */
+  reasoning_effort: string | null;
 }
 
 export interface HostProviderBindingOverride {
@@ -30,6 +33,7 @@ export interface HostProviderBindingOverride {
    */
   model_provider_id?: unknown;
   model?: string | null;
+  reasoning_effort?: string | null;
 }
 
 export interface ProviderLookupPort {
@@ -71,13 +75,29 @@ export async function resolveHostProviderBinding(input: {
     if (usable === undefined) {
       throw new HttpError(422, "model_provider_id must be a ModelProvider id, or null for the machine's own login");
     }
-    selected = { provider_id: usable, model: input.override.model ?? null };
+    selected = {
+      provider_id: usable,
+      model: input.override.model ?? null,
+      reasoning_effort: input.override.reasoning_effort ?? null,
+    };
   } else {
     selected = await hostDefault(input.db, input.hostId, input.adapterType);
-    if (input.modelOverrideProvided) selected = { ...selected, model: input.override.model ?? null };
+    if (input.modelOverrideProvided) {
+      selected = {
+        ...selected,
+        model: input.override.model ?? null,
+        reasoning_effort: input.override.reasoning_effort ?? null,
+      };
+    }
   }
 
-  if (!selected.provider_id) return { provider_id: null, model: null };
+  // A run on the machine's own login still has a model — the CLI's, which the
+  // caller may have chosen for this dispatch. Discarding it here made that
+  // choice unexpressible: the only model an unbound run could use was whatever
+  // the CLI was configured with, with no way to say otherwise.
+  if (!selected.provider_id) {
+    return { provider_id: null, model: selected.model, reasoning_effort: selected.reasoning_effort };
+  }
 
   const provider = await assertProviderUsable({
     providers: input.providers,
@@ -110,8 +130,10 @@ async function hostDefault(
   adapterType: string,
 ): Promise<ResolvedHostProviderBinding> {
   const binding = await new PgHostRuntimeProviderBindingRepository(db).get(hostId, adapterType);
-  if (!binding) return { provider_id: null, model: null };
-  return { provider_id: binding.model_provider_id, model: binding.model };
+  if (!binding) return { provider_id: null, model: null, reasoning_effort: null };
+  // A host default names a provider and a model; effort stays a per-dispatch
+  // choice rather than something a host is pinned to.
+  return { provider_id: binding.model_provider_id, model: binding.model, reasoning_effort: null };
 }
 
 /**

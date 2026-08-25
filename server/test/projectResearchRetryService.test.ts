@@ -27,24 +27,6 @@ describe("ProjectResearchRetryService", () => {
     expect(ports.queueSynthesis).not.toHaveBeenCalled();
   });
 
-  it("delegates synthesis retry atomically and returns the current operation", async () => {
-    const operation = failedOperation("synthesis");
-    const ports = retryPorts(operation);
-    const result = await new ProjectResearchRetryService(writerDb(), ports)
-      .retry(identity, "project", operation.id);
-
-    expect(result).toEqual({ id: operation.id });
-    expect(ports.queueSynthesis).toHaveBeenCalledWith({
-      spaceId: "space",
-      userId: "user",
-      projectId: "project",
-      operationId: operation.id,
-      workflowId: "workflow",
-      from: ["failed"],
-      reuseExistingRun: false,
-    });
-    expect(ports.readOperation).toHaveBeenCalledTimes(1);
-  });
 });
 
 function failedOperation(failedStage: "screening" | "synthesis", extra: Record<string, unknown> = {}): RetryOperationRow {

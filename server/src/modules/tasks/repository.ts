@@ -595,7 +595,7 @@ export class PgTaskRepository {
       // picks its provider through routing. Accepting either override here and
       // ignoring it would run on a backend the caller did not ask for, which
       // is the substitution this whole path exists to prevent.
-      for (const key of ["model_provider_id", "model"]) {
+      for (const key of ["model_provider_id", "model", "reasoning_effort"]) {
         if (Object.hasOwn(body, key)) {
           throw new HttpError(422, `${key} applies only to a remote Workspace Location`);
         }
@@ -775,6 +775,9 @@ export class PgTaskRepository {
             // choose", and coalescing it into the inherited value would make
             // that request unexpressible.
             model: Object.hasOwn(body, "model") ? optionalString(body.model) : inherited.model,
+            reasoning_effort: Object.hasOwn(body, "reasoning_effort")
+              ? optionalString(body.reasoning_effort)
+              : inherited.reasoning_effort,
             provenance: "thread",
           }
         : {
@@ -783,11 +786,12 @@ export class PgTaskRepository {
             // explicit null that means "ambient login for this dispatch".
             model_provider_id: body.model_provider_id,
             model: optionalString(body.model),
+            reasoning_effort: optionalString(body.reasoning_effort),
           },
       overrideProvided: Object.hasOwn(body, "model_provider_id") || inherited !== null,
       // Only read on the non-override branch, which inheritance never takes;
       // the inherited model travels in `override.model` above.
-      modelOverrideProvided: Object.hasOwn(body, "model"),
+      modelOverrideProvided: Object.hasOwn(body, "model") || Object.hasOwn(body, "reasoning_effort"),
     });
 
     const message = await messages.enqueue(thread.id, task.id, prompt, identity.userId, binding);

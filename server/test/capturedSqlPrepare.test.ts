@@ -1,9 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { globSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 
 // The runtime half of the SQL guard. `staticSqlPrepare.test.ts` covers SQL
 // written as a complete literal; this covers SQL assembled at runtime from
@@ -52,33 +51,18 @@ function loadCapturedStatements(): CapturedStatement[] {
   return [...byStatement].map(([sql, sources]) => ({ sql, sources }));
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 1 });
 
 beforeAll(async () => {
+  if (!db.available) return;
   if (loadCapturedStatements().length === 0) return;
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
-    // Optional plugins own their tables and ship their own migrations, so a
-    // core-only schema reports every finance_/diary_ statement as a missing
-    // relation. Their SQL is server code too — give it the same check.
-    for (const file of globSync(join(process.cwd(), "..", "plugins", "official", "*", "migrations", "*.sql")).sort()) {
-      await pool.query(readFileSync(file, "utf8"));
-    }
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[captured-sql-prepare] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  // Optional plugins own their tables and ship their own migrations, so a
+  // core-only schema reports every finance_/diary_ statement as a missing
+  // relation. Their SQL is server code too — give it the same check.
+  for (const file of globSync(join(process.cwd(), "..", "plugins", "official", "*", "migrations", "*.sql")).sort()) {
+    await db.pool.query(readFileSync(file, "utf8"));
   }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
 });
 
 describe("captured SQL", () => {
@@ -88,9 +72,9 @@ describe("captured SQL", () => {
       console.warn("[captured-sql-prepare] no capture file — run the suites with SQL_CAPTURE_DIR set first");
       return;
     }
-    if (!available || !pool) return;
+    if (!db.available) return;
 
-    const client = await pool.connect();
+    const client = await db.pool.connect();
     const failures: string[] = [];
     try {
       let index = 0;

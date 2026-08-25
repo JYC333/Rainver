@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryGraphService } from "../src/modules/inquiry/graphService";
@@ -19,48 +18,31 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const VIEWER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[inquiry-thread-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 let PROJECT: string;
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "notes", "space_objects", "projects", "project_members", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES
        ($1, 'Owner', 'active', $3, $3), ($2, 'Viewer', 'active', $3, $3)`,
     [OWNER, VIEWER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES
        ($1, $2, $3, 'owner', 'active', $5, $5), ($4, $2, $6, 'member', 'active', $5, $5)`,
     [randomUUID(), SPACE, OWNER, randomUUID(), now, VIEWER],
   );
-  const project = await new PgProjectRepository(pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Inquiry Project" });
+  const project = await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Inquiry Project" });
   PROJECT = project.id as string;
 });
 
@@ -70,12 +52,12 @@ const viewerIdentity = () => ({ spaceId: SPACE, userId: VIEWER });
 async function createNote(): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
      VALUES ($1, $2, 'note', 'A note', 'private', $3, $4, $4)`,
     [objectId, SPACE, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO notes (object_id, space_id, content_format, content_schema_version) VALUES ($1, $2, 'markdown', 1)`,
     [objectId, SPACE],
   );
@@ -84,9 +66,9 @@ async function createNote(): Promise<string> {
 
 describe("Inquiry Core (real Postgres)", () => {
   it("golden path: create Question + Hypothesis, relate them, link a Note, record a cited Iteration, set one Next Focus", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
 
     const question = await threadSvc.createThread(identity, PROJECT, {
@@ -131,14 +113,14 @@ describe("Inquiry Core (real Postgres)", () => {
     expect((questionDetail.relations as unknown[]).length).toBe(1);
 
     // No AI/Workflow is required for the core loop: nothing above touched runs.
-    const runCount = await pool.query<{ total: string }>(`SELECT count(*)::text AS total FROM runs`);
+    const runCount = await db.pool.query<{ total: string }>(`SELECT count(*)::text AS total FROM runs`);
     expect(runCount.rows[0]?.total).toBe("0");
   });
 
   it("protected cognitive fields cannot be overwritten through the work-management command", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Is X true?" });
 
@@ -167,9 +149,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("a semantic statement change cannot pass through the work-management command and requires the Definition Revision command", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Original statement" });
 
@@ -190,9 +172,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("a wording_only revision cannot smuggle a substantive definition field change", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const hypothesis = await threadSvc.createThread(identity, PROJECT, {
       kind: "hypothesis",
@@ -211,9 +193,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("a semantic_change revision with structure_action=supersede creates a new Thread and archives the old one", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Narrow question" });
 
@@ -239,9 +221,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("rejects semantic_change without structure_action, and rejects structure_action on wording_only", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Q" });
 
@@ -258,9 +240,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("rejects a step and a blocking reason together, but allows a focused Thread to hold neither", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Q" });
 
@@ -289,9 +271,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("records a step for each declared Next Focus and keeps the Thread column as its projection", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Steps" });
     const threadId = question.id as string;
@@ -322,9 +304,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("moves a search into the background slot so the primary slot stays free", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Background" });
     const threadId = question.id as string;
@@ -347,15 +329,15 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("finishes the evidence step when the search finishes, without asking the user to say so", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Auto-complete" });
     const threadId = question.id as string;
 
     await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "search_acquisition" });
-    const completed = await completeBackgroundStep(pool, {
+    const completed = await completeBackgroundStep(db.pool, {
       spaceId: SPACE,
       threadId,
       kind: "search_acquisition",
@@ -377,28 +359,28 @@ describe("Inquiry Core (real Postgres)", () => {
 
     // Manual work has no such fact behind it and is deliberately left alone.
     await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
-    expect(await completeBackgroundStep(pool, {
+    expect(await completeBackgroundStep(db.pool, {
       spaceId: SPACE, threadId, kind: "read_evidence", at: new Date().toISOString(),
     })).toBe(false);
   });
 
   it("does not carry a private Thread's statement into another member's origin bar", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const thread = await threadSvc.createThread(ownerIdentity(), PROJECT, {
       kind: "question",
       statement: "SECRET owner-only question",
     });
     await iterationSvc.updateWork(ownerIdentity(), PROJECT, thread.id as string, { next_focus_kind: "synthesize" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
       [randomUUID(), SPACE, PROJECT, VIEWER],
     );
     expect(await iterationSvc.listOpenProjectSteps(viewerIdentity(), PROJECT)).toHaveLength(1);
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
       [thread.id as string, SPACE],
     );
@@ -409,9 +391,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("carries an open step across Areas with the Thread it belongs to", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Where did I come from?" });
     await iterationSvc.updateWork(identity, PROJECT, question.id as string, { next_focus_kind: "synthesize" });
@@ -427,9 +409,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("assigns every settled step to the round that closed, so the next round starts empty", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Rounds" });
     const threadId = question.id as string;
@@ -450,9 +432,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("can call off a running background search, which the primary-only column cannot express", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Cancel" });
     const threadId = question.id as string;
@@ -467,9 +449,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("refuses to mark a Thread blocked while a background search is still open", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Blocked+bg" });
     const threadId = question.id as string;
@@ -488,9 +470,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("keeps a note written for a background step instead of discarding it", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Notes" });
     const threadId = question.id as string;
@@ -504,9 +486,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("keeps a step's note when the same step is re-declared, and never copies it onto another", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Notes across steps" });
     const threadId = question.id as string;
@@ -534,9 +516,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("records no work event when a running step is re-declared", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Audit" });
     const threadId = question.id as string;
@@ -549,9 +531,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("ends open steps when a Thread leaves the active lifecycle", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Resolve" });
     const threadId = question.id as string;
@@ -567,9 +549,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("closes the round's steps into the Iteration that ended it", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Round" });
     const threadId = question.id as string;
@@ -594,8 +576,8 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("lists the personal Focus of the calling user only", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const identity = ownerIdentity();
     const focused = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "In focus" });
     await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Not in focus" });
@@ -609,9 +591,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("flags a soft WIP-limit breach without blocking the transition", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const threadIds: string[] = [];
     for (let i = 0; i < 4; i += 1) {
@@ -634,9 +616,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("does not spend a WIP slot on a Thread whose only running work is a background search", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const identity = ownerIdentity();
     const ids: string[] = [];
     for (let i = 0; i < 4; i += 1) {
@@ -670,23 +652,23 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("keeps Inquiry write commands Space- and membership-gated", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const question = await threadSvc.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "Q" });
-    await new InquiryIterationService(pool).recordIteration(ownerIdentity(), PROJECT, question.id as string, {
+    await new InquiryIterationService(db.pool).recordIteration(ownerIdentity(), PROJECT, question.id as string, {
       change_summary: "Answer changed",
       current_answer_summary: "A",
     });
 
     await expect(threadSvc.listThreads(viewerIdentity(), PROJECT)).rejects.toMatchObject({ statusCode: 404 });
     await expect(
-      new InquiryIterationService(pool).listIterations(viewerIdentity(), PROJECT, question.id as string),
+      new InquiryIterationService(db.pool).listIterations(viewerIdentity(), PROJECT, question.id as string),
     ).rejects.toMatchObject({ statusCode: 404 });
     await expect(
       threadSvc.createThread(viewerIdentity(), PROJECT, { kind: "question", statement: "Should fail" }),
     ).rejects.toMatchObject({ statusCode: 403 });
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'viewer', 'active', now(), now())`,
       [randomUUID(), SPACE, PROJECT, VIEWER],
@@ -699,9 +681,9 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("rejects primary-parent cycles and records lifecycle transitions separately from work state", async () => {
-    if (!available || !pool) return;
-    const threads = new InquiryThreadService(pool);
-    const iterations = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threads = new InquiryThreadService(db.pool);
+    const iterations = new InquiryIterationService(db.pool);
     const a = await threads.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "A" });
     const b = await threads.createThread(ownerIdentity(), PROJECT, {
       kind: "question",
@@ -738,14 +720,14 @@ describe("Inquiry Core (real Postgres)", () => {
         current_answer_summary: "No",
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
-    const events = await pool.query(`SELECT to_status FROM inquiry_thread_lifecycle_events WHERE thread_id=$1`, [a.id]);
+    const events = await db.pool.query(`SELECT to_status FROM inquiry_thread_lifecycle_events WHERE thread_id=$1`, [a.id]);
     expect(events.rows).toEqual([{ to_status: "resolved" }]);
   });
 
   it("rejects invalid numeric values instead of silently treating them as omitted", async () => {
-    if (!available || !pool) return;
-    const threads = new InquiryThreadService(pool);
-    const iterations = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threads = new InquiryThreadService(db.pool);
+    const iterations = new InquiryIterationService(db.pool);
     const hypothesis = await threads.createThread(ownerIdentity(), PROJECT, {
       kind: "hypothesis",
       statement: "Numeric validation",
@@ -765,8 +747,8 @@ describe("Inquiry Core (real Postgres)", () => {
   // and both were rewritten from domain tables to `object_relations` — exactly
   // the shape where a wrong column name survives a green suite.
   it("removes a Thread relation and a Note link through object_relations", async () => {
-    if (!available || !pool) return;
-    const threads = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threads = new InquiryThreadService(db.pool);
     const from = await threads.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "From" });
     const to = await threads.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "To" });
     const relation = await threads.addRelation(ownerIdentity(), PROJECT, {
@@ -780,7 +762,7 @@ describe("Inquiry Core (real Postgres)", () => {
     expect((await threads.getThread(ownerIdentity(), PROJECT, from.id as string)).relations)
       .toHaveLength(0);
 
-    const note = await pool.query<{ id: string }>(
+    const note = await db.pool.query<{ id: string }>(
       `SELECT id FROM space_objects WHERE space_id=$1 AND object_type='note' LIMIT 1`,
       [SPACE],
     );
@@ -798,12 +780,12 @@ describe("Inquiry Core (real Postgres)", () => {
   // read gate instead of relying on Project membership alone. These assert the
   // three B12H-adjacent guarantees the migration is supposed to buy.
   it("gives a recovered Thread the ontology root's governance columns", async () => {
-    if (!available || !pool) return;
-    const thread = await new InquiryThreadService(pool).createThread(ownerIdentity(), PROJECT, {
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(ownerIdentity(), PROJECT, {
       kind: "question",
       statement: "Governed question",
     });
-    const root = await pool.query<{
+    const root = await db.pool.query<{
       object_type: string; visibility: string; owner_user_id: string | null;
       primary_project_id: string | null; created_by_user_id: string | null;
     }>(
@@ -834,18 +816,18 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("hides a private Thread from its own list, not only from the graph", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const thread = await threadSvc.createThread(ownerIdentity(), PROJECT, {
       kind: "question",
       statement: "Owner-only question",
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
       [randomUUID(), SPACE, PROJECT, VIEWER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
       [thread.id as string, SPACE],
     );
@@ -860,13 +842,13 @@ describe("Inquiry Core (real Postgres)", () => {
   });
 
   it("hides a private Thread from another Project member", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const thread = await threadSvc.createThread(ownerIdentity(), PROJECT, {
       kind: "question",
       statement: "Private question",
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
       [randomUUID(), SPACE, PROJECT, VIEWER],
@@ -876,19 +858,19 @@ describe("Inquiry Core (real Postgres)", () => {
 
     // Per-object visibility is what the ontology adds; Project membership alone
     // no longer decides who sees a Thread.
-    await pool.query(
+    await db.pool.query(
       `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
       [thread.id as string, SPACE],
     );
-    const graph = await new InquiryGraphService(pool)
+    const graph = await new InquiryGraphService(db.pool)
       .getCombinedProjectGraph(viewerIdentity(), PROJECT, { limit: 50 });
     expect(graph.nodes.map((node) => node.id)).not.toContain(thread.id);
   });
 
   it("database constraints reject cross-Project Inquiry references", async () => {
-    if (!available || !pool) return;
-    const projects = new PgProjectRepository(pool);
-    const threads = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const projects = new PgProjectRepository(db.pool);
+    const threads = new InquiryThreadService(db.pool);
     const first = await threads.createThread(ownerIdentity(), PROJECT, {
       kind: "question",
       statement: "First Project",

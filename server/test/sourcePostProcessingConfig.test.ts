@@ -222,4 +222,16 @@ describe("source post-processing actions", () => {
       mark_items: false,
     });
   });
+
+  it("preserves preset content profile hints", () => {
+    expect(normalizeInputConfig({
+      content_profile: "arxiv_new_papers",
+      summary_goal: "Summarize newly captured arXiv papers for categories: cs.AI.",
+      output_instructions: "Include arXiv ids and categories.",
+    })).toMatchObject({
+      content_profile: "arxiv_new_papers",
+      summary_goal: "Summarize newly captured arXiv papers for categories: cs.AI.",
+      output_instructions: "Include arXiv ids and categories.",
+    });
+  });
 });

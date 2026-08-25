@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -38,42 +37,21 @@ function capturingSynthesizer(sink: BriefCandidate[], citations: number[]): Synt
   };
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-brief-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Brief', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Brief', 'personal', now(), now())`, [SPACE]);
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('brief-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -87,7 +65,7 @@ async function seed(doc: {
   visibility?: string;
   owner?: string | null;
 }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -100,18 +78,18 @@ async function seed(doc: {
 }
 
 async function reindex(): Promise<void> {
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 }
 
 describe("Retrieval Context Brief (real Postgres)", () => {
   it("synthesizes a cited answer from the revalidated sources", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "doc-a", title: "Backups", content: "Nightly backups run at 02:00 to cold storage." });
     await seed({ id: "doc-b", title: "Restore", content: "Restores are tested quarterly from backups." });
     await reindex();
 
     const captured: BriefCandidate[] = [];
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       synthesizer: capturingSynthesizer(captured, [0]),
     });
     const result = await search.buildBrief({
@@ -135,7 +113,7 @@ describe("Retrieval Context Brief (real Postgres)", () => {
   });
 
   it("never sends a non-readable object to the synthesizer (invariant 1/2)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // Both match "ledger" lexically, but `secret` is private and owned by OTHER.
     await seed({ id: "public-ledger", title: "Ledger basics", content: "The ledger records every transaction." });
     await seed({
@@ -148,7 +126,7 @@ describe("Retrieval Context Brief (real Postgres)", () => {
     await reindex();
 
     const captured: BriefCandidate[] = [];
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       synthesizer: capturingSynthesizer(captured, [0]),
     });
     const result = await search.buildBrief({
@@ -169,11 +147,11 @@ describe("Retrieval Context Brief (real Postgres)", () => {
   });
 
   it("drops a citation index the synthesizer invented beyond the surfaced sources", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "only-doc", title: "Solo", content: "The one and only matching page about quokkas." });
     await reindex();
 
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       synthesizer: capturingSynthesizer([], [0, 99]), // 99 is out of range
     });
     const result = await search.buildBrief({
@@ -188,14 +166,14 @@ describe("Retrieval Context Brief (real Postgres)", () => {
   });
 
   it("does not cite sources outside the returned max_results window", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "doc-a", title: "A", content: "Phoenix launch checklist." });
     await seed({ id: "doc-b", title: "B", content: "Phoenix launch dependencies." });
     await seed({ id: "doc-c", title: "C", content: "Phoenix launch archive." });
     await reindex();
 
     const captured: BriefCandidate[] = [];
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       synthesizer: capturingSynthesizer(captured, [2]),
     });
     const result = await search.buildBrief({
@@ -213,11 +191,11 @@ describe("Retrieval Context Brief (real Postgres)", () => {
   });
 
   it("returns a deterministic-only brief when no synthesizer is configured", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "lonely", title: "Lonely page", content: "x" }); // thin + low coverage
     await reindex();
 
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry);
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry);
     const result = await search.buildBrief({
       spaceId: SPACE,
       viewerUserId: VIEWER,

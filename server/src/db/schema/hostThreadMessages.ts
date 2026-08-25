@@ -51,6 +51,11 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 	 */
 	modelProviderId: varchar("model_provider_id", { length: 36 }),
 	model: varchar({ length: 256 }),
+	// Separate from `model` because ACP exposes them as two settings and a
+	// model id can contain brackets of its own — Claude's `claude-fable-5[1m]`
+	// is one name, not a model and an effort. Encoding the pair into one string
+	// therefore cannot be decoded again.
+	reasoningEffort: varchar("reasoning_effort", { length: 32 }),
 	runId: varchar("run_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),

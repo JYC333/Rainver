@@ -1,7 +1,7 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { PgVerificationRepository } from "../src/modules/runs/verification/repository";
@@ -24,54 +24,35 @@ const CREDENTIAL = "88888888-8888-4888-8888-888888888888";
 const PROVIDER_CREDENTIAL = "89999999-9999-4999-8999-999999999999";
 const PROVIDER_GRANT = "8aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(
-      `[run-supervisor-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  if (!db.available) return;
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Supervisor Test User', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Supervisor Test Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('86666666-6666-4666-8666-666666666666', $1, $2, 'owner', 'active', $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id,
                          created_at, updated_at, visibility)
      VALUES ($1, $2, $3, 'Supervisor Test Agent', 'active', NULL, $4, $4, 'space_shared')`,
     [AGENT, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
@@ -82,39 +63,39 @@ beforeEach(async () => {
                '["research.brief_synthesize"]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `UPDATE agents SET current_version_id = $2 WHERE id = $1 AND space_id = $3`,
     [AGENT, VERSION, SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO credentials (
        id, space_id, owner_user_id, name, credential_type, secret_ref,
        scopes_json, created_at, updated_at
      ) VALUES ($1, $2, $3, 'Supervisor Test Credential', 'api_key', 'test-secret-ref', '{}'::jsonb, $4, $4)`,
     [CREDENTIAL, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, default_model,
        credential_id, enabled, capabilities_json, config_json, created_at, updated_at
      ) VALUES ($1, $2, $3, 'Supervisor Test Provider', 'openai', 'test-model', $4, true, '{}'::jsonb, '{}'::jsonb, $5, $5)`,
     [PROVIDER, SPACE, USER, CREDENTIAL, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_provider_credentials (
        id, space_id, provider_id, credential_id, position, enabled, healthy,
        request_count, failure_count, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, 0, true, true, 0, 0, $5, $5)`,
     [PROVIDER_CREDENTIAL, SPACE, PROVIDER, CREDENTIAL, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_provider_space_grants (
        id, provider_id, space_id, owner_user_id, granted_by_user_id,
        enabled, is_default, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, $4, true, true, $5, $5)`,
     [PROVIDER_GRANT, PROVIDER, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type,
        model_provider_id, runtime_config_json, runtime_policy_json, enabled, is_default,
@@ -122,7 +103,7 @@ beforeEach(async () => {
      ) VALUES ($1, $2, $3, 'Default', 'model_api', $4, '{}', '{}', true, true, $5, $5)`,
     [PROFILE, SPACE, AGENT, PROVIDER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, model_provider_id,
        runtime_config_json, runtime_policy_json, enabled, is_default,
@@ -134,13 +115,13 @@ beforeEach(async () => {
 
 describe("run attempts and supervisor against shared PostgreSQL", () => {
   it("records physical attempts and retries the same route before human review", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
-    const repository = new PgRunRepository(pool);
-    const supervisor = new PgRunSupervisor(pool, new EvolutionSignalEmitter(pool));
+    const repository = new PgRunRepository(db.pool);
+    const supervisor = new PgRunSupervisor(db.pool, new EvolutionSignalEmitter(db.pool));
     const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, supervisor);
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
        VALUES ($1, $2, $3, 1, 'queued', now(), now())`,
       [randomUUID(), SPACE, runId],
@@ -154,7 +135,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       completed_at: new Date().toISOString(),
     });
     await finalizer.finalize(runId, SPACE);
-    expect((await pool.query<{ committed: string | null }>(
+    expect((await db.pool.query<{ committed: string | null }>(
       `SELECT metadata_json->>'completion_gate_committed' AS committed
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
@@ -163,7 +144,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       [SPACE, runId],
     )).rows[0]?.committed).toBe("true");
 
-    const firstAttempt = await pool.query<{ attempt_number: number; status: string }>(
+    const firstAttempt = await db.pool.query<{ attempt_number: number; status: string }>(
       `SELECT attempt_number, status FROM run_attempts WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     );
@@ -172,11 +153,11 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       { attempt_number: 2, status: "queued" },
     ]);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM jobs WHERE space_id = $1 AND payload_json->>'run_id' = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("1");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM evolution_signals
         WHERE space_id = $1 AND signal_type = 'supervisor_outcome'
@@ -194,7 +175,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     });
     await finalizer.finalize(runId, SPACE);
 
-    const decisions = await pool.query<{ decision: string; reason_code: string }>(
+    const decisions = await db.pool.query<{ decision: string; reason_code: string }>(
       `SELECT decision, reason_code
          FROM run_supervisor_decisions decision
          JOIN run_attempts attempt
@@ -209,14 +190,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       { decision: "human_review", reason_code: "retry_attempt_cap_reached" },
     ]);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM jobs WHERE space_id = $1 AND payload_json->>'run_id' = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("1");
   });
 
   it("leaves a non-retryable interactive chat failure terminal for its conversation reply", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({
       max_attempts: 2,
       model_override_json: {
@@ -231,7 +212,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
         },
       },
     });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({
       run_id: runId,
       space_id: SPACE,
@@ -248,7 +229,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       completed_at: new Date().toISOString(),
     });
 
-    const decision = await new PgRunSupervisor(pool).supervise({
+    const decision = await new PgRunSupervisor(db.pool).supervise({
       run: (await repository.getRun(SPACE, runId))!,
       evaluation: {
         outcome_status: "failed",
@@ -258,7 +239,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
 
     expect(decision).toBeNull();
     expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM run_supervisor_decisions
         WHERE space_id = $1 AND run_id = $2`,
@@ -267,16 +248,16 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("retries semantic rejection through RunEvaluation and honors the attempt cap", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     const finalizer = new PostRunFinalizationService(
       repository,
       undefined,
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     );
 
     await repository.markRunRunning({
@@ -320,7 +301,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await finalizer.finalize(runId, SPACE);
 
     expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
-    expect((await pool.query<{ decision: string; reason_code: string }>(
+    expect((await db.pool.query<{ decision: string; reason_code: string }>(
       `SELECT decision, reason_code
          FROM run_supervisor_decisions decision
          JOIN run_attempts attempt
@@ -336,9 +317,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("keeps cancellation in cancelling until the terminal write confirms the attempt", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
     const cancelling = await repository.markRunCancelling({
       run_id: runId,
@@ -363,9 +344,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("linearizes cancellation against execution-owned terminal publication", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({
       run_id: runId,
       space_id: SPACE,
@@ -376,7 +357,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       worker_id: "worker-1",
       job_id: null,
     })).toBe(true);
-    await insertProposalRow(pool, {
+    await insertProposalRow(db.pool, {
       spaceId: SPACE,
       createdByRunId: runId,
       createdByAgentId: AGENT,
@@ -421,21 +402,21 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       completed_at: new Date().toISOString(),
     });
     expect(cancelled?.status).toBe("cancelled");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM run_execution_locks WHERE run_id = $1",
       [runId],
     )).rows[0]?.count).toBe("0");
-    expect((await pool.query<{ status: string }>(
+    expect((await db.pool.query<{ status: string }>(
       "SELECT status FROM proposals WHERE created_by_run_id = $1",
       [runId],
     )).rows).toEqual([{ status: "rejected" }]);
   });
 
   it("selects terminal chat Runs for recovery before finalization exists", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
-    await pool.query(
+    const repository = new PgRunRepository(db.pool);
+    await db.pool.query(
       `UPDATE runs
           SET model_override_json = jsonb_build_object(
             'chat_turn',
@@ -472,9 +453,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("serializes concurrent finalization before writing evaluation evidence", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({
       run_id: runId,
       space_id: SPACE,
@@ -489,7 +470,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     });
 
     const constrainedPool = new Pool({
-      connectionString: database!.getConnectionUri(),
+      connectionString: db.connectionUri,
       max: 1,
       connectionTimeoutMillis: 2_000,
     });
@@ -506,18 +487,18 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       await constrainedPool.end();
     }
 
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM run_finalizations WHERE space_id = $1 AND run_id = $2",
       [SPACE, runId],
     )).rows[0]?.count).toBe("1");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM run_evaluations WHERE space_id = $1 AND run_id = $2",
       [SPACE, runId],
     )).rows[0]?.count).toBe("1");
   });
 
   it("leaves managed fail-fast runs failed for their owning operation", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({
       trigger_origin: "job",
       policy_context_json: {
@@ -526,14 +507,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
         failure_policy: "fail_fast",
       },
     });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     const finalizer = new PostRunFinalizationService(
       repository,
       undefined,
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     );
 
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
@@ -547,14 +528,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await finalizer.finalize(runId, SPACE);
 
     expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("0");
   });
 
   it("automatically retries transient managed failures before returning final failure to the owning operation", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({
       trigger_origin: "system",
       max_attempts: 2,
@@ -564,14 +545,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
         failure_policy: "fail_fast",
       },
     });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     const finalizer = new PostRunFinalizationService(
       repository,
       undefined,
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     );
 
     await repository.markRunRunning({
@@ -592,7 +573,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await finalizer.finalize(runId, SPACE);
 
     expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
-    expect((await pool.query<{ decision: string }>(
+    expect((await db.pool.query<{ decision: string }>(
       `SELECT decision FROM run_supervisor_decisions
         WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
@@ -616,7 +597,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await finalizer.finalize(runId, SPACE);
 
     expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM run_supervisor_decisions
         WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
@@ -624,10 +605,10 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("reroutes a retry through the persisted C2 fallback chain", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
-    const repository = new PgRunRepository(pool);
-    const routing = new PgRouteDecisionRepository(pool);
+    const repository = new PgRunRepository(db.pool);
+    const routing = new PgRouteDecisionRepository(db.pool);
     const initial = await repository.getRun(SPACE, runId);
     if (!initial) throw new Error("seeded run not found");
     const firstRoute = await routing.routeRun(initial);
@@ -647,14 +628,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     ).finalize(runId, SPACE);
 
     const queuedRetry = await repository.getRun(SPACE, runId);
     if (!queuedRetry) throw new Error("retry run not found");
     const secondRoute = await routing.routeRun(queuedRetry);
     expect(secondRoute.runtime_profile_id).toBe(FALLBACK_PROFILE);
-    expect((await pool.query<{ attempt_number: number; selected_runtime_profile_id: string }>(
+    expect((await db.pool.query<{ attempt_number: number; selected_runtime_profile_id: string }>(
       `SELECT attempt_number, selected_runtime_profile_id
          FROM route_decisions WHERE space_id = $1 AND run_id = $2 ORDER BY attempt_number`,
       [SPACE, runId],
@@ -662,7 +643,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       { attempt_number: 1, selected_runtime_profile_id: PROFILE },
       { attempt_number: 2, selected_runtime_profile_id: FALLBACK_PROFILE },
     ]);
-    expect((await pool.query<{ decision: string; next_attempt_number: number | null }>(
+    expect((await db.pool.query<{ decision: string; next_attempt_number: number | null }>(
       `SELECT decision, next_attempt_number
          FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
@@ -670,8 +651,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("loads routing capabilities from the agent's current version when profiles do not duplicate them", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const routing = new PgRouteDecisionRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const routing = new PgRouteDecisionRepository(db.pool);
     const candidates = await routing.listCandidates(SPACE, AGENT, USER);
     expect(candidates).toHaveLength(2);
     expect(candidates[0]?.capabilities).toContain("research.brief_synthesize");
@@ -679,14 +660,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("keeps the current route when the persisted fallback chain has no remainder", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    await pool.query(
+    if (!db.available || !db.pool) return ctx.skip();
+    await db.pool.query(
       `UPDATE agent_runtime_profiles SET enabled = false WHERE space_id = $1 AND id = $2`,
       [SPACE, FALLBACK_PROFILE],
     );
     const runId = await seedRun({ max_attempts: 2 });
-    const repository = new PgRunRepository(pool);
-    const routing = new PgRouteDecisionRepository(pool);
+    const repository = new PgRunRepository(db.pool);
+    const routing = new PgRouteDecisionRepository(db.pool);
     const initial = await repository.getRun(SPACE, runId);
     if (!initial) throw new Error("seeded run not found");
     expect((await routing.routeRun(initial)).runtime_profile_id).toBe(PROFILE);
@@ -704,21 +685,21 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     ).finalize(runId, SPACE);
     const retry = await repository.getRun(SPACE, runId);
     if (!retry) throw new Error("retry run not found");
     expect((await routing.routeRun(retry)).runtime_profile_id).toBe(PROFILE);
-    expect((await pool.query<{ decision: string }>(
+    expect((await db.pool.query<{ decision: string }>(
       `SELECT decision FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     )).rows[0]?.decision).toBe("retry_same_route");
   });
 
   it("keeps approval-paused attempts resumable without inventing a duplicate attempt", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
     const paused = await repository.markRunWaitingForReview({
       run_id: runId,
@@ -744,7 +725,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       approval_granted_by_user_id: USER,
     });
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
-    const attempts = await pool.query<{ count: string }>(
+    const attempts = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM run_attempts WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     );
@@ -752,10 +733,10 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("keeps each attempt's verification results and stamps evidence with the producing attempt", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
-    const repository = new PgRunRepository(pool);
-    const verifications = new PgVerificationRepository(pool);
+    const repository = new PgRunRepository(db.pool);
+    const verifications = new PgVerificationRepository(db.pool);
     const check = (status: "passed" | "failed") => [{
       verifier_type: "output_schema",
       verifier_version: "verification_engine.v1",
@@ -796,7 +777,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
     await verifications.upsertResults(SPACE, runId, check("passed"));
 
-    const rows = await pool.query<{ attempt_number: number; status: string }>(
+    const rows = await db.pool.query<{ attempt_number: number; status: string }>(
       `SELECT attempt_number, status FROM verification_results
         WHERE space_id = $1 AND run_id = $2 ORDER BY attempt_number`,
       [SPACE, runId],
@@ -808,7 +789,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     const current = await repository.listVerificationResults(SPACE, runId);
     expect(current.map((row) => [row.attempt_number, row.status])).toEqual([[2, "passed"]]);
 
-    const events = await pool.query<{ attempt_number: number | null; event_type: string }>(
+    const events = await db.pool.query<{ attempt_number: number | null; event_type: string }>(
       `SELECT attempt_number, event_type FROM run_events
         WHERE space_id = $1 AND run_id = $2 ORDER BY event_index`,
       [SPACE, runId],
@@ -820,7 +801,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       event_type: "validation_completed",
       status: "succeeded",
     });
-    expect((await pool.query<{ attempt_number: number | null }>(
+    expect((await db.pool.query<{ attempt_number: number | null }>(
       `SELECT attempt_number FROM run_events
         WHERE space_id = $1 AND run_id = $2 ORDER BY event_index DESC LIMIT 1`,
       [SPACE, runId],
@@ -828,9 +809,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("allows a human to abandon a supervisor-held run and finalize it", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 1 });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
     await repository.markRunTerminal({
       run_id: runId,
@@ -861,9 +842,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("resumes a supervisor terminal hold as a new explicitly authorized attempt", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 1 });
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
     await repository.markRunTerminal({
       run_id: runId,
@@ -886,7 +867,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       resumed_at: new Date().toISOString(),
     });
     expect(resumed?.status).toBe("queued");
-    expect((await pool.query<{ attempt_number: number; status: string }>(
+    expect((await db.pool.query<{ attempt_number: number; status: string }>(
       `SELECT attempt_number, status
          FROM run_attempts WHERE space_id = $1 AND run_id = $2 ORDER BY attempt_number`,
       [SPACE, runId],
@@ -897,10 +878,10 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
   });
 
   it("enforces a run cost cap across attempts before scheduling a retry", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2, max_cost: 1 });
-    const repository = new PgRunRepository(pool);
-    const usage = new PgUsageRepository(pool);
+    const repository = new PgRunRepository(db.pool);
+    const usage = new PgUsageRepository(db.pool);
     const instanceId = await usage.getOrCreateInstanceId();
     await usage.appendEvent(normalizeUsageObservation(
       {
@@ -943,24 +924,24 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       undefined,
       undefined,
       undefined,
-      new PgRunSupervisor(pool),
+      new PgRunSupervisor(db.pool),
     ).finalize(runId, SPACE);
 
     expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
-    expect((await pool.query<{ decision: string }>(
+    expect((await db.pool.query<{ decision: string }>(
       `SELECT decision FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     )).rows[0]?.decision).toBe("budget_exceeded");
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM jobs WHERE space_id = $1 AND payload_json->>'run_id' = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("0");
   });
 
   it("marks lost executions orphaned during startup recovery", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun();
-    const repository = new PgRunRepository(pool);
+    const repository = new PgRunRepository(db.pool);
     const startedAt = new Date(Date.now() - 120_000).toISOString();
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
     expect(await repository.tryAcquireExecutionLock({
@@ -968,7 +949,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       worker_id: "lost-worker",
       job_id: null,
     })).toBe(true);
-    await insertProposalRow(pool, {
+    await insertProposalRow(db.pool, {
       spaceId: SPACE,
       createdByRunId: runId,
       createdByAgentId: AGENT,
@@ -980,7 +961,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       visibility: "space_shared",
       status: "staged",
     });
-    await insertProposalRow(pool, {
+    await insertProposalRow(db.pool, {
       spaceId: SPACE,
       createdByRunId: runId,
       createdByAgentId: AGENT,
@@ -993,13 +974,13 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       status: "pending",
     });
     expect(await repository.listProposalSummaries(SPACE, runId)).toEqual([]);
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET started_at = $3, updated_at = $3 WHERE space_id = $1 AND id = $2`,
       [SPACE, runId, startedAt],
     );
     const recovered = await repository.recoverStaleRuns(60, new Date());
     expect(recovered).toBe(1);
-    expect((await pool.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM run_execution_locks WHERE run_id = $1",
       [runId],
     )).rows[0]?.count).toBe("0");
@@ -1027,7 +1008,7 @@ async function seedRun(contract: {
 } = {}): Promise<string> {
   const runId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, runtime_profile_id,
        run_type, trigger_origin, status, mode,

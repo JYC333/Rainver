@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
 import { withTransaction } from "../src/db/tx";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
@@ -9,7 +8,7 @@ import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReord
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { buildModuleServer } from "./support/moduleServer";
 import { knowledgeModule } from "../src/modules/knowledge";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 // note_collection_items.sort_order existed in the schema before this but was
@@ -21,52 +20,37 @@ import { resetTables } from "./support/resetTables";
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    app = buildModuleServer(loadConfig({
-      SERVER_DATABASE_URL: database.getConnectionUri(),
-      SERVER_INTERNAL_TOKEN: "test-internal-token",
-      AGENT_SPACE_HOME: "/tmp/agent-space-note-ordering-test",
-    }), [knowledgeModule]);
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[knowledge-note-ordering-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await database?.stop();
+  if (!db.available || !app) return;
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
+  app = buildModuleServer(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    SERVER_INTERNAL_TOKEN: "test-internal-token",
+    AGENT_SPACE_HOME: "/tmp/agent-space-note-ordering-test",
+  }), [knowledgeModule]);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available || !app) return;
   await resetTables(
-    pool,
+    db.pool,
     ["notes", "note_collections", "note_collection_items", "space_objects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
-  await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
 });
 
 async function makeFolder(name: string): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
      VALUES ($1,$2,NULL,$3,'normal',0,false,false,$4,$4)`,
     [id, SPACE, name, now],
@@ -91,9 +75,9 @@ function placementOrder(note: ListedNote, collectionId: string): number | undefi
 
 describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   it("appends newly created notes to the end of their folder in creation order", async () => {
-    if (!available || !pool) return;
+    if (!db.available || !app) return;
     const identity = { spaceId: SPACE, userId: USER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const folder = await makeFolder("Folder");
 
     const first = await repository.createNote(identity, { title: "First", collection_id: folder });
@@ -107,9 +91,9 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("appends a note moved into a different folder after that folder's existing notes", async () => {
-    if (!available || !pool) return;
+    if (!db.available || !app) return;
     const identity = { spaceId: SPACE, userId: USER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const source = await makeFolder("Source");
     const target = await makeFolder("Target");
 
@@ -125,21 +109,21 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("repositions a note within its current folder without changing which folder it's in", async () => {
-    if (!available || !pool) return;
+    if (!db.available || !app) return;
     const identity = { spaceId: SPACE, userId: USER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const folder = await makeFolder("Folder");
     const a = await repository.createNote(identity, { title: "A", collection_id: folder }) as { id: string };
     const b = await repository.createNote(identity, { title: "B", collection_id: folder }) as { id: string };
 
-    const before = await pool.query<{ id: string; updated_at: Date }>(
+    const before = await db.pool.query<{ id: string; updated_at: Date }>(
       `SELECT id, updated_at FROM space_objects WHERE id = ANY($1::varchar[]) ORDER BY id`,
       [[a.id, b.id]],
     );
 
     // Move "B" (currently sort_order 1) to the front, ahead of "A" in one
     // transaction, without turning the reorder into a content update.
-    const result = await withTransaction(pool, (client) =>
+    const result = await withTransaction(db.pool, (client) =>
       persistNotesTreeReorder(client, identity, {
         kind: "notes",
         updates: [
@@ -153,7 +137,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
     const items = (listed as { items: Array<{ id: string }> }).items;
     expect(result).toEqual({ kind: "notes", updated: 2 });
     expect(items.map((item) => item.id)).toEqual([b.id, a.id]);
-    const after = await pool.query<{ id: string; updated_at: Date }>(
+    const after = await db.pool.query<{ id: string; updated_at: Date }>(
       `SELECT id, updated_at FROM space_objects WHERE id = ANY($1::varchar[]) ORDER BY id`,
       [[a.id, b.id]],
     );
@@ -161,14 +145,14 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("rolls back the complete reorder when any destination collection is invalid", async () => {
-    if (!available || !pool) return;
+    if (!db.available || !app) return;
     const identity = { spaceId: SPACE, userId: USER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const folder = await makeFolder("Folder");
     const a = await repository.createNote(identity, { title: "A", collection_id: folder }) as { id: string };
     const b = await repository.createNote(identity, { title: "B", collection_id: folder }) as { id: string };
 
-    await expect(withTransaction(pool, (client) =>
+    await expect(withTransaction(db.pool, (client) =>
       persistNotesTreeReorder(client, identity, {
         kind: "notes",
         updates: [
@@ -187,9 +171,9 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("persists a complete reorder through one public API request", async () => {
-    if (!available || !pool || !app) return;
+    if (!db.available || !app) return;
     const identity = { spaceId: SPACE, userId: USER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const folder = await makeFolder("Folder");
     const a = await repository.createNote(identity, { title: "A", collection_id: folder }) as { id: string };
     const b = await repository.createNote(identity, { title: "B", collection_id: folder }) as { id: string };
@@ -213,7 +197,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("rejects ambiguous duplicate positions at the API boundary", async () => {
-    if (!available || !app) return;
+    if (!db.available || !app) return;
     const collectionId = randomUUID();
     const response = await app.inject({
       method: "PATCH",
@@ -231,7 +215,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
   });
 
   it("persists folder ordering through the shared tree reorder API", async () => {
-    if (!available || !pool || !app) return;
+    if (!db.available || !app) return;
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
 
@@ -249,7 +233,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ kind: "collections", updated: 2 });
-    const rows = await pool.query<{ id: string; parent_id: string | null; sort_order: number }>(
+    const rows = await db.pool.query<{ id: string; parent_id: string | null; sort_order: number }>(
       `SELECT id,parent_id,sort_order FROM note_collections WHERE id = ANY($1::varchar[]) ORDER BY id`,
       [[first, second]],
     );

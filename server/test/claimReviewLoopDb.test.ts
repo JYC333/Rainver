@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { buildClaimTrajectory, scanClaimContradictions } from "../src/modules/knowledge/claimReviewLoop";
 
@@ -13,55 +12,36 @@ const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const SUBJECT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[claim-review-loop-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["claim_sources", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "claims", "space_objects", "users", "spaces"],
     { cascade: true },
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Claim Review Loop Space', 'household', $2, now(), now())`,
     [SPACE, VIEWER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
   );
   // Subject the seeded claims point at (claims.subject_object_id has an FK to
   // space_objects).
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'knowledge_item', 'Subject', 'Subject', 'space_shared', $3, $3, now(), now())`,
     [SUBJECT, SPACE, VIEWER],
   );
@@ -84,11 +64,11 @@ interface InsertClaimInput {
 async function insertClaim(input: InsertClaimInput): Promise<void> {
   const createdAt = input.createdAt ?? "2026-01-01T00:00:00.000Z";
   const owner = input.ownerUserId === undefined ? VIEWER : input.ownerUserId;
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'claim', $3, left($4, 200), $5, $6, $6, $7::timestamptz, $7::timestamptz)`,
     [input.id, SPACE, input.claimText.slice(0, 60), input.claimText, input.visibility ?? "space_shared", owner, createdAt],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO claims (
        object_id, space_id, status, subject_object_id, subject_text, claim_kind,
        claim_text, normalized_claim_hash, confidence, confidence_method,
@@ -110,19 +90,19 @@ async function insertClaim(input: InsertClaimInput): Promise<void> {
 }
 
 async function insertSourceConnection(input: { id: string; connectorId: string; ownerUserId: string }): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (
        id, connector_key, display_name, connector_type, ingestion_mode, status,
        capabilities_json, created_at, updated_at
      ) VALUES ($1, $2, 'Test connector', 'external_url', 'manual', 'active', '{}'::jsonb, now(), now())`,
     [input.connectorId, `test-${input.connectorId}`],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1, $2, 'Test provider', 'generic', 'test', 'active', '{}'::jsonb, now(), now())`,
     [input.connectorId, `test-${input.connectorId}`],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$1,$1,'active',0,'{}'::jsonb,now(),now())`,
     [input.connectorId],
@@ -140,7 +120,7 @@ async function insertSourceConnection(input: { id: string; connectorId: string; 
     schema_version: 1,
     source_egress_class: "external_provider_allowed",
   };
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, topic_hints_json, consent_json, policy_json,
@@ -155,7 +135,7 @@ async function insertSourceConnection(input: { id: string; connectorId: string; 
 }
 
 async function insertClaimSource(input: { id: string; claimId: string; sourceConnectionId: string }): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO claim_sources (
        id, space_id, claim_id, source_connection_id, evidence_role,
        source_trust, confidence, metadata_json, created_by_user_id, created_at
@@ -166,11 +146,11 @@ async function insertClaimSource(input: { id: string; claimId: string; sourceCon
 
 describe("Slice E claim review loop (real Postgres)", () => {
   it("builds trajectory signals over visible claims about a subject", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertClaim({ id: "c1", claimText: "Plan ships in Q1.", status: "superseded", confidence: 0.4, createdAt: "2026-01-01T00:00:00.000Z" });
     await insertClaim({ id: "c2", claimText: "Plan ships in Q2.", status: "active", confidence: 0.9, createdAt: "2026-02-01T00:00:00.000Z" });
 
-    const result = await buildClaimTrajectory(pool, { spaceId: SPACE, userId: VIEWER, subjectObjectId: SUBJECT, limit: 100 });
+    const result = await buildClaimTrajectory(db.pool, { spaceId: SPACE, userId: VIEWER, subjectObjectId: SUBJECT, limit: 100 });
     expect(result.points.map((p) => p.claim_id)).toEqual(["c1", "c2"]);
     const kinds = result.signals.map((s) => s.kind);
     expect(kinds).toContain("supersession");
@@ -178,7 +158,7 @@ describe("Slice E claim review loop (real Postgres)", () => {
   });
 
   it("filters trajectory claims whose source policy denies the viewer", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const connectionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     await insertClaim({ id: "c1", claimText: "Plan ships in Q1.", createdAt: "2026-01-01T00:00:00.000Z" });
     await insertClaim({ id: "c2", claimText: "Plan ships in Q2.", createdAt: "2026-02-01T00:00:00.000Z" });
@@ -189,21 +169,21 @@ describe("Slice E claim review loop (real Postgres)", () => {
     });
     await insertClaimSource({ id: "claim-source-denied", claimId: "c2", sourceConnectionId: connectionId });
 
-    const result = await buildClaimTrajectory(pool, { spaceId: SPACE, userId: VIEWER, subjectObjectId: SUBJECT, limit: 100 });
+    const result = await buildClaimTrajectory(db.pool, { spaceId: SPACE, userId: VIEWER, subjectObjectId: SUBJECT, limit: 100 });
 
     expect(result.points.map((point) => point.claim_id)).toEqual(["c1"]);
     expect(result.canonical_write_performed).toBe(false);
   });
 
   it("scan flags a negation contradiction and excludes claims the viewer cannot read", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertClaim({ id: "a", claimText: "The backup job runs every night." });
     await insertClaim({ id: "b", claimText: "The backup job does not run every night." });
     // Same subject + contradicting, but private to OTHER -> the viewer must not
     // see it, so no extra pairing leaks a hidden claim.
     await insertClaim({ id: "hidden", claimText: "The backup job never runs.", visibility: "private", ownerUserId: OTHER });
 
-    const report = await scanClaimContradictions(pool, { spaceId: SPACE, userId: VIEWER, limit: 200, maxFindings: 40 });
+    const report = await scanClaimContradictions(db.pool, { spaceId: SPACE, userId: VIEWER, limit: 200, maxFindings: 40 });
     expect(report.candidates_examined).toBe(2);
     expect(report.findings).toHaveLength(1);
     expect(report.findings[0]!.signal).toBe("negation");

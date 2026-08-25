@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { writeNote } from "../src/modules/knowledge/noteRevisionService";
@@ -34,57 +34,30 @@ const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[knowledge-promotion-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["knowledge_revalidation_outcomes", "knowledge_promotion_candidates", "knowledge_promotion_review_packets", "domain_change_outbox", "inquiry_thread_revisions", "note_revisions", "notes", "note_collections", "knowledge_items", "space_objects", "proposals", "experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
-  await pool.query(
+  const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,current_version_id,visibility,created_at,updated_at)
      VALUES ($1,$2,$3,'Extraction Agent','active',NULL,'private',$4,$4)`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
        context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
      ) VALUES ($1,$2,$3,'v1','Extract governed candidates.','{}','{}','{}','{}','[]','{}','{}',$4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
 });
 
 function doc(paragraphs: string[]): Record<string, unknown> {
@@ -94,38 +67,38 @@ function doc(paragraphs: string[]): Record<string, unknown> {
 async function seedNote(initialParagraphs: string[]): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at)
      VALUES ($1,$2,'note','Test note','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash)
      VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,1,'seed')`,
     [objectId, SPACE, JSON.stringify(doc(initialParagraphs)), initialParagraphs.join("\n\n")],
   );
   const { insertInitialNoteRevision } = await import("../src/modules/knowledge/noteRevisionService.js");
-  await insertInitialNoteRevision(pool!, { spaceId: SPACE, noteId: objectId, doc: doc(initialParagraphs), at: now });
+  await insertInitialNoteRevision(db.pool, { spaceId: SPACE, noteId: objectId, doc: doc(initialParagraphs), at: now });
   return objectId;
 }
 
 function proposalApplyService() {
-  const config = loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri(), SERVER_INTERNAL_TOKEN: "test-internal-token" });
+  const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" });
   return PgProposalApplyService.fromConfig(config);
 }
 
 describe("Knowledge promotion and revalidation (real Postgres)", () => {
   it("queues AI extraction against an immutable source and reconciles only reviewable Candidates idempotently", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const noteId = await seedNote(["A durable finding worth reviewing."]);
-    const extraction = new KnowledgeExtractionService(pool);
+    const extraction = new KnowledgeExtractionService(db.pool);
     const queued = await extraction.queue(identity, PROJECT, {
       source_kind: "note",
       source_id: noteId,
       agent_id: AGENT,
     });
     const runId = queued.run_id as string;
-    const run = await pool.query<{ status: string; workflow_input: Record<string, unknown> }>(
+    const run = await db.pool.query<{ status: string; workflow_input: Record<string, unknown> }>(
       `SELECT status,contract_snapshot_json->'workflow_input_json' AS workflow_input
          FROM runs WHERE id=$1`,
       [runId],
@@ -143,12 +116,12 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       note_id: noteId,
       version: 1,
     });
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1`,
       [runId],
     )).rows[0]!.count).toBe(1);
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET status='succeeded',output_json=$2::jsonb,ended_at=$3,updated_at=$3 WHERE id=$1`,
       [runId, JSON.stringify(canonicalRunOutput({
         success: true,
@@ -164,7 +137,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     );
     expect(await extraction.reconcile(SPACE, runId)).toBe(1);
     expect(await extraction.reconcile(SPACE, runId)).toBe(1);
-    const stored = await pool.query<{
+    const stored = await db.pool.query<{
       status: string; source_ref_json: Record<string, unknown>; proposed_title: string;
     }>(
       `SELECT status,source_ref_json,proposed_title
@@ -179,11 +152,11 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       version: 1,
       extraction_run_id: runId,
     });
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM knowledge_items`,
     )).rows[0]!.count).toBe(0);
 
-    const review = await new ProjectReviewSessionService(pool).open(identity, PROJECT, 5);
+    const review = await new ProjectReviewSessionService(db.pool).open(identity, PROJECT, 5);
     expect(review.summary).toBe("0 Inquiry changes and 1 Knowledge change need review.");
     const sections = review.sections as {
       inquiry: { packet: { candidates: unknown[] } };
@@ -194,10 +167,10 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
   });
 
   it("promotes a Note-block Candidate; a same-block edit revalidates, a different-block edit is no_impact, and the original Knowledge version is never overwritten", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const noteId = await seedNote(["Block zero: unrelated context.", "Block one: the finding that matters."]);
 
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     const candidate = await candidates.createFromNote(identity, PROJECT, {
       note_id: noteId, block_anchors: [1], candidate_kind: "concept",
       proposed_title: "The finding that matters", proposed_content: "Block one: the finding that matters.",
@@ -213,7 +186,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const applied = await proposalApplyService().accept(promoted.created_proposal_id as string, identity);
     expect(applied?.proposal.status).toBe("accepted");
     const knowledgeItemId = (applied!.result as { knowledge_item: { id: string } }).knowledge_item.id;
-    const stored = await pool.query<{ pinned_source_ref_json: unknown; content: string }>(
+    const stored = await db.pool.query<{ pinned_source_ref_json: unknown; content: string }>(
       `SELECT pinned_source_ref_json, content FROM knowledge_items WHERE object_id=$1 AND space_id=$2`,
       [knowledgeItemId, SPACE],
     );
@@ -221,26 +194,26 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(stored.rows[0]!.content).toBe("Block one: the finding that matters.");
 
     // Edit block 0 only (the anchored block 1 is untouched) — irrelevant.
-    await writeNote(pool, {
+    await writeNote(db.pool, {
       spaceId: SPACE, noteId, expectVersion: 1,
       content: { kind: "doc", doc: doc(["Block zero: revised unrelated context.", "Block one: the finding that matters."]) },
       source: "user_edit",
     });
-    let sweep = await processUnclaimedDomainChangeEvents(pool, SPACE);
+    let sweep = await processUnclaimedDomainChangeEvents(db.pool, SPACE);
     expect(sweep.outcomes).toMatchObject({ no_impact: 1 });
-    expect((await pool.query(`SELECT count(*)::int AS n FROM knowledge_promotion_candidates WHERE trigger='revalidation'`)).rows[0].n).toBe(0);
-    const unchangedContent = await pool.query<{ content: string }>(`SELECT content FROM knowledge_items WHERE object_id=$1`, [knowledgeItemId]);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM knowledge_promotion_candidates WHERE trigger='revalidation'`)).rows[0].n).toBe(0);
+    const unchangedContent = await db.pool.query<{ content: string }>(`SELECT content FROM knowledge_items WHERE object_id=$1`, [knowledgeItemId]);
     expect(unchangedContent.rows[0]!.content).toBe("Block one: the finding that matters."); // later Note edits never overwrite Knowledge
 
     // Edit the anchored block itself — material, must produce a reviewable revalidation Candidate.
-    await writeNote(pool, {
+    await writeNote(db.pool, {
       spaceId: SPACE, noteId, expectVersion: 2,
       content: { kind: "doc", doc: doc(["Block zero: revised unrelated context.", "Block one: the finding now reads differently."]) },
       source: "user_edit",
     });
-    sweep = await processUnclaimedDomainChangeEvents(pool, SPACE);
+    sweep = await processUnclaimedDomainChangeEvents(db.pool, SPACE);
     expect(sweep.outcomes).toMatchObject({ candidate_created: 1 });
-    const revalidationCandidateRow = await pool.query<{ id: string; trigger: string; supersedes_knowledge_item_id: string; proposed_content: string }>(
+    const revalidationCandidateRow = await db.pool.query<{ id: string; trigger: string; supersedes_knowledge_item_id: string; proposed_content: string }>(
       `SELECT id, trigger, supersedes_knowledge_item_id, proposed_content FROM knowledge_promotion_candidates WHERE trigger='revalidation'`,
     );
     expect(revalidationCandidateRow.rows[0]).toMatchObject({
@@ -250,32 +223,32 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     });
 
     // Idempotency: re-running the sweep must not double-count or duplicate outcomes for events already processed.
-    const secondSweep = await processUnclaimedDomainChangeEvents(pool, SPACE);
+    const secondSweep = await processUnclaimedDomainChangeEvents(db.pool, SPACE);
     expect(secondSweep.processed).toBe(0);
-    const outcomeCount = await pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM knowledge_revalidation_outcomes`);
+    const outcomeCount = await db.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM knowledge_revalidation_outcomes`);
     expect(outcomeCount.rows[0]!.n).toBe(2); // one no_impact, one candidate_created — never re-recorded
 
     // Accepting the revalidation Candidate creates a NEW Knowledge version (supersedes), never mutating the original.
     const revalidationPromoted = await candidates.decideCandidate(identity, PROJECT, revalidationCandidateRow.rows[0]!.id, { decision: "promote" });
     const revalidationApplied = await proposalApplyService().accept(revalidationPromoted.created_proposal_id as string, identity);
     expect(revalidationApplied?.proposal.status).toBe("accepted");
-    const original = await pool.query<{ status: string; content: string }>(
+    const original = await db.pool.query<{ status: string; content: string }>(
       `SELECT ki.status, ki.content FROM knowledge_items ki JOIN space_objects so ON so.id=ki.object_id WHERE ki.object_id=$1`,
       [knowledgeItemId],
     );
     expect(original.rows[0]).toMatchObject({ status: "superseded", content: "Block one: the finding that matters." });
-    const replacement = await pool.query<{ content: string }>(
+    const replacement = await db.pool.query<{ content: string }>(
       `SELECT content FROM knowledge_items WHERE supersedes_item_id=$1`, [knowledgeItemId],
     );
     expect(replacement.rows[0]?.content).toBe("Block one: the finding now reads differently.");
   });
 
   it("promotes a Knowledge Candidate from an Inquiry Thread revision, keyed to a material Iteration", async () => {
-    if (!available || !pool || !container) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const hypothesis = await threadSvc.createThread(identity, PROJECT, { kind: "hypothesis", statement: "Caching reduces latency" });
-    const initialRevision = await pool.query<{ version: number; state_snapshot_json: Record<string, unknown> }>(
+    const initialRevision = await db.pool.query<{ version: number; state_snapshot_json: Record<string, unknown> }>(
       `SELECT version, state_snapshot_json FROM inquiry_thread_revisions WHERE thread_id=$1 AND version=1`,
       [hypothesis.id],
     );
@@ -286,13 +259,13 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     await iterationSvc.recordIteration(identity, PROJECT, hypothesis.id as string, {
       change_summary: "Confirmed via benchmark", evaluation_state: "supported", confidence: 80,
     });
-    const revisions = await pool.query<{ version: number; change_significance: string }>(
+    const revisions = await db.pool.query<{ version: number; change_significance: string }>(
       `SELECT version, change_significance FROM inquiry_thread_revisions WHERE thread_id=$1 ORDER BY version DESC`,
       [hypothesis.id],
     );
     expect(revisions.rows[0]).toMatchObject({ change_significance: "material" });
 
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     const candidate = await candidates.createFromThread(identity, PROJECT, {
       thread_id: hypothesis.id, candidate_kind: "lesson",
       proposed_title: "Caching reduces latency (confirmed)", proposed_content: "Benchmarked and confirmed: caching reduces latency.",
@@ -301,16 +274,16 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const applied = await proposalApplyService().accept(promoted.created_proposal_id as string, identity);
     expect(applied?.proposal.status).toBe("accepted");
     const knowledgeItemId = (applied!.result as { knowledge_item: { id: string } }).knowledge_item.id;
-    const stored = await pool.query<{ pinned_source_ref_json: { kind: string; thread_id: string } }>(
+    const stored = await db.pool.query<{ pinned_source_ref_json: { kind: string; thread_id: string } }>(
       `SELECT pinned_source_ref_json FROM knowledge_items WHERE object_id=$1`, [knowledgeItemId],
     );
     expect(stored.rows[0]!.pinned_source_ref_json).toMatchObject({ kind: "inquiry_thread_revision", thread_id: hypothesis.id });
   });
 
   it("proposeFromThreadForAgent combines create+promote into one reviewable Proposal (inquiry.promote_knowledge, Phase A)", async () => {
-    if (!available || !pool || !container) return;
-    const threadSvc = new InquiryThreadService(pool);
-    const iterationSvc = new InquiryIterationService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
     const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Does batching reduce write amplification?" });
     await iterationSvc.recordIteration(identity, PROJECT, question.id as string, {
       change_summary: "Confirmed via benchmark", answer_state: "answered",
@@ -318,12 +291,12 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
 
     const runId = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id)
        VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'selected_users','full',$7,$6)`,
       [runId, SPACE, AGENT, AGENT_VERSION, now, OWNER, PROJECT],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO content_access_grants (
          id, space_id, resource_type, resource_id, grantee_user_id,
          granted_by_user_id, access_level, created_at, updated_at
@@ -331,7 +304,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       [randomUUID(), SPACE, runId, OWNER, now],
     );
 
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     const actor = {
       agentId: AGENT,
       runId,
@@ -345,7 +318,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     }, actor);
 
     expect(result.proposal_id).toBeTruthy();
-    const proposalRow = await pool.query<{ status: string; created_by_run_id: string; created_by_agent_id: string; created_by_user_id: string | null; owner_user_id: string | null; visibility: string }>(
+    const proposalRow = await db.pool.query<{ status: string; created_by_run_id: string; created_by_agent_id: string; created_by_user_id: string | null; owner_user_id: string | null; visibility: string }>(
       `SELECT status, created_by_run_id, created_by_agent_id, created_by_user_id, owner_user_id, visibility FROM proposals WHERE id=$1`,
       [result.proposal_id],
     );
@@ -357,14 +330,14 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       owner_user_id: OWNER,
       visibility: "selected_users",
     });
-    const inheritedGrant = await pool.query(
+    const inheritedGrant = await db.pool.query(
       `SELECT 1 FROM content_access_grants
         WHERE space_id=$1 AND resource_type='proposal' AND resource_id=$2
           AND grantee_user_id=$3 AND revoked_at IS NULL`,
       [SPACE, result.proposal_id, OWNER],
     );
     expect(inheritedGrant.rowCount).toBe(1);
-    const candidateVisibility = await pool.query<{ visibility: string; owner_user_id: string | null }>(
+    const candidateVisibility = await db.pool.query<{ visibility: string; owner_user_id: string | null }>(
       `SELECT visibility, owner_user_id FROM knowledge_promotion_candidates WHERE id=$1`,
       [result.candidate.id],
     );
@@ -377,7 +350,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       proposed_content: "A different draft body on retry.",
     }, actor);
     expect(retry.proposal_id).toBe(result.proposal_id);
-    const candidateCount = await pool.query<{ total: string }>(
+    const candidateCount = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM knowledge_promotion_candidates WHERE project_id=$1`, [PROJECT],
     );
     expect(candidateCount.rows[0]?.total).toBe("1");
@@ -396,7 +369,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       proposed_content: "A second benchmark reproduced the result.",
       supersedes_knowledge_item_id: knowledgeItemId,
     }, { ...actor, idempotencyKey: "promote-2" });
-    const updateProposal = await pool.query<{ proposal_type: string; created_by_user_id: string | null; owner_user_id: string | null }>(
+    const updateProposal = await db.pool.query<{ proposal_type: string; created_by_user_id: string | null; owner_user_id: string | null }>(
       "SELECT proposal_type, created_by_user_id, owner_user_id FROM proposals WHERE id=$1",
       [update.proposal_id],
     );
@@ -410,11 +383,11 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
   });
 
   it("promotes a Knowledge Candidate from a converted Experiment Interpretation only, never a draft one", async () => {
-    if (!available || !pool || !container) return;
-    const definitions = new ExperimentDefinitionService(pool);
-    const runs = new ExperimentRunService(pool);
-    const interpretations = new ExperimentInterpretationService(pool);
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const definitions = new ExperimentDefinitionService(db.pool);
+    const runs = new ExperimentRunService(db.pool);
+    const interpretations = new ExperimentInterpretationService(db.pool);
+    const threadSvc = new InquiryThreadService(db.pool);
     const hypothesis = await threadSvc.createThread(identity, PROJECT, { kind: "hypothesis", statement: "Warm cache improves p95" });
     const definition = await definitions.createDefinition(identity, PROJECT, { name: "Cache experiment", primary_hypothesis_thread_id: hypothesis.id });
     const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
@@ -425,7 +398,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       run_ids: [run.id], verdict: "supports", conclusion: "Warm cache confirmed to improve p95.",
     });
 
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     await expect(candidates.createFromInterpretation(identity, PROJECT, {
       interpretation_id: interpretation.id, candidate_kind: "lesson", proposed_title: "x", proposed_content: "y",
     })).rejects.toMatchObject({ statusCode: 409 });
@@ -443,9 +416,9 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
   });
 
   it("records failed revalidation attempts and leaves the event eligible for a later retry", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const noteId = await seedNote(["Pinned block."]);
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     const candidate = await candidates.createFromNote(identity, PROJECT, {
       note_id: noteId, block_anchors: [0], candidate_kind: "summary",
       proposed_title: "Pinned block", proposed_content: "Pinned block.",
@@ -456,7 +429,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const eventId = randomUUID();
     const missingRevisionId = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO domain_change_outbox (
          id, space_id, source_kind, source_id, source_ref_json, change_kind,
          change_significance, occurred_at
@@ -467,8 +440,8 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       }), now],
     );
 
-    await processUnclaimedDomainChangeEvents(pool, SPACE);
-    const failed = await pool.query<{
+    await processUnclaimedDomainChangeEvents(db.pool, SPACE);
+    const failed = await db.pool.query<{
       processed_at: string | null;
       attempt_count: number;
       last_error: string | null;
@@ -484,21 +457,21 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
   });
 
   it("dismisses a Candidate without creating a proposal", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const noteId = await seedNote(["Only block."]);
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     const candidate = await candidates.createFromNote(identity, PROJECT, {
       note_id: noteId, block_anchors: [0], candidate_kind: "summary", proposed_title: "t", proposed_content: "c",
     });
     const dismissed = await candidates.decideCandidate(identity, PROJECT, candidate.id as string, { decision: "dismiss" });
     expect(dismissed).toMatchObject({ status: "dismissed", created_proposal_id: null });
-    expect((await pool.query(`SELECT count(*)::int AS n FROM proposals`)).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM proposals`)).rows[0].n).toBe(0);
   });
 
   it("opens bounded review packets while preserving a view-all list and defer/reopen flow", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const noteId = await seedNote(["Only block."]);
-    const candidates = new KnowledgePromotionCandidateService(pool);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
     for (let index = 0; index < 12; index += 1) {
       await candidates.createFromNote(identity, PROJECT, {
         note_id: noteId, block_anchors: [0], candidate_kind: "summary",

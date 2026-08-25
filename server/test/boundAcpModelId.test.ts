@@ -39,6 +39,20 @@ describe("the bound model in each runtime's identifier space", () => {
     expect(boundAcpModelId("claude_code", "MiniMax-M2.7")).toBeNull();
   });
 
+  it("lets the provider's endpoint decide how much its model reasons", () => {
+    // Codex resolves a bound model's effort from the catalog the binding
+    // writes and sends it upstream as a request parameter — it is the model's
+    // reasoning, not the harness's. Declaring only "none" decided on the
+    // endpoint's behalf that its model cannot reason at all.
+    const catalog = codexModelCatalog("MiniMax", "MiniMax-M3", []) as {
+      models: { default_reasoning_level: string; supported_reasoning_levels: { effort: string }[] }[];
+    };
+    expect(catalog.models[0]!.supported_reasoning_levels.map((l) => l.effort)).toEqual(["low", "medium", "high"]);
+    // Codex's own fallback, so an endpoint that ignores the parameter behaves
+    // exactly as it did before.
+    expect(catalog.models[0]!.default_reasoning_level).toBe("medium");
+  });
+
   it("says nothing when the binding named no model", () => {
     expect(boundAcpModelId("opencode", null)).toBeNull();
     expect(boundAcpModelId("codex_cli", null)).toBeNull();

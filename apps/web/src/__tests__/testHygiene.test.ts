@@ -1,6 +1,5 @@
 // @vitest-environment node
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+/// <reference types="vite/client" />
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -10,16 +9,12 @@ import { describe, expect, it } from 'vitest'
  * listed here, by file, so adding one is a visible decision.
  */
 
-const srcDir = join(__dirname, '..')
-const files: string[] = []
-;(function walk(dir: string) {
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry)
-    if (statSync(path).isDirectory()) walk(path)
-    else if (/\.test\.tsx?$/.test(entry) && !path.endsWith('testHygiene.test.ts')) files.push(path)
-  }
-})(srcDir)
-const source = new Map(files.map(path => [relative(srcDir, path), readFileSync(path, 'utf8')]))
+const modules = import.meta.glob('../**/*.test.{ts,tsx}', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
+const source = new Map(
+  Object.entries(modules)
+    .map(([path, text]) => [path.replace(/^\.\.\//, ''), text] as const)
+    .filter(([name]) => name !== '__tests__/testHygiene.test.ts'),
+)
 
 function offenders(matches: (text: string) => boolean, exempt: readonly string[] = []): string[] {
   return [...source.entries()].filter(([name, text]) => !exempt.includes(name) && matches(text)).map(([name]) => name).sort()
@@ -34,7 +29,7 @@ describe('test hygiene', () => {
     const sleep = /setTimeout\(\s*(?:\(\)\s*=>\s*)?(?:resolve|r|res|done)\b[^,)]*,\s*(\d[\d_]*)\s*\)/g
     expect(offenders(text => {
       for (const match of text.matchAll(sleep)) {
-        if (Number(match[1].replaceAll('_', '')) > 100) return true
+        if (Number(match[1].replace(/_/g, '')) > 100) return true
       }
       return false
     }, [

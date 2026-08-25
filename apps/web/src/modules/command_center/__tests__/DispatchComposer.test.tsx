@@ -6,7 +6,7 @@ import { hostsApi, projectFoldersApi, projectsApi, providersApi, tasksApi } from
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
-  hostsApi: { list: vi.fn(), listRuntimeAdapters: vi.fn() },
+  hostsApi: { list: vi.fn(), listRuntimeAdapters: vi.fn(), listProviderBindings: vi.fn().mockResolvedValue({ items: [] }) },
   projectFoldersApi: { list: vi.fn(), locations: vi.fn() },
   projectsApi: { list: vi.fn(), create: vi.fn() },
   tasksApi: { createRunWithoutTask: vi.fn() },
@@ -16,7 +16,20 @@ vi.mock('../../../api/client', () => ({
 const REMOTE_HOST = {
   id: 'host-1', owner_user_id: 'user-1', name: 'Laptop', kind: 'remote' as const,
   status: 'online' as const, last_heartbeat_at: null, platform: 'linux', arch: 'x64',
-  daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude', 'git'] },
+  daemon_version: '0.1.0',
+  // As the runtime itself reported over ACP: brackets are part of a model's
+  // name, and the effort levels are its own, not a guessed three.
+  capabilities_json: {
+    runtimes: ['claude', 'git'],
+    options: {
+      claude: {
+        models: ['default', 'claude-fable-5[1m]', 'sonnet'],
+        current_model: 'claude-fable-5[1m]',
+        efforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+        current_effort: 'high',
+      },
+    },
+  },
   created_at: '', updated_at: '',
 }
 
@@ -209,7 +222,7 @@ describe('DispatchComposer — choosing a backend', () => {
   }
 
   /** The Select is a custom listbox, not a native <select>. */
-  async function choose(label: string, optionName: string) {
+  async function choose(label: string, optionName: string | RegExp) {
     await userEvent.click(screen.getByRole('button', { name: label }))
     await userEvent.click(screen.getByRole('option', { name: optionName }))
   }
@@ -252,7 +265,7 @@ describe('DispatchComposer — choosing a backend', () => {
     // Distinct from omitting the key: this is a real choice to ignore the
     // thread's backend for this dispatch.
     await ready()
-    await choose('Model backend', "This machine's login")
+    await choose('Model backend', /This machine's login/)
     await userEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
     const body = lastDispatchBody()
@@ -300,6 +313,140 @@ describe('DispatchComposer — choosing a backend', () => {
 
     await choose('Runtime', 'OpenCode')
     expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent("This host's default")
+  })
+
+  /** A brand-new conversation, where "inherit" means this host's default. */
+  async function readyNew() {
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER] })
+    render(<DispatchComposer initialProjectId="project-1" onDispatched={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model backend' })).toBeInTheDocument())
+    await userEvent.type(screen.getByPlaceholderText(/Describe what to do/), 'hello')
+  }
+
+  it("names the host's default instead of only promising one", async () => {
+    // "This host's default" on its own tells you nothing about which model you
+    // are about to run on — which is the question being asked at the moment of
+    // picking a runtime.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({
+      items: [{ host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: 'prov-1', model: 'MiniMax-M2', updated_at: '' }],
+    })
+    await readyNew()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent('MiniMax'))
+    expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent('MiniMax-M2')
+  })
+
+  it("says so when the host's default is the machine's own login", async () => {
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent("this machine's login"))
+  })
+
+  it("offers the inherited provider's models without restating the provider", async () => {
+    // The server keeps the resolved provider and narrows only the model when
+    // `model` travels without `model_provider_id`; before this the composer
+    // could not produce that request at all.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({
+      items: [{ host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: 'prov-1', model: null, updated_at: '' }],
+    })
+    await readyNew()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Model' })).toBeInTheDocument())
+    await choose('Model', 'MiniMax-M2')
+    // A new conversation's button reads differently from a follow-up's.
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+
+    const body = lastDispatchBody()
+    expect(body.model).toBe('MiniMax-M2')
+    expect('model_provider_id' in body).toBe(false)
+  })
+
+  it("names the model the machine's own login would use", async () => {
+    // With no binding the model is the CLI's own business — its configured
+    // model is the only thing that can answer "opus or sonnet, sol or luna"
+    // at the moment someone is choosing.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await userEvent.click(screen.getByRole('button', { name: 'Model backend' }))
+    expect(screen.getByRole('option', { name: /This machine's login · claude-fable-5\[1m\]/ })).toBeInTheDocument()
+  })
+
+  it("still offers the machine's login when its CLI pins no model", async () => {
+    vi.mocked(hostsApi.list).mockResolvedValue({
+      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'git'] } }],
+    })
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await userEvent.click(screen.getByRole('button', { name: 'Model backend' }))
+    expect(screen.getByRole('option', { name: "This machine's login" })).toBeInTheDocument()
+  })
+
+  it("lets the machine's own login be given a different model", async () => {
+    // The whole point of naming it: with no binding the model is the CLI's,
+    // and until now there was no way to run this one turn on another.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await choose('Model backend', /This machine's login/)
+    await choose('Model', 'sonnet')
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+
+    const body = lastDispatchBody()
+    expect(body.model_provider_id).toBeNull()
+    expect(body.model).toBe('sonnet')
+  })
+
+  it('sends model and effort as two fields, never encoded into one', async () => {
+    // A model id can carry brackets of its own — `claude-fable-5[1m]` is one
+    // name — so an encoded pair cannot be decoded again.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await choose('Model backend', /This machine's login/)
+    await choose('Model', 'sonnet')
+    await choose('Reasoning effort', 'xhigh')
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+
+    expect(lastDispatchBody()).toMatchObject({ model: 'sonnet', reasoning_effort: 'xhigh' })
+  })
+
+  it('offers the effort levels the runtime reported, not a guessed three', async () => {
+    // Claude's are default/low/medium/high/xhigh/max; hardcoding three both
+    // omitted real levels and would have invented them for other runtimes.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort' }))
+    expect(screen.getByRole('option', { name: 'xhigh' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'max' })).toBeInTheDocument()
+  })
+
+  it("applies an effort to the CLI's own model without renaming it", async () => {
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await choose('Model backend', /This machine's login/)
+    await choose('Reasoning effort', 'low')
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+
+    const body = lastDispatchBody()
+    expect(body.reasoning_effort).toBe('low')
+    // The model is untouched: it was never renamed to carry the effort.
+    expect('model' in body).toBe(false)
+  })
+
+  it("does not guess an existing thread's backend from the host default", async () => {
+    // A thread carries its own backend and may have overridden it on an
+    // earlier message. The composer cannot see that, so naming the host's
+    // default here would state something it does not know.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({
+      items: [{ host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: 'prov-1', model: 'MiniMax-M2', updated_at: '' }],
+    })
+    await ready()
+    const trigger = screen.getByRole('button', { name: 'Model backend' })
+    expect(trigger).toHaveTextContent("Keep this conversation's backend")
+    expect(trigger).not.toHaveTextContent('MiniMax')
+    // And no model catalog, which would be the host default's, not the thread's.
+    expect(screen.queryByRole('button', { name: 'Model' })).not.toBeInTheDocument()
   })
 
   it('does not offer a subscription-credentialed provider the server would reject', async () => {

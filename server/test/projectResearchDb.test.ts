@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
@@ -25,71 +25,33 @@ const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const CONFIG = loadConfig({});
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
+  if (!db.available) return;
   registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_research_reports", "project_research_checkpoints", "project_research_workflows", "artifacts", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
-     VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
-    [AGENT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
-    [AGENT_VERSION, AGENT, SPACE, now],
-  );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, now });
 });
 
 function repo(): ProjectResearchRepository {
-  return new ProjectResearchRepository(pool!);
+  return new ProjectResearchRepository(db.pool);
 }
 
 async function seedWorkflow(state: Record<string, unknown> = {}, primaryThreadId: string | null = null): Promise<string> {
   const workflowId = randomUUID();
   const now = new Date().toISOString();
-  await insertResearchWorkflowFixture(pool!, {
+  await insertResearchWorkflowFixture(db.pool, {
     id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
     state, primaryThreadId, now,
   });
@@ -100,8 +62,8 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 describe("ProjectResearchRepository (real Postgres)", () => {
   it("projects the canonical Inquiry owner needed by the research setup UI", async () => {
-    if (!available || !pool) return;
-    const thread = await new InquiryThreadService(pool).createThread(
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(
       identity,
       PROJECT,
       { kind: "question", statement: "How should agents remember?" },
@@ -119,18 +81,18 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("materializes and reuses a normal Inquiry Question as the Auto Research scope", async () => {
-    if (!available || !pool) return;
-    const first = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
-    const second = await resolveResearchThreadScope(pool, identity, PROJECT, "Which mechanism explains the effect?", null);
+    if (!db.available) return;
+    const first = await resolveResearchThreadScope(db.pool, identity, PROJECT, "Which mechanism explains the effect?", null);
+    const second = await resolveResearchThreadScope(db.pool, identity, PROJECT, "Which mechanism explains the effect?", null);
     expect(second).toEqual(first);
-    expect((await pool.query<{ created_from: string }>(
+    expect((await db.pool.query<{ created_from: string }>(
       `SELECT created_from FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
       [first.thread_id, SPACE],
     )).rows[0]?.created_from).toBe("user");
   });
 
   it("aggregates persisted monitoring scans into one entry per UTC day without synthesizing missing days", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     const older = "2026-07-17T08:00:00.000Z";
     const newerMorning = "2026-07-18T08:00:00.000Z";
@@ -140,7 +102,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       ["scan:newer-morning", newerMorning, 3],
       ["scan:newer-evening", newerEvening, 4],
     ] as const) {
-      await pool!.query(
+      await db.pool.query(
         `INSERT INTO research_scan_summaries (
            id,space_id,project_id,workflow_id,scan_key,scanned_at,new_item_count,relevant_count,maybe_count,excluded_count,created_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,2,1,4,$6)`,
@@ -156,9 +118,9 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("records a successful zero-item scan and completes its waiting incremental operation", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
-    await pool!.query(
+    await db.pool.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
         WHERE space_id=$1 AND object_id=$2`,
@@ -166,7 +128,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     );
     const operationId = randomUUID();
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_operations (
          id,space_id,project_id,kind,title,status,created_by_user_id,progress_json,created_at,updated_at
        ) VALUES ($1,$2,$3,'research','Incremental scan','active',$4,$5::jsonb,$6,$6)`,
@@ -178,12 +140,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         watermark: { before: null, after: "2026-07-17T00:00:00.000Z", overlap_hours: 48 },
       }), now],
     );
-    await new ProjectResearchOrchestrator(pool!, CONFIG).onSourceScanCompleted({
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).onSourceScanCompleted({
       spaceId: SPACE, sourceChannelId: "channel-1", scanJobId: "scan-job-1",
       scannedAt: "2026-07-18T08:00:00.000Z", scanWindowStart: "2026-07-17T00:00:00.000Z",
       scanWindowEnd: "2026-07-18T00:00:00.000Z", newItemCount: 0,
     });
-    const operation = await pool!.query<{ status: string; progress_json: Record<string, unknown> }>(
+    const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(
       `SELECT status,progress_json FROM project_operations WHERE id=$1`, [operationId],
     );
     expect(operation.rows[0]?.status).toBe("completed");
@@ -204,22 +166,22 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("collapses repeated same-day zero-result scans into one refreshed daily row", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
-    await pool!.query(
+    await db.pool.query(
       `UPDATE project_research_workflows
           SET state_json=state_json || $3::jsonb
         WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId, JSON.stringify({ channel_ids: ["channel-1"], monitoring: { active: true } })],
     );
     for (const [jobId, scannedAt] of [["scan-job-a", "2026-07-18T08:00:00.000Z"], ["scan-job-b", "2026-07-18T20:00:00.000Z"]] as const) {
-      await new ProjectResearchOrchestrator(pool!, CONFIG).onSourceScanCompleted({
+      await new ProjectResearchOrchestrator(db.pool, CONFIG).onSourceScanCompleted({
         spaceId: SPACE, sourceChannelId: "channel-1", scanJobId: jobId,
         scannedAt, scanWindowStart: "2026-07-17T00:00:00.000Z",
         scanWindowEnd: "2026-07-18T00:00:00.000Z", newItemCount: 0,
       });
     }
-    const rows = await pool!.query<{ scanned_at: string }>(
+    const rows = await db.pool.query<{ scanned_at: string }>(
       `SELECT scanned_at FROM research_scan_summaries WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT],
     );
     expect(rows.rows).toHaveLength(1);
@@ -228,15 +190,15 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("activates monitoring even when the workflow state has no monitoring object yet", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow({ research_question: "Does X improve Y?" });
     // Reused workflows created by the draft/item-limit paths carry a minimal
     // state without a `monitoring` key; jsonb_set cannot create it.
-    await pool!.query(
+    await db.pool.query(
       `UPDATE project_research_workflows SET state_json='{"schema_version":"project_research_initial_intake.v1"}'::jsonb WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
-    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG) as unknown as {
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG) as unknown as {
       setWorkflowMonitoring(spaceId: string, projectId: string, workflowId: string, state: {
         channel_ids: string[];
         source_post_processing_rule_ids: string[];
@@ -248,7 +210,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       source_post_processing_rule_ids: [],
       watermark: { before: null, after: null, overlap_hours: 48 },
     });
-    const updated = await pool!.query<{ state_json: Record<string, unknown> }>(
+    const updated = await db.pool.query<{ state_json: Record<string, unknown> }>(
       `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
@@ -256,15 +218,15 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("blocks incremental research until a changed project question is explicitly applied forward", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = randomUUID();
     const now = new Date().toISOString();
-    const thread = await new InquiryThreadService(pool!).createThread(
+    const thread = await new InquiryThreadService(db.pool).createThread(
       identity,
       PROJECT,
       { kind: "question", statement: "Old research question" },
     );
-    await insertResearchWorkflowFixture(pool!, {
+    await insertResearchWorkflowFixture(db.pool, {
       id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
       currentStage: "screening", primaryThreadId: String(thread.id), state: {
           research_question: "Old research question",
@@ -274,12 +236,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
           monitoring: { active: true },
         }, now,
     });
-    await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
+    await new InquiryIterationService(db.pool).reviseDefinition(identity, PROJECT, thread.id as string, {
       revision_kind: "wording_only",
       new_statement: "New research question",
     });
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
     await expect(orchestrator.triggerIncremental(identity, PROJECT, workflowId, {})).rejects.toMatchObject({ statusCode: 409 });
 
     const applied = await orchestrator.applyQuestionForward(identity, PROJECT, workflowId);
@@ -290,7 +252,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       research_question_version: 2,
       previous_research_question_version: 1,
     });
-    const stored = await pool!.query<{ state_json: Record<string, unknown> }>(
+    const stored = await db.pool.query<{ state_json: Record<string, unknown> }>(
       `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND object_id=$2`,
       [SPACE, workflowId],
     );
@@ -298,17 +260,17 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("starts a versioned re-screen while preserving human-confirmed triage", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = randomUUID();
     const humanItemId = randomUUID();
     const aiItemId = randomUUID();
     const now = new Date().toISOString();
-    const thread = await new InquiryThreadService(pool!).createThread(
+    const thread = await new InquiryThreadService(db.pool).createThread(
       identity,
       PROJECT,
       { kind: "question", statement: "Old question" },
     );
-    await insertResearchWorkflowFixture(pool!, {
+    await insertResearchWorkflowFixture(db.pool, {
       id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
       currentStage: "complete", primaryThreadId: String(thread.id), state: {
         research_question: "Old question", research_question_version: 1, channel_ids: [],
@@ -317,12 +279,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         source_post_processing_rule_ids: [], monitoring: { active: true },
       }, now,
     });
-    await new InquiryIterationService(pool!).reviseDefinition(identity, PROJECT, thread.id as string, {
+    await new InquiryIterationService(db.pool).reviseDefinition(identity, PROJECT, thread.id as string, {
       revision_kind: "wording_only",
       new_statement: "New question",
     });
     for (const itemId of [humanItemId, aiItemId]) {
-      await pool!.query(
+      await db.pool.query(
         `INSERT INTO source_items (
            id, space_id, owner_user_id, visibility, item_type, title, first_seen_at, last_seen_at,
            content_state, retention_policy, created_at, updated_at
@@ -330,7 +292,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
         [itemId, SPACE, OWNER, now],
       );
     }
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, source_item_id, role, status, triage_status,
          triage_confirmed_by_user, relevance, confidence, reason, metadata_json, created_at, updated_at
@@ -340,7 +302,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [randomUUID(), SPACE, PROJECT, humanItemId, now, randomUUID(), aiItemId],
     );
 
-    const result = await new ProjectResearchOrchestrator(pool!, CONFIG).resolveQuestionChange(identity, PROJECT, workflowId, "rescreen") as {
+    const result = await new ProjectResearchOrchestrator(db.pool, CONFIG).resolveQuestionChange(identity, PROJECT, workflowId, "rescreen") as {
       workflow: { state_json: Record<string, unknown> };
       operation: { progress_json: Record<string, unknown> };
     };
@@ -351,7 +313,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       question_change_mode: "rescreen",
     });
     expect(result.operation.progress_json).toMatchObject({ run_kind: "question_rescreen", research_question_version: 2 });
-    const corpus = await pool!.query<{ source_item_id: string; triage_status: string; triage_confirmed_by_user: boolean; relevance: string | null; confidence: number | null }>(
+    const corpus = await db.pool.query<{ source_item_id: string; triage_status: string; triage_confirmed_by_user: boolean; relevance: string | null; confidence: number | null }>(
       `SELECT source_item_id, triage_status, triage_confirmed_by_user, relevance, confidence
          FROM project_corpus_items WHERE project_id=$1 ORDER BY source_item_id`,
       [PROJECT],
@@ -363,7 +325,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("runs a stage on a workflow and lists checkpoints via a decided checkpoint", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
 
     const afterRun = await repo().runStage(identity, PROJECT, workflowId, "research_setup", { run_id: "run-123" });
@@ -392,16 +354,16 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("evidence matrix includes only included/maybe corpus items, and rebuild backfills from source links", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const objectId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
        VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
     const corpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, object_id, role, status, triage_status, read_status,
          metadata_json, created_at, updated_at
@@ -410,12 +372,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     );
     const excludedCorpusItemId = randomUUID();
     const excludedObjectId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
        VALUES ($1,$2,'source','Paper B',$3,$3)`,
       [excludedObjectId, SPACE, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, object_id, role, status, triage_status, read_status,
          metadata_json, created_at, updated_at
@@ -432,7 +394,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("computes a real (non-fabricated) integrity result", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
 
     // No claim links yet, so the integrity gate has nothing to check
@@ -443,7 +405,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("returns an empty default before screening criteria are saved, then upserts and rejects a bad date range", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const empty = await repo().getScreeningCriteria(identity, PROJECT);
     expect(empty).toMatchObject({ include_keywords: [], exclude_keywords: [], project_id: PROJECT });
 
@@ -472,65 +434,65 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("enriches the evidence matrix with academic metadata and evidence/annotation counts", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const sourceItemId = randomUUID();
     const corpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_items (
          id, space_id, owner_user_id, visibility, item_type, title, first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
        ) VALUES ($1,$2,$3,'space_shared','feed_entry','Paper A',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
       [sourceItemId, SPACE, OWNER, now],
     );
     const objectId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
        VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
        VALUES ($1,$2,'paper','https://arxiv.org/abs/2401.00009',$3::jsonb)`,
       [objectId, SPACE, JSON.stringify({ authors: ["A. Author"], categories: ["cs.CL"] })],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO academic_papers (object_id, space_id, arxiv_id, paper_type, created_at, updated_at)
        VALUES ($1,$2,'2401.00009','preprint',$3,$3)`,
       [objectId, SPACE, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_item_references (source_item_id, space_id, reference_object_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$4)`,
       [sourceItemId, SPACE, objectId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, object_id, role, status, triage_status, read_status,
          metadata_json, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'candidate','active','included','unread','{}'::jsonb,$5,$5)`,
       [corpusItemId, SPACE, PROJECT, objectId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO extracted_evidence (
          id, space_id, owner_user_id, visibility, source_item_id, source_object_type, source_object_id, evidence_type, title,
          extraction_method, trust_level, status, created_at, updated_at
        ) VALUES ($1,$2,$3,'space_shared',$4,'source_item',$4,'excerpt','Key finding','full_text','normal','candidate',$5,$5)`,
       [randomUUID(), SPACE, OWNER, sourceItemId, now],
     );
-    await pool!.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
-    await pool!.query(
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
+    await db.pool.query(
       `INSERT INTO extracted_evidence (
          id,space_id,owner_user_id,visibility,source_item_id,source_object_type,source_object_id,evidence_type,title,
          extraction_method,trust_level,status,created_at,updated_at
        ) VALUES ($1,$2,$3,'private',$4,'source_item',$4,'excerpt','Private finding','full_text','normal','candidate',$5,$5)`,
       [randomUUID(), SPACE, OTHER, sourceItemId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO reader_annotations (
          id,space_id,document_type,document_id,annotation_type,quote_text,anchor_json,visibility,status,
          anchor_state,created_by_user_id,owner_user_id,created_at,updated_at
@@ -549,15 +511,15 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("omits source-backed matrix rows whose object is readable but provenance is summary-only", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool!.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
-    await pool!.query(
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,
       [randomUUID(), SPACE, OTHER, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, PROJECT, OTHER, now],
@@ -565,25 +527,25 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const objectId = randomUUID();
     const sourceItemId = randomUUID();
     const corpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, visibility, created_at, updated_at)
        VALUES ($1,$2,'source','Restricted paper','space_shared',$3,$3)`,
       [objectId, SPACE, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_items (
          id,space_id,owner_user_id,created_by_user_id,visibility,access_level,item_type,title,first_seen_at,last_seen_at,
          content_state,retention_policy,created_at,updated_at
        ) VALUES ($1,$2,$3,$3,'space_shared','summary','feed_entry','Restricted provenance',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
       [sourceItemId, SPACE, OWNER, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id,space_id,project_id,object_id,role,status,triage_status,read_status,metadata_json,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,'candidate','active','included','unread','{}'::jsonb,$5,$5)`,
       [corpusItemId, SPACE, PROJECT, objectId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
@@ -594,52 +556,52 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   });
 
   it("counts corpus status once per source item when evidence has its own corpus row", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const sourceItemId = randomUUID();
     const evidenceId = randomUUID();
     const sourceCorpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_items (
          id, space_id, owner_user_id, visibility, item_type, title, first_seen_at, last_seen_at,
          content_state, retention_policy, created_at, updated_at
        ) VALUES ($1,$2,$3,'space_shared','feed_entry','Paper A',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
       [sourceItemId, SPACE, OWNER, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO extracted_evidence (
          id, space_id, owner_user_id, visibility, source_item_id, source_object_type,
          evidence_type, title, extraction_method, trust_level, status, created_at, updated_at
        ) VALUES ($1,$2,$3,'space_shared',$4,'source_item','excerpt','Evidence A','full_text','normal','candidate',$5,$5)`,
       [evidenceId, SPACE, OWNER, sourceItemId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, source_item_id, role, status, triage_status, read_status,
          metadata_json, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,$5,$5)`,
       [sourceCorpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [randomUUID(), sourceCorpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
     const evidenceCorpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, evidence_id, role, status, triage_status,
          read_status, metadata_json, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,$5,$5)`,
       [evidenceCorpusItemId, SPACE, PROJECT, evidenceId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [randomUUID(), evidenceCorpusItemId, SPACE, PROJECT, sourceItemId, now],
     );
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
     const countRelevantItems = (orchestrator as unknown as {
       countRelevantItems: (spaceId: string, projectId: string, sourceItemIds: string[]) => Promise<Record<string, number>>;
     }).countRelevantItems.bind(orchestrator);
@@ -651,29 +613,29 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
     const objectId = randomUUID();
     const objectCorpusItemId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
        VALUES ($1,$2,'source','Paper A',$3,$3)`,
       [objectId, SPACE, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
        VALUES ($1,$2,'paper','https://example.test/paper-a','{}'::jsonb)`,
       [objectId, SPACE],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_item_references (source_item_id, space_id, reference_object_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$4)`,
       [sourceItemId, SPACE, objectId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_items (
          id, space_id, project_id, object_id, role, status,
          triage_status, read_status, metadata_json, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,$5,$5)`,
       [objectCorpusItemId, SPACE, PROJECT, objectId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [randomUUID(), objectCorpusItemId, SPACE, PROJECT, sourceItemId, now],

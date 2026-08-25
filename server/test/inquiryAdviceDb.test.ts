@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -19,25 +18,8 @@ import type { ServerConfig } from "../src/config";
 const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[inquiry-advice-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 let PROJECT: string;
 let THREAD: string;
@@ -46,11 +28,11 @@ const identity = () => ({ spaceId: SPACE, userId: OWNER });
 const config = { databaseUrl: "postgres://unused" } as ServerConfig;
 
 function serviceReturning(output: Record<string, unknown>): InquiryAdviceService {
-  return new InquiryAdviceService(pool!, config, async () => output);
+  return new InquiryAdviceService(db.pool, config, async () => output);
 }
 
 async function registerPromptAsset(): Promise<void> {
-  const repo = new EvolvableAssetRepository(pool!);
+  const repo = new EvolvableAssetRepository(db.pool);
   const asset = await repo.createAsset(identity(), {
     asset_type: "prompt_template",
     asset_key: INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY,
@@ -66,11 +48,11 @@ async function registerPromptAsset(): Promise<void> {
     },
   });
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `UPDATE evolvable_asset_versions SET status='approved', updated_at=$3 WHERE asset_id=$1 AND id=$2`,
     [asset.id, version.id, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO prompt_deployment_refs (id, space_id, asset_id, scope_type, scope_id, label, version_id, status, created_at, updated_at)
      VALUES ($1,$2,$3,'space',$2,'production',$4,'active',$5,$5)`,
     [randomUUID(), SPACE, asset.id, version.id, now],
@@ -80,12 +62,12 @@ async function registerPromptAsset(): Promise<void> {
 async function registerProvider(): Promise<void> {
   const providerId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO model_providers (id, space_id, name, provider_type, default_model, enabled, capabilities_json, config_json, created_at, updated_at)
      VALUES ($1, $2, 'Test Provider', 'anthropic', 'claude-test', true, '{}'::jsonb, '{}'::jsonb, $3, $3)`,
     [providerId, SPACE, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO model_provider_space_grants (id, provider_id, space_id, enabled, is_default, created_at, updated_at)
      VALUES ($1, $2, $3, true, true, $4, $4)`,
     [randomUUID(), providerId, SPACE, now],
@@ -93,25 +75,25 @@ async function registerProvider(): Promise<void> {
 }
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["inquiry_thread_advice", "jobs", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "model_provider_space_grants", "model_providers", "inquiry_evidence_signals", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Owner', 'active', $2, $2)`,
     [OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  const project = await new PgProjectRepository(pool).create(identity(), { name: "Advice Project" });
+  const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Advice Project" });
   PROJECT = project.id as string;
-  const thread = await new InquiryThreadService(pool).createThread(identity(), PROJECT, {
+  const thread = await new InquiryThreadService(db.pool).createThread(identity(), PROJECT, {
     kind: "question",
     statement: "Does caching reduce p95 latency?",
   });
@@ -122,7 +104,7 @@ beforeEach(async () => {
 
 describe("Inquiry next-step advice (real Postgres)", () => {
   it("stores a recommendation without touching the Thread's own Next Focus", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({
       recommended_focus_kind: "synthesize",
       rationale: "Thirty-four supporting items are in hand and no contradiction has appeared in two scans.",
@@ -136,13 +118,13 @@ describe("Inquiry next-step advice (real Postgres)", () => {
 
     // The Thread itself must be untouched: adopting advice goes through the
     // work-state command, which is the only Next Focus write authority.
-    const thread = await new InquiryThreadService(pool).getThread(identity(), PROJECT, THREAD);
+    const thread = await new InquiryThreadService(db.pool).getThread(identity(), PROJECT, THREAD);
     expect(thread.next_focus_kind).toBeNull();
     expect(thread.version).toBe(1);
   });
 
   it("rejects a recommendation the domain does not define", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({
       recommended_focus_kind: "go_and_think_harder",
       rationale: "Anything",
@@ -154,7 +136,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("becomes stale once the Thread moves past the revision it reasoned about", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({
       recommended_focus_kind: "read_evidence",
       rationale: "Two contradicting papers arrived and have not been judged.",
@@ -163,7 +145,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     await service.generateAdvice(identity(), PROJECT, THREAD, "candidate_created");
     expect((await service.getAdvice(identity(), PROJECT, THREAD))?.stale).toBe(false);
 
-    await new InquiryIterationService(pool).recordIteration(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).recordIteration(identity(), PROJECT, THREAD, {
       change_summary: "Read both papers; the contradiction is about a different workload.",
       answer_state: "partial",
       current_answer_summary: "Helps for read-heavy workloads.",
@@ -175,19 +157,19 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("keeps one current recommendation per Thread rather than a queue", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await serviceReturning({ recommended_focus_kind: "search_acquisition", rationale: "No evidence yet.", cited_refs: [] })
       .generateAdvice(identity(), PROJECT, THREAD, "user_request");
     await serviceReturning({ recommended_focus_kind: "synthesize", rationale: "Evidence has since arrived.", cited_refs: [] })
       .generateAdvice(identity(), PROJECT, THREAD, "search_completed");
 
-    const rows = await pool.query("SELECT recommended_focus_kind, trigger_kind FROM inquiry_thread_advice WHERE thread_id = $1", [THREAD]);
+    const rows = await db.pool.query("SELECT recommended_focus_kind, trigger_kind FROM inquiry_thread_advice WHERE thread_id = $1", [THREAD]);
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]).toMatchObject({ recommended_focus_kind: "synthesize", trigger_kind: "search_completed" });
   });
 
   it("dismissal retires the suggestion, and regenerating reopens it", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({ recommended_focus_kind: "clarify_or_decompose", rationale: "Blocked upstream.", cited_refs: [] });
     await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
 
@@ -199,8 +181,8 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("refuses to advise a Thread that is no longer active", async () => {
-    if (!available || !pool) return;
-    await new InquiryIterationService(pool).transitionLifecycle(identity(), PROJECT, THREAD, {
+    if (!db.available) return;
+    await new InquiryIterationService(db.pool).transitionLifecycle(identity(), PROJECT, THREAD, {
       lifecycle_status: "resolved",
       reason: "Answered",
     });
@@ -210,36 +192,36 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("queues automatic advice only for Threads the project has actually focused", async () => {
-    if (!available || !pool) return;
-    const jobCount = async () => Number((await pool!.query(
+    if (!db.available) return;
+    const jobCount = async () => Number((await db.pool.query(
       "SELECT COUNT(*)::text AS total FROM jobs WHERE job_type = 'inquiry_next_step_advice' AND status IN ('pending','claimed','running')",
     )).rows[0].total);
 
     // Backlog by default — automatic spend stays bounded by the Focus WIP limit.
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
     });
     expect(await jobCount()).toBe(0);
 
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "search_acquisition",
     });
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
     });
     expect(await jobCount()).toBe(1);
 
     // A burst of triggers on the same Thread must not buy several provider
     // calls whose results only overwrite each other.
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
     });
     expect(await jobCount()).toBe(1);
   });
 
   it("retires open advice as soon as replacement analysis is requested", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({
       recommended_focus_kind: "search_acquisition",
       rationale: "No evidence has arrived yet.",
@@ -249,30 +231,30 @@ describe("Inquiry next-step advice (real Postgres)", () => {
 
     // An unfocused Thread does not spend on automatic analysis, but the event
     // still makes its old recommendation unsafe to keep presenting.
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
     });
     expect((await service.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
-    expect((await pool.query(
+    expect((await db.pool.query(
       "SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
     )).rows).toHaveLength(0);
 
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
     await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
     });
     expect((await service.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
-    expect((await pool.query(
+    expect((await db.pool.query(
       "SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
     )).rows).toHaveLength(1);
   });
 
   it("does not rewrite advice that was already adopted or dismissed", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const service = serviceReturning({
       recommended_focus_kind: "search_acquisition",
       rationale: "No evidence has arrived yet.",
@@ -282,7 +264,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     await service.markAdopted(identity(), PROJECT, THREAD);
     const adoptedAt = (await service.getAdvice(identity(), PROJECT, THREAD))!.updated_at;
 
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
     });
     const adopted = await service.getAdvice(identity(), PROJECT, THREAD);
@@ -292,7 +274,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
     await service.dismissAdvice(identity(), PROJECT, THREAD);
     const dismissedAt = (await service.getAdvice(identity(), PROJECT, THREAD))!.updated_at;
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
     });
     const dismissed = await service.getAdvice(identity(), PROJECT, THREAD);
@@ -301,25 +283,25 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("fences an in-flight automatic generation and queues one fresh successor", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const current = serviceReturning({
       recommended_focus_kind: "read_evidence",
       rationale: "Review the evidence already available.",
       cited_refs: [],
     });
     await current.generateAdvice(identity(), PROJECT, THREAD, "user_request");
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
 
-    const job = await new PgJobQueueRepository(pool).enqueue({
+    const job = await new PgJobQueueRepository(db.pool).enqueue({
       job_type: "inquiry_next_step_advice",
       space_id: SPACE,
       user_id: OWNER,
       payload: { project_id: PROJECT, thread_id: THREAD, trigger_kind: "iteration_recorded" },
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE jobs SET status='running', started_at=$2, updated_at=$2 WHERE id=$1`,
       [job.id, new Date().toISOString()],
     );
@@ -328,7 +310,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     let providerStarted!: () => void;
     const started = new Promise<void>((resolve) => { providerStarted = resolve; });
     const release = new Promise<void>((resolve) => { releaseProvider = resolve; });
-    const late = new InquiryAdviceService(pool, config, async () => {
+    const late = new InquiryAdviceService(db.pool, config, async () => {
       providerStarted();
       await release;
       return {
@@ -342,7 +324,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     });
     await started;
 
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE,
       userId: OWNER,
       projectId: PROJECT,
@@ -353,7 +335,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
 
     expect(await generation).toBeNull();
     expect((await current.getAdvice(identity(), PROJECT, THREAD))?.status).toBe("dismissed");
-    const jobs = await pool.query<{ status: string; superseded: boolean }>(
+    const jobs = await db.pool.query<{ status: string; superseded: boolean }>(
       `SELECT status, payload_json ? 'advice_superseded_at' AS superseded
          FROM jobs WHERE job_type='inquiry_next_step_advice' ORDER BY created_at`,
     );
@@ -364,24 +346,24 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("keeps job-before-advice lock order when generation and invalidation overlap", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const current = serviceReturning({
       recommended_focus_kind: "read_evidence",
       rationale: "Current recommendation.",
       cited_refs: [],
     });
     await current.generateAdvice(identity(), PROJECT, THREAD, "user_request");
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
-    const job = await new PgJobQueueRepository(pool).enqueue({
+    const job = await new PgJobQueueRepository(db.pool).enqueue({
       job_type: "inquiry_next_step_advice",
       space_id: SPACE,
       user_id: OWNER,
       payload: { project_id: PROJECT, thread_id: THREAD, trigger_kind: "iteration_recorded" },
     });
-    await pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
+    await db.pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
 
     let guardLocked!: () => void;
     let releaseGuard!: () => void;
@@ -400,7 +382,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
       },
     });
     await locked;
-    const invalidation = queueAdviceForFocusedThread(pool, {
+    const invalidation = queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE,
       userId: OWNER,
       projectId: PROJECT,
@@ -416,23 +398,23 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("leaves exactly one current job when a worker claim races invalidation", async () => {
-    if (!available || !pool) return;
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    if (!db.available) return;
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
     });
 
     await Promise.all([
-      queueAdviceForFocusedThread(pool, {
+      queueAdviceForFocusedThread(db.pool, {
         spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
       }),
-      new PgJobQueueRepository(pool).claimNext("race-worker", ["inquiry_next_step_advice"]),
+      new PgJobQueueRepository(db.pool).claimNext("race-worker", ["inquiry_next_step_advice"]),
     ]);
 
-    const active = await pool.query<{ status: string; superseded: boolean }>(
+    const active = await db.pool.query<{ status: string; superseded: boolean }>(
       `SELECT status, payload_json ? 'advice_superseded_at' AS superseded
          FROM jobs
         WHERE job_type='inquiry_next_step_advice' AND status IN ('pending','claimed','running')`,
@@ -442,45 +424,45 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("cancels pending advice when the latest trigger has no actor or the Thread is unfocused", async () => {
-    if (!available || !pool) return;
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    if (!db.available) return;
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "search_acquisition",
     });
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
     });
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: null, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
     });
-    const jobs = await pool.query<{ status: string }>(
+    const jobs = await db.pool.query<{ status: string }>(
       "SELECT status FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
     );
     expect(jobs.rows).toEqual([{ status: "cancelled" }]);
 
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
     });
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "backlog",
     });
-    await queueAdviceForFocusedThread(pool, {
+    await queueAdviceForFocusedThread(db.pool, {
       spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "search_completed",
     });
-    const afterUnfocus = await pool.query<{ status: string }>(
+    const afterUnfocus = await db.pool.query<{ status: string }>(
       "SELECT status FROM jobs WHERE job_type = 'inquiry_next_step_advice' ORDER BY created_at",
     );
     expect(afterUnfocus.rows).toEqual([{ status: "cancelled" }, { status: "cancelled" }]);
   });
 
   it("skips a superseded retry before invoking the provider", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     let providerCalls = 0;
-    const service = new InquiryAdviceService(pool, config, async () => {
+    const service = new InquiryAdviceService(db.pool, config, async () => {
       providerCalls += 1;
       return { recommended_focus_kind: "read_evidence", rationale: "Old", cited_refs: [] };
     });
-    const job = await new PgJobQueueRepository(pool).enqueue({
+    const job = await new PgJobQueueRepository(db.pool).enqueue({
       job_type: "inquiry_next_step_advice",
       space_id: SPACE,
       user_id: OWNER,
@@ -491,9 +473,9 @@ describe("Inquiry next-step advice (real Postgres)", () => {
         advice_superseded_at: new Date().toISOString(),
       },
     });
-    await pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
+    await db.pool.query("UPDATE jobs SET status='running' WHERE id=$1", [job.id]);
 
-    const result = await runInquiryAdviceJob(pool, service, {
+    const result = await runInquiryAdviceJob(db.pool, service, {
       job_id: job.id,
       space_id: SPACE,
       user_id: OWNER,
@@ -505,11 +487,11 @@ describe("Inquiry next-step advice (real Postgres)", () => {
 
 
   it("advice generated while the Thread changes underneath does not claim to be current", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // The provider call is where real latency lives; a concurrent Iteration
     // during it means the advice reasoned about a superseded revision.
-    const service = new InquiryAdviceService(pool, config, async () => {
-      await new InquiryIterationService(pool!).recordIteration(identity(), PROJECT, THREAD, {
+    const service = new InquiryAdviceService(db.pool, config, async () => {
+      await new InquiryIterationService(db.pool).recordIteration(identity(), PROJECT, THREAD, {
         change_summary: "Someone else moved this Thread on while advice was being generated.",
         answer_state: "partial",
         current_answer_summary: "Changed.",
@@ -523,18 +505,18 @@ describe("Inquiry next-step advice (real Postgres)", () => {
   });
 
   it("recording an Iteration on a focused Thread queues advice without blocking on a provider", async () => {
-    if (!available || !pool) return;
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    if (!db.available) return;
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
-    await new InquiryIterationService(pool).recordIteration(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).recordIteration(identity(), PROJECT, THREAD, {
       change_summary: "Skimmed the first ten results.",
       answer_state: "partial",
       current_answer_summary: "Looks promising for read-heavy workloads.",
     });
 
-    const jobs = await pool.query<{ payload_json: Record<string, unknown> }>(
+    const jobs = await db.pool.query<{ payload_json: Record<string, unknown> }>(
       "SELECT payload_json FROM jobs WHERE job_type = 'inquiry_next_step_advice'",
     );
     expect(jobs.rows).toHaveLength(1);

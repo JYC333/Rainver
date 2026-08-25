@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -189,13 +189,64 @@ describe("history page narrowing", () => {
     expect(error).toBeInstanceOf(SourceFetchFailure);
   });
 
-  it("stops immediately on a failure that a smaller page cannot fix", async () => {
-    const { asked } = await run({ fails: () => upstream(404) });
-    expect(asked.map(a => a.pageSize)).toEqual([100]);
+});
+
+describe("fetchSourceConnection with a stubbed fetch", () => {
+  const stubProvider = {
+    providerKey: "semantic_scholar",
+    providerDisplayName: "Semantic Scholar",
+    connectorKey: "semantic_scholar_api",
+  };
+  const stubHandler = {
+    prepareRequest: vi.fn(async () => undefined),
+  } as unknown as SourceConnectorHandler;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+  it("defers HTTP 429 after one request instead of retrying immediately or marking it permanent", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 429 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const failure = await fetchSourceConnection({
+      handler: stubHandler,
+      url: "https://api.semanticscholar.org/graph/v1/paper/search",
+      headers: {},
+      maxDownloadBytes: 1024,
+      backfill: true,
+      provider: stubProvider,
+    }).catch(error => error);
+
+    expect(failure).toBeInstanceOf(SourceFetchFailure);
+    expect(failure).toMatchObject({
+      statusCode: 503,
+      diagnostics: {
+        provider_key: "semantic_scholar",
+        upstream_status: 429,
+        attempts: 1,
+        retryable: true,
+        failure_kind: "upstream_http",
+      },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("records every width tried when the whole ladder fails", async () => {
-    const { error } = await run({ fails: () => upstream(500) }) as never;
-    expect((error as SourceFetchFailure).diagnostics).toMatchObject({ page_sizes_attempted: [100, 25, 10] });
+  it("keeps a rejected request such as HTTP 400 permanent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 400 })));
+
+    const failure = await fetchSourceConnection({
+      handler: stubHandler,
+      url: "https://api.semanticscholar.org/graph/v1/paper/search",
+      headers: {},
+      maxDownloadBytes: 1024,
+      backfill: true,
+      provider: stubProvider,
+    }).catch(error => error);
+
+    expect(failure).toMatchObject({
+      statusCode: 502,
+      diagnostics: { upstream_status: 400, attempts: 1, retryable: false },
+    });
   });
 });

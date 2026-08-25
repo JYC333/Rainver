@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
@@ -23,60 +22,43 @@ const VERSION = "84444444-4444-4444-8444-444444444444";
 const RUN = "95555555-5555-4555-8555-555555555555";
 const CHECKPOINT = "a6666666-6666-4666-8666-666666666666";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-usage-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["token_usage_events", "instance_identity", "runs", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1,'Main','personal',$2,$2)`,
     [SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1,$1,'active',$2,$2)`,
     [OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
@@ -87,7 +69,7 @@ beforeEach(async () => {
        '[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
     [VERSION, AGENT, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
        status, mode, adapter_type, instructed_by_user_id,
@@ -97,11 +79,11 @@ beforeEach(async () => {
        $5,$5,$6,'{}'::jsonb,$7,$7,$7,$7)`,
     [RUN, SPACE, AGENT, VERSION, OWNER, PROJECT, now],
   );
-  await insertResearchWorkflowFixture(pool, {
+  await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
     currentStage: "idea_review", now,
   });
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_operations (
        id, space_id, project_id, kind, title, status, created_by_user_id,
        progress_json, created_at, updated_at
@@ -115,7 +97,7 @@ beforeEach(async () => {
       now,
     ],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_research_checkpoints (
        id, space_id, project_id, workflow_id, stage_key, checkpoint_type,
        status, machine_result_json, created_at, updated_at
@@ -130,7 +112,7 @@ beforeEach(async () => {
     ],
   );
 
-  const usage = new PgUsageRepository(pool);
+  const usage = new PgUsageRepository(db.pool);
   const instanceId = await usage.getOrCreateInstanceId();
   await usage.appendEvent(normalizeUsageObservation(
     {
@@ -165,10 +147,10 @@ beforeEach(async () => {
 
 describe("ProjectResearchRepository review usage (real Postgres)", () => {
   it("reads provider usage from the canonical token ledger", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
 
     const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
-    const checkpoints = await new ProjectResearchRepository(pool).listCheckpoints(identity, PROJECT, WORKFLOW);
+    const checkpoints = await new ProjectResearchRepository(db.pool).listCheckpoints(identity, PROJECT, WORKFLOW);
     const review = checkpoints[0]?.review as { usage?: Record<string, unknown> } | null | undefined;
 
     expect(review?.usage).toMatchObject({

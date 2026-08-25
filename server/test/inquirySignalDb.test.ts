@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -15,25 +14,8 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[inquiry-signal-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 let PROJECT: string;
 let THREAD: string;
@@ -44,12 +26,12 @@ async function createCorpusItem(visibility: "private" | "space_shared" = "privat
   const objectId = randomUUID();
   const corpusItemId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
      VALUES ($1, $2, 'source', 'A source', $3, $4, $5, $5)`,
     [objectId, SPACE, visibility, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_corpus_items (id, space_id, project_id, object_id, role, status, triage_status, read_status, metadata_json, created_at, updated_at)
      VALUES ($1, $2, $3, $4, 'candidate', 'active', 'new', 'unread', '{}'::jsonb, $5, $5)`,
     [corpusItemId, SPACE, PROJECT, objectId, now],
@@ -58,43 +40,43 @@ async function createCorpusItem(visibility: "private" | "space_shared" = "privat
 }
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["inquiry_thread_advice", "jobs", "inquiry_delta_briefs", "inquiry_signal_candidates", "inquiry_evidence_signals", "inquiry_review_packets", "inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "project_corpus_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', $3, $3), ($2, 'Member', 'active', $3, $3)`,
     [OWNER, MEMBER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  const project = await new PgProjectRepository(pool).create(identity(), { name: "Signals Project" });
+  const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Signals Project" });
   PROJECT = project.id as string;
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', $4, $4)`,
     [randomUUID(), SPACE, MEMBER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, $4, 'member', 'active', $5, $5)`,
     [randomUUID(), SPACE, PROJECT, MEMBER, now],
   );
-  const thread = await new InquiryThreadService(pool).createThread(identity(), PROJECT, { kind: "hypothesis", statement: "Caching reduces latency", proposed_claim: "Cache hit rate above 80% halves p95 latency" });
+  const thread = await new InquiryThreadService(db.pool).createThread(identity(), PROJECT, { kind: "hypothesis", statement: "Caching reduces latency", proposed_claim: "Cache hit rate above 80% halves p95 latency" });
   THREAD = thread.id as string;
 });
 
 describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () => {
   it("a batch of routine supporting Signals auto-attaches without creating review noise", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
     for (let i = 0; i < 3; i += 1) {
       const corpusItemId = await createCorpusItem();
       const signal = await signalSvc.createSignal(identity(), PROJECT, THREAD, {
@@ -113,8 +95,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("multiple contradiction Signals about the same Thread consolidate into exactly one explainable Candidate", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
     const signalIds: string[] = [];
     for (let i = 0; i < 3; i += 1) {
       const corpusItemId = await createCorpusItem();
@@ -136,9 +118,9 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("confirming (accepting) a Candidate creates an Inquiry Iteration, and dismissing one never removes its Signal audit record", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
+    const threadSvc = new InquiryThreadService(db.pool);
     const corpusItemId = await createCorpusItem();
     const signal = await signalSvc.createSignal(identity(), PROJECT, THREAD, {
       corpus_item_id: corpusItemId,
@@ -156,7 +138,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     expect(accepted.status).toBe("accepted");
     expect(accepted.resulting_iteration_id).toBeTruthy();
 
-    const iterations = await new InquiryIterationService(pool).listIterations(identity(), PROJECT, THREAD);
+    const iterations = await new InquiryIterationService(db.pool).listIterations(identity(), PROJECT, THREAD);
     expect(iterations).toHaveLength(1);
     expect(iterations[0]!.id).toBe(accepted.resulting_iteration_id);
 
@@ -175,7 +157,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     expect(dismissed.status).toBe("dismissed");
     expect(dismissed.resulting_iteration_id).toBeNull();
 
-    const stillAudited = await pool.query<{ id: string; status: string }>(
+    const stillAudited = await db.pool.query<{ id: string; status: string }>(
       `SELECT id, status FROM inquiry_evidence_signals WHERE id = $1`,
       [signal2.id],
     );
@@ -185,8 +167,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("rejects deciding an already-decided Candidate", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
     const corpusItemId = await createCorpusItem();
     const signal = await signalSvc.createSignal(identity(), PROJECT, THREAD, { corpus_item_id: corpusItemId, classification: "raises_gap" });
     const candidateId = signal.candidate_id as string;
@@ -197,10 +179,10 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     await expect(signalSvc.decideCandidate(identity(), PROJECT, candidateId, { decision: "dismiss" })).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("bounds a Review Packet to the configured size and returns leftover Candidates to the pool on close", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
-    const threadSvc = new InquiryThreadService(pool);
+  it("bounds a Review Packet to the configured size and returns leftover Candidates to the db.pool on close", async () => {
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
+    const threadSvc = new InquiryThreadService(db.pool);
     for (let i = 0; i < 4; i += 1) {
       const t = await threadSvc.createThread(identity(), PROJECT, { kind: "question", statement: `Q${i}` });
       const corpusItemId = await createCorpusItem();
@@ -213,7 +195,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
 
     const replacement = await signalSvc.openReviewPacket(identity(), PROJECT, 2);
     expect((replacement.candidates as unknown[])).toHaveLength(2);
-    const oldPacket = await pool.query<{ status: string }>(
+    const oldPacket = await db.pool.query<{ status: string }>(
       `SELECT status FROM inquiry_review_packets WHERE id=$1`,
       [packet.id],
     );
@@ -225,9 +207,9 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("generates a read-only Delta Brief that never mutates Thread state", async () => {
-    if (!available || !pool) return;
-    const signalSvc = new InquirySignalService(pool);
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const signalSvc = new InquirySignalService(db.pool);
+    const threadSvc = new InquiryThreadService(db.pool);
     const before = await threadSvc.getThread(identity(), PROJECT, THREAD);
 
     const corpusItemId = await createCorpusItem();
@@ -247,8 +229,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("deduplicates retry deliveries but keeps unrelated semantic changes separate", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     const corpusItemId = await createCorpusItem();
     const body = {
       corpus_item_id: corpusItemId,
@@ -270,9 +252,9 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("does not retire current advice when a material Signal delivery is replayed", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
-    await new InquiryIterationService(pool).updateWork(identity(), PROJECT, THREAD, {
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
       attention_state: "focused",
       next_focus_kind: "read_evidence",
     });
@@ -283,7 +265,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     };
     const first = await service.createSignal(identity(), PROJECT, THREAD, body);
     const generatedAt = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO inquiry_thread_advice
          (id, space_id, project_id, thread_id, recommended_focus_kind, rationale,
           cited_refs_json, thread_version, status, trigger_kind, model_version,
@@ -295,20 +277,20 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
 
     const retry = await service.createSignal(identity(), PROJECT, THREAD, body);
     expect(retry.id).toBe(first.id);
-    const advice = await pool.query<{ status: string; updated_at: Date }>(
+    const advice = await db.pool.query<{ status: string; updated_at: Date }>(
       "SELECT status, updated_at FROM inquiry_thread_advice WHERE thread_id=$1",
       [THREAD],
     );
     expect(advice.rows[0]?.status).toBe("open");
     expect(advice.rows[0]?.updated_at.toISOString()).toBe(generatedAt);
-    expect((await pool.query(
+    expect((await db.pool.query(
       "SELECT id FROM jobs WHERE job_type='inquiry_next_step_advice'",
     )).rows).toHaveLength(1);
   });
 
   it("keeps a Candidate hidden unless every contributing Signal is readable", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     const semanticKey = "mixed-visibility-change";
     await service.createSignal(identity(), PROJECT, THREAD, {
       corpus_item_id: await createCorpusItem("space_shared"),
@@ -340,8 +322,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("serializes concurrent producer retries and Candidate consolidation", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     const body = {
       corpus_item_id: await createCorpusItem(),
       classification: "contradicts",
@@ -357,15 +339,15 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("rejects Signal/accept writes to terminal Threads and cross-Thread Candidate merges", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     const pending = await service.createSignal(identity(), PROJECT, THREAD, {
       corpus_item_id: await createCorpusItem(),
       classification: "contradicts",
       semantic_key: "terminal-change",
       proposed_change: { evaluation_state: "challenged" },
     });
-    const otherThread = await new InquiryThreadService(pool).createThread(identity(), PROJECT, {
+    const otherThread = await new InquiryThreadService(db.pool).createThread(identity(), PROJECT, {
       kind: "hypothesis",
       statement: "A distinct hypothesis",
     });
@@ -381,7 +363,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
 
-    await new InquiryIterationService(pool).transitionLifecycle(identity(), PROJECT, THREAD, {
+    await new InquiryIterationService(db.pool).transitionLifecycle(identity(), PROJECT, THREAD, {
       lifecycle_status: "resolved",
     });
     await expect(
@@ -400,8 +382,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("rolls back Candidate acceptance when the Iteration is invalid, and supports defer/reopen", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     const signal = await service.createSignal(identity(), PROJECT, THREAD, {
       corpus_item_id: await createCorpusItem(),
       classification: "contradicts",
@@ -412,7 +394,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     ).rejects.toMatchObject({ statusCode: 422 });
     const afterFailure = await service.getCandidate(identity(), PROJECT, signal.candidate_id as string);
     expect(afterFailure.status).toBe("pending");
-    expect((await new InquiryIterationService(pool).listIterations(identity(), PROJECT, THREAD))).toHaveLength(0);
+    expect((await new InquiryIterationService(db.pool).listIterations(identity(), PROJECT, THREAD))).toHaveLength(0);
 
     const deferred = await service.decideCandidate(identity(), PROJECT, signal.candidate_id as string, {
       decision: "defer",
@@ -424,8 +406,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("a Delta Brief covers only its window, so the next one reports what is genuinely new", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
 
     await service.createSignal(identity(), PROJECT, THREAD, {
       corpus_item_id: await createCorpusItem(),
@@ -450,8 +432,8 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("exposes the most recent Brief so a caller can continue from its coverage end", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     expect(await service.latestDeltaBrief(identity(), PROJECT)).toBeNull();
 
     await service.generateDeltaBrief(identity(), PROJECT, {});
@@ -463,16 +445,16 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
   });
 
   it("keeps a Delta Brief inside its own Project and refuses a non-member", async () => {
-    if (!available || !pool) return;
-    const service = new InquirySignalService(pool);
+    if (!db.available) return;
+    const service = new InquirySignalService(db.pool);
     await service.generateDeltaBrief(identity(), PROJECT, {});
 
-    const otherProject = await new PgProjectRepository(pool).create(identity(), { name: "Unrelated Project" });
+    const otherProject = await new PgProjectRepository(db.pool).create(identity(), { name: "Unrelated Project" });
     expect(await service.latestDeltaBrief(identity(), otherProject.id as string)).toBeNull();
 
     const stranger = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Stranger', 'active', $2, $2)`,
       [stranger, now],
     );

@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 /**
@@ -21,40 +20,23 @@ import { resetTables } from "./support/resetTables";
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 let projectId = "";
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[note-quick-capture-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["notes", "note_collections", "note_collection_items", "note_links", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
-  await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
   projectId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
      VALUES ($1,$2,'Study','active',$3,$4,$4)`,
     [projectId, SPACE, USER, now],
@@ -64,7 +46,7 @@ beforeEach(async () => {
 const identity = { spaceId: SPACE, userId: USER };
 
 async function inboxRow(): Promise<{ object_id: string; project_role: string; role_project_id: string } | undefined> {
-  const result = await pool!.query<{ object_id: string; project_role: string; role_project_id: string }>(
+  const result = await db.pool.query<{ object_id: string; project_role: string; role_project_id: string }>(
     `SELECT object_id, project_role, role_project_id FROM notes
       WHERE space_id = $1 AND project_role = 'inbox'`,
     [SPACE],
@@ -74,8 +56,8 @@ async function inboxRow(): Promise<{ object_id: string; project_role: string; ro
 
 describe("quick capture (real Postgres)", () => {
   it("creates the Project inbox on the first contextless capture", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
 
     const note = await repository.jotNoteForObject(identity, {
       project_id: projectId,
@@ -91,7 +73,7 @@ describe("quick capture (real Postgres)", () => {
     });
     // Filed in the Project's own notes folder, so it shows up on the Project
     // notes surface rather than only in the global tree.
-    const placements = await pool.query<{ project_id: string | null }>(
+    const placements = await db.pool.query<{ project_id: string | null }>(
       `SELECT c.project_id
          FROM note_collection_items i
          JOIN note_collections c ON c.id = i.collection_id AND c.space_id = i.space_id
@@ -102,8 +84,8 @@ describe("quick capture (real Postgres)", () => {
   });
 
   it("appends to the same inbox rather than making a second one", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
 
     const first = await repository.jotNoteForObject(identity, {
       project_id: projectId, text: "First thought.",
@@ -116,13 +98,13 @@ describe("quick capture (real Postgres)", () => {
     expect(second.plain_text).toContain("First thought.");
     expect(second.plain_text).toContain("Second thought.");
     expect(second.version).toBeGreaterThan(1);
-    const all = await pool.query(`SELECT object_id FROM notes WHERE space_id = $1`, [SPACE]);
+    const all = await db.pool.query(`SELECT object_id FROM notes WHERE space_id = $1`, [SPACE]);
     expect(all.rows).toHaveLength(1);
   });
 
   it("keeps using the inbox after it has been renamed", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await repository.jotNoteForObject(identity, {
       project_id: projectId, text: "First thought.",
     }) as { id: string };
@@ -139,11 +121,11 @@ describe("quick capture (real Postgres)", () => {
   });
 
   it("gives each Project its own inbox", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const other = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
        VALUES ($1,$2,'Other','active',$3,$4,$4)`,
       [other, SPACE, USER, now],
@@ -153,13 +135,13 @@ describe("quick capture (real Postgres)", () => {
     const b = await repository.jotNoteForObject(identity, { project_id: other, text: "B" }) as { id: string };
 
     expect(b.id).not.toBe(a.id);
-    const rows = await pool.query(`SELECT role_project_id FROM notes WHERE project_role = 'inbox' ORDER BY role_project_id`, []);
+    const rows = await db.pool.query(`SELECT role_project_id FROM notes WHERE project_role = 'inbox' ORDER BY role_project_id`, []);
     expect(rows.rows).toHaveLength(2);
   });
 
   it("requires a project when there is no context object to hang the note on", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
 
     await expect(repository.jotNoteForObject(identity, { text: "Nowhere to put this." }))
       .rejects.toMatchObject({ statusCode: 422 });
@@ -167,8 +149,8 @@ describe("quick capture (real Postgres)", () => {
   });
 
   it("still makes one note per object when a context object is given", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const target = await repository.createNote(identity, { title: "Target" }) as { id: string };
 
     const jotted = await repository.jotNoteForObject(identity, {
@@ -186,18 +168,18 @@ describe("quick capture (real Postgres)", () => {
     expect(jotted.title).toBe("Note on Target");
     // The contextful path is untouched by the inbox: no role, and a link.
     expect(await inboxRow()).toBeUndefined();
-    const links = await pool.query(
+    const links = await db.pool.query(
       `SELECT to_object_id FROM note_links WHERE space_id = $1 AND from_object_id = $2`,
       [SPACE, jotted.id],
     );
     expect(links.rows).toEqual([{ to_object_id: target.id }]);
-    const notes = await pool.query(`SELECT object_id FROM notes WHERE space_id = $1`, [SPACE]);
+    const notes = await db.pool.query(`SELECT object_id FROM notes WHERE space_id = $1`, [SPACE]);
     expect(notes.rows).toHaveLength(2); // target + one quick-capture note
   });
 
   it("serializes concurrent first captures for the same context object", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const target = await repository.createNote(identity, { title: "Target" }) as { id: string };
 
     const [first, second] = await Promise.all([
@@ -209,7 +191,7 @@ describe("quick capture (real Postgres)", () => {
     const saved = await repository.getNote(identity, first.id) as { plain_text: string };
     expect(saved.plain_text).toContain("First concurrent thought.");
     expect(saved.plain_text).toContain("Second concurrent thought.");
-    const linkedNotes = await pool.query(
+    const linkedNotes = await db.pool.query(
       `SELECT DISTINCT from_object_id
          FROM note_links
         WHERE space_id = $1 AND to_object_id = $2 AND status = 'active'`,
@@ -219,8 +201,8 @@ describe("quick capture (real Postgres)", () => {
   });
 
   it("refuses to append to an inbox the caller cannot read", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await repository.jotNoteForObject(identity, {
       project_id: projectId, text: "Mine.",
     }) as { id: string };
@@ -230,16 +212,16 @@ describe("quick capture (real Postgres)", () => {
     // come back empty.
     const other = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
-    await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, other, now]);
-    await pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [first.id]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, other, now]);
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [first.id]);
 
     await expect(repository.jotNoteForObject({ spaceId: SPACE, userId: other }, {
       project_id: projectId, text: "Theirs.",
     })).rejects.toMatchObject({ statusCode: 409 });
 
     // And the role stays where it was — a second inbox would have taken it.
-    const rows = await pool.query(`SELECT object_id FROM notes WHERE project_role = 'inbox'`, []);
+    const rows = await db.pool.query(`SELECT object_id FROM notes WHERE project_role = 'inbox'`, []);
     expect(rows.rows).toEqual([{ object_id: first.id }]);
   });
 });

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { seedPendingScreeningGate } from "./support/researchSeeds";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
@@ -31,62 +32,26 @@ const EXISTING_RUN_ID = "existing-synthesis-run-id";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-beforeAll(async () => {
-  registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-synthesis-resume-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  registerProjectResearchExecutionHandlers();
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
-     VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
-    [AGENT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
-    [AGENT_VERSION, AGENT, SPACE, now],
-  );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
-  await insertResearchWorkflowFixture(pool, {
+  const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, now });
+  await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
     currentStage: "screening", now,
   });
@@ -115,7 +80,7 @@ async function seedStuckOperation(): Promise<void> {
     synthesis_run_id: EXISTING_RUN_ID,
     watermark: { before: null, after: null, overlap_hours: 48 },
   };
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
      VALUES ($1,$2,$3,'research','Initial literature intake','waiting_review',$4,$5::jsonb,$6,$6)`,
     [OPERATION, SPACE, PROJECT, OWNER, JSON.stringify(progress), now],
@@ -125,24 +90,20 @@ async function seedStuckOperation(): Promise<void> {
 async function seedPendingScreeningCheckpoint(): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
-    `INSERT INTO project_research_checkpoints (id, space_id, project_id, workflow_id, stage_key, checkpoint_type, status, machine_result_json, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'screening','screening_gate','pending',$5::jsonb,$6,$6)`,
-    [id, SPACE, PROJECT, WORKFLOW, JSON.stringify({ operation_id: OPERATION, total: 0 }), now],
-  );
+  await seedPendingScreeningGate(db.pool, { id: id, space: SPACE, project: PROJECT, workflow: WORKFLOW, machineResult: { operation_id: OPERATION, total: 0 }, now });
   return id;
 }
 
 describe("ProjectResearchOrchestrator.decideCheckpoint resuming a stuck synthesis (real Postgres)", () => {
   it("advances current_stage to synthesis when re-approving after synthesis_run_id was already set by an earlier (clobbered) pass", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedStuckOperation();
     const checkpointId = await seedPendingScreeningCheckpoint();
 
-    const result = await new ProjectResearchOrchestrator(pool!, CONFIG).decideCheckpoint(identity, PROJECT, WORKFLOW, checkpointId, { decision: "approved" });
+    const result = await new ProjectResearchOrchestrator(db.pool, CONFIG).decideCheckpoint(identity, PROJECT, WORKFLOW, checkpointId, { decision: "approved" });
     expect(result.user_decision).toBe("approved");
 
-    const operation = await pool!.query<{ status: string; progress_json: { current_stage?: string; synthesis_run_id?: string } }>(
+    const operation = await db.pool.query<{ status: string; progress_json: { current_stage?: string; synthesis_run_id?: string } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
       [OPERATION],
     );
@@ -151,7 +112,7 @@ describe("ProjectResearchOrchestrator.decideCheckpoint resuming a stuck synthesi
     expect(operation.rows[0]!.progress_json.synthesis_run_id).toBe(EXISTING_RUN_ID);
     expect(operation.rows[0]!.status).toBe("active");
 
-    const workflow = await pool!.query<{ current_stage: string }>(
+    const workflow = await db.pool.query<{ current_stage: string }>(
       `SELECT current_stage FROM project_research_workflows WHERE object_id=$1`,
       [WORKFLOW],
     );

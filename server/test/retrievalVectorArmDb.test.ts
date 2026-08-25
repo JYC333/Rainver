@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -49,50 +48,29 @@ function oneHot(slot: number, dim = EMBED_DIMENSIONS): number[] {
   return v;
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-vector-arm-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Vec', 'personal', now(), now())`,
     [SPACE],
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'U', 'active', now(), now())`,
       [id],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('vector-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -106,7 +84,7 @@ async function seedKnowledge(doc: {
   visibility?: string;
   owner?: string | null;
 }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -119,15 +97,15 @@ async function seedKnowledge(doc: {
 }
 
 async function reindexAndEmbed(dim = EMBED_DIMENSIONS): Promise<void> {
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
-  await new RetrievalEmbeddingBackfillService(pool!, markerEmbedder(dim)).backfillSpace(SPACE, {
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalEmbeddingBackfillService(db.pool, markerEmbedder(dim)).backfillSpace(SPACE, {
     embeddingDimensions: dim,
   });
 }
 
 describe("Vector recall arm (real Postgres + pgvector)", () => {
   it("surfaces a semantically-near object that the deterministic arms miss", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge({ id: "alpha", title: "Alpha doc", content: "alpha marker aaa" });
     await seedKnowledge({ id: "beta", title: "Beta doc", content: "beta marker bbb" });
     await reindexAndEmbed();
@@ -136,7 +114,7 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
     const query = "qqqzzz no lexical overlap";
 
     // Without an embedder, the deterministic arms return nothing.
-    const deterministic = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search({
+    const deterministic = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search({
       spaceId: SPACE,
       viewerUserId: VIEWER,
       objectTypes: ["knowledge_item"],
@@ -146,7 +124,7 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
     expect(deterministic.items).toHaveLength(0);
 
     // With the vector arm (query in the "alpha" direction), alpha is recalled.
-    const hybrid = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const hybrid = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryEmbedder: querySlot(0),
     }).search({
       spaceId: SPACE,
@@ -163,7 +141,7 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
   });
 
   it("still drops a vector hit the viewer may not read (revalidate gate holds)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // A private knowledge item owned by OTHER, embedded in the "ccc" direction.
     await seedKnowledge({
       id: "secret",
@@ -174,7 +152,7 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
     });
     await reindexAndEmbed();
 
-    const result = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const result = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryEmbedder: querySlot(2),
     }).search({
       spaceId: SPACE,
@@ -189,20 +167,20 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
   });
 
   it("supports a non-default embedding dimension for model experiments", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const dim = 384;
     await seedKnowledge({ id: "alpha", title: "Alpha doc", content: "alpha marker aaa" });
     await seedKnowledge({ id: "beta", title: "Beta doc", content: "beta marker bbb" });
     await reindexAndEmbed(dim);
 
-    const row = await pool.query<{ dims: number }>(
+    const row = await db.pool.query<{ dims: number }>(
       `SELECT embedding_dimensions AS dims FROM retrieval_chunks
         WHERE embedding IS NOT NULL
         LIMIT 1`,
     );
     expect(row.rows[0]?.dims).toBe(dim);
 
-    const result = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const result = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryEmbedder: querySlot(1, dim),
     }).search({
       spaceId: SPACE,

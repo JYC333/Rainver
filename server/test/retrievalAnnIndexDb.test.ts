@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -46,40 +45,19 @@ const targetQueryEmbedder: QueryEmbedder = {
   },
 };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-ann-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Ann', 'personal', now(), now())`, [SPACE]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [VIEWER]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Ann', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [VIEWER]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('ann-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -87,13 +65,13 @@ beforeEach(async () => {
 });
 
 async function seed(id: string, title: string, content: string): Promise<void> {
-  await insertKnowledgeItem(pool!, { id, spaceId: SPACE, title, content, slug: id });
+  await insertKnowledgeItem(db.pool, { id, spaceId: SPACE, title, content, slug: id });
 }
 
 describe("Retrieval ANN halfvec index (real Postgres + pgvector)", () => {
   it("ships the default-dimension halfvec HNSW index in the baseline", async () => {
-    if (!available || !pool) return;
-    const idx = await pool.query<{ indexdef: string }>(
+    if (!db.available) return;
+    const idx = await db.pool.query<{ indexdef: string }>(
       `SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_retrieval_chunks_embedding_hnsw_2560'`,
     );
     expect(idx.rows).toHaveLength(1);
@@ -104,20 +82,20 @@ describe("Retrieval ANN halfvec index (real Postgres + pgvector)", () => {
   it(
     "the planner uses the HNSW index for the arm's constant-dimension halfvec query",
     async () => {
-      if (!available || !pool) return;
+      if (!db.available) return;
       for (let i = 0; i < 40; i++) await seed(`noise-${i}`, `Noise ${i}`, `noise chunk ${i}`);
       await seed("target", "Target doc", "the target chunk");
-      const svc = new RetrievalProjectionService(pool, knowledgeRetrievalRegistry);
+      const svc = new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry);
       await svc.reindexAll(SPACE);
-      await new RetrievalEmbeddingBackfillService(pool, markerEmbedder).backfillSpace(SPACE, {
+      await new RetrievalEmbeddingBackfillService(db.pool, markerEmbedder).backfillSpace(SPACE, {
         embeddingDimensions: EMBED_DIMENSIONS,
       });
 
       // EXPLAIN the exact halfvec query shape the vector arm emits at the default
-      // dim. SET + EXPLAIN must run on the SAME connection (a GUC set via the pool
+      // dim. SET + EXPLAIN must run on the SAME connection (a GUC set via the db.pool
       // could otherwise land on a different pooled connection under load), so use a
       // dedicated client.
-      const client = await pool.connect();
+      const client = await db.pool.connect();
       let planText: string;
       try {
         await client.query("SET enable_seqscan = off");
@@ -142,16 +120,16 @@ describe("Retrieval ANN halfvec index (real Postgres + pgvector)", () => {
   );
 
   it("recalls the nearest object at the default dimension through the arm", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed("target", "Target doc", "the target chunk");
     await seed("other", "Other doc", "an unrelated chunk");
-    const svc = new RetrievalProjectionService(pool, knowledgeRetrievalRegistry);
+    const svc = new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry);
     await svc.reindexAll(SPACE);
-    await new RetrievalEmbeddingBackfillService(pool, markerEmbedder).backfillSpace(SPACE, {
+    await new RetrievalEmbeddingBackfillService(db.pool, markerEmbedder).backfillSpace(SPACE, {
       embeddingDimensions: EMBED_DIMENSIONS,
     });
 
-    const result = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const result = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryEmbedder: targetQueryEmbedder,
     }).search({
       spaceId: SPACE,

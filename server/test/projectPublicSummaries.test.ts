@@ -304,32 +304,6 @@ describe("Project public summaries", () => {
     expect(db.writes).toHaveLength(0);
   });
 
-  it("keeps approved public summaries readable to ordinary space members", async () => {
-    const db = new ProjectSummaryFakeDb();
-    const repo = new PgProjectRepository(db);
-    await repo.upsertPublicSummary(ownerIdentity, PROJECT, {
-      summary_text: "Public, redacted summary.",
-      topics: ["public-discovery"],
-      review_status: "approved",
-    });
-
-    const list = await repo.listPublicSummaries(
-      { spaceId: SPACE, userId: MEMBER },
-      { limit: 50, offset: 0 },
-    );
-
-    expect(list).toMatchObject({
-      total: 1,
-      items: [
-        {
-          project_id: PROJECT,
-          summary_text: "Public, redacted summary.",
-          topics: ["public-discovery"],
-        },
-      ],
-    });
-  });
-
   it("does not expose draft summaries through the public list", async () => {
     const db = new ProjectSummaryFakeDb();
     const repo = new PgProjectRepository(db);

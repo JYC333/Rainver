@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RelationsRepository } from "../src/modules/relations/repository";
 import { RelationsService } from "../src/modules/relations/service";
@@ -14,45 +14,28 @@ const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[relations-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["relation_source_links", "relation_notes", "relation_identities", "relation_organizations", "relation_people", "object_relations", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'User', 'active', now(), now())`,
     [USER],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ($1, 'Relations Space', 'household', $2, now(), now())`,
       [spaceId, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())`,
       [spaceId, USER],
@@ -79,12 +62,12 @@ class PrivateCreationRelationsService extends RelationsService {
 function service(): RelationsService {
   // Route-level creation resolution is outside this repository integration
   // suite; its direct service calls model an already-resolved private context.
-  return new PrivateCreationRelationsService(pool as Pool, new RelationsRepository(pool as Pool));
+  return new PrivateCreationRelationsService(db.pool as Pool, new RelationsRepository(db.pool as Pool));
 }
 
 describe("relations module (real Postgres)", () => {
   it("creates and reads a relation person", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson(
       { spaceId: SPACE, userId: USER },
       { title: "Ada Lovelace", summary: "Mathematician", pronouns: "she/her", headline: "Analytical Engine pioneer" },
@@ -98,7 +81,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("updates a person's fields, including clearing summary with an explicit null", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson(
       { spaceId: SPACE, userId: USER },
       { title: "Hedy Lamarr", summary: "Actress and inventor", pronouns: "she/her" },
@@ -117,7 +100,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("paginates listPeople honoring the requested limit and offset", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (const name of ["Person A", "Person B", "Person C", "Person D"]) {
       await service().createPerson({ spaceId: SPACE, userId: USER }, { title: name });
     }
@@ -131,7 +114,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("rejects reading a person from another space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Alan Turing" });
     await expect(service().getPerson({ spaceId: OTHER_SPACE, userId: USER }, person.object_id)).rejects.toMatchObject({
       statusCode: 404,
@@ -139,7 +122,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("creates an organization with org_type and parent linkage", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const university = await service().createOrganization({ spaceId: SPACE, userId: USER }, {
       title: "Stanford University",
       org_type: "university",
@@ -156,14 +139,14 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("rejects an invalid org_type", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().createOrganization({ spaceId: SPACE, userId: USER }, { title: "Bad Org", org_type: "not_a_type" }),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("creates identities and enforces the unique (space, object, type, value) index", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Grace Hopper" });
     const identity = await service().createIdentity({ spaceId: SPACE, userId: USER }, person.object_id, {
       id_type: "email",
@@ -172,7 +155,7 @@ describe("relations module (real Postgres)", () => {
     });
     expect(identity.id_type).toBe("email");
 
-    await expect(pool!.query(
+    await expect(db.pool.query(
       `INSERT INTO relation_identities (id, space_id, object_id, id_type, id_value, is_primary, source, created_at, updated_at)
        VALUES (gen_random_uuid(), $1, $2, 'email', 'grace@example.com', false, 'manual', now(), now())`,
       [SPACE, person.object_id],
@@ -183,7 +166,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("creates a pending proposal instead of directly writing an affiliation edge", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Barbara Liskov" });
     const org = await service().createOrganization({ spaceId: SPACE, userId: USER }, { title: "MIT", org_type: "university" });
 
@@ -194,7 +177,7 @@ describe("relations module (real Postgres)", () => {
       title: "Professor of Computer Science",
     });
     expect(proposal).toMatchObject({ proposal_type: "object_relation_create", status: "pending" });
-    const stored = await pool!.query<{ payload_json: Record<string, unknown> }>(
+    const stored = await db.pool.query<{ payload_json: Record<string, unknown> }>(
       `SELECT payload_json FROM proposals WHERE id=$1`,
       [proposal.id],
     );
@@ -206,13 +189,13 @@ describe("relations module (real Postgres)", () => {
       metadata: expect.objectContaining({ role: "professor", title: "Professor of Computer Science" }),
     });
 
-    const edgeResult = await pool!.query(
+    const edgeResult = await db.pool.query(
       `SELECT link_type, status FROM object_relations WHERE from_object_id = $1 AND to_object_id = $2`,
       [person.object_id, org.object_id],
     );
     expect(edgeResult.rows).toHaveLength(0);
 
-    const approved = await pool!.query<{ id: string }>(
+    const approved = await db.pool.query<{ id: string }>(
       `INSERT INTO object_relations (
          id, space_id, from_object_id, to_object_id, link_type, status,
          confidence, metadata_json, created_by_user_id, created_at, updated_at
@@ -231,11 +214,11 @@ describe("relations module (real Postgres)", () => {
       "2020-01-01T00:00:00.000Z",
     );
     expect(archiveProposal).toMatchObject({ proposal_type: "object_relation_delete", status: "pending" });
-    expect((await pool!.query(`SELECT status FROM object_relations WHERE id=$1`, [approved.rows[0]!.id])).rows[0]!.status).toBe("active");
+    expect((await db.pool.query(`SELECT status FROM object_relations WHERE id=$1`, [approved.rows[0]!.id])).rows[0]!.status).toBe("active");
   });
 
   it("rejects an affiliation referencing a person from another space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: OTHER_SPACE, userId: USER }, { title: "Cross Space Person" });
     const org = await service().createOrganization({ spaceId: SPACE, userId: USER }, { title: "Local Org", org_type: "company" });
     await expect(
@@ -247,7 +230,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("creates and lists relation notes", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Katherine Johnson" });
     await service().createNote({ spaceId: SPACE, userId: USER }, person.object_id, { body: "Met at a conference in 2024." });
     const notes = await service().listNotes({ spaceId: SPACE, userId: USER }, person.object_id);
@@ -256,7 +239,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("creates and lists relation source links", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Margaret Hamilton" });
     await service().createSourceLink({ spaceId: SPACE, userId: USER }, person.object_id, {
       link_type: "external",
@@ -266,13 +249,13 @@ describe("relations module (real Postgres)", () => {
     expect(links).toHaveLength(1);
     expect(links[0]!.link_type).toBe("external");
 
-    await expect(pool!.query(
+    await expect(db.pool.query(
       `INSERT INTO relation_source_links (
          id, space_id, object_id, link_type, created_by_user_id, created_at
        ) VALUES ($1,$2,$3,'external',$4,now())`,
       ["33333333-3333-4333-8333-333333333333", SPACE, person.object_id, USER],
     )).rejects.toMatchObject({ code: "23514" });
-    await expect(pool!.query(
+    await expect(db.pool.query(
       `INSERT INTO relation_source_links (
          id, space_id, object_id, link_type, external_ref, created_by_user_id, created_at
        ) VALUES ($1,$2,$3,'activity','https://example.com/wrong-target',$4,now())`,
@@ -281,7 +264,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("rejects an invalid source link type", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Invalid Link Target" });
     await expect(
       service().createSourceLink({ spaceId: SPACE, userId: USER }, person.object_id, { link_type: "not_a_type" }),
@@ -289,20 +272,20 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("does not write or reveal links to unreadable Source and Evidence endpoints", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1,'Other','active',$2,$2)`,
       [OTHER_USER, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES (gen_random_uuid()::varchar,$1,$2,'member','active',$3,$3)`,
       [SPACE, OTHER_USER, now],
     );
     const sourceItemId = "55555555-5555-4555-8555-555555555555";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO source_items (
          id, space_id, owner_user_id, visibility, access_level, item_type, title,
          first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
@@ -310,7 +293,7 @@ describe("relations module (real Postgres)", () => {
       [sourceItemId, SPACE, OTHER_USER, now],
     );
     const evidenceId = "66666666-6666-4666-8666-666666666666";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO extracted_evidence (
          id, space_id, owner_user_id, visibility, access_level, source_item_id,
          evidence_type, title, content_excerpt, metadata_json, extraction_method,
@@ -319,12 +302,12 @@ describe("relations module (real Postgres)", () => {
       [evidenceId, SPACE, OTHER_USER, sourceItemId, now],
     );
     const sourceObjectId = "88888888-8888-4888-8888-888888888888";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES ($1,$2,'source','Private canonical source','private','full',$3,$4,$4)`,
       [sourceObjectId, SPACE, OTHER_USER, now],
     );
     const objectEvidenceId = "99999999-9999-4999-8999-999999999999";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO extracted_evidence (
          id, space_id, owner_user_id, visibility, access_level, source_object_type,
          source_object_id, evidence_type, title, content_excerpt, metadata_json,
@@ -344,13 +327,13 @@ describe("relations module (real Postgres)", () => {
       link_type: "evidence", evidence_id: objectEvidenceId,
     })).rejects.toMatchObject({ statusCode: 422 });
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO relation_source_links (
          id, space_id, object_id, link_type, source_item_id, created_by_user_id, created_at
        ) VALUES ($1,$2,$3,'source_item',$4,$5,$6)`,
       ["77777777-7777-4777-8777-777777777777", SPACE, person.object_id, sourceItemId, OTHER_USER, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO relation_source_links (
          id, space_id, object_id, link_type, evidence_id, created_by_user_id, created_at
        ) VALUES ($1,$2,$3,'evidence',$4,$5,$6)`,
@@ -360,7 +343,7 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("searches people and organizations by title within a space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Radia Perlman" });
     await service().createOrganization({ spaceId: SPACE, userId: USER }, { title: "Perlman Labs", org_type: "lab" });
     await service().createPerson({ spaceId: OTHER_SPACE, userId: USER }, { title: "Perlman Impostor" });
@@ -370,10 +353,10 @@ describe("relations module (real Postgres)", () => {
   });
 
   it("archives a person via soft delete", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "To Be Archived" });
     await service().archivePerson({ spaceId: SPACE, userId: USER }, person.object_id);
-    const result = await pool!.query(`SELECT status FROM relation_people WHERE object_id = $1`, [person.object_id]);
+    const result = await db.pool.query(`SELECT status FROM relation_people WHERE object_id = $1`, [person.object_id]);
     expect(result.rows[0].status).toBe("archived");
   });
 });

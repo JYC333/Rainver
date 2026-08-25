@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { resolveProvidersDbPort } from "../src/modules/providers/dbReader";
@@ -57,62 +56,44 @@ const TASK = "bbbb2222-2222-4222-8222-222222222222";
 const CLAUDE_PROVIDER = "55555555-5555-4555-8555-555555555555";
 const OPENAI_PROVIDER = "66666666-6666-4666-8666-666666666666";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
 /** Which user the next HTTP request authenticates as. */
 let actingUser = OWNER;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    __setAuthIdentityForTests(() => ({ spaceId: SPACE, userId: actingUser } as never));
-    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [hostsModule]);
-    await app.listen({ port: 0, host: "127.0.0.1" });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[host-runtime-provider-binding-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  // Process-global; leaving it set would leak this file's fixture into any
-  // suite that shares the worker.
-  setProviderProxyBaseUrlForProcess(null, null);
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  __setAuthIdentityForTests(() => ({ spaceId: SPACE, userId: actingUser } as never));
+  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [hostsModule]);
+  await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["host_runtime_provider_bindings", "host_thread_messages", "host_task_threads", "runs", "agent_versions", "agents", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
   for (const space of [SPACE, OTHER_SPACE]) {
-    await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [space, now]);
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [space, now]);
   }
   actingUser = OWNER;
   for (const user of [OWNER, STRANGER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'active',$5,$5)`,
       [randomUUID(), SPACE, user, user === OWNER ? "owner" : "member", now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, created_at, updated_at) VALUES ($1,$2,'Laptop',$3,$3)`,
     [MACHINE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, created_at, updated_at)
      VALUES ($1,$2,$3,'linux_native','Laptop','remote','online',$4,$4)`,
     [HOST, OWNER, MACHINE, now],
@@ -124,14 +105,14 @@ beforeEach(async () => {
     [OPENAI_PROVIDER, "DeepSeek", { openai_compatible_base_url: "https://api.deepseek.com/v1" }],
   ] as const;
   for (const [id, name, config] of providers) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (id, space_id, owner_user_id, name, provider_type, enabled, capabilities_json, config_json, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'custom',true,'{}'::jsonb,$5::jsonb,$6,$6)`,
       [id, SPACE, OWNER, name, JSON.stringify(config), now],
     );
     // A provider is only reachable through a grant; without this row the real
     // read port returns null, which is the point of using it here.
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (id, space_id, provider_id, granted_by_user_id, enabled, is_default, created_at, updated_at)
        VALUES ($1,$2,$3,$4,true,false,$5,$5)`,
       [randomUUID(), SPACE, id, OWNER, now],
@@ -140,7 +121,7 @@ beforeEach(async () => {
 });
 
 function repo(): PgHostRuntimeProviderBindingRepository {
-  return new PgHostRuntimeProviderBindingRepository(pool!);
+  return new PgHostRuntimeProviderBindingRepository(db.pool);
 }
 
 /**
@@ -151,7 +132,7 @@ function repo(): PgHostRuntimeProviderBindingRepository {
  * resolution code deliberately relies on.
  */
 function providerPort(): ProviderLookupPort {
-  const port = resolveProvidersDbPort(loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri() }));
+  const port = resolveProvidersDbPort(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
   if (!port) throw new Error("providers read port unavailable");
   return port;
 }
@@ -165,7 +146,7 @@ async function resolve(input: {
   providers?: ProviderLookupPort | null;
 }) {
   return resolveHostProviderBinding({
-    db: pool!,
+    db: db.pool,
     providers: input.providers === undefined ? providerPort() : input.providers,
     spaceId: input.spaceId ?? SPACE,
     hostId: HOST,
@@ -195,12 +176,12 @@ const BINDINGS = `/api/v1/hosts/${HOST}/runtime-provider-bindings`;
 
 describe("host runtime provider binding", () => {
   it("defaults to ambient login when the host has no binding", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(resolve({})).resolves.toEqual({ provider_id: null, model: null });
   });
 
   it("resolves the host default for the adapter, and only that adapter", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -218,7 +199,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("lets a dispatch override the host default, including back to ambient login", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -242,7 +223,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("refuses a provider that cannot serve the adapter's protocol", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // DeepSeek is configured OpenAI-compatible only; claude_code needs a
     // Claude-compatible URL. Caught at dispatch, not on the host.
     await expect(resolve({
@@ -259,7 +240,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("refuses a provider whose Space grant has been disabled", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -271,7 +252,7 @@ describe("host runtime provider binding", () => {
     // disabled and the binding row survives. Dispatch must fail loudly, and
     // name the host default as the cause, rather than quietly running on the
     // machine's own login.
-    await pool!.query(`UPDATE model_provider_space_grants SET enabled = false WHERE provider_id = $1`, [CLAUDE_PROVIDER]);
+    await db.pool.query(`UPDATE model_provider_space_grants SET enabled = false WHERE provider_id = $1`, [CLAUDE_PROVIDER]);
     await expect(resolve({})).rejects.toMatchObject({
       statusCode: 422,
       message: expect.stringContaining("host's configured model backend"),
@@ -282,8 +263,8 @@ describe("host runtime provider binding", () => {
   });
 
   it("refuses a disabled provider even when the grant is still enabled", async () => {
-    if (!available) return;
-    await pool!.query(`UPDATE model_providers SET enabled = false WHERE id = $1`, [CLAUDE_PROVIDER]);
+    if (!db.available) return;
+    await db.pool.query(`UPDATE model_providers SET enabled = false WHERE id = $1`, [CLAUDE_PROVIDER]);
     await expect(resolve({
       override: { model_provider_id: CLAUDE_PROVIDER },
       overrideProvided: true,
@@ -291,7 +272,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("rejects a malformed provider id instead of falling back to ambient login", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (const bad of ["", "   ", 42, {}]) {
       await expect(resolve({
         override: { model_provider_id: bad },
@@ -301,7 +282,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("lets a model-only override narrow the host default's model", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -316,7 +297,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("refuses a provider that is not reachable from the dispatching Space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -331,7 +312,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("refuses rather than silently unbinding when the providers port is unavailable", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST,
       adapterType: "claude_code",
@@ -347,7 +328,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("rejects an adapter that has no provider binding shape at all", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(assertProviderUsable({
       providers: providerPort(),
       spaceId: SPACE,
@@ -357,7 +338,7 @@ describe("host runtime provider binding", () => {
   });
 
   it("keeps one default per host and adapter, replacing on re-set", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({ hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: "a", createdByUserId: OWNER });
     await repo().upsert({ hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: "b", createdByUserId: OWNER });
 
@@ -371,25 +352,25 @@ describe("host runtime provider binding", () => {
   });
 
   it("drops a host's bindings when its provider is deleted, rather than stranding them", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({ hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER });
-    await pool!.query(`DELETE FROM model_providers WHERE id = $1`, [CLAUDE_PROVIDER]);
+    await db.pool.query(`DELETE FROM model_providers WHERE id = $1`, [CLAUDE_PROVIDER]);
     // The cascade is a referential backstop for a hard delete. Product removal
     // is a soft delete, covered by the disabled-grant case above.
     await expect(repo().listForHost(HOST)).resolves.toEqual([]);
   });
 
   it("drops bindings with the host they belong to", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({ hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER });
-    await pool!.query(`DELETE FROM hosts WHERE id = $1`, [HOST]);
+    await db.pool.query(`DELETE FROM hosts WHERE id = $1`, [HOST]);
     await expect(repo().listForHost(HOST)).resolves.toEqual([]);
   });
 });
 
 describe("host runtime provider binding routes", () => {
   it("sets, lists, and clears a binding for a host the caller owns", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const set = await api("PUT", `${BINDINGS}/claude_code`, { model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" });
     expect(set.status).toBe(200);
     await expect(set.json()).resolves.toMatchObject({
@@ -409,7 +390,7 @@ describe("host runtime provider binding routes", () => {
   });
 
   it("hides another user's host behind 404 on every verb (B63)", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // A Space member who does not own the host must not be able to read its
     // configuration, change what it runs against, or learn that it exists —
     // hence 404 rather than 403, matching revoke.
@@ -427,13 +408,13 @@ describe("host runtime provider binding routes", () => {
   });
 
   it("answers 404 for a revoked host, so a revoked pairing cannot be reconfigured", async () => {
-    if (!available) return;
-    await pool!.query(`UPDATE hosts SET status = 'revoked' WHERE id = $1`, [HOST]);
+    if (!db.available) return;
+    await db.pool.query(`UPDATE hosts SET status = 'revoked' WHERE id = $1`, [HOST]);
     expect((await api("GET", BINDINGS)).status).toBe(404);
   });
 
   it("rejects a provider the adapter cannot use, and an adapter that cannot be dispatched remotely", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const wrongProtocol = await api("PUT", `${BINDINGS}/claude_code`, { model_provider_id: OPENAI_PROVIDER });
     expect(wrongProtocol.status).toBe(422);
 
@@ -455,36 +436,36 @@ describe("host runtime provider binding routes", () => {
  */
 async function seedDispatchableThread(): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Work','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_folders (id, space_id, project_id, name, kind, status, protected, system_managed, created_at, updated_at)
      VALUES ($1,$2,$3,'repo','code','active',false,false,$4,$4)`,
     [FOLDER, SPACE, PROJECT, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,
        display_path, preferred, execution_ready, status, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'remote','/home/u/repo',true,true,'active',$5,$5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO tasks (id, space_id, project_id, project_folder_id, title, status, task_role,
        created_by_user_id, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'Do the thing','ready','source',$5,$6,$6)`,
     [TASK, SPACE, PROJECT, FOLDER, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO host_task_threads (id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at)
      VALUES ($1,$2,'claude_code','active',$3,$4,$4)`,
     [THREAD, LOCATION, OWNER, now],
   );
   // The capability probe is rechecked when the queue advances, not only at
   // dispatch, so the host has to still report the runtime here.
-  await pool!.query(
+  await db.pool.query(
     `UPDATE hosts SET capabilities_json = '{"runtimes":["claude"]}'::jsonb, last_heartbeat_at = now() WHERE id = $1`,
     [HOST],
   );
@@ -492,17 +473,17 @@ async function seedDispatchableThread(): Promise<void> {
 
 describe("binding carried onto the Run", () => {
   it("stamps the message's resolved binding onto the Run the queue creates", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(
       THREAD, TASK, "go", OWNER,
       { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
     );
 
-    const result = await advanceThreadQueue(pool!, THREAD);
+    const result = await advanceThreadQueue(db.pool, THREAD);
     expect(result.advanced).toBe(true);
 
-    const run = await pool!.query<{ model_provider_id: string | null; model_override_json: { model?: string; source?: string } | null }>(
+    const run = await db.pool.query<{ model_provider_id: string | null; model_override_json: { model?: string; source?: string } | null }>(
       `SELECT model_provider_id, model_override_json FROM runs WHERE host_task_thread_id = $1`,
       [THREAD],
     );
@@ -516,7 +497,7 @@ describe("binding carried onto the Run", () => {
     // path injects it yet, so the read model must not tell a reader the
     // adapter used it — that is the "recorded provider is a lie" failure B67
     // exists to prevent, and the read model is what a person sees.
-    const full = await pool!.query<RunRecord>(
+    const full = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     const view = runToOut(full.rows[0]!).resolved_model as Record<string, unknown>;
@@ -528,7 +509,7 @@ describe("binding carried onto the Run", () => {
   });
 
   it("qualifies a remote run whose trust_mode was never set", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
     // The failure this guards: only the thread-dispatch path writes
     // `trust_mode`, so an Automation, Room, Workflow or evolution run on a
@@ -539,12 +520,12 @@ describe("binding carried onto the Run", () => {
     const now = new Date().toISOString();
     // The system dispatch Agent is created lazily by the queue, so drive one
     // ordinary advance first and reuse its identity for the hand-built run.
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "seed", OWNER);
-    await advanceThreadQueue(pool!, THREAD);
-    const agent = await pool!.query<{ id: string; current_version_id: string }>(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "seed", OWNER);
+    await advanceThreadQueue(db.pool, THREAD);
+    const agent = await db.pool.query<{ id: string; current_version_id: string }>(
       `SELECT id, current_version_id FROM agents WHERE space_id = $1 LIMIT 1`, [SPACE],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
          project_id, project_folder_id, workspace_location_id, adapter_type, required_sandbox_level,
          model_provider_id, model_override_json, owner_user_id, created_at, updated_at)
@@ -553,12 +534,12 @@ describe("binding carried onto the Run", () => {
       [runId, SPACE, agent.rows[0]!.id, agent.rows[0]!.current_version_id,
        PROJECT, FOLDER, LOCATION, CLAUDE_PROVIDER, OWNER, now],
     );
-    const row = await pool!.query<RunRecord>(`SELECT * FROM runs WHERE id = $1`, [runId]);
+    const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE id = $1`, [runId]);
     expect(row.rows[0]?.trust_mode ?? null).toBeNull();
 
     // Thread the resolved value rather than hard-coding it, so the resolver
     // and the read model are tested together.
-    const remote = await resolveRunRemoteness(pool!, [row.rows[0]!]);
+    const remote = await resolveRunRemoteness(db.pool, [row.rows[0]!]);
     expect(remote.has(runId)).toBe(true);
     const view = runToOut(row.rows[0]!, null, { executes_remotely: remote.has(runId) }).resolved_model as Record<string, unknown>;
     expect(view.used_by_adapter).toBe(false);
@@ -566,12 +547,12 @@ describe("binding carried onto the Run", () => {
   });
 
   it("leaves the Run unbound when the message carried no binding", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "go", OWNER);
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
 
-    expect((await advanceThreadQueue(pool!, THREAD)).advanced).toBe(true);
-    const run = await pool!.query<{ model_provider_id: string | null; model_override_json: unknown }>(
+    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
+    const run = await db.pool.query<{ model_provider_id: string | null; model_override_json: unknown }>(
       `SELECT model_provider_id, model_override_json FROM runs WHERE host_task_thread_id = $1`,
       [THREAD],
     );
@@ -580,9 +561,9 @@ describe("binding carried onto the Run", () => {
   });
 
   it("uses the snapshot, not the host default as it stands when the queue advances", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(
       THREAD, TASK, "go", OWNER,
       { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
     );
@@ -593,8 +574,8 @@ describe("binding carried onto the Run", () => {
       modelProviderId: OPENAI_PROVIDER, model: "deepseek-chat", createdByUserId: OWNER,
     });
 
-    expect((await advanceThreadQueue(pool!, THREAD)).advanced).toBe(true);
-    const run = await pool!.query<{ model_provider_id: string | null }>(
+    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
+    const run = await db.pool.query<{ model_provider_id: string | null }>(
       `SELECT model_provider_id FROM runs WHERE host_task_thread_id = $1`,
       [THREAD],
     );
@@ -606,26 +587,26 @@ describe("carrying the binding to the executing host", () => {
   const EXTERNAL = "http://control-plane.local:8021";
 
   function config() {
-    return loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri() });
+    return loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
   }
 
   async function boundRun(): Promise<RunRecord> {
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(
       THREAD, TASK, "go", OWNER,
       { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
     );
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<RunRecord>(
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     return row.rows[0]!;
   }
 
   it("reads a dispatched run's binding from its message", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const run = await boundRun();
-    await expect(resolveRemoteRunBinding(pool!, run, HOST, "claude_code")).resolves.toEqual({
+    await expect(resolveRemoteRunBinding(db.pool, run, HOST, "claude_code")).resolves.toEqual({
       provider_id: CLAUDE_PROVIDER,
       model: "MiniMax-M2",
       origin: "dispatch",
@@ -633,13 +614,13 @@ describe("carrying the binding to the executing host", () => {
   });
 
   it("marks where a binding came from, because that decides what an unusable one costs", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST, adapterType: "claude_code",
       modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
     await expect(
-      resolveRemoteRunBinding(pool!, { id: randomUUID() }, HOST, "claude_code"),
+      resolveRemoteRunBinding(db.pool, { id: randomUUID() }, HOST, "claude_code"),
     ).resolves.toMatchObject({ origin: "host_default" });
 
     // A Host is user-scoped and can back Locations in several Spaces, so a
@@ -647,20 +628,20 @@ describe("carrying the binding to the executing host", () => {
     // that run would regress something that used to work on ambient login;
     // a provider the dispatch explicitly asked for still fails.
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(
       THREAD, TASK, "go", OWNER, { provider_id: CLAUDE_PROVIDER, model: null },
     );
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<RunRecord>(
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     await expect(
-      resolveRemoteRunBinding(pool!, row.rows[0]!, HOST, "claude_code"),
+      resolveRemoteRunBinding(db.pool, row.rows[0]!, HOST, "claude_code"),
     ).resolves.toMatchObject({ origin: "dispatch" });
   });
 
   it("falls back to the host default for a run that never went through dispatch", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // An Automation, Room, Workflow or evolution run on a remote-preferred
     // Folder has no message. Ignoring the host default there would make the
     // Command Center's per-host setting a lie for every run but one kind.
@@ -669,16 +650,16 @@ describe("carrying the binding to the executing host", () => {
       modelProviderId: CLAUDE_PROVIDER, model: "MiniMax-M2", createdByUserId: OWNER,
     });
     await expect(
-      resolveRemoteRunBinding(pool!, { id: randomUUID() }, HOST, "claude_code"),
+      resolveRemoteRunBinding(db.pool, { id: randomUUID() }, HOST, "claude_code"),
     ).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2", origin: "host_default" });
     // Per adapter, as configured.
     await expect(
-      resolveRemoteRunBinding(pool!, { id: randomUUID() }, HOST, "codex_cli"),
+      resolveRemoteRunBinding(db.pool, { id: randomUUID() }, HOST, "codex_cli"),
     ).resolves.toBeNull();
   });
 
   it("honors a dispatch that chose ambient login over the host default", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await repo().upsert({
       hostId: HOST, adapterType: "claude_code",
       modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
@@ -686,18 +667,18 @@ describe("carrying the binding to the executing host", () => {
     await seedDispatchableThread();
     // The message was resolved at dispatch and deliberately unbound; the host
     // default must not resurrect itself at execution.
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "go", OWNER);
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<RunRecord>(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     await expect(
-      resolveRemoteRunBinding(pool!, row.rows[0]!, HOST, "claude_code"),
+      resolveRemoteRunBinding(db.pool, row.rows[0]!, HOST, "claude_code"),
     ).resolves.toBeNull();
   });
 
   it("hands the host a lease URL it can reach and a token, never the provider key", async () => {
-    if (!available) return;
+    if (!db.available) return;
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     const registry = new ProviderProxyLeaseRegistry();
     const run = await boundRun();
@@ -710,7 +691,7 @@ describe("carrying the binding to the executing host", () => {
       binding: { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2", origin: "dispatch" },
       ttlSeconds: 60,
       leaseRegistry: registry,
-      db: pool!,
+      db: db.pool,
     });
 
     expect(binding.frame.env.ANTHROPIC_BASE_URL.startsWith(`${EXTERNAL}/anthropic/`)).toBe(true);
@@ -735,14 +716,14 @@ describe("carrying the binding to the executing host", () => {
   });
 
   it("binds the lease to the host, so revoking that host cuts its leases off", async () => {
-    if (!available) return;
+    if (!db.available) return;
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     const registry = new ProviderProxyLeaseRegistry();
     const run = await boundRun();
     await buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: CLAUDE_PROVIDER, model: null, origin: "dispatch" },
-      ttlSeconds: 60, leaseRegistry: registry, db: pool!,
+      ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     });
 
     // Cutting the WebSocket stops new work; the lease is plain HTTP and would
@@ -753,7 +734,7 @@ describe("carrying the binding to the executing host", () => {
   });
 
   it("refuses when this deployment has published no address a host could reach", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // In-network URL only: the Compose service name a paired machine cannot
     // resolve. Handing that out would fail on the host with no explanation.
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
@@ -763,14 +744,14 @@ describe("carrying the binding to the executing host", () => {
     await expect(buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: CLAUDE_PROVIDER, model: null, origin: "dispatch" },
-      ttlSeconds: 60, leaseRegistry: registry, db: pool!,
+      ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toBeInstanceOf(RemoteProviderBindingError);
     // And it does not leave the lease it had already created behind.
     expect(registry.size()).toBe(0);
   });
 
   it("refuses a provider that cannot serve the adapter, without leaking a lease", async () => {
-    if (!available) return;
+    if (!db.available) return;
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     const registry = new ProviderProxyLeaseRegistry();
     const run = await boundRun();
@@ -778,7 +759,7 @@ describe("carrying the binding to the executing host", () => {
     await expect(buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: OPENAI_PROVIDER, model: null, origin: "dispatch" },
-      ttlSeconds: 60, leaseRegistry: registry, db: pool!,
+      ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toMatchObject({ code: "claude_compatible_base_url_required" });
     expect(registry.size()).toBe(0);
   });
@@ -790,20 +771,20 @@ describe("the files a bound host is told to write", () => {
   async function frameFor(adapterType: string, providerId: string) {
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "go", OWNER, { provider_id: providerId, model: "m-1" });
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER, { provider_id: providerId, model: "m-1" });
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
     const built = await buildRemoteProviderBinding({
-      config: loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri() }),
+      config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       run: row.rows[0]!, hostId: HOST, adapterType,
       binding: { provider_id: providerId, model: "m-1", origin: "dispatch" },
-      ttlSeconds: 60, leaseRegistry: new ProviderProxyLeaseRegistry(), db: pool!,
+      ttlSeconds: 60, leaseRegistry: new ProviderProxyLeaseRegistry(), db: db.pool,
     });
     return built.frame;
   }
 
   it("gives Codex a config that actually references the catalog it also writes", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const frame = await frameFor("codex_cli", OPENAI_PROVIDER);
     const toml = frame.files.find((f) => f.relative_path === ".codex/config.toml")!.contents;
     const catalogPath = ".codex/model-catalogs/agent-space-provider.json";
@@ -826,7 +807,7 @@ describe("the files a bound host is told to write", () => {
   });
 
   it("gives OpenCode the npm field that makes a non-registry provider loadable", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const frame = await frameFor("opencode", OPENAI_PROVIDER);
     const config = JSON.parse(frame.files.find((f) => f.relative_path === "opencode.json")!.contents);
     // Without `npm`, OpenCode has no SDK to load `agent_space_provider` with
@@ -838,20 +819,20 @@ describe("the files a bound host is told to write", () => {
   });
 
   it("refuses a config-file runtime with no model rather than letting it pick its own", async () => {
-    if (!available) return;
+    if (!db.available) return;
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
-    await pool!.query(`UPDATE model_providers SET default_model = NULL, capabilities_json = '{}'::jsonb WHERE id = $1`, [OPENAI_PROVIDER]);
+    await db.pool.query(`UPDATE model_providers SET default_model = NULL, capabilities_json = '{}'::jsonb WHERE id = $1`, [OPENAI_PROVIDER]);
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "go", OWNER, { provider_id: OPENAI_PROVIDER, model: null });
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER, { provider_id: OPENAI_PROVIDER, model: null });
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
     const registry = new ProviderProxyLeaseRegistry();
 
     await expect(buildRemoteProviderBinding({
-      config: loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri() }),
+      config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       run: row.rows[0]!, hostId: HOST, adapterType: "codex_cli",
       binding: { provider_id: OPENAI_PROVIDER, model: null, origin: "dispatch" },
-      ttlSeconds: 60, leaseRegistry: registry, db: pool!,
+      ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toMatchObject({ code: "codex_model_required" });
     expect(registry.size()).toBe(0);
   });
@@ -860,13 +841,13 @@ describe("the files a bound host is told to write", () => {
 describe("recording what a remote run actually executed against", () => {
   async function runWithOverride(override: Record<string, unknown>): Promise<string> {
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "go", OWNER);
-    await advanceThreadQueue(pool!, THREAD);
-    const row = await pool!.query<{ id: string }>(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
+    await advanceThreadQueue(db.pool, THREAD);
+    const row = await db.pool.query<{ id: string }>(
       `SELECT id FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     const runId = row.rows[0]!.id;
-    await pool!.query(
+    await db.pool.query(
       `UPDATE runs SET model_provider_id = $2, model_override_json = $3::jsonb WHERE id = $1`,
       [runId, OPENAI_PROVIDER, JSON.stringify(override)],
     );
@@ -874,18 +855,18 @@ describe("recording what a remote run actually executed against", () => {
   }
 
   async function overrideOf(runId: string): Promise<Record<string, unknown> | null> {
-    const row = await pool!.query<{ model_override_json: Record<string, unknown> | null }>(
+    const row = await db.pool.query<{ model_override_json: Record<string, unknown> | null }>(
       `SELECT model_override_json FROM runs WHERE id = $1`, [runId],
     );
     return row.rows[0]?.model_override_json ?? null;
   }
 
   it("replaces the router's prediction with the provider that ran", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const runId = await runWithOverride({ model: "routed-model", source: "runtime_profile" });
-    await recordRemoteRunBackend(pool!, runId, { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" }, SPACE);
+    await recordRemoteRunBackend(db.pool, runId, { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" }, SPACE);
 
-    const row = await pool!.query<{ model_provider_id: string | null }>(
+    const row = await db.pool.query<{ model_provider_id: string | null }>(
       `SELECT model_provider_id FROM runs WHERE id = $1`, [runId],
     );
     expect(row.rows[0]?.model_provider_id).toBe(CLAUDE_PROVIDER);
@@ -893,20 +874,20 @@ describe("recording what a remote run actually executed against", () => {
   });
 
   it("marks a bound run even when no model resolved", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // claude_code binds without a model legitimately. If the marker rode on
     // the model it would vanish here, and the read model would call a provider
     // that genuinely ran a mere routing prediction.
     const runId = await runWithOverride({ model: "routed-model", source: "runtime_profile" });
-    await recordRemoteRunBackend(pool!, runId, { provider_id: CLAUDE_PROVIDER, model: null }, SPACE);
+    await recordRemoteRunBackend(db.pool, runId, { provider_id: CLAUDE_PROVIDER, model: null }, SPACE);
     await expect(overrideOf(runId)).resolves.toMatchObject({ source: "host_binding" });
   });
 
   it("clears the provider for a run that used the machine's own login", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const runId = await runWithOverride({ model: "routed-model", source: "runtime_profile" });
-    await recordRemoteRunBackend(pool!, runId, null, SPACE);
-    const row = await pool!.query<{ model_provider_id: string | null }>(
+    await recordRemoteRunBackend(db.pool, runId, null, SPACE);
+    const row = await db.pool.query<{ model_provider_id: string | null }>(
       `SELECT model_provider_id FROM runs WHERE id = $1`, [runId],
     );
     expect(row.rows[0]?.model_provider_id).toBeNull();
@@ -914,7 +895,7 @@ describe("recording what a remote run actually executed against", () => {
   });
 
   it("never destroys the rest of the run's control blob", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // `model_override_json` also carries `execution_mode`, `chat_turn` and
     // `conversation_runtime`. A Room turn on a remote-preferred Folder reaches
     // this path, and `finalizeChatTurn` re-reads the run from the database
@@ -928,14 +909,14 @@ describe("recording what a remote run actually executed against", () => {
       source: "runtime_profile",
     };
     const bound = await runWithOverride(control);
-    await recordRemoteRunBackend(pool!, bound, { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" }, SPACE);
+    await recordRemoteRunBackend(db.pool, bound, { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" }, SPACE);
     await expect(overrideOf(bound)).resolves.toEqual({
       ...control, model: "MiniMax-M2", source: "host_binding",
     });
 
     // A second run on the same seeded thread, taking the unbound branch.
     const unbound = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
          project_id, project_folder_id, workspace_location_id, adapter_type, required_sandbox_level,
          model_provider_id, model_override_json, owner_user_id, created_at, updated_at)
@@ -945,7 +926,7 @@ describe("recording what a remote run actually executed against", () => {
          FROM runs WHERE id = $4`,
       [unbound, OPENAI_PROVIDER, JSON.stringify(control), bound],
     );
-    await recordRemoteRunBackend(pool!, unbound, null, SPACE);
+    await recordRemoteRunBackend(db.pool, unbound, null, SPACE);
     // Unbound removes only this path's own keys.
     await expect(overrideOf(unbound)).resolves.toEqual({
       execution_mode: "room_conversation.v1",
@@ -963,14 +944,14 @@ describe("what counts as executing remotely", () => {
   // Run read model calls a provider unused when it was the one that ran.
   /** Seeds once per test; both runs in a test share the same Location. */
   async function seedOnce(): Promise<RunRecord> {
-    const existing = await pool!.query<RunRecord>(
+    const existing = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1 LIMIT 1`, [THREAD],
     );
     if (existing.rows[0]) return existing.rows[0];
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(pool!).enqueue(THREAD, TASK, "seed", OWNER);
-    await advanceThreadQueue(pool!, THREAD);
-    const seeded = await pool!.query<RunRecord>(
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "seed", OWNER);
+    await advanceThreadQueue(db.pool, THREAD);
+    const seeded = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
     return seeded.rows[0]!;
@@ -979,7 +960,7 @@ describe("what counts as executing remotely", () => {
   async function runOnRemoteLocation(adapterType: string): Promise<RunRecord> {
     const seed = await seedOnce();
     const runId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
          project_id, project_folder_id, workspace_location_id, adapter_type, required_sandbox_level,
          model_provider_id, owner_user_id, created_at, updated_at)
@@ -988,29 +969,29 @@ describe("what counts as executing remotely", () => {
          FROM runs WHERE id = $4`,
       [runId, adapterType, CLAUDE_PROVIDER, seed.id],
     );
-    const row = await pool!.query<RunRecord>(`SELECT * FROM runs WHERE id = $1`, [runId]);
+    const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE id = $1`, [runId]);
     return row.rows[0]!;
   }
 
   it("counts a local_cli run on a remote Location, and not a managed-API one", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const cli = await runOnRemoteLocation("claude_code");
-    await expect(resolveRunRemoteness(pool!, [cli])).resolves.toEqual(new Set([cli.id]));
+    await expect(resolveRunRemoteness(db.pool, [cli])).resolves.toEqual(new Set([cli.id]));
 
     // Same Location, same recorded provider — but this one executes on the
     // server against exactly that provider, so calling it remote would make
     // the read model deny a provider that was used.
     const managed = await runOnRemoteLocation("model_api");
-    await expect(resolveRunRemoteness(pool!, [managed])).resolves.toEqual(new Set());
+    await expect(resolveRunRemoteness(db.pool, [managed])).resolves.toEqual(new Set());
   });
 
   it("does not strip a managed-API run's provider from its execution preflight", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // The regression this guards: deriving "executes remotely" from the
     // Location alone made this run's preflight throw for a provider it does
     // use, failing a run that used to work.
     const managed = await runOnRemoteLocation("model_api");
-    const repository = new ExecutionControlSnapshotRepository(pool!);
+    const repository = new ExecutionControlSnapshotRepository(db.pool);
     const policy = { policy: { constraints: {} } } as never;
     await expect(
       repository.createForRun(managed, policy, { executesRemotely: true }),
@@ -1059,7 +1040,7 @@ describe("setting a host's proxy address", () => {
   const PROXY_URL = `/api/v1/hosts/${HOST}/provider-proxy-url`;
 
   it("stores an override and clears it back to derived", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const set = await api("PUT", PROXY_URL, { base_url: "https://proxy.example.com/" });
     expect(set.status).toBe(200);
     // Trailing slash normalized, so the stored value concatenates cleanly.
@@ -1070,14 +1051,14 @@ describe("setting a host's proxy address", () => {
   });
 
   it("refuses a value that is not an absolute http(s) URL", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (const bad of ["proxy.example.com", "ftp://proxy.example.com", "not a url"]) {
       expect((await api("PUT", PROXY_URL, { base_url: bad })).status, bad).toBe(422);
     }
   });
 
   it("hides another user's host behind 404, like every other host setting", async () => {
-    if (!available) return;
+    if (!db.available) return;
     actingUser = STRANGER;
     expect((await api("PUT", PROXY_URL, { base_url: "https://proxy.example.com" })).status).toBe(404);
   });
@@ -1092,8 +1073,8 @@ describe("a thread keeps the backend it started with", () => {
 
   async function dispatch(body: Record<string, unknown>) {
     const repo = new PgTaskRepository(
-      pool!,
-      resolveProvidersDbPort(loadConfig({ SERVER_DATABASE_URL: container!.getConnectionUri() })),
+      db.pool,
+      resolveProvidersDbPort(loadConfig({ SERVER_DATABASE_URL: db.connectionUri })),
     );
     // `createTaskRun` returns either a server-host Run or a queued remote
     // message; these dispatches are all remote, so narrow it once here rather
@@ -1117,7 +1098,7 @@ describe("a thread keeps the backend it started with", () => {
   }
 
   async function messageBinding(messageId: string) {
-    const row = await pool!.query<{ model_provider_id: string | null; model: string | null }>(
+    const row = await db.pool.query<{ model_provider_id: string | null; model: string | null }>(
       `SELECT model_provider_id, model FROM host_thread_messages WHERE id = $1`,
       [messageId],
     );
@@ -1130,7 +1111,7 @@ describe("a thread keeps the backend it started with", () => {
    * following dispatch sees a thread that has actually dispatched something.
    */
   async function settle(messageId: string) {
-    await pool!.query(
+    await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now()
         WHERE id = (SELECT run_id FROM host_thread_messages WHERE id = $1)`,
       [messageId],
@@ -1138,8 +1119,8 @@ describe("a thread keeps the backend it started with", () => {
   }
 
   beforeEach(async () => {
-    if (!available) return;
-    await pool!.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO model_providers (id, space_id, owner_user_id, name, provider_type, base_url, default_model,
          enabled, capabilities_json, config_json, created_at, updated_at)
        VALUES ($1,$2,$3,'Second','minimax','https://second.example/anthropic','Second-M1',true,
@@ -1149,7 +1130,7 @@ describe("a thread keeps the backend it started with", () => {
     );
     // Without a grant row the real read port returns null — a provider is only
     // reachable through one.
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (id, space_id, provider_id, granted_by_user_id, enabled, is_default, created_at, updated_at)
        VALUES ($1,$2,$3,$4,true,false,now(),now())`,
       [randomUUID(), SPACE, SECOND_PROVIDER, OWNER],
@@ -1157,9 +1138,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("does not move an existing thread when the host default changes", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    const bindings = new PgHostRuntimeProviderBindingRepository(pool!);
+    const bindings = new PgHostRuntimeProviderBindingRepository(db.pool);
     await bindings.upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
@@ -1178,9 +1159,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("uses the host default for a thread that has never dispatched", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
     const queued = await dispatch({});
@@ -1188,9 +1169,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("honors an explicit override and inherits it next time", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
@@ -1209,9 +1190,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("keeps a queued override rather than resolving the next message against the older backend", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    const bindings = new PgHostRuntimeProviderBindingRepository(pool!);
+    const bindings = new PgHostRuntimeProviderBindingRepository(db.pool);
     await bindings.upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
@@ -1232,9 +1213,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("ignores a withdrawn message when deciding what the thread runs on", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
@@ -1244,7 +1225,7 @@ describe("a thread keeps the backend it started with", () => {
     const running = await dispatch({});
     expect((await messageBinding(running.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
     const withdrawn = await dispatch({ model_provider_id: SECOND_PROVIDER });
-    await pool!.query(`UPDATE host_thread_messages SET status = 'withdrawn' WHERE id = $1`, [withdrawn.message_id]);
+    await db.pool.query(`UPDATE host_thread_messages SET status = 'withdrawn' WHERE id = $1`, [withdrawn.message_id]);
 
     // A message that will never run is not what the thread runs on.
     const next = await dispatch({});
@@ -1252,9 +1233,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("drops a pinned model back to the provider's default when asked", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
@@ -1274,13 +1255,13 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("stamps a concrete model when the caller took the provider's default", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // A null model here would be re-read against the provider's `default_model`
     // on every later message, so editing that field would move the model of
     // every thread that never named one — the same drift thread inheritance
     // exists to stop, one level down.
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
@@ -1292,26 +1273,26 @@ describe("a thread keeps the backend it started with", () => {
     await settle(first.message_id);
 
     // The provider's default changes; the thread does not follow it.
-    await pool!.query(`UPDATE model_providers SET default_model = 'Second-M9' WHERE id = $1`, [SECOND_PROVIDER]);
+    await db.pool.query(`UPDATE model_providers SET default_model = 'Second-M9' WHERE id = $1`, [SECOND_PROVIDER]);
     const next = await dispatch({});
     expect((await messageBinding(next.message_id)).model).toBe("Second-M1");
   });
 
   it("validates an inherited provider exactly like an explicit one", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // B67: a thread whose provider was revoked must fail, never fall through
     // to the executing machine's own login. An implementation that trusted the
     // inherited value because it was valid once would pass every other test
     // here.
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
     const pinned = await dispatch({});
     expect((await messageBinding(pinned.message_id)).model_provider_id).toBe(SECOND_PROVIDER);
     await settle(pinned.message_id);
 
-    await pool!.query(`UPDATE model_provider_space_grants SET enabled = false WHERE provider_id = $1`, [SECOND_PROVIDER]);
+    await db.pool.query(`UPDATE model_provider_space_grants SET enabled = false WHERE provider_id = $1`, [SECOND_PROVIDER]);
 
     await expect(dispatch({})).rejects.toMatchObject({ statusCode: 422 });
     // And the message names the conversation, not the host: changing the
@@ -1321,9 +1302,9 @@ describe("a thread keeps the backend it started with", () => {
   });
 
   it("treats an explicit null as a real choice the thread then keeps", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(pool!).upsert({
+    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 

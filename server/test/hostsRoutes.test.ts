@@ -1,7 +1,6 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { buildModuleServer } from "./support/moduleServer";
 import { hostsModule } from "../src/modules/hosts";
@@ -22,10 +21,7 @@ const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OWNER_TOKEN = "owner-session-token";
 const OTHER_TOKEN = "other-session-token";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
 
 function stubAuth(): AuthRepository {
   const users: Record<string, CurrentUser> = {
@@ -75,24 +71,12 @@ function httpBaseUrl(): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [hostsModule]);
-    await app.listen({ port: 0, host: "127.0.0.1" });
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[hosts-routes] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  __setAuthRepositoryForTests(null);
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [hostsModule]);
+  await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 afterEach(() => {
@@ -100,13 +84,13 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["runs", "agent_versions", "agents", "hosts", "projects", "spaces", "users"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now()), ($2, 'Other', 'active', now(), now())`,
     [OWNER, OTHER_USER],
@@ -115,13 +99,13 @@ beforeEach(async () => {
 
 describe("hosts routes", () => {
   it("rejects pairing-code issuance without a session", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     const response = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", payload: { name: "Desktop" } });
     expect(response.statusCode).toBe(401);
   });
 
   it("runs the full pairing -> register -> list -> revoke flow", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
 
     const issue = await app.inject({
@@ -187,7 +171,7 @@ describe("hosts routes", () => {
   });
 
   it("rejects an unknown pairing code at registration", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
@@ -197,14 +181,14 @@ describe("hosts routes", () => {
   });
 
   it("registers, lists, and removes a daemon-registered workspace by host bearer token", async (ctx) => {
-    if (!available || !app || !pool) return ctx.skip();
+    if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('workspace-space', 'Space', 'household', $1, now(), now())`,
       [OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
        VALUES ('workspace-project', 'workspace-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
@@ -286,14 +270,14 @@ describe("hosts routes", () => {
   });
 
   it("never lets one host's token list, create in, or remove another host's workspace", async (ctx) => {
-    if (!available || !app || !pool) return ctx.skip();
+    if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('cross-host-space', 'Space', 'household', $1, now(), now())`,
       [OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
        VALUES ('cross-host-project', 'cross-host-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
@@ -358,7 +342,7 @@ describe("hosts routes", () => {
   });
 
   it("rejects a raw (unexchanged) pairing code presented as a bearer token", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",
@@ -377,24 +361,24 @@ describe("hosts routes", () => {
   });
 
   it("uploads a diff/output for a Run bound to the caller's own workspace, and rejects another host's token (ADR 0016 D7)", async (ctx) => {
-    if (!available || !app || !pool) return ctx.skip();
+    if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('upload-space', 'Space', 'household', $1, now(), now())`,
       [OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
        VALUES ('upload-project', 'upload-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
        VALUES ('upload-agent', 'upload-space', NULL, 'Agent', 'active', 'standard', 'space_shared', now(), now())`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
        VALUES ('upload-agent-version', 'upload-agent', 'upload-space', 'v1', 'x', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())`,
     );
@@ -425,7 +409,7 @@ describe("hosts routes", () => {
     });
     const locationId = created.json().id as string;
     const runId = "upload-run-1";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, workspace_location_id, adapter_type, owner_user_id, created_at, updated_at)
        VALUES ($1, 'upload-space', 'upload-agent', 'upload-agent-version', 'agent', 'manual', 'succeeded', 'live', $2, 'claude_code', $3, $4, $4)`,
       [runId, locationId, OWNER, now],
@@ -470,7 +454,7 @@ describe("hosts routes", () => {
     // a paired machine can resolve. Dropping it at this wire boundary is
     // silent: every provider-bound run on the host then fails dispatch with
     // provider_proxy_not_reachable, and nothing upstream looks broken.
-    if (!available || !app || !pool) return ctx.skip();
+    if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",
@@ -503,7 +487,7 @@ describe("hosts routes", () => {
       setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
     });
 
-    const row = await pool.query("SELECT daemon_server_url FROM hosts WHERE id = $1", [hostId]);
+    const row = await db.pool.query("SELECT daemon_server_url FROM hosts WHERE id = $1", [hostId]);
     expect(row.rows[0]?.daemon_server_url).toBe("http://laptop.local:3000");
 
     const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
@@ -512,7 +496,7 @@ describe("hosts routes", () => {
   });
 
   it("authenticates a real WebSocket hello and records a heartbeat (phase 1 wire contract)", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",
@@ -578,7 +562,7 @@ describe("hosts routes", () => {
   });
 
   it("closes an already-connected daemon's live WebSocket immediately on revoke, instead of only blocking its next reconnect", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",
@@ -623,7 +607,7 @@ describe("hosts routes", () => {
   });
 
   it("rejects a WebSocket hello with an invalid token and a heartbeat before hello", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
@@ -652,7 +636,7 @@ describe("hosts routes", () => {
   });
 
   it("rejects a second WebSocket hello instead of switching the connection identity", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",
@@ -689,7 +673,7 @@ describe("hosts routes", () => {
   });
 
   it("rejects a WebSocket hello presenting a raw (unexchanged) pairing code as the token", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
       method: "POST",

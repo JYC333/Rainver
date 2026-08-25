@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { PromptRepository } from "../src/modules/prompts/repository";
@@ -20,44 +19,27 @@ const OWNER = "3aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER_SPACE = "32222222-2222-4222-8222-222222222222";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[prompt-registry-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$3,$3), ($2,'Other','personal',$3,$3)`,
     [SPACE, OTHER_SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1,$1,'active',$3,$3), ($2,$2,'active',$3,$3)`,
     [OWNER, OUTSIDER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$5,$5), ($4,$2,$6,'member','active',$5,$5)`,
     [randomUUID(), SPACE, OWNER, randomUUID(), now, OUTSIDER],
@@ -65,11 +47,11 @@ beforeEach(async () => {
 });
 
 function repo(): PromptRepository {
-  return new PromptRepository(pool!);
+  return new PromptRepository(db.pool);
 }
 
 function evolvableRepo(): EvolvableAssetRepository {
-  return new EvolvableAssetRepository(pool!);
+  return new EvolvableAssetRepository(db.pool);
 }
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
@@ -93,7 +75,7 @@ async function approvedVersion(assetId: string, content: Record<string, unknown>
   await evolvableRepo().transitionVersionStatus(identity, assetId, version.id as string, { status: "candidate" });
   await evolvableRepo().transitionVersionStatus(identity, assetId, version.id as string, { status: "testing" });
   const now = new Date().toISOString();
-  await pool!.query(`UPDATE evolvable_asset_versions SET status = 'approved', updated_at = $3 WHERE asset_id = $1 AND id = $2`, [
+  await db.pool.query(`UPDATE evolvable_asset_versions SET status = 'approved', updated_at = $3 WHERE asset_id = $1 AND id = $2`, [
     assetId,
     version.id,
     now,
@@ -103,7 +85,7 @@ async function approvedVersion(assetId: string, content: Record<string, unknown>
 
 describe("Prompt registry facade (real Postgres)", () => {
   it("hides generic evolvable_assets rows that have no prompt_type marker", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await evolvableRepo().createAsset(identity, {
       asset_type: "prompt_template",
       asset_key: "academic.paper_screening_assistant",
@@ -116,7 +98,7 @@ describe("Prompt registry facade (real Postgres)", () => {
   });
 
   it("lists prompt-registry assets and filters by prompt_type", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await createPromptAsset("custom.text", "text");
     await createPromptAsset("retrieval.query_rewrite", "retrieval_query");
 
@@ -130,12 +112,12 @@ describe("Prompt registry facade (real Postgres)", () => {
   });
 
   it("rejects an invalid prompt_type filter", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(repo().listAssets(identity, { promptType: "not_a_type" })).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("returns asset detail with metadata_json and projects version content", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createPromptAsset("custom.general", "text");
     await approvedVersion(asset.id as string, {
       schema_version: "prompt_asset.v1",
@@ -154,7 +136,7 @@ describe("Prompt registry facade (real Postgres)", () => {
   });
 
   it("rejects unknown asset keys and cross-space asset keys with 404", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(repo().getAsset(identity, "does.not.exist")).rejects.toMatchObject({ statusCode: 404 });
 
     await createPromptAsset("custom.private", "text");
@@ -163,7 +145,7 @@ describe("Prompt registry facade (real Postgres)", () => {
   });
 
   it("does not expose user-owned prompt assets to other users in the same space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await createPromptAsset("private.owner_prompt", "text", { owner_scope_type: "user" });
 
     const outsiderIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };

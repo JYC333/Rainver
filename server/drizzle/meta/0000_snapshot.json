@@ -1,5 +1,5 @@
 {
-  "id": "2bef43ff-aa18-489a-a749-41f666a7f7e1",
+  "id": "c197828f-d3ef-4b6f-a3aa-d1f1e106585b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -67498,6 +67498,12 @@
         "model": {
           "name": "model",
           "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reasoning_effort": {
+          "name": "reasoning_effort",
+          "type": "varchar(32)",
           "primaryKey": false,
           "notNull": false
         },

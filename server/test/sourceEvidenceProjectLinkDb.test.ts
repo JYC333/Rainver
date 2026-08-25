@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   linkEvidenceToBoundProjects,
@@ -30,58 +29,37 @@ const PROJECT_B = "66666666-6666-4666-8666-666666666666";
 const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-evidence-project-link-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evidence_links", "extracted_evidence", "source_snapshots", "source_items", "project_source_item_links", "project_source_bindings", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`,
     [SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1,$1,'active',$3,$3), ($2,$2,'active',$3,$3)`,
     [OWNER, OTHER_USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$5,$5), ($4,$2,$6,'member','active',$5,$5)`,
     [randomUUID(), SPACE, OWNER, randomUUID(), now, OTHER_USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$2,$3,'Second','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, PROJECT_B],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (
        id, connector_key, display_name, connector_type, ingestion_mode, status,
        capabilities_json, created_at, updated_at
@@ -90,17 +68,17 @@ beforeEach(async () => {
   );
   const providerId = randomUUID();
   const mappingId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'generic_rss','RSS','generic','feed','active','{}'::jsonb,$2,$2)`,
     [providerId, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$2,$3,'active',0,'{}'::jsonb,$4,$4)`,
     [mappingId, providerId, CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
@@ -123,14 +101,14 @@ beforeEach(async () => {
       now,
     ],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_channels (
        id, space_id, source_connection_id, created_by_user_id, name, channel_type, endpoint_url,
        query_json, provider_query_json, query_fingerprint, status, fetch_frequency, schedule_rule_json, created_at, updated_at
      ) VALUES ($1,$2,$1,$3,'RSS Channel','feed','https://example.org/rss','{}'::jsonb,'{}'::jsonb,$1,'active','daily','{"frequency":"daily","hour":0,"minute":0}'::jsonb,$4,$4)`,
     [CONNECTION, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_channel_user_subscriptions (id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
     [randomUUID(), SPACE, CONNECTION, OWNER, now],
@@ -140,7 +118,7 @@ beforeEach(async () => {
 async function seedBinding(projectId: string, status = "active", bindingKey = "default"): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_source_bindings (
        id, space_id, project_id, source_channel_id, binding_key,
        status, priority, delivery_scope, collection_notifications_enabled,
@@ -156,14 +134,14 @@ async function seedItemWithEvidence(connectionId: string | null = CONNECTION): P
   const itemId = randomUUID();
   const evidenceId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, first_seen_at, last_seen_at,
        content_state, retention_policy, created_at, updated_at
      ) VALUES ($1,$2,$3,'space_shared',$4,'external_url','New paper',$5,$5,'excerpt_saved','summary_only',$5,$5)`,
     [itemId, SPACE, OWNER, connectionId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO extracted_evidence (
        id, space_id, owner_user_id, visibility, source_item_id, source_object_type, source_object_id,
        evidence_type, title, content_excerpt, extraction_method, trust_level,
@@ -177,7 +155,7 @@ async function seedItemWithEvidence(connectionId: string | null = CONNECTION): P
 
 async function seedSourceSnapshot(itemId: string, connectionId: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_snapshots (
        id, space_id, owner_user_id, visibility, source_item_id, connection_id, snapshot_type, content_hash,
        source_uri, capture_method, trust_level, metadata_json, captured_at, created_at, updated_at
@@ -190,7 +168,7 @@ async function seedSourceSnapshot(itemId: string, connectionId: string): Promise
 async function seedConnectionOnlySnapshot(): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_snapshots (
        id, space_id, owner_user_id, visibility, connection_id, snapshot_type, content_hash,
        source_uri, capture_method, trust_level, metadata_json, captured_at, created_at, updated_at
@@ -203,7 +181,7 @@ async function seedConnectionOnlySnapshot(): Promise<string> {
 
 describe("Evidence→project auto-link (real Postgres)", () => {
   it("rejects duplicate post-processing evidence for the same source content", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const { itemId } = await seedItemWithEvidence();
     const now = new Date().toISOString();
     const key = [randomUUID(), SPACE, OWNER, itemId, "post-processing-hash", "source_post_processing", now];
@@ -213,15 +191,15 @@ describe("Evidence→project auto-link (real Postgres)", () => {
        confidence, status, metadata_json, created_at, updated_at
      ) VALUES ($1,$2,$3,'space_shared',$4,'source_item',$4,'summary','Summary','Content',$5,$6,'normal',
        0.7,'candidate','{}'::jsonb,$7,$7)`;
-    await pool.query(insert, key);
-    await expect(pool.query(insert, [randomUUID(), SPACE, OWNER, itemId, "post-processing-hash", "manual", now])).rejects.toMatchObject({
+    await db.pool.query(insert, key);
+    await expect(db.pool.query(insert, [randomUUID(), SPACE, OWNER, itemId, "post-processing-hash", "manual", now])).rejects.toMatchObject({
       code: "23505",
       constraint: "uq_extracted_evidence_source_content",
     });
   });
 
   it("reuses canonical content identity while preserving distinct extraction observations", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const { itemId } = await seedItemWithEvidence();
     const now = new Date().toISOString();
     const common = {
@@ -241,14 +219,14 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       status: "candidate",
       observedAt: now,
     };
-    const first = await upsertCanonicalEvidence(pool, {
+    const first = await upsertCanonicalEvidence(db.pool, {
       ...common,
       evidenceType: "summary",
       extractionMethod: "source_post_processing",
       createdByRunId: null,
       metadata: { source: "digest" },
     });
-    const second = await upsertCanonicalEvidence(pool, {
+    const second = await upsertCanonicalEvidence(db.pool, {
       ...common,
       evidenceType: "excerpt",
       extractionMethod: "manual",
@@ -256,20 +234,20 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       metadata: { source: "reader" },
     });
     expect(second).toBe(first);
-    const row = await pool.query<{ observations: unknown[] }>(
+    const row = await db.pool.query<{ observations: unknown[] }>(
       `SELECT metadata_json->'evidence_observations' AS observations
          FROM extracted_evidence WHERE id=$1`,
       [first],
     );
     expect(row.rows[0]!.observations).toHaveLength(2);
-    await upsertCanonicalEvidence(pool, {
+    await upsertCanonicalEvidence(db.pool, {
       ...common,
       evidenceType: "excerpt",
       extractionMethod: "manual",
       createdByUserId: OWNER,
       metadata: { source: "reader" },
     });
-    const retry = await pool.query<{ count: number }>(
+    const retry = await db.pool.query<{ count: number }>(
       `SELECT jsonb_array_length(metadata_json->'evidence_observations')::int AS count
          FROM extracted_evidence WHERE id=$1`,
       [first],
@@ -278,7 +256,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
   });
 
   it("does not merge ACL-scoped annotation Evidence into Source content identity", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const common = {
       spaceId: SPACE,
@@ -295,7 +273,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       status: "candidate",
       observedAt: now,
     };
-    const privateId = await upsertCanonicalEvidence(pool, {
+    const privateId = await upsertCanonicalEvidence(db.pool, {
       ...common,
       ownerUserId: OWNER,
       visibility: "private",
@@ -303,7 +281,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       metadata: { annotation_id: "annotation-private" },
       createdByUserId: OWNER,
     });
-    const sharedId = await upsertCanonicalEvidence(pool, {
+    const sharedId = await upsertCanonicalEvidence(db.pool, {
       ...common,
       ownerUserId: OWNER,
       visibility: "space_shared",
@@ -312,7 +290,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       createdByUserId: OWNER,
     });
     expect(sharedId).not.toBe(privateId);
-    const rows = await pool.query<{ id: string; visibility: string; annotation_id: string }>(
+    const rows = await db.pool.query<{ id: string; visibility: string; annotation_id: string }>(
       `SELECT id, visibility, metadata_json->>'annotation_id' AS annotation_id
          FROM extracted_evidence WHERE id=ANY($1::varchar[]) ORDER BY visibility`,
       [[privateId, sharedId]],
@@ -324,10 +302,10 @@ describe("Evidence→project auto-link (real Postgres)", () => {
   });
 
   it("preserves canonical extraction observations when Evidence metadata is patched", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const { itemId } = await seedItemWithEvidence();
     const now = new Date().toISOString();
-    const evidenceId = await upsertCanonicalEvidence(pool, {
+    const evidenceId = await upsertCanonicalEvidence(db.pool, {
       spaceId: SPACE,
       projectId: null,
       ownerUserId: OWNER,
@@ -346,11 +324,11 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       metadata: { producer: "digest" },
       observedAt: now,
     });
-    const repository = new PgSourcesRepository(pool, {} as ServerConfig);
+    const repository = new PgSourcesRepository(db.pool, {} as ServerConfig);
     await repository.updateEvidence({ spaceId: SPACE, userId: OWNER }, evidenceId, {
       metadata: { edited: true, evidence_observations: [{ forged: true }] },
     });
-    const row = await pool.query<{ metadata: Record<string, unknown> }>(
+    const row = await db.pool.query<{ metadata: Record<string, unknown> }>(
       `SELECT metadata_json AS metadata FROM extracted_evidence WHERE id=$1`,
       [evidenceId],
     );
@@ -361,9 +339,9 @@ describe("Evidence→project auto-link (real Postgres)", () => {
   });
 
   it("keeps annotation Evidence outside content dedupe while enforcing its origin Source gate", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const { itemId } = await seedItemWithEvidence();
-    const evidenceId = await upsertCanonicalEvidence(pool, {
+    const evidenceId = await upsertCanonicalEvidence(db.pool, {
       spaceId: SPACE,
       projectId: null,
       ownerUserId: OWNER,
@@ -382,7 +360,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       status: "candidate",
       observedAt: new Date().toISOString(),
     });
-    const repository = new PgSourcesRepository(pool, {} as ServerConfig);
+    const repository = new PgSourcesRepository(db.pool, {} as ServerConfig);
     const filters = {
       status: null, evidenceType: null, sourceItemId: null, projectId: null, connectionId: null, limit: 50, offset: 0,
     };
@@ -392,9 +370,9 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(unconsentedPage.items.map((item) => item.id)).not.toContain(evidenceId);
     await expect(repository.getEvidence({ spaceId: SPACE, userId: OTHER_USER }, evidenceId)).resolves.toBeNull();
 
-    const corpus = new ProjectCorpusRepository(pool);
+    const corpus = new ProjectCorpusRepository(db.pool);
     const corpusItem = await corpus.upsert({ spaceId: SPACE, userId: OWNER }, PROJECT, { evidence_id: evidenceId });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, PROJECT, OTHER_USER, new Date().toISOString()],
@@ -415,14 +393,14 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     await expect(corpus.entityCounts({ spaceId: SPACE, userId: OTHER_USER }, PROJECT))
       .resolves.toEqual({ source_item_count: 0, extracted_evidence_count: 0 });
 
-    await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OWNER)).resolves.not.toBeNull();
-    await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OTHER_USER)).resolves.toBeNull();
+    await expect(sourceRetrievalAdapter.revalidate(db.pool, SPACE, "extracted_evidence", evidenceId, OWNER)).resolves.not.toBeNull();
+    await expect(sourceRetrievalAdapter.revalidate(db.pool, SPACE, "extracted_evidence", evidenceId, OTHER_USER)).resolves.toBeNull();
   });
 
   it("enforces snapshot connection consent when annotation Evidence has no origin Source item", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const snapshotId = await seedConnectionOnlySnapshot();
-    const evidenceId = await upsertCanonicalEvidence(pool, {
+    const evidenceId = await upsertCanonicalEvidence(db.pool, {
       spaceId: SPACE,
       projectId: null,
       ownerUserId: OWNER,
@@ -441,7 +419,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       status: "candidate",
       observedAt: new Date().toISOString(),
     });
-    const repository = new PgSourcesRepository(pool, {} as ServerConfig);
+    const repository = new PgSourcesRepository(db.pool, {} as ServerConfig);
     const filters = {
       status: null, evidenceType: null, sourceItemId: null, projectId: null, connectionId: null, limit: 50, offset: 0,
     };
@@ -450,41 +428,41 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const unconsentedPage = await repository.listEvidence({ spaceId: SPACE, userId: OTHER_USER }, filters);
     expect(unconsentedPage.items.map((item) => item.id)).not.toContain(evidenceId);
     await expect(repository.getEvidence({ spaceId: SPACE, userId: OTHER_USER }, evidenceId)).resolves.toBeNull();
-    await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OWNER)).resolves.not.toBeNull();
-    await expect(sourceRetrievalAdapter.revalidate(pool, SPACE, "extracted_evidence", evidenceId, OTHER_USER)).resolves.toBeNull();
+    await expect(sourceRetrievalAdapter.revalidate(db.pool, SPACE, "extracted_evidence", evidenceId, OWNER)).resolves.not.toBeNull();
+    await expect(sourceRetrievalAdapter.revalidate(db.pool, SPACE, "extracted_evidence", evidenceId, OTHER_USER)).resolves.toBeNull();
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, PROJECT, OTHER_USER, new Date().toISOString()],
     );
-    const corpus = new ProjectCorpusRepository(pool);
+    const corpus = new ProjectCorpusRepository(db.pool);
     await expect(corpus.upsert(
       { spaceId: SPACE, userId: OTHER_USER }, PROJECT, { evidence_id: evidenceId },
     )).rejects.toMatchObject({ statusCode: 422 });
     await corpus.upsert({ spaceId: SPACE, userId: OWNER }, PROJECT, { evidence_id: evidenceId });
-    const artifactId = await new ProjectResearchArtifactService(pool).ensureEvidenceMatrix({
+    const artifactId = await new ProjectResearchArtifactService(db.pool).ensureEvidenceMatrix({
       spaceId: SPACE,
       projectId: PROJECT,
       workflowId: "workflow-policy-test",
       operationId: "operation-policy-test",
       ownerUserId: OTHER_USER,
     });
-    const artifact = await pool.query<{ content: string; visibility: string; owner_user_id: string }>(
+    const artifact = await db.pool.query<{ content: string; visibility: string; owner_user_id: string }>(
       `SELECT content,visibility,owner_user_id FROM artifacts WHERE id=$1`, [artifactId],
     );
     expect(JSON.parse(artifact.rows[0]!.content).rows).toEqual([]);
     expect(artifact.rows[0]).toMatchObject({ visibility: "private", owner_user_id: OTHER_USER });
-    const artifacts = new PgArtifactRepository(pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
+    const artifacts = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
     await expect(artifacts.getVisible(SPACE, OWNER, artifactId, true)).resolves.toBeNull();
     await expect(artifacts.getVisible(SPACE, OTHER_USER, artifactId, true)).resolves.toMatchObject({ id: artifactId });
   });
 
   it("redacts full Source and Evidence fields for every summary-access path", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(`UPDATE spaces SET oversight_mode='summary' WHERE id=$1`, [SPACE]);
-    await pool.query(
+    await db.pool.query(`UPDATE spaces SET oversight_mode='summary' WHERE id=$1`, [SPACE]);
+    await db.pool.query(
       `UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`,
       [SPACE, OTHER_USER],
     );
@@ -496,7 +474,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       [selectedItem, "selected_users", "full"],
       [oversightItem, "private", "full"],
     ] as const) {
-      await pool.query(
+      await db.pool.query(
         `INSERT INTO source_items (
            id,space_id,owner_user_id,created_by_user_id,visibility,access_level,item_type,title,source_uri,
            canonical_uri,content_hash,excerpt,metadata_json,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at
@@ -508,7 +486,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     for (let index = 0; index < evidenceIds.length; index += 1) {
       const visibility = index === 0 ? "space_shared" : index === 1 ? "selected_users" : "private";
       const accessLevel = index === 0 ? "summary" : "full";
-      await pool.query(
+      await db.pool.query(
         `INSERT INTO extracted_evidence (
            id,space_id,owner_user_id,visibility,access_level,source_item_id,source_object_type,evidence_type,title,
            content_excerpt,content_hash,source_uri,metadata_json,extraction_method,trust_level,status,created_at,updated_at
@@ -516,7 +494,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
         [evidenceIds[index], SPACE, OWNER, visibility, accessLevel, [sharedItem, selectedItem, oversightItem][index], `Evidence ${index}`, `evidence-secret-${index}`, `evidence-hash-${index}`, `https://secret.test/evidence/${index}`, JSON.stringify({ secret: index }), now],
       );
     }
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO content_access_grants (
          id,space_id,resource_type,resource_id,grantee_user_id,granted_by_user_id,access_level,created_at,updated_at
        ) VALUES
@@ -525,7 +503,7 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       [randomUUID(), SPACE, selectedItem, OTHER_USER, OWNER, now, randomUUID(), evidenceIds[1]],
     );
 
-    const repository = new PgSourcesRepository(pool, {} as ServerConfig);
+    const repository = new PgSourcesRepository(db.pool, {} as ServerConfig);
     const itemPage = await repository.listItems({ spaceId: SPACE, userId: OTHER_USER }, {
       libraryStatus: null, readStatus: null, contentState: null, connectionId: null, itemType: null,
       libraryType: null, sourceDomain: null, createdAfter: null, occurredAfter: null, q: null, limit: 50, offset: 0,
@@ -548,11 +526,11 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       });
     }
     const revalidatedItems = await sourceRetrievalAdapter.revalidateMany!(
-      pool, SPACE, "source_item", [sharedItem, selectedItem, oversightItem], OTHER_USER,
+      db.pool, SPACE, "source_item", [sharedItem, selectedItem, oversightItem], OTHER_USER,
     );
     expect([...revalidatedItems.keys()]).toEqual([]);
     const revalidatedEvidence = await sourceRetrievalAdapter.revalidateMany!(
-      pool, SPACE, "extracted_evidence", evidenceIds, OTHER_USER,
+      db.pool, SPACE, "extracted_evidence", evidenceIds, OTHER_USER,
     );
     expect([...revalidatedEvidence.keys()]).toEqual([]);
     await expect(repository.createSummaryRun({ spaceId: SPACE, userId: OTHER_USER }, {
@@ -564,17 +542,17 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     const summary = await repository.createSummaryRun({ spaceId: SPACE, userId: OWNER }, {
       source_item_ids: [sharedItem], evidence_ids: [],
     });
-    expect((await pool.query<{ visibility: string; owner_user_id: string }>(
+    expect((await db.pool.query<{ visibility: string; owner_user_id: string }>(
       `SELECT visibility,owner_user_id FROM artifacts WHERE id=$1`, [String(summary.artifact_id)],
     )).rows[0]).toEqual({ visibility: "private", owner_user_id: OWNER });
   });
 
   it("does not let Activity summary guess or republish restricted Source content", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const { itemId, evidenceId } = await seedItemWithEvidence();
-    await pool.query(`UPDATE source_items SET visibility='private' WHERE id=$1`, [itemId]);
-    await pool.query(`UPDATE extracted_evidence SET visibility='private' WHERE id=$1`, [evidenceId]);
-    const summaries = new PgActivityRepository(pool);
+    await db.pool.query(`UPDATE source_items SET visibility='private' WHERE id=$1`, [itemId]);
+    await db.pool.query(`UPDATE extracted_evidence SET visibility='private' WHERE id=$1`, [evidenceId]);
+    const summaries = new PgActivityRepository(db.pool);
     const input = {
       activityIds: [], evidenceIds: [evidenceId], sourceItemIds: [itemId], summaryGoal: "Restricted summary",
       createMemoryProposal: false, createKnowledgeProposal: false,
@@ -586,23 +564,23 @@ describe("Evidence→project auto-link (real Postgres)", () => {
 
     const created = await summaries.createSummaryRun({ spaceId: SPACE, userId: OWNER }, input);
     const artifactId = String(created.artifact_id);
-    const artifact = await pool.query<{ visibility: string; owner_user_id: string }>(
+    const artifact = await db.pool.query<{ visibility: string; owner_user_id: string }>(
       `SELECT visibility,owner_user_id FROM artifacts WHERE id=$1`, [artifactId],
     );
     expect(artifact.rows[0]).toEqual({ visibility: "private", owner_user_id: OWNER });
-    const repository = new PgArtifactRepository(pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
+    const repository = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
     await expect(repository.getVisible(SPACE, OTHER_USER, artifactId, true)).resolves.toBeNull();
   });
 
   it("links new evidence to the bound project and is idempotent on re-run", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const bindingId = await seedBinding(PROJECT);
     const { itemId, evidenceId } = await seedItemWithEvidence();
 
-    const created = await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
+    const created = await linkEvidenceToBoundProjects(db.pool, { spaceId: SPACE, sourceItemId: itemId });
     expect(created).toBe(1);
 
-    const links = await pool!.query(
+    const links = await db.pool.query(
       `SELECT target_type, target_id, link_type, status, reason FROM evidence_links WHERE evidence_id = $1`,
       [evidenceId],
     );
@@ -616,20 +594,20 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       },
     ]);
 
-    const again = await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
+    const again = await linkEvidenceToBoundProjects(db.pool, { spaceId: SPACE, sourceItemId: itemId });
     expect(again).toBe(0);
   });
 
   it("backfills historical evidence after a source binding is created", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { evidenceId } = await seedItemWithEvidence();
     const bindingId = await seedBinding(PROJECT);
 
-    const result = await recomputeProjectSourceBindingLinks(pool!, { spaceId: SPACE, bindingId });
+    const result = await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
     expect(result.created_links).toBe(1);
     expect(result.evidence_links).toBe(1);
 
-    const links = await pool!.query(
+    const links = await db.pool.query(
       `SELECT target_type, target_id, link_type, status, reason FROM evidence_links WHERE evidence_id = $1`,
       [evidenceId],
     );
@@ -643,22 +621,22 @@ describe("Evidence→project auto-link (real Postgres)", () => {
       },
     ]);
 
-    const again = await recomputeProjectSourceBindingLinks(pool!, { spaceId: SPACE, bindingId });
+    const again = await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
     expect(again.created_links).toBe(0);
     expect(again.evidence_links).toBe(0);
   });
 
   it("two bindings to the same project produce one link; distinct projects each get one", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedBinding(PROJECT, "active", "default");
     await seedBinding(PROJECT, "active", "secondary");
     await seedBinding(PROJECT_B, "active", "default");
     const { itemId, evidenceId } = await seedItemWithEvidence();
 
-    const created = await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
+    const created = await linkEvidenceToBoundProjects(db.pool, { spaceId: SPACE, sourceItemId: itemId });
     expect(created).toBe(2);
 
-    const targets = await pool!.query<{ target_id: string }>(
+    const targets = await db.pool.query<{ target_id: string }>(
       `SELECT target_id FROM evidence_links WHERE evidence_id = $1 ORDER BY target_id`,
       [evidenceId],
     );
@@ -666,26 +644,26 @@ describe("Evidence→project auto-link (real Postgres)", () => {
   });
 
   it("creates nothing for paused bindings", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedBinding(PROJECT, "paused");
     const { itemId, evidenceId } = await seedItemWithEvidence();
 
-    const created = await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
+    const created = await linkEvidenceToBoundProjects(db.pool, { spaceId: SPACE, sourceItemId: itemId });
     expect(created).toBe(0);
-    const links = await pool!.query(`SELECT id FROM evidence_links WHERE evidence_id = $1`, [evidenceId]);
+    const links = await db.pool.query(`SELECT id FROM evidence_links WHERE evidence_id = $1`, [evidenceId]);
     expect(links.rows).toHaveLength(0);
   });
 
   it("links evidence through source snapshot provenance when the item belongs to another source", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const bindingId = await seedBinding(PROJECT);
     const { itemId, evidenceId } = await seedItemWithEvidence(null);
     await seedSourceSnapshot(itemId, CONNECTION);
 
-    const created = await linkEvidenceToBoundProjects(pool!, { spaceId: SPACE, sourceItemId: itemId });
+    const created = await linkEvidenceToBoundProjects(db.pool, { spaceId: SPACE, sourceItemId: itemId });
     expect(created).toBe(1);
 
-    const links = await pool!.query(
+    const links = await db.pool.query(
       `SELECT target_id, reason FROM evidence_links WHERE evidence_id = $1`,
       [evidenceId],
     );

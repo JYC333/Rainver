@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -83,48 +82,27 @@ interface SearchTrace {
   rewrite?: { variants: number; applied: boolean };
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-search-modes-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Modes', 'personal', now(), now())`,
     [SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'U', 'active', now(), now())`,
     [VIEWER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('modes-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -136,7 +114,7 @@ async function seed(): Promise<void> {
     ["alpha", "alpha report aaa"],
     ["beta", "beta report bbb"],
   ]) {
-    await insertKnowledgeItem(pool!, {
+    await insertKnowledgeItem(db.pool, {
       id,
       spaceId: SPACE,
       title: `${id} report`,
@@ -144,8 +122,8 @@ async function seed(): Promise<void> {
       slug: id,
     });
   }
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
-  await new RetrievalEmbeddingBackfillService(pool!, markerEmbedder()).backfillSpace(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalEmbeddingBackfillService(db.pool, markerEmbedder()).backfillSpace(SPACE);
 }
 
 function service(
@@ -153,7 +131,7 @@ function service(
   rewriteSink: string[],
   reranker: Reranker = capturingReranker(rerankSink),
 ): RetrievalSearchService {
-  return new RetrievalSearchService(pool!, knowledgeRetrievalRegistry, {
+  return new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
     queryEmbedder: querySlot(0), // matches "alpha" direction
     reranker,
     queryRewriter: fixedRewriter(["alpha summary"], rewriteSink),
@@ -181,7 +159,7 @@ async function searchTrace(
 
 describe("Retrieval search modes (real Postgres + pgvector)", () => {
   it("exact mode runs only the exact arm — no lexical/vector/graph, no rerank", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     const { trace, reranked } = await searchTrace("exact");
     expect(trace.mode).toBe("exact");
@@ -192,7 +170,7 @@ describe("Retrieval search modes (real Postgres + pgvector)", () => {
   });
 
   it("lexical mode runs the lexical arm but not the vector arm or rerank", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     const { trace, reranked } = await searchTrace("lexical");
     expect(trace.mode).toBe("lexical");
@@ -202,7 +180,7 @@ describe("Retrieval search modes (real Postgres + pgvector)", () => {
   });
 
   it("hybrid mode adds the vector arm but still does not rerank", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     const { trace, reranked } = await searchTrace("hybrid");
     expect(trace.mode).toBe("hybrid");
@@ -212,7 +190,7 @@ describe("Retrieval search modes (real Postgres + pgvector)", () => {
   });
 
   it("hybrid_rerank mode invokes the reranker over the visible candidates", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     const { trace, reranked } = await searchTrace("hybrid_rerank");
     expect(trace.mode).toBe("hybrid_rerank");
@@ -223,7 +201,7 @@ describe("Retrieval search modes (real Postgres + pgvector)", () => {
   });
 
   it("records how many visible candidates moved when rerank applies", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     const reranked: RerankCandidate[] = [];
     const response = await service(reranked, [], movingReranker(reranked)).search({
@@ -243,7 +221,7 @@ describe("Retrieval search modes (real Postgres + pgvector)", () => {
   });
 
   it("query rewriting is opt-in and ignored in exact mode", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed();
     // hybrid + rewrite:true → rewriter invoked, free-text arms search the variant too.
     const hybrid = await searchTrace("hybrid", { rewrite: true });

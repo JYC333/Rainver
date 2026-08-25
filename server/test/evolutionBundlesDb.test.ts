@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, inject, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository";
@@ -14,9 +13,6 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
@@ -26,9 +22,9 @@ const describeWithPostgres = describe.skipIf(
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: USER };
 
 async function waitForAdvisoryWait(expected: number): Promise<void> {
-  if (!pool) throw new Error("PostgreSQL pool is unavailable");
+  if (!db.pool) throw new Error("PostgreSQL db.pool is unavailable");
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const result = await pool.query<{ count: string }>(
+    const result = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM pg_stat_activity
         WHERE datname = current_database()
@@ -41,51 +37,37 @@ async function waitForAdvisoryWait(expected: number): Promise<void> {
   throw new Error(`Timed out waiting for ${expected} advisory-lock waiter(s)`);
 }
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 10 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[evolution-bundles-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolution_bundle_members", "evolution_bundles", "evolution_experiences", "evolution_signals", "evolution_targets", "evolvable_asset_pins", "evolvable_asset_evaluation_runs", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "proposals", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Bundle Owner', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Bundle Member', 'active', $2, $2)`,
     [OTHER_USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Bundle Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', $4, $4)`,
     [randomUUID(), SPACE, OTHER_USER, now],
@@ -94,11 +76,11 @@ beforeEach(async () => {
 
 describeWithPostgres("evolution bundles against real PostgreSQL", () => {
   it("rejects incomplete patches and granting-user egress proposals at the server boundary", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const incompletePatchId = randomUUID();
     const egressId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO proposals (
          id, space_id, proposal_type, status, risk_level, urgency, preview, title,
          summary, payload_json, created_at, updated_at, rationale, created_by_user_id,
@@ -110,7 +92,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
           'Egress review', $6::jsonb, $4, $4, 'test', $2, $2, 'space_shared', 'full')`,
       [incompletePatchId, USER, SPACE, now, egressId, JSON.stringify({ grant_id: randomUUID(), requires_approval_type: "egress_granting_user" })],
     );
-    const bundles = new EvolutionBundleRepository(pool);
+    const bundles = new EvolutionBundleRepository(db.pool);
     await expect(bundles.create(identity, { title: "Invalid patch bundle", proposalIds: [incompletePatchId] })).rejects.toMatchObject({
       statusCode: 422,
       message: expect.stringContaining("incomplete code patch"),
@@ -119,7 +101,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
       statusCode: 422,
       message: expect.stringContaining("granting-user egress approval"),
     });
-    const created = await pool.query<{ count: string }>(
+    const created = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM evolution_bundles WHERE space_id = $1`,
       [SPACE],
     );
@@ -127,12 +109,12 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
   });
 
   it("supports partial approval and restores the recorded version set on rollback", async () => {
-    if (!available || !pool || !container) {
+    if (!db.available) {
       throw new Error("evolution bundle integration test requires the shared PostgreSQL Testcontainer");
     }
-    const assets = new EvolvableAssetRepository(pool);
-    const evaluations = new EvolvableAssetEvaluationRepository(pool);
-    const bundles = new EvolutionBundleRepository(pool);
+    const assets = new EvolvableAssetRepository(db.pool);
+    const evaluations = new EvolvableAssetEvaluationRepository(db.pool);
+    const bundles = new EvolutionBundleRepository(db.pool);
     const asset = await assets.createAsset(identity, {
       asset_type: "prompt_template",
       asset_key: `bundle.asset.${randomUUID()}`,
@@ -176,7 +158,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     });
 
     const proposalTargetId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolution_targets (
          id, space_id, target_type, target_ref_type, target_ref_id, risk_level,
          status, enabled, engine_policy_json, metadata_json, created_at, updated_at
@@ -185,7 +167,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     );
 
     const config = loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     });
     const apply = PgProposalApplyService.fromConfig(config);
@@ -216,7 +198,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
       created.id as string,
       apply,
     )).rejects.toMatchObject({ statusCode: 403 });
-    const unauthorizedRollbackProposals = await pool.query(
+    const unauthorizedRollbackProposals = await db.pool.query(
       `SELECT id FROM proposals
         WHERE proposal_type = 'evolution_bundle_rollback'
           AND payload_json->>'bundle_id' = $1`,
@@ -230,24 +212,24 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     expect(versions.find((row) => row.id === first.id)).toMatchObject({ status: "candidate" });
     expect(versions.find((row) => row.id === second.id)).toMatchObject({ status: "candidate" });
     expect(await assets.listPins(identity, asset.id as string)).toEqual([]);
-    const rollbackProposal = await pool.query<{ status: string; proposal_type: string }>(
+    const rollbackProposal = await db.pool.query<{ status: string; proposal_type: string }>(
       `SELECT status, proposal_type FROM proposals WHERE proposal_type = 'evolution_bundle_rollback' AND payload_json->>'bundle_id' = $1`,
       [created.id],
     );
     expect(rollbackProposal.rows).toEqual([{ status: "accepted", proposal_type: "evolution_bundle_rollback" }]);
-    const rollbackActivity = await pool.query<{ activity_type: string }>(
+    const rollbackActivity = await db.pool.query<{ activity_type: string }>(
       `SELECT activity_type FROM activity_records WHERE activity_type = 'evolution.bundle.rolled_back' AND payload_json->>'bundle_id' = $1`,
       [created.id],
     );
     expect(rollbackActivity.rows).toHaveLength(1);
-    const rejectedSignals = await pool.query<{ signal_type: string }>(
+    const rejectedSignals = await db.pool.query<{ signal_type: string }>(
       `SELECT signal_type FROM evolution_signals WHERE source_type = 'proposal' AND source_id = $1`,
       [secondEval.proposal_id],
     );
     expect(rejectedSignals.rows).toEqual([{ signal_type: "proposal_rejected" }]);
 
     const unsupportedProposalId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO proposals (
          id, space_id, proposal_type, status, risk_level, urgency, preview, title,
          summary, payload_json, created_at, updated_at, rationale, created_by_user_id,
@@ -260,11 +242,11 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
       title: "Unsupported rollback bundle",
       proposalIds: [unsupportedProposalId],
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE proposals SET status = 'accepted', reviewed_at = now(), reviewed_by = $2 WHERE id = $1`,
       [unsupportedProposalId, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE evolution_bundle_members
           SET status = 'approved',
               before_snapshot_json = '{"kind":"unsupported"}'::jsonb,
@@ -272,7 +254,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
         WHERE bundle_id = $1`,
       [unsupported.id],
     );
-    await pool.query(`UPDATE evolution_bundles SET status = 'applied' WHERE id = $1`, [unsupported.id]);
+    await db.pool.query(`UPDATE evolution_bundles SET status = 'applied' WHERE id = $1`, [unsupported.id]);
     const unsupportedDetail = await bundles.get(identity, unsupported.id as string);
     expect(unsupportedDetail).toMatchObject({
       rollbackable: false,
@@ -281,7 +263,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     await expect(bundles.requestRollback(identity, unsupported.id as string, apply)).rejects.toMatchObject({
       statusCode: 409,
     });
-    const unsupportedRollbackProposals = await pool.query(
+    const unsupportedRollbackProposals = await db.pool.query(
       `SELECT id FROM proposals
         WHERE proposal_type = 'evolution_bundle_rollback'
           AND payload_json->>'bundle_id' = $1`,
@@ -291,19 +273,19 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
   });
 
   it("serializes same-asset approvals and refuses rollback over a later promotion", async () => {
-    if (!available || !pool || !container) {
+    if (!db.available) {
       throw new Error("evolution bundle concurrency test requires the shared PostgreSQL Testcontainer");
     }
-    const assets = new EvolvableAssetRepository(pool);
-    const evaluations = new EvolvableAssetEvaluationRepository(pool);
-    const bundles = new EvolutionBundleRepository(pool);
+    const assets = new EvolvableAssetRepository(db.pool);
+    const evaluations = new EvolvableAssetEvaluationRepository(db.pool);
+    const bundles = new EvolutionBundleRepository(db.pool);
     const asset = await assets.createAsset(identity, {
       asset_type: "prompt_template",
       asset_key: `bundle.concurrent.${randomUUID()}`,
       display_name: "Concurrent bundle asset",
     });
     const config = loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     });
     const apply = PgProposalApplyService.fromConfig(config);
@@ -328,7 +310,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     const firstBundle = await bundles.create(identity, { title: "First concurrent bundle", proposalIds: [first.proposalId] });
     const secondBundle = await bundles.create(identity, { title: "Second concurrent bundle", proposalIds: [second.proposalId] });
 
-    const blocker = await pool.connect();
+    const blocker = await db.pool.connect();
     let blockerCommitted = false;
     try {
       await blocker.query("BEGIN");
@@ -374,7 +356,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
       proposalIds: [bundled.proposalId],
     });
 
-    const secondBlocker = await pool.connect();
+    const secondBlocker = await db.pool.connect();
     let secondBlockerCommitted = false;
     try {
       await secondBlocker.query("BEGIN");
@@ -404,7 +386,7 @@ describeWithPostgres("evolution bundles against real PostgreSQL", () => {
     });
     const afterOrdinaryPromotion = await assets.listVersions(identity, asset.id as string);
     expect(afterOrdinaryPromotion.find((row) => row.id === ordinary.version.id)).toMatchObject({ status: "approved" });
-    const rollbackProposals = await pool.query(
+    const rollbackProposals = await db.pool.query(
       `SELECT id FROM proposals
         WHERE proposal_type = 'evolution_bundle_rollback'
           AND payload_json->>'bundle_id' = $1`,

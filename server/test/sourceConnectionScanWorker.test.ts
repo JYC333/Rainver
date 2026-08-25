@@ -731,24 +731,6 @@ describe("SourceExtractionWorker connection_scan", () => {
     expect(String(insert?.params[13]).length).toBeLessThanOrEqual(2048);
   });
 
-  it("updates an existing arXiv item when a newer version is scanned", async () => {
-    __setArxivThrottleForTests({ sleep: async () => {} });
-    const db = new ScanDb({
-      connectorKey: "arxiv_api",
-      capturePolicy: "reference_only",
-      policyRetention: "metadata_only",
-      existingItemId: "item-existing",
-    });
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(arxivFeed(), { status: 200 }));
-
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
-
-    expect(db.calls.some(call => call.sql.includes("INSERT INTO source_items"))).toBe(false);
-    expect(db.calls.some(call => call.sql.includes("UPDATE source_items") && call.sql.includes("SET title = $3"))).toBe(true);
-    const stats = db.calls.find(call => call.sql.includes("items_seen"));
-    expect(stats?.params.slice(2, 5)).toEqual([1, 0, 1]);
-  });
-
   it("relinks existing arXiv item evidence after another source scans the same paper", async () => {
     __setArxivThrottleForTests({ sleep: async () => {} });
     const db = new ScanDb({

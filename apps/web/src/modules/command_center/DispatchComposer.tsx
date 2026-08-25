@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { Plus, Check, X } from 'lucide-react'
 import { hostsApi, projectsApi, providersApi, tasksApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostRuntimeAdapterOption } from '../../types/api'
+import type { Host, HostRuntimeAdapterOption, HostRuntimeProviderBinding } from '../../types/api'
 import { ProjectSelector } from '../../components/ProjectFolderSelectors'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -110,6 +110,11 @@ export default function DispatchComposer({
   // backend the conversation is already on.
   const [backend, setBackend] = useState(INHERIT_BACKEND)
   const [model, setModel] = useState('')
+  const [effort, setEffort] = useState('')
+  // What this host already runs each of its runtimes on. Without it the
+  // default option is an unnamed promise — "this host's default" tells you
+  // nothing about which model you are about to use.
+  const [hostBindings, setHostBindings] = useState<HostRuntimeProviderBinding[] | null>(null)
   const [busy, setBusy] = useState(false)
   // ProjectSelector fetches its own project list once on mount and never
   // refetches — remounting it (via `key`) after an inline create is the
@@ -188,6 +193,18 @@ export default function DispatchComposer({
   const selected = useMemo(() => workspaces.find(w => w.location.id === locationId) ?? null, [workspaces, locationId])
   const hostOnline = selected?.host?.status === 'online' && selected.location.execution_ready
   const selectedTrustMode = selected?.location.execution_host_kind === 'remote' ? 'trusted_host' : selected ? 'sandboxed' : null
+
+  useEffect(() => {
+    const hostId = selected?.host?.id
+    if (!hostId) { setHostBindings(null); return }
+    let cancelled = false
+    hostsApi.listProviderBindings(hostId)
+      .then(result => { if (!cancelled) setHostBindings(result.items) })
+      // Losing this costs the *name* of the default, not the ability to send.
+      .catch(() => { if (!cancelled) setHostBindings([]) })
+    return () => { cancelled = true }
+  }, [selected?.host?.id])
+
   const selectedAdapter = useMemo(
     () => runtimeAdapters.find(a => a.adapter_type === (fixedAdapterType ?? adapterType)) ?? null,
     [runtimeAdapters, fixedAdapterType, adapterType],
@@ -225,14 +242,86 @@ export default function DispatchComposer({
   useEffect(() => {
     setBackend(INHERIT_BACKEND)
     setModel('')
+    setEffort('')
   }, [effectiveAdapterType])
-  const modelOptions = useMemo(
-    () => providerModels(backendOptions.find(p => p.id === backend)),
-    [backendOptions, backend],
-  )
+  // The provider this host×runtime already uses, when it has one. `null` means
+  // ambient login; `undefined` means the bindings are not loaded yet.
+  const inheritedProvider = useMemo(() => {
+    if (!hostBindings) return undefined
+    const bound = hostBindings.find(b => b.adapter_type === effectiveAdapterType)
+    if (!bound) return null
+    return backendOptions.find(p => p.id === bound.model_provider_id) ?? null
+  }, [hostBindings, effectiveAdapterType, backendOptions])
+
+  const inheritedModel = useMemo(() => {
+    if (!hostBindings) return null
+    const bound = hostBindings.find(b => b.adapter_type === effectiveAdapterType)
+    return bound?.model ?? inheritedProvider?.default_model ?? null
+  }, [hostBindings, effectiveAdapterType, inheritedProvider])
+
+  // What the machine's own login would run this runtime on, as that CLI's own
+  // configuration has it. Nothing else knows: an unbound run's model is the
+  // CLI's business, so without this "this machine's login" cannot say whether
+  // it means opus or sonnet, sol or luna.
+  // What this runtime told the host it can be set to. Asked over ACP by the
+  // capability probe, because guessing was wrong in both directions: the
+  // effort levels differ per runtime, and a model id can carry brackets of its
+  // own that are part of its name.
+  const runtimeOptions = useMemo(() => {
+    const probe = selectedAdapter?.capability_probe
+    return probe ? selected?.host?.capabilities_json?.options?.[probe] ?? null : null
+  }, [selectedAdapter?.capability_probe, selected?.host?.capabilities_json])
+
+  const ambient = useMemo(() => {
+    const probe = selectedAdapter?.capability_probe
+    const capabilities = selected?.host?.capabilities_json
+    return {
+      model: runtimeOptions?.current_model ?? (probe ? capabilities?.models?.[probe] ?? '' : ''),
+      effort: runtimeOptions?.current_effort ?? (probe ? capabilities?.reasoning?.[probe] ?? '' : ''),
+    }
+  }, [runtimeOptions, selectedAdapter?.capability_probe, selected?.host?.capabilities_json])
+
+  const ambientModel = ambient.model || null
+  const ambientLabel = ambientModel
+    ? `This machine's login · ${ambient.effort ? `${ambientModel} · ${ambient.effort}` : ambientModel}`
+    : "This machine's login"
+
+  /** Names the default instead of merely promising one. */
+  const inheritLabel = useMemo(() => {
+    const base = fixedThreadId ? "Keep this conversation's backend" : "This host's default"
+    if (fixedThreadId || inheritedProvider === undefined) return base
+    if (!inheritedProvider) return `${base} · ${ambientLabel.replace("This machine's login", "this machine's login")}`
+    return inheritedModel ? `${base} · ${inheritedProvider.name} · ${inheritedModel}` : `${base} · ${inheritedProvider.name}`
+  }, [fixedThreadId, inheritedProvider, inheritedModel, ambientLabel])
+
+  // Which provider's catalog the Model select offers. Sticking with the
+  // inherited backend still lets a model be chosen from it — the server keeps
+  // the provider and narrows only the model when `model` travels without
+  // `model_provider_id`.
+  const modelProvider = useMemo(() => {
+    if (backend === AMBIENT_BACKEND) return undefined
+    if (backend === INHERIT_BACKEND) {
+      // Only for a new conversation, where "inherit" means this host's
+      // default and is therefore knowable. An existing thread carries its own
+      // backend, which may have been overridden on an earlier message — the
+      // composer cannot see it, so offering the host default's catalog would
+      // name models the thread's actual provider may not serve.
+      return fixedThreadId ? undefined : inheritedProvider ?? undefined
+    }
+    return backendOptions.find(p => p.id === backend)
+  }, [backend, fixedThreadId, inheritedProvider, backendOptions])
+
+  const modelOptions = useMemo(() => providerModels(modelProvider), [modelProvider])
+  // Only where the runtime exposes the setting at all: OpenCode has none, and
+  // asking for one it never offered is rejected as invalid_params.
+  // Offered only where the runtime said it has them: OpenCode exposes none,
+  // and a runtime that could not be asked yields none rather than a guess.
+  const availableEfforts = useMemo<string[]>(() => runtimeOptions?.efforts ?? [], [runtimeOptions])
+  const ambientModels = useMemo<string[]>(() => runtimeOptions?.models ?? [], [runtimeOptions])
 
   async function dispatch() {
     if (!selected || !effectiveAdapterType || !prompt.trim()) return
+    const requestedModel = model.trim() || null
     setBusy(true)
     try {
       const result = await tasksApi.createRunWithoutTask({
@@ -247,10 +336,17 @@ export default function DispatchComposer({
         // while an explicit null means the machine's own login. Sending null
         // for "inherit" would silently unbind the thread.
         ...(backend === INHERIT_BACKEND
-          ? {}
+          // Keep the resolved provider, narrow only the model — the server's
+          // third request shape. Sending `model_provider_id` here would pin a
+          // provider the caller did not choose.
+          ? {
+              ...(requestedModel ? { model: requestedModel } : {}),
+              ...(effort ? { reasoning_effort: effort } : {}),
+            }
           : {
               model_provider_id: backend === AMBIENT_BACKEND ? null : backend,
-              ...(model ? { model } : {}),
+              ...(requestedModel ? { model: requestedModel } : {}),
+              ...(effort ? { reasoning_effort: effort } : {}),
             }),
       })
       if (!fixedFolderId) rememberWorkspaceId(projectId, selected.location.id)
@@ -260,6 +356,7 @@ export default function DispatchComposer({
       // override.
       setBackend(INHERIT_BACKEND)
       setModel('')
+      setEffort('')
       if ('thread_id' in result && result.thread_id) onDispatched(result)
     } catch (error) {
       toast.error(errMsg(error))
@@ -342,13 +439,10 @@ export default function DispatchComposer({
             <Select
               ariaLabel="Model backend"
               value={backend}
-              onChange={value => { setBackend(value); setModel('') }}
+              onChange={value => { setBackend(value); setModel(''); setEffort('') }}
               options={[
-                {
-                  value: INHERIT_BACKEND,
-                  label: fixedThreadId ? "Keep this conversation's backend" : "This host's default",
-                },
-                { value: AMBIENT_BACKEND, label: "This machine's login" },
+                { value: INHERIT_BACKEND, label: inheritLabel },
+                { value: AMBIENT_BACKEND, label: ambientLabel },
                 ...backendOptions.map(p => ({ value: p.id, label: p.name })),
               ]}
             />
@@ -363,6 +457,42 @@ export default function DispatchComposer({
                 options={[
                   { value: '', label: "Provider's default" },
                   ...modelOptions.map(m => ({ value: m, label: m })),
+                ]}
+              />
+            </div>
+          )}
+          {backend === AMBIENT_BACKEND && ambientModels.length > 0 && (
+            <div>
+              <Label>Model</Label>
+              {/* The runtime's own catalogue, as it reported it — not typed in,
+                  and not guessed: these ids can carry brackets that are part of
+                  the name. */}
+              <Select
+                ariaLabel="Model"
+                value={model}
+                onChange={setModel}
+                options={[
+                  { value: '', label: ambientModel ? `As configured (${ambientModel})` : "The CLI's own" },
+                  ...ambientModels.filter(m => m !== ambientModel).map(m => ({ value: m, label: m })),
+                ]}
+              />
+            </div>
+          )}
+          {availableEfforts.length > 0 && (
+            <div>
+              <Label>Reasoning effort</Label>
+              <Select
+                ariaLabel="Reasoning effort"
+                value={effort}
+                onChange={setEffort}
+                options={[
+                  {
+                    value: '',
+                    label: backend === AMBIENT_BACKEND && ambient.effort
+                      ? `As configured (${ambient.effort})`
+                      : "Runtime's default",
+                  },
+                  ...availableEfforts.map(level => ({ value: level, label: level })),
                 ]}
               />
             </div>

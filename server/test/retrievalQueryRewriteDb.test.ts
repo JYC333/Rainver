@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -55,50 +54,29 @@ function constantRewriter(variant: string): QueryRewriter {
 /** Rewriter that returns null (the skip / degrade signal). */
 const nullRewriter: QueryRewriter = { async rewrite() { return null; } };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-query-rewrite-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Rewrite', 'personal', now(), now())`,
     [SPACE],
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'U', 'active', now(), now())`,
       [id],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('rewrite-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -106,7 +84,7 @@ beforeEach(async () => {
 });
 
 async function seedPrivate(doc: { id: string; title: string; content: string; owner: string }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -119,7 +97,7 @@ async function seedPrivate(doc: { id: string; title: string; content: string; ow
 }
 
 async function seedKnowledge(doc: KnowledgeDoc): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -131,7 +109,7 @@ async function seedKnowledge(doc: KnowledgeDoc): Promise<void> {
 
 describe("Retrieval query rewriting (real Postgres)", () => {
   it("recalls a document the original query misses lexically via a rewrite variant", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge({
       id: "rrf",
       title: "Fusion notes",
@@ -139,7 +117,7 @@ describe("Retrieval query rewriting (real Postgres)", () => {
       slug: "fusion-notes",
       aliases: [],
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const params = {
       spaceId: SPACE,
@@ -151,12 +129,12 @@ describe("Retrieval query rewriting (real Postgres)", () => {
     };
 
     // The acronym "RRF" has no lexical/alias overlap with the document.
-    const baseline = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search(params);
+    const baseline = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search(params);
     expect(baseline.items.map((i) => i.object_id)).not.toContain("rrf");
 
     // With a rewriter expanding "RRF" → "reciprocal rank fusion", the doc surfaces
     // in the SEPARATE rewrite_items section — never blended into the primary items.
-    const expanded = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const expanded = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryRewriter: fixedRewriter({ RRF: ["reciprocal rank fusion"] }),
     }).search(params);
     expect(expanded.items.map((i) => i.object_id)).not.toContain("rrf");
@@ -165,7 +143,7 @@ describe("Retrieval query rewriting (real Postgres)", () => {
   });
 
   it("keeps a primary hit out of the rewrite section (no duplicate across the two lists)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge({
       id: "shared",
       title: "Alpha overview",
@@ -173,10 +151,10 @@ describe("Retrieval query rewriting (real Postgres)", () => {
       slug: "alpha-overview",
       aliases: [],
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     // Both the original "alpha" and the variant "alpha summary" match the doc.
-    const out = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const out = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryRewriter: fixedRewriter({ alpha: ["alpha summary"] }),
     }).search({
       spaceId: SPACE,
@@ -193,7 +171,7 @@ describe("Retrieval query rewriting (real Postgres)", () => {
   });
 
   it("revalidates the rewrite section — a private variant hit is never surfaced", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // 'secret' is private to OTHER and only a rewrite variant would match it.
     await seedPrivate({
       id: "secret",
@@ -201,9 +179,9 @@ describe("Retrieval query rewriting (real Postgres)", () => {
       content: "Reciprocal rank fusion internal notes.",
       owner: OTHER,
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
-    const out = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const out = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryRewriter: fixedRewriter({ RRF: ["reciprocal rank fusion"] }),
     }).search({
       spaceId: SPACE,
@@ -219,9 +197,9 @@ describe("Retrieval query rewriting (real Postgres)", () => {
   });
 
   it("still searches the original query when the rewriter returns null (degrades to baseline)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     for (const doc of knowledgeFixture.docs) await seedKnowledge(doc);
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const params = {
       spaceId: SPACE,
@@ -231,8 +209,8 @@ describe("Retrieval query rewriting (real Postgres)", () => {
       maxResults: 10,
       rewrite: true, // opt in; the rewriter returns null, so it must degrade to baseline
     };
-    const baseline = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search(params);
-    const withNullRewriter = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const baseline = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search(params);
+    const withNullRewriter = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       queryRewriter: nullRewriter,
     }).search(params);
 
@@ -242,12 +220,12 @@ describe("Retrieval query rewriting (real Postgres)", () => {
   });
 
   it(`keeps golden recall@${K} under a query rewriter (eval gate)`, async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     for (const doc of knowledgeFixture.docs) await seedKnowledge(doc);
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const report = await runRecallCases(
-      new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+      new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
         queryRewriter: constantRewriter("database index tuning"),
       }),
       { spaceId: SPACE, viewerUserId: VIEWER, objectTypes: ["knowledge_item"], rewrite: true },

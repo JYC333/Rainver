@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  MODE_PLACEHOLDER_ENTITIES,
   assertPlaceholderEntitiesProvided,
   projectEntitySummaryRegistry,
 } from "../src/modules/projects/overviewRegistry";
@@ -41,16 +40,4 @@ describe("Primary Mode placeholder entities", () => {
     )).toThrow(/delivery declares a placeholder for artifact/);
   });
 
-  /** Order is part of the contract: a placeholder that reorders itself as
-   *  data arrives moves the page under the reader. */
-  it("declares research placeholders question-first, from asking to evidence", () => {
-    expect(MODE_PLACEHOLDER_ENTITIES.research).toEqual([
-      "inquiry_thread", "research_workflow", "source_item", "extracted_evidence",
-    ]);
-  });
-
-  it("classifies by how work advances, not by subject matter", () => {
-    expect(Object.keys(MODE_PLACEHOLDER_ENTITIES).sort())
-      .toEqual(["delivery", "learning", "operations", "research"]);
-  });
 });

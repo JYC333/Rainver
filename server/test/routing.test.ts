@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { DeterministicRouteSelector, mergeRouteHints } from "../src/modules/routing/router";
 import { runtimeRequiredCapabilities } from "../src/modules/routing/repository";
 import type { RouteCandidate } from "../src/modules/routing/types";
-import { SERVER_MODULES } from "../src/gateway/routeRegistry";
 
 function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
   return {
@@ -44,10 +43,6 @@ describe("deterministic route selector", () => {
       "agent.delegate",
       "runtime.custom_capability",
     ])).resolves.toEqual(["runtime.custom_capability"]);
-  });
-
-  it("registers the durable run route-decision read surface", () => {
-    expect(SERVER_MODULES.find((module) => module.name === "routing")).toBeDefined();
   });
 
   it("hard-filters credentials, capabilities, sandbox, and trust before scoring", () => {

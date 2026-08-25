@@ -246,6 +246,7 @@ export async function advanceThreadQueue(
       // it runs against.
       modelProviderId: next.model_provider_id,
       model: next.model,
+      reasoningEffort: next.reasoning_effort,
       agent,
       contractSnapshot: {
         source: { kind: "task", id: next.task_id },
@@ -289,6 +290,7 @@ async function createAndQueueRun(db: Queryable, params: {
   userId: string;
   modelProviderId: string | null;
   model: string | null;
+  reasoningEffort: string | null;
   agent: { id: string; current_version_id: string };
   contractSnapshot: Parameters<typeof createRunContractSnapshot>[0];
   timeoutMs: number | null;
@@ -326,7 +328,15 @@ async function createAndQueueRun(db: Queryable, params: {
       // host default it resolved to, not from a routing decision. Without it
       // the Run read model normalizes to "none" and shows a chosen model with
       // no provenance.
-      params.model ? JSON.stringify({ model: params.model, source: "request" }) : null,
+      params.model || params.reasoningEffort
+        ? JSON.stringify({
+            ...(params.model ? { model: params.model } : {}),
+            // Beside the model, never inside it: a model id can carry brackets
+            // of its own, so the pair cannot be recovered from one string.
+            ...(params.reasoningEffort ? { reasoning_effort: params.reasoningEffort } : {}),
+            source: "request",
+          })
+        : null,
     ],
   );
   // D4: the Run this thread just produced belongs to whichever Task its

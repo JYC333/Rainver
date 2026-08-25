@@ -1,8 +1,6 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { seedRun } from "./support/domainSeeds";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   MemoryApplyError,
@@ -13,55 +11,35 @@ import {
 
 // Real-PostgreSQL integration tests for the memory appliers. These run the
 // actual INSERT/UPDATE memory_entries + provenance / relation writes against a
-// throwaway Postgres loaded with memoryApplySchema.sql, so the column set,
 // versioning, supersede, and access invariants are exercised on the real
 // stack. Skips gracefully when Docker is unavailable.
 
-const SCHEMA = readFileSync(join(process.cwd(), "test/fixtures/memoryApplySchema.sql"), "utf8");
-
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let repo: PgMemoryApplyRepository | undefined;
-let available = false;
 
 const SPACE = "space-1";
 const USER = "user-1";
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename, { empty: true });
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
-    repo = new PgMemoryApplyRepository(pool);
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[memory-apply-integration] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
+const db = useTestDatabase(__filename, { max: 10 });
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  repo = new PgMemoryApplyRepository(db.pool);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
-    ["retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "memory_entries", "provenance_links", "memory_relations", "spaces", "projects", "proposals"],
+    db.pool,
+    ["agents", "agent_versions", "runs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "memory_entries", "provenance_links", "memory_relations", "spaces", "projects", "proposals", "space_memberships", "users"],
   );
-  await pool.query("INSERT INTO spaces (id, type) VALUES ($1, 'personal')", [SPACE]);
+  await db.pool.query("INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'personal', now(), now())", [SPACE]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('creator-9', 'creator-9', 'active', now(), now()), ('user-1', 'user-1', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
 });
 
 /** Run a callback against a repo bound to a single transaction; commit on
  * success, roll back (and rethrow) on error — mirrors the accept route. */
 async function inTx<T>(fn: (repo: PgMemoryApplyRepository) => Promise<T>): Promise<T> {
-  const client = await pool!.connect();
+  const client = await db.pool.connect();
   try {
     await client.query("BEGIN");
     const result = await fn(new PgMemoryApplyRepository(client));
@@ -75,10 +53,22 @@ async function inTx<T>(fn: (repo: PgMemoryApplyRepository) => Promise<T>): Promi
   }
 }
 
+/** The real schema needs the proposal row before a memory can reference it. */
+async function applyCreate(p: ApplyProposal, user: string) {
+  await seedProposal(p);
+  return repo!.applyCreate(p, user);
+}
+
+async function applyUpdate(p: ApplyProposal, user: string) {
+  await seedProposal(p);
+  return repo!.applyUpdate(p, user);
+}
+
 async function seedProposal(p: ApplyProposal): Promise<void> {
-  await pool!.query(
-    `INSERT INTO proposals (id, space_id, proposal_type, status, payload_json, created_by_user_id, created_by_run_id, project_folder_id, project_id, title)
-     VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9)`,
+  await db.pool.query(
+    `INSERT INTO proposals (id, space_id, proposal_type, status, payload_json, created_by_user_id, created_by_run_id, project_folder_id, project_id, title, risk_level, urgency, created_at, updated_at)
+     VALUES ($1, $2, $3, 'pending', $4::jsonb, $5, $6, $7, $8, $9, 'low', 'normal', now(), now())
+     ON CONFLICT (id) DO NOTHING`,
     [
       p.id,
       p.space_id,
@@ -124,18 +114,20 @@ async function insertActiveMemory(over: Record<string, unknown>): Promise<void> 
     updated_at: new Date().toISOString(),
     version: 1,
     access_count: 0,
+    confidence: 1,
+    importance: 0.5,
     ...over,
   };
   const names = Object.keys(cols);
   const ph = names.map((_, i) => `$${i + 1}`);
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (${names.join(", ")}) VALUES (${ph.join(", ")})`,
     names.map((n) => cols[n]),
   );
 }
 
 async function provFor(memoryId: string) {
-  const r = await pool!.query(
+  const r = await db.pool.query(
     "SELECT source_type, source_id, source_trust FROM provenance_links WHERE target_id = $1 ORDER BY source_type, source_id",
     [memoryId],
   );
@@ -146,8 +138,8 @@ const userConf = { source_type: "user_confirmation", source_id: "u1", source_tru
 
 describe("PgMemoryApplyRepository against real Postgres", () => {
   it("applies memory_create: active row + provenance + dominant trust", async () => {
-    if (!available || !repo || !pool) return;
-    const out = await repo.applyCreate(
+    if (!db.available || !repo || !db.pool) return;
+    const out = await applyCreate(
       proposal({
         payload_json: {
           target_visibility: "private",
@@ -174,7 +166,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       source_trust: "user_confirmed", // dominant over agent_inferred
     });
 
-    const row = (await pool.query("SELECT * FROM memory_entries WHERE id = $1", [out.memory.id])).rows[0];
+    const row = (await db.pool.query("SELECT * FROM memory_entries WHERE id = $1", [out.memory.id])).rows[0];
     expect(row.created_from_proposal_id).toBe("prop-1");
     expect(row.approved_by).toBe(USER);
     expect(row.access_count).toBe(0);
@@ -187,10 +179,10 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("applies memory_create with a validated project association", async () => {
-    if (!available || !repo || !pool) return;
-    await pool.query("INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-1', $1, NULL)", [SPACE]);
+    if (!db.available || !repo || !db.pool) return;
+    await db.pool.query("INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-1', $1, 'project-1', 'active', now(), now())", [SPACE]);
 
-    const out = await repo.applyCreate(
+    const out = await applyCreate(
       proposal({
         project_id: "project-1",
         payload_json: {
@@ -204,15 +196,21 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     );
 
     expect(out.memory.project_id).toBe("project-1");
-    const row = (await pool.query("SELECT project_id FROM memory_entries WHERE id = $1", [out.memory.id])).rows[0];
+    const row = (await db.pool.query("SELECT project_id FROM memory_entries WHERE id = $1", [out.memory.id])).rows[0];
     expect(row.project_id).toBe("project-1");
   });
 
   it("rejects memory_create when the proposal project is outside the current space", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
 
+    // The proposals row itself cannot point at a project in another Space:
+    // the composite (project_id, space_id) FK refuses it before any apply.
+    await db.pool.query("INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ('space-other', 'Other', 'personal', now(), now())");
+    await db.pool.query(
+      "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-other', 'space-other', 'project-other', 'active', now(), now())",
+    );
     await expect(
-      repo.applyCreate(
+      applyCreate(
         proposal({
           project_id: "project-other",
           payload_json: {
@@ -223,14 +221,14 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
         }),
         USER,
       ),
-    ).rejects.toBeInstanceOf(MemoryApplyError);
-    expect((await pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c).toBe(0);
+    ).rejects.toMatchObject({ code: "23503" });
+    expect((await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c).toBe(0);
   });
 
   it("allows private visibility in a multi-member space", async () => {
-    if (!available || !repo || !pool) return;
-    await pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
-    const out = await repo.applyCreate(
+    if (!db.available || !repo || !db.pool) return;
+    await db.pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
+    const out = await applyCreate(
       proposal({ payload_json: { target_visibility: "private", proposed_content: "x", owner_user_id: USER, provenance_entries: [userConf] } }),
       USER,
     );
@@ -238,8 +236,8 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("allows private visibility in a personal space with owner fallback", async () => {
-    if (!available || !repo) return;
-    const out = await repo.applyCreate(
+    if (!db.available || !repo) return;
+    const out = await applyCreate(
       proposal({ payload_json: { target_visibility: "private", proposed_content: "p", provenance_entries: [userConf] } }),
       USER,
     );
@@ -248,11 +246,11 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("defaults a no-visibility create to owner-only private in a multi-member space", async () => {
-    if (!available || !repo || !pool) return;
-    await pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
+    if (!db.available || !repo || !db.pool) return;
+    await db.pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
     const creator = "creator-9";
 
-    const out = await repo.applyCreate(
+    const out = await applyCreate(
       proposal({
         created_by_user_id: creator,
         payload_json: { proposed_content: "assistant-derived", provenance_entries: [userConf] },
@@ -266,8 +264,8 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("keeps the no-visibility default private in a personal space", async () => {
-    if (!available || !repo) return; // space is 'personal' by default
-    const out = await repo.applyCreate(
+    if (!db.available || !repo) return; // space is 'personal' by default
+    const out = await applyCreate(
       proposal({ payload_json: { proposed_content: "personal default", provenance_entries: [userConf] } }),
       USER,
     );
@@ -275,20 +273,20 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("promotes an owner-only private memory into Project memory", async () => {
-    if (!available || !repo || !pool) return;
-    await pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
+    if (!db.available || !repo || !db.pool) return;
+    await db.pool.query("UPDATE spaces SET type = 'team' WHERE id = $1", [SPACE]);
     await insertActiveMemory({
       id: "mem-personal",
       visibility: "private",
       owner_user_id: USER,
       content: "personal note",
     });
-    await pool.query(
-      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-promotion', $1, NULL)",
+    await db.pool.query(
+      "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-promotion', $1, 'project-promotion', 'active', now(), now())",
       [SPACE],
     );
 
-    const out = await repo.applyUpdate(
+    const out = await applyUpdate(
       proposal({
         proposal_type: "memory_update",
         project_id: "project-promotion",
@@ -306,21 +304,21 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.memory.scope_type).toBe("project");
     expect(out.memory.project_id).toBe("project-promotion");
     expect(out.memory.owner_user_id).toBe(USER); // promoter stays steward
-    const old = (await pool.query("SELECT status FROM memory_entries WHERE id = 'mem-personal'")).rows[0];
+    const old = (await db.pool.query("SELECT status FROM memory_entries WHERE id = 'mem-personal'")).rows[0];
     expect(old.status).toBe("superseded");
   });
 
   it("applies memory_update: new version supersedes old, copies + adds provenance", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     await insertActiveMemory({ id: "mem-old", content: "old", source_trust: "trusted_external" });
     // Seed an existing provenance link on the old memory (must be copied forward).
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO provenance_links (id, space_id, target_type, target_id, source_type, source_id, source_trust, created_at)
        VALUES ('pl-old', $1, 'memory', 'mem-old', 'activity', 'act-old', 'trusted_external', now())`,
       [SPACE],
     );
 
-    const out = await repo.applyUpdate(
+    const out = await applyUpdate(
       proposal({
         proposal_type: "memory_update",
         payload_json: {
@@ -338,12 +336,12 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.supersededMemoryId).toBe("mem-old");
 
     // Old row is superseded.
-    const old = (await pool.query("SELECT status FROM memory_entries WHERE id = 'mem-old'")).rows[0];
+    const old = (await db.pool.query("SELECT status FROM memory_entries WHERE id = 'mem-old'")).rows[0];
     expect(old.status).toBe("superseded");
 
     // supersedes relation recorded.
     const rel = (
-      await pool.query("SELECT source_id, target_id, relation_type FROM memory_relations")
+      await db.pool.query("SELECT source_id, target_id, relation_type FROM memory_relations")
     ).rows;
     expect(rel).toEqual([
       { source_id: out.memory.id, target_id: "mem-old", relation_type: "supersedes" },
@@ -358,17 +356,17 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("applies memory_update across the user-to-project attribution boundary", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     await insertActiveMemory({
       id: "mem-personal-to-project",
       content: "personal content",
     });
-    await pool.query(
-      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-target', $1, NULL)",
+    await db.pool.query(
+      "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-target', $1, 'project-target', 'active', now(), now())",
       [SPACE],
     );
 
-    const out = await repo.applyUpdate(
+    const out = await applyUpdate(
       proposal({
         proposal_type: "memory_update",
         project_id: "project-target",
@@ -388,7 +386,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("applies memory_archive: marks target archived and writes provenance", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     await insertActiveMemory({ id: "mem-arch", content: "keep" });
 
     const out = await repo.applyArchive(
@@ -401,7 +399,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     );
 
     expect(out.memory.status).toBe("archived");
-    const row = (await pool.query("SELECT status FROM memory_entries WHERE id = 'mem-arch'")).rows[0];
+    const row = (await db.pool.query("SELECT status FROM memory_entries WHERE id = 'mem-arch'")).rows[0];
     expect(row.status).toBe("archived");
 
     const prov = await provFor("mem-arch");
@@ -411,9 +409,9 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("fails memory_update when the target is missing/inactive", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     await expect(
-      repo.applyUpdate(
+      applyUpdate(
         proposal({ proposal_type: "memory_update", payload_json: { target_memory_id: "nope", proposed_content: "x" } }),
         USER,
       ),
@@ -423,7 +421,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   // ── applyOnly repository contract ────────────────────────────────────────
 
   it("applyOnly: applies create and returns the proposal payload patch", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const p = proposal({
       payload_json: {
         target_visibility: "private",
@@ -435,10 +433,10 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
 
     const out = await inTx((r) => r.applyOnly(p, USER));
 
-    const mem = (await pool.query("SELECT * FROM memory_entries WHERE id = $1", [out.memoryId])).rows[0];
+    const mem = (await db.pool.query("SELECT * FROM memory_entries WHERE id = $1", [out.memoryId])).rows[0];
     expect(mem.content).toBe("orchestrated");
     expect(mem.status).toBe("active");
-    const prop = (await pool.query("SELECT status, reviewed_by, payload_json FROM proposals WHERE id = $1", [p.id])).rows[0];
+    const prop = (await db.pool.query("SELECT status, reviewed_by, payload_json FROM proposals WHERE id = $1", [p.id])).rows[0];
     expect(prop.status).toBe("pending");
     expect(prop.reviewed_by).toBeNull();
     expect(prop.payload_json.resulting_memory_id).toBeUndefined();
@@ -446,7 +444,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
   });
 
   it("applyOnly: rejects an agent_inferred-only semantic proposal (source monitoring) with no writes", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const p = proposal({
       payload_json: {
         proposed_content: "weak",
@@ -458,12 +456,12 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
 
     await expect(inTx((r) => r.applyOnly(p, USER))).rejects.toBeInstanceOf(MemoryApplyError);
     // Rolled back: no memory, proposal still pending.
-    expect((await pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c).toBe(0);
-    expect((await pool.query("SELECT status FROM proposals WHERE id = $1", [p.id])).rows[0].status).toBe("pending");
+    expect((await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c).toBe(0);
+    expect((await db.pool.query("SELECT status FROM proposals WHERE id = $1", [p.id])).rows[0].status).toBe("pending");
   });
 
   it("applyOnly: returns source_monitoring_result for untrusted_external require_review", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const p = proposal({
       payload_json: {
         proposed_content: "needs review",
@@ -477,12 +475,13 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect((out.payloadJson.source_monitoring_result as Record<string, unknown>).reason_code).toBe(
       "untrusted_external_only",
     );
-    const mem = (await pool.query("SELECT status FROM memory_entries WHERE id = $1", [out.memoryId])).rows[0];
+    const mem = (await db.pool.query("SELECT status FROM memory_entries WHERE id = $1", [out.memoryId])).rows[0];
     expect(mem.status).toBe("active");
   });
 
-  it("applyOnly: fails closed for grant-derived memory proposals", async () => {
-    if (!available || !pool) return;
+  it("applyOnly: fails closed for a grant-derived proposal even when a same-space run created it", async () => {
+    if (!db.available) return;
+    await seedRun(db.pool, { id: "run-9", space: SPACE, owner: USER, agent: "agent-1", version: "agent-v1" });
     const runCtx = proposal({
       id: "p-run",
       payload_json: {
@@ -495,12 +494,27 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     });
     await seedProposal(runCtx);
     await expect(inTx((r) => r.applyOnly(runCtx, USER))).rejects.toBeInstanceOf(MemoryApplyUnsupportedError);
+    expect((await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c).toBe(0);
+  });
+
+  it("applyOnly: applies a same-space run proposal that carries no grant-derived markers", async () => {
+    if (!db.available) return;
+    await seedRun(db.pool, { id: "run-9", space: SPACE, owner: USER, agent: "agent-1", version: "agent-v1" });
+    const runCtx = proposal({
+      id: "p-run-ok",
+      payload_json: { proposed_content: "from a run", provenance_entries: [userConf] },
+      created_by_run_id: "run-9",
+    });
+    await seedProposal(runCtx);
+    const out = await inTx((r) => r.applyOnly(runCtx, USER));
+    const row = (await db.pool.query("SELECT content, status, created_from_proposal_id FROM memory_entries WHERE id = $1", [out.memoryId])).rows[0];
+    expect(row).toMatchObject({ content: "from a run", status: "active", created_from_proposal_id: "p-run-ok" });
   });
 
   it("applyOnly: returns the Project scope", async () => {
-    if (!available || !pool) return;
-    await pool.query(
-      "INSERT INTO projects (id, space_id, deleted_at) VALUES ('project-scope', $1, NULL)",
+    if (!db.available) return;
+    await db.pool.query(
+      "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-scope', $1, 'project-scope', 'active', now(), now())",
       [SPACE],
     );
     const projectScope = proposal({
@@ -516,7 +530,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     await seedProposal(projectScope);
     const result = await inTx((r) => r.applyOnly(projectScope, USER));
     expect(result.scopeType).toBe("project");
-    const count = (await pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c;
+    const count = (await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c;
     expect(count).toBe(1);
   });
 });

@@ -9,7 +9,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Research Space', preferredSpaceId: 'space-1', spaces: [] }),
 }))
 vi.mock('../../../api/client', () => ({
-  hostsApi: { list: vi.fn(), listThreads: vi.fn(), listRecentThreads: vi.fn(), listRuntimeAdapters: vi.fn(), dispatch: vi.fn() },
+  hostsApi: { list: vi.fn(), listThreads: vi.fn(), listRecentThreads: vi.fn(), listRuntimeAdapters: vi.fn(), dispatch: vi.fn(), listProviderBindings: vi.fn().mockResolvedValue({ items: [] }) },
   projectFoldersApi: { list: vi.fn() },
   projectsApi: { list: vi.fn() },
   runsApi: { list: vi.fn() },

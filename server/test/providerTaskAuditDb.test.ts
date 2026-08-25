@@ -1,46 +1,32 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../src/config";
 import { resolveProviderCommandStore } from "../src/modules/providers/commands/store";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 
 const SPACE = "72000000-0000-4000-8000-000000000001";
 const USER = "72000000-0000-4000-8000-000000000002";
 const PROVIDER = "72000000-0000-4000-8000-000000000003";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Provider task','personal',now(),now())`, [SPACE]);
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
-    await pool.query(
-      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
-       VALUES ($1,$2,$3,'owner','active',now(),now())`,
-      [randomUUID(), SPACE, USER],
-    );
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[provider-task-audit-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Provider task','personal',now(),now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+     VALUES ($1,$2,$3,'owner','active',now(),now())`,
+    [randomUUID(), SPACE, USER],
+  );
 });
 
 describe("Provider task audit persistence", () => {
   it("creates distinct immutable control/delivery/snapshot/Usage refs and closes the snapshot", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const store = resolveProviderCommandStore({
-      databaseUrl: container.getConnectionUri(),
+      databaseUrl: db.connectionUri,
       agentSpaceHome: "/tmp/provider-task-audit-test",
     } as ServerConfig);
     const first = await store.beginProviderTaskAttempt!({
@@ -78,7 +64,7 @@ describe("Provider task audit persistence", () => {
     await store.completeProviderTaskAttempt!(first, { status: "accepted" });
     await store.completeProviderTaskAttempt!(second, { status: "failed", error_code: "provider_timeout" });
 
-    const rows = await pool.query<{
+    const rows = await db.pool.query<{
       delivery_id: string;
       status: string;
       error_code: string | null;

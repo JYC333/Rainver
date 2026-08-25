@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
@@ -19,54 +18,35 @@ import { loadConfig } from "../src/config";
 // capabilities, immutable AgentVersion permissions, and the System Action
 // Registry. A FakeDb cannot prove which columns the INSERT actually writes.
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
 const SPACE = "space-1";
 const USER = "user-1";
 const AGENT = "agent-1";
 let agentVersionId = "";
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[run-tool-grant-provisioning] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   const now = new Date().toISOString();
   await resetTables(
-    pool,
+    db.pool,
     ["runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Agent','active',NULL,$4,$4,'space_shared')`,
     [AGENT, SPACE, USER, now],
@@ -74,7 +54,7 @@ beforeEach(async () => {
   agentVersionId = randomUUID();
   // The AgentVersion declares a capability ceiling and an allowed tool, so a
   // missing grant cannot be blamed on an agent that was never allowed a tool.
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -90,11 +70,11 @@ beforeEach(async () => {
       now,
     ],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, agentVersionId]);
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, agentVersionId]);
 });
 
 async function readSnapshot(runId: string): Promise<unknown> {
-  const result = await pool!.query<{ permission_snapshot_json: unknown }>(
+  const result = await db.pool.query<{ permission_snapshot_json: unknown }>(
     `SELECT permission_snapshot_json FROM runs WHERE id = $1`,
     [runId],
   );
@@ -103,8 +83,8 @@ async function readSnapshot(runId: string): Promise<unknown> {
 
 describe("run tool grant provisioning", () => {
   it("persists declared and permitted agent-tool grants when a run is created", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repository = new PgRunRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
 
     const created = await repository.createQueuedRun({
       agent_id: AGENT,
@@ -137,8 +117,8 @@ describe("run tool grant provisioning", () => {
   });
 
   it("projects durable grants into the CLI run input envelope", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repository = new PgRunRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
 
     const created = await repository.createQueuedRun({
       agent_id: AGENT,
@@ -173,8 +153,8 @@ describe("run tool grant provisioning", () => {
   });
 
   it("does not grant undeclared, unpermitted, or unknown actions", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repository = new PgRunRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
 
     const created = await repository.createQueuedRun({
       agent_id: AGENT,
@@ -210,8 +190,8 @@ describe("run tool grant provisioning", () => {
   });
 
   it("creates and approves a request bound to an audited same-Run denial", async (ctx) => {
-    if (!available || !pool || !container) return ctx.skip();
-    const repository = new PgRunRepository(pool);
+    if (!db.available) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
     const created = await repository.createQueuedRun({
       agent_id: AGENT,
       space_id: SPACE,
@@ -223,20 +203,20 @@ describe("run tool grant provisioning", () => {
       capabilities_json: ["agent.delegate"],
     });
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET status = 'running', started_at = $3, updated_at = $3
         WHERE id = $1 AND space_id = $2`,
       [created.id, SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE run_attempts
           SET status = 'running', started_at = $3, last_activity_at = $3, updated_at = $3
         WHERE run_id = $1 AND space_id = $2 AND attempt_number = 1`,
       [created.id, SPACE, now],
     );
     const policyResult = await enforce(
-      { databaseUrl: container.getConnectionUri() },
+      { databaseUrl: db.connectionUri },
       await loadActionRegistry(),
       {
         action: "project.source.bind",
@@ -268,11 +248,11 @@ describe("run tool grant provisioning", () => {
     });
     const policyDecisionRecordId = policyResult.policy_decision_record_id!;
 
-    const service = new AuthorizationRequestService(pool, {
-      databaseUrl: container!.getConnectionUri(),
+    const service = new AuthorizationRequestService(db.pool, {
+      databaseUrl: db.connectionUri,
     });
     const wrongActorDecision = await enforce(
-      { databaseUrl: container.getConnectionUri() },
+      { databaseUrl: db.connectionUri },
       await loadActionRegistry(),
       {
         action: "project.source.bind",
@@ -313,7 +293,7 @@ describe("run tool grant provisioning", () => {
       action_id: "project.source.propose_bind",
       status: "pending",
     });
-    const pausedRun = await pool.query(
+    const pausedRun = await db.pool.query(
       `SELECT status, error_json FROM runs WHERE id = $1 AND space_id = $2`,
       [created.id, SPACE],
     );
@@ -332,7 +312,7 @@ describe("run tool grant provisioning", () => {
     );
     expect(approved.status).toBe("approved");
     expect(approved.resulting_action_grant_id).toBeTruthy();
-    const grant = await pool.query(
+    const grant = await db.pool.query(
       `SELECT action_id, target_run_id, project_id, resource_kind, resource_id,
               max_uses, status
          FROM action_approval_grants
@@ -348,7 +328,7 @@ describe("run tool grant provisioning", () => {
       max_uses: 1,
       status: "active",
     });
-    const grantService = new ActionApprovalGrantService(pool);
+    const grantService = new ActionApprovalGrantService(db.pool);
     await expect(grantService.hasMatching({
       spaceId: SPACE,
       agentId: AGENT,
@@ -361,12 +341,12 @@ describe("run tool grant provisioning", () => {
       actionId: "project.source.propose_bind",
       runId: "another-run",
     })).resolves.toBe(false);
-    const waitingRun = await pool.query(
+    const waitingRun = await db.pool.query(
       `SELECT status, error_json FROM runs WHERE id = $1 AND space_id = $2`,
       [created.id, SPACE],
     );
     expect(waitingRun.rows[0]).toMatchObject({ status: "waiting_for_review" });
-    const reconcileJob = await pool.query<{
+    const reconcileJob = await db.pool.query<{
       id: string;
       payload_json: Record<string, unknown>;
       attempts: number;
@@ -379,17 +359,17 @@ describe("run tool grant provisioning", () => {
       [request.id],
     );
     expect(reconcileJob.rows).toHaveLength(1);
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO run_execution_locks (run_id, locked_at, worker_id, job_id)
        VALUES ($1, $2, 'old-worker', NULL)`,
       [created.id, now],
     );
     const registry = new JobHandlerRegistry();
     registerAgentRunHandler(registry, loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     }));
-    const queue = new PgJobQueueRepository(pool);
+    const queue = new PgJobQueueRepository(db.pool);
     const worker = new JobWorker(
       queue,
       registry,
@@ -400,7 +380,7 @@ describe("run tool grant provisioning", () => {
       status: "deferred",
       job_id: reconcileJob.rows[0]!.id,
     });
-    const deferred = await pool.query<{
+    const deferred = await db.pool.query<{
       status: string;
       attempts: number;
       scheduled_at: Date;
@@ -410,22 +390,22 @@ describe("run tool grant provisioning", () => {
     );
     expect(deferred.rows[0]).toMatchObject({ status: "pending", attempts: 0 });
     expect(deferred.rows[0]!.scheduled_at.getTime()).toBeGreaterThan(Date.now());
-    await pool.query(`DELETE FROM run_execution_locks WHERE run_id = $1`, [created.id]);
+    await db.pool.query(`DELETE FROM run_execution_locks WHERE run_id = $1`, [created.id]);
     // Clearly in the past: the claim compares against a millisecond JS clock,
     // and a same-millisecond now() with microseconds would still be "later".
-    await pool.query(
+    await db.pool.query(
       "UPDATE jobs SET scheduled_at = now() - interval '1 second' WHERE id = $1",
       [reconcileJob.rows[0]!.id],
     );
     await expect(worker.processOne()).resolves.toMatchObject({
       status: "completed",
     });
-    const resumedRun = await pool.query(
+    const resumedRun = await db.pool.query(
       `SELECT status, error_json FROM runs WHERE id = $1 AND space_id = $2`,
       [created.id, SPACE],
     );
     expect(resumedRun.rows[0]).toMatchObject({ status: "queued", error_json: null });
-    await pool.query(
+    await db.pool.query(
       `DELETE FROM jobs
         WHERE job_type = 'agent_run'
           AND payload_json->>'run_id' = $1`,
@@ -441,7 +421,7 @@ describe("run tool grant provisioning", () => {
       worker_id: "test-worker",
       payload: reconcileJob.rows[0]!.payload_json,
     });
-    const recoveredAgentJob = await pool.query(
+    const recoveredAgentJob = await db.pool.query(
       `SELECT id
          FROM jobs
         WHERE job_type = 'agent_run'
@@ -461,20 +441,20 @@ describe("run tool grant provisioning", () => {
       prompt: "Reject this bounded authorization",
       capabilities_json: ["agent.delegate"],
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET status = 'running', started_at = $3, updated_at = $3
         WHERE id = $1 AND space_id = $2`,
       [rejectedRun.id, SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE run_attempts
           SET status = 'running', started_at = $3, last_activity_at = $3, updated_at = $3
         WHERE run_id = $1 AND space_id = $2 AND attempt_number = 1`,
       [rejectedRun.id, SPACE, now],
     );
     const rejectedPolicy = await enforce(
-      { databaseUrl: container.getConnectionUri() },
+      { databaseUrl: db.connectionUri },
       await loadActionRegistry(),
       {
         action: "project.source.bind",
@@ -509,7 +489,7 @@ describe("run tool grant provisioning", () => {
       rejectedRequest.id,
       "rejected",
     );
-    const rejectedJob = await pool.query<{
+    const rejectedJob = await db.pool.query<{
       id: string;
       payload_json: Record<string, unknown>;
       attempts: number;
@@ -531,7 +511,7 @@ describe("run tool grant provisioning", () => {
       worker_id: "test-worker",
       payload: rejectedJob.rows[0]!.payload_json,
     });
-    const cancelled = await pool.query(
+    const cancelled = await db.pool.query(
       `SELECT status, error_json FROM runs WHERE id = $1 AND space_id = $2`,
       [rejectedRun.id, SPACE],
     );

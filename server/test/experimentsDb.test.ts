@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
 import { ExperimentRunService } from "../src/modules/experiments/runService";
@@ -25,92 +24,75 @@ const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const HOST = "77777777-7777-4777-8777-777777777777";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[experiments-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_evidence_signals", "inquiry_signal_candidates", "inquiry_threads", "workspace_locations", "project_folders", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
     [HOST, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ($1, NULL, $3, 'server', 'server', 'server', 'online', $2, $2)`,
     [HOST, now, HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'Experiment Folder','active','code',true,false,false,$5,$5)`,
     [WORKSPACE, SPACE, PROJECT, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind,
        root_path, execution_ready, status, preferred, created_at, updated_at
      ) VALUES ($1,$2,$3,$4,'server','/tmp/experiment-folder',true,'active',true,$5,$5)`,
     [randomUUID(), SPACE, WORKSPACE, HOST, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,current_version_id,visibility,created_at,updated_at)
      VALUES ($1,$2,$3,'Experiment Agent','active',NULL,'private',$4,$4)`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
        context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
      ) VALUES ($1,$2,$3,'v1','Execute governed experiments.','{}','{}','{}','{}','[]','{}','{}',$4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
 });
 
 async function createCorpusItem(): Promise<string> {
   const objectId = randomUUID();
   const corpusItemId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
      VALUES ($1, $2, 'source', 'A source', 'private', $3, $4, $4)`,
     [objectId, SPACE, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_corpus_items (id, space_id, project_id, object_id, role, status, triage_status, read_status, metadata_json, created_at, updated_at)
      VALUES ($1, $2, $3, $4, 'candidate', 'active', 'new', 'unread', '{}'::jsonb, $5, $5)`,
     [corpusItemId, SPACE, PROJECT, objectId, now],
@@ -120,13 +102,13 @@ async function createCorpusItem(): Promise<string> {
 
 describe("Experiment Domain (real Postgres)", () => {
   it("runs a manual Experiment end to end and converts a reviewed Interpretation into a material Evidence Signal that accepts into an Iteration", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const hypothesis = await threadSvc.createThread(identity, PROJECT, {
       kind: "hypothesis", statement: "Caching reduces tail latency by 40%",
     });
 
-    const definitions = new ExperimentDefinitionService(pool);
+    const definitions = new ExperimentDefinitionService(db.pool);
     const definition = await definitions.createDefinition(identity, PROJECT, {
       name: "Cache warm-up experiment", objective: "Measure p95 latency with cache warm-up enabled",
       primary_hypothesis_thread_id: hypothesis.id,
@@ -140,7 +122,7 @@ describe("Experiment Domain (real Postgres)", () => {
     await expect(definitions.createVersion(identity, PROJECT, definition.id as string, {
       executor_type: "manual", status: "approved",
     })).rejects.toMatchObject({ statusCode: 422 });
-    const runs = new ExperimentRunService(pool);
+    const runs = new ExperimentRunService(db.pool);
     await expect(runs.createRun(identity, PROJECT, definition.id as string, version.id as string, {}))
       .rejects.toMatchObject({ statusCode: 409 });
     const approvedVersion = await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
@@ -184,13 +166,13 @@ describe("Experiment Domain (real Postgres)", () => {
     const afterRuns = await definitions.getDefinition(identity, PROJECT, definition.id as string);
     expect(afterRuns).toMatchObject({ baseline_run_id: baseline.id, best_run_id: candidateRun.id });
 
-    const interpretations = new ExperimentInterpretationService(pool);
+    const interpretations = new ExperimentInterpretationService(db.pool);
     const interpretation = await interpretations.createInterpretation(identity, PROJECT, definition.id as string, {
       run_ids: [baseline.id, candidateRun.id], verdict: "supports",
       conclusion: "Cache warm-up reduced p95 latency by 42%, supporting the Hypothesis.",
     });
     expect(interpretation).toMatchObject({ status: "draft", resulting_signal_id: null });
-    const signalSvc = new InquirySignalService(pool);
+    const signalSvc = new InquirySignalService(db.pool);
     await expect(signalSvc.createSignal(identity, PROJECT, hypothesis.id as string, {
       classification: "supports",
       experiment_interpretation_id: interpretation.id,
@@ -229,12 +211,12 @@ describe("Experiment Domain (real Postgres)", () => {
   });
 
   it("enforces managed_code_comparison config validation and baseline-first Run ordering", async () => {
-    if (!available || !pool) return;
-    const hypothesis = await new InquiryThreadService(pool).createThread(identity, PROJECT, {
+    if (!db.available) return;
+    const hypothesis = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
       kind: "hypothesis",
       statement: "The managed comparison improves the target metric",
     });
-    const definitions = new ExperimentDefinitionService(pool);
+    const definitions = new ExperimentDefinitionService(db.pool);
     const definition = await definitions.createDefinition(identity, PROJECT, {
       name: "Prompt A/B",
       primary_hypothesis_thread_id: hypothesis.id,
@@ -262,7 +244,7 @@ describe("Experiment Domain (real Postgres)", () => {
     });
     await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
 
-    const runs = new ExperimentRunService(pool);
+    const runs = new ExperimentRunService(db.pool);
     await expect(runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: false }))
       .rejects.toMatchObject({ statusCode: 422 });
 
@@ -284,11 +266,11 @@ describe("Experiment Domain (real Postgres)", () => {
     expect(launched).toMatchObject({ status: "queued", is_baseline: false });
     expect(launched.run_id).toBeTruthy();
     const managedRunId = launched.run_id as string;
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1`,
       [managedRunId],
     )).rows[0]?.count).toBe(1);
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET status='succeeded',output_json=$3::jsonb,ended_at=$4,updated_at=$4 WHERE id=$1 AND space_id=$2`,
       [managedRunId, SPACE, JSON.stringify({ experiment_metrics: { accuracy: 0.91, notes: "stable" } }), new Date().toISOString()],
     );
@@ -303,15 +285,15 @@ describe("Experiment Domain (real Postgres)", () => {
   });
 
   it("requires a primary Hypothesis Thread before the first Run, and the DB rejects a Signal with both or neither source", async () => {
-    if (!available || !pool) return;
-    const definitions = new ExperimentDefinitionService(pool);
+    if (!db.available) return;
+    const definitions = new ExperimentDefinitionService(db.pool);
     const definition = await definitions.createDefinition(identity, PROJECT, { name: "No hypothesis yet" });
     const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
-    const runs = new ExperimentRunService(pool);
+    const runs = new ExperimentRunService(db.pool);
     await expect(runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true }))
       .rejects.toMatchObject({ statusCode: 409 });
 
-    const threadSvc = new InquiryThreadService(pool);
+    const threadSvc = new InquiryThreadService(db.pool);
     const primary = await threadSvc.createThread(identity, PROJECT, {
       kind: "hypothesis", statement: "The primary target must be fixed before evidence collection",
     });
@@ -322,7 +304,7 @@ describe("Experiment Domain (real Postgres)", () => {
     const run = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true });
     await runs.completeRun(identity, PROJECT, definition.id as string, run.id as string, { status: "completed" });
 
-    const interpretations = new ExperimentInterpretationService(pool);
+    const interpretations = new ExperimentInterpretationService(db.pool);
     const interpretation = await interpretations.createInterpretation(identity, PROJECT, definition.id as string, {
       run_ids: [run.id], verdict: "inconclusive",
     });
@@ -332,13 +314,13 @@ describe("Experiment Domain (real Postgres)", () => {
 
     const thread = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Constraint probe Thread" });
     const now = new Date().toISOString();
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO inquiry_evidence_signals (id, space_id, project_id, thread_id, corpus_item_id, experiment_interpretation_id, classification, is_material, dedupe_key, status, created_at)
        VALUES ($1,$2,$3,$4,NULL,NULL,'supports',false,'dk-neither','pending',$5)`,
       [randomUUID(), SPACE, PROJECT, thread.id, now],
     )).rejects.toThrow(/ck_inquiry_evidence_signals_one_source/);
     const corpusItemId = await createCorpusItem();
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO inquiry_evidence_signals (id, space_id, project_id, thread_id, corpus_item_id, experiment_interpretation_id, classification, is_material, dedupe_key, status, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,'supports',false,'dk-both','pending',$7)`,
       [randomUUID(), SPACE, PROJECT, thread.id, corpusItemId, interpretation.id, now],
@@ -346,13 +328,13 @@ describe("Experiment Domain (real Postgres)", () => {
   });
 
   it("rejects cross-domain provenance links and non-Hypothesis primary Threads", async () => {
-    if (!available || !pool) return;
-    const threads = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threads = new InquiryThreadService(db.pool);
     const question = await threads.createThread(identity, PROJECT, {
       kind: "question",
       statement: "This is not a hypothesis",
     });
-    const definitions = new ExperimentDefinitionService(pool);
+    const definitions = new ExperimentDefinitionService(db.pool);
     await expect(definitions.createDefinition(identity, PROJECT, {
       name: "Invalid primary Thread",
       primary_hypothesis_thread_id: question.id,
@@ -379,7 +361,7 @@ describe("Experiment Domain (real Postgres)", () => {
       executor_type: "manual",
     });
     await definitions.approveVersion(identity, PROJECT, definition.id as string, manualVersion.id as string);
-    const runs = new ExperimentRunService(pool);
+    const runs = new ExperimentRunService(db.pool);
     await expect(runs.createRun(identity, PROJECT, definition.id as string, manualVersion.id as string, {
       run_id: randomUUID(),
     })).rejects.toMatchObject({ statusCode: 422 });
@@ -402,7 +384,7 @@ describe("Experiment Domain (real Postgres)", () => {
       value_number: 1,
     })).rejects.toMatchObject({ statusCode: 409 });
 
-    const interpretations = new ExperimentInterpretationService(pool);
+    const interpretations = new ExperimentInterpretationService(db.pool);
     await expect(interpretations.createInterpretation(identity, PROJECT, definition.id as string, {
       run_ids: [randomUUID()],
       verdict: "supports",

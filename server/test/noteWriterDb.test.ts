@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
 import { withNoteWrites } from "../src/modules/knowledge/noteWriter";
 import { blockIds } from "../src/modules/knowledge/noteBlockIds";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 /**
@@ -26,45 +25,31 @@ const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OUTSIDER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[note-writer-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await pool?.end();
-  await database?.stop();
+  if (!db.available) return;
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "note_collection_items", "note_collections", "note_revisions", "notes", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','team',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','team',$2,$2)`, [SPACE, now]);
   for (const [id, name, role] of [[OWNER, "Owner", "owner"], [OUTSIDER, "Outsider", "member"]] as const) {
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [id, name, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [id, name, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`,
       [randomUUID(), SPACE, id, role, now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
@@ -74,7 +59,7 @@ const owner = { spaceId: SPACE, userId: OWNER };
 const outsider = { spaceId: SPACE, userId: OUTSIDER };
 
 async function indexedNote(noteId: string): Promise<{ title: string; content_hash: string } | undefined> {
-  const rows = await pool!.query<{ title: string; content_hash: string }>(
+  const rows = await db.pool.query<{ title: string; content_hash: string }>(
     `SELECT title, content_hash FROM retrieval_objects
       WHERE space_id=$1 AND object_type='note' AND object_id=$2`,
     [SPACE, noteId],
@@ -84,12 +69,12 @@ async function indexedNote(noteId: string): Promise<{ title: string; content_has
 
 describe("shared note writer (real Postgres)", () => {
   it("indexes a Project's starter notes and files them in a stable order", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // The Project path built its own note rows: no summary, and every note at
     // sort_order 0, so the four starter notes were ordered by tie-break.
-    await new ProjectResearchAreaService(pool).initializeArea(owner, PROJECT);
+    await new ProjectResearchAreaService(db.pool).initializeArea(owner, PROJECT);
 
-    const notes = await pool.query<{ id: string; summary: string | null; sort_order: number; project_role: string }>(
+    const notes = await db.pool.query<{ id: string; summary: string | null; sort_order: number; project_role: string }>(
       `SELECT n.object_id AS id, so.summary, nci.sort_order, n.project_role
          FROM notes n
          JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
@@ -106,9 +91,9 @@ describe("shared note writer (real Postgres)", () => {
   });
 
   it("keeps the retrieval index current when an agent writes the note, not only a user", async () => {
-    if (!available || !pool) return;
-    await new ProjectResearchAreaService(pool).initializeArea(owner, PROJECT);
-    const baseline = await pool.query<{ id: string; version: number }>(
+    if (!db.available) return;
+    await new ProjectResearchAreaService(db.pool).initializeArea(owner, PROJECT);
+    const baseline = await db.pool.query<{ id: string; version: number }>(
       `SELECT object_id AS id, version FROM notes WHERE space_id=$1 AND project_role='understanding'`,
       [SPACE],
     );
@@ -120,7 +105,7 @@ describe("shared note writer (real Postgres)", () => {
     // this shape — report seeding, ask-ai, notebook chat, the monitoring
     // reconciler — and all of them used to leave the projection untouched, so
     // a note an agent had maintained for weeks was stale in search.
-    await withNoteWrites(pool, (scope) => scope.write({
+    await withNoteWrites(db.pool, (scope) => scope.write({
       spaceId: SPACE,
       noteId: note.id,
       expectVersion: note.version,
@@ -134,8 +119,8 @@ describe("shared note writer (real Postgres)", () => {
   });
 
   it("refuses to bind a note to a Project the caller cannot write to", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     await expect(
       repository.createNote(outsider, { title: "Mine now", primary_project_id: PROJECT }),
     ).rejects.toMatchObject({ statusCode: 403 });
@@ -147,21 +132,21 @@ describe("shared note writer (real Postgres)", () => {
   });
 
   it("leaves a Project's baseline note in place when an outsider tries to take its role", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // The whole chain: bind a note to someone else's Project, then claim the
     // baseline role, which clears the real holder. The bind is where it stops.
-    await new ProjectResearchAreaService(pool).initializeArea(owner, PROJECT);
-    const before = await pool.query<{ id: string }>(
+    await new ProjectResearchAreaService(db.pool).initializeArea(owner, PROJECT);
+    const before = await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM notes WHERE space_id=$1 AND project_role='understanding'`,
       [SPACE],
     );
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const attacker = await repository.createNote(outsider, { title: "Actually" }) as { id: string };
     await expect(
       repository.updateNote(outsider, attacker.id, { primary_project_id: PROJECT, project_role: "understanding" }),
     ).rejects.toMatchObject({ statusCode: 403 });
 
-    const after = await pool.query<{ id: string }>(
+    const after = await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM notes WHERE space_id=$1 AND project_role='understanding'`,
       [SPACE],
     );
@@ -176,16 +161,16 @@ describe("shared note writer (real Postgres)", () => {
  */
 describe("block ids on notes written before they existed (real Postgres)", () => {
   it("loads an id-less note and stamps it on the next write, leaving its history alone", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const identity = { spaceId: SPACE, userId: OWNER };
     const note = await repository.createNote(identity, { title: "Legacy" }) as { id: string };
 
     // Rewrite the stored document to the pre-block-id shape, exactly as a note
     // saved before this feature would sit in the database.
     const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Older text." }] }] };
-    await pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
-    await pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1`, [note.id, JSON.stringify(legacy)]);
+    await db.pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
+    await db.pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1`, [note.id, JSON.stringify(legacy)]);
 
     const loaded = await repository.getNote(identity, note.id) as { content_json: unknown; version: number };
     expect(blockIds(loaded.content_json)).toEqual([null]);
@@ -198,7 +183,7 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
 
     // The historical revision is untouched — history is evidence, not something
     // to backfill.
-    const revisions = await pool.query<{ content_json: unknown }>(
+    const revisions = await db.pool.query<{ content_json: unknown }>(
       `SELECT content_json FROM note_revisions WHERE note_id = $1 ORDER BY version ASC LIMIT 1`,
       [note.id],
     );
@@ -206,9 +191,9 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
   });
 
   it("anchors an append on the appended block, not on the first pre-existing one", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const identity = { spaceId: SPACE, userId: OWNER };
-    const repository = new PgKnowledgeRepository(pool);
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, { title: "Pre-block-id note" }) as { id: string };
 
     // Exactly the shape every note written before block ids has — and the shape
@@ -220,9 +205,9 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
         { type: "paragraph", content: [{ type: "text", text: "old two" }] },
       ],
     };
-    await pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
+    await db.pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
 
-    const result = await withNoteWrites(pool, (scope) => scope.write({
+    const result = await withNoteWrites(db.pool, (scope) => scope.write({
       spaceId: SPACE,
       noteId: note.id,
       content: { kind: "ops", ops: [{ op: "append", markdown: "THE CAPTURE" }] },
@@ -244,12 +229,12 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
   });
 
   it("stamps a rollback that restores an id-less revision", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const identity = { spaceId: SPACE, userId: OWNER };
     const note = await repository.createNote(identity, { title: "Rollback" }) as { id: string };
     const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Version one." }] }] };
-    await pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1 AND version = 1`, [note.id, JSON.stringify(legacy)]);
+    await db.pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1 AND version = 1`, [note.id, JSON.stringify(legacy)]);
 
     const current = await repository.getNote(identity, note.id) as { version: number };
     await repository.updateNote(identity, note.id, {

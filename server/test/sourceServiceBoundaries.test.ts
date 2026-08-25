@@ -1,17 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import type { Queryable } from "../src/modules/routeUtils/common";
-import { SourceRecipeService } from "../src/modules/sources/sourceRecipeService";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService";
 import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService";
 
 const identity = { spaceId: "space-1", userId: "user-1" };
 
-describe("Source application-service boundaries", () => {
-  it("exposes recipe discovery through the formal recipe service", () => {
-    const service = new SourceRecipeService({} as never, loadConfig({}));
-    const result = service.listPrimitives();
-
-    expect(result.primitives.length).toBeGreaterThan(0);
+/** Input that must be refused at the service boundary, before any SQL runs. */
+describe("Source service boundaries", () => {
+  it("requires a Provider instead of an implementation connector key", async () => {
+    const query = vi.fn();
+    const service = new SourceChannelService({ query } as Queryable, loadConfig({}));
+    await expect(service.create({ spaceId: "space-1", userId: "user-1" }, {
+      connector_key: "custom_source",
+      name: "Bypass attempt",
+    })).rejects.toMatchObject({ statusCode: 422 });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("rejects malformed project binding commands before persistence", async () => {

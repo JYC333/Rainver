@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { DecisionCaseService } from "../src/modules/decisions/caseService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
@@ -17,53 +17,26 @@ const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "66666666-6666-4666-8666-666666666666";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[decisions-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["decision_option_scores", "decision_commitments", "decision_criteria", "decision_options", "decision_cases", "tasks", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
+  await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
 });
 
 describe("Decision Domain (real Postgres)", () => {
   it("golden path: Case referencing a Thread, Options, Criteria, Trade-offs, decide, Commitment, and Decision -> Delivery", async () => {
-    if (!available || !pool) return;
-    const threadSvc = new InquiryThreadService(pool);
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
     const thread = await threadSvc.createThread(identity, PROJECT, { kind: "hypothesis", statement: "Switching providers reduces cost" });
 
-    const cases = new DecisionCaseService(pool);
+    const cases = new DecisionCaseService(db.pool);
     const decisionCase = await cases.createCase(identity, PROJECT, {
       title: "Which provider to switch to",
       framing: "Cost pressure from the current vendor",
@@ -90,7 +63,7 @@ describe("Decision Domain (real Postgres)", () => {
     // Re-scoring the same (option, criterion) pair upserts rather than duplicating.
     const rescored = await cases.scoreOption(identity, PROJECT, decisionCase.id as string, { option_id: optionA.id, criterion_id: criterion.id, score: 5, rationale: "cheaper than expected" });
     expect(rescored).toMatchObject({ score: 5, rationale: "cheaper than expected" });
-    const scoreCount = await pool.query(`SELECT count(*)::int AS n FROM decision_option_scores WHERE decision_case_id=$1`, [decisionCase.id]);
+    const scoreCount = await db.pool.query(`SELECT count(*)::int AS n FROM decision_option_scores WHERE decision_case_id=$1`, [decisionCase.id]);
     expect(scoreCount.rows[0].n).toBe(2);
 
     // A Commitment requires a decided Case — too early while still open.
@@ -108,7 +81,7 @@ describe("Decision Domain (real Postgres)", () => {
     const delivery = await cases.createDeliveryFromCommitment(identity, PROJECT, decisionCase.id as string, commitment.id as string, {});
     const taskId = (delivery.task as { id: string }).id;
     expect(delivery.commitment).toMatchObject({ created_delivery_task_id: taskId });
-    const taskRow = await pool.query<{ project_id: string; task_type: string; metadata_json: { source_decision_commitment_id: string } }>(
+    const taskRow = await db.pool.query<{ project_id: string; task_type: string; metadata_json: { source_decision_commitment_id: string } }>(
       `SELECT project_id, task_type, metadata_json FROM tasks WHERE id=$1`, [taskId],
     );
     expect(taskRow.rows[0]).toMatchObject({ project_id: PROJECT, task_type: "delivery" });
@@ -116,13 +89,13 @@ describe("Decision Domain (real Postgres)", () => {
 
     // Idempotency: a second attempt on the same (already-delivered) Commitment is rejected.
     await expect(cases.createDeliveryFromCommitment(identity, PROJECT, decisionCase.id as string, commitment.id as string, {})).rejects.toMatchObject({ statusCode: 409 });
-    const taskCount = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE metadata_json->>'source_decision_commitment_id' = $1`, [commitment.id]);
+    const taskCount = await db.pool.query(`SELECT count(*)::int AS n FROM tasks WHERE metadata_json->>'source_decision_commitment_id' = $1`, [commitment.id]);
     expect(taskCount.rows[0].n).toBe(1);
   });
 
   it("serializes concurrent Delivery creation without leaving an orphan Task", async () => {
-    if (!available || !pool) return;
-    const cases = new DecisionCaseService(pool);
+    if (!db.available) return;
+    const cases = new DecisionCaseService(db.pool);
     const decisionCase = await cases.createCase(identity, PROJECT, { title: "Concurrent delivery" });
     const option = await cases.addOption(identity, PROJECT, decisionCase.id as string, { title: "Proceed" });
     await cases.decide(identity, PROJECT, decisionCase.id as string, { option_id: option.id });
@@ -132,7 +105,7 @@ describe("Decision Domain (real Postgres)", () => {
       cases.createDeliveryFromCommitment(identity, PROJECT, decisionCase.id as string, commitment.id as string, {}),
     ]);
     expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
-    const tasks = await pool.query<{ count: number }>(
+    const tasks = await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM tasks WHERE metadata_json->>'source_decision_commitment_id'=$1`,
       [commitment.id],
     );
@@ -140,8 +113,8 @@ describe("Decision Domain (real Postgres)", () => {
   });
 
   it("rejects a source Thread that does not belong to the Project, and a decided Option from a different Case", async () => {
-    if (!available || !pool) return;
-    const cases = new DecisionCaseService(pool);
+    if (!db.available) return;
+    const cases = new DecisionCaseService(db.pool);
     await expect(cases.createCase(identity, PROJECT, { title: "x", source_thread_ids: [randomUUID()] })).rejects.toMatchObject({ statusCode: 422 });
 
     const caseOne = await cases.createCase(identity, PROJECT, { title: "Case One" });
@@ -151,8 +124,8 @@ describe("Decision Domain (real Postgres)", () => {
   });
 
   it("rejects a non-integer or missing Trade-off score instead of silently storing it", async () => {
-    if (!available || !pool) return;
-    const cases = new DecisionCaseService(pool);
+    if (!db.available) return;
+    const cases = new DecisionCaseService(db.pool);
     const decisionCase = await cases.createCase(identity, PROJECT, { title: "Case" });
     const option = await cases.addOption(identity, PROJECT, decisionCase.id as string, { title: "Option" });
     const criterion = await cases.addCriterion(identity, PROJECT, decisionCase.id as string, { name: "Cost" });
@@ -161,7 +134,7 @@ describe("Decision Domain (real Postgres)", () => {
     await expect(cases.scoreOption(identity, PROJECT, decisionCase.id as string, { option_id: option.id, criterion_id: criterion.id, score: "5" })).rejects.toMatchObject({ statusCode: 422 });
     await expect(cases.scoreOption(identity, PROJECT, decisionCase.id as string, { option_id: option.id, criterion_id: criterion.id, score: 3.5 })).rejects.toMatchObject({ statusCode: 422 });
     await expect(cases.scoreOption(identity, PROJECT, decisionCase.id as string, { option_id: option.id, criterion_id: criterion.id, score: 6 })).rejects.toMatchObject({ statusCode: 422 });
-    const count = await pool.query(`SELECT count(*)::int AS n FROM decision_option_scores WHERE decision_case_id=$1`, [decisionCase.id]);
+    const count = await db.pool.query(`SELECT count(*)::int AS n FROM decision_option_scores WHERE decision_case_id=$1`, [decisionCase.id]);
     expect(count.rows[0].n).toBe(0);
   });
 });

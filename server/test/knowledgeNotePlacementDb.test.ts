@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config";
 import { withTransaction } from "../src/db/tx";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
@@ -9,7 +8,7 @@ import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReord
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { buildModuleServer } from "./support/moduleServer";
 import { knowledgeModule } from "../src/modules/knowledge";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 /**
@@ -24,48 +23,33 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    app = buildModuleServer(loadConfig({
-      SERVER_DATABASE_URL: database.getConnectionUri(),
-      SERVER_INTERNAL_TOKEN: "test-internal-token",
-      AGENT_SPACE_HOME: "/tmp/agent-space-note-placement-test",
-    }), [knowledgeModule]);
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[knowledge-note-placement-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await database?.stop();
+  if (!db.available || !app) return;
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
+  app = buildModuleServer(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    SERVER_INTERNAL_TOKEN: "test-internal-token",
+    AGENT_SPACE_HOME: "/tmp/agent-space-note-placement-test",
+  }), [knowledgeModule]);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available || !app) return;
   await resetTables(
-    pool,
+    db.pool,
     ["notes", "note_collections", "note_collection_items", "space_objects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
-  await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Member','active',$2,$2)`, [OTHER_USER, now]);
-  await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, OTHER_USER, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Member','active',$2,$2)`, [OTHER_USER, now]);
+  await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, OTHER_USER, now]);
 });
 
 const identity = { spaceId: SPACE, userId: USER };
@@ -75,7 +59,7 @@ interface Placement { collection_id: string; sort_order: number }
 async function makeFolder(name: string): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
      VALUES ($1,$2,NULL,$3,'normal',0,false,false,$4,$4)`,
     [id, SPACE, name, now],
@@ -93,8 +77,8 @@ function orderIn(note: unknown, collectionId: string): number | undefined {
 
 describe("note placements (real Postgres)", () => {
   it("reports every folder a note is placed in", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const note = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
@@ -107,8 +91,8 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("reorders one placement without disturbing the note's other placement", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const shared = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
@@ -119,7 +103,7 @@ describe("note placements (real Postgres)", () => {
     // Move the shared note to the front of `first`. Its placement in `second`
     // must be untouched — the previous UPDATE matched on note_id alone and
     // dragged that row into `first` too.
-    await withTransaction(pool, (client) => persistNotesTreeReorder(client, identity, {
+    await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
       kind: "notes",
       updates: [
         { noteId: shared.id, fromCollectionId: first, collectionId: first, sortOrder: 0 },
@@ -134,15 +118,15 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("moves only the addressed placement when a note is dragged between folders", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const third = await makeFolder("Third");
     const note = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
     await repository.addNotePlacement(identity, note.id, second);
 
-    await withTransaction(pool, (client) => persistNotesTreeReorder(client, identity, {
+    await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
       kind: "notes",
       updates: [{ noteId: note.id, fromCollectionId: first, collectionId: third, sortOrder: 0 }],
     }));
@@ -153,13 +137,13 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("refuses a reorder that names a folder the note is not placed in", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const elsewhere = await makeFolder("Elsewhere");
     const note = await repository.createNote(identity, { title: "Only here", collection_id: first }) as { id: string };
 
-    await expect(withTransaction(pool, (client) => persistNotesTreeReorder(client, identity, {
+    await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
       kind: "notes",
       updates: [{ noteId: note.id, fromCollectionId: elsewhere, collectionId: elsewhere, sortOrder: 0 }],
     }))).rejects.toMatchObject({ statusCode: 404 });
@@ -169,8 +153,8 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("rejects placing a note twice in the same folder", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const folder = await makeFolder("Folder");
     const note = await repository.createNote(identity, { title: "Note", collection_id: folder }) as { id: string };
 
@@ -179,8 +163,8 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("removes a placement but refuses to remove the last one", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const note = await repository.createNote(identity, { title: "Note", collection_id: first }) as { id: string };
@@ -197,8 +181,8 @@ describe("note placements (real Postgres)", () => {
   });
 
   it("carries both placement actions through the public routes", async () => {
-    if (!available || !pool || !app) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const note = await repository.createNote(identity, { title: "Note", collection_id: first }) as { id: string };
@@ -225,15 +209,15 @@ describe("note placements (real Postgres)", () => {
    * open. The gate has to come from the note's `space_objects` row.
    */
   it("refuses to reorder a placement of a note the caller cannot read", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const first = await makeFolder("First");
     const second = await makeFolder("Second");
     const mine = await repository.createNote(identity, { title: "Private", collection_id: first }) as { id: string };
-    await pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [mine.id]);
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [mine.id]);
 
     const stranger = { spaceId: SPACE, userId: OTHER_USER };
-    await expect(withTransaction(pool, (client) => persistNotesTreeReorder(client, stranger, {
+    await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, stranger, {
       kind: "notes",
       updates: [{ noteId: mine.id, fromCollectionId: first, collectionId: second, sortOrder: 0 }],
     }))).rejects.toMatchObject({ statusCode: 404 });
@@ -242,7 +226,7 @@ describe("note placements (real Postgres)", () => {
       .toEqual([{ collection_id: first, sort_order: 0 }]);
 
     // The owner is unaffected — the refusal is about who is asking.
-    await withTransaction(pool, (client) => persistNotesTreeReorder(client, identity, {
+    await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
       kind: "notes",
       updates: [{ noteId: mine.id, fromCollectionId: first, collectionId: second, sortOrder: 0 }],
     }));

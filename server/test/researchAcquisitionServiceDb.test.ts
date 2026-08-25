@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
 import { ResearchAcquisitionService } from "../src/modules/projectResearch/pipeline/researchAcquisitionService";
@@ -19,55 +19,26 @@ const SPACE = "21111111-1111-4111-8111-111111111111";
 const OWNER = "2aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "25555555-5555-4555-8555-555555555555";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[research-acquisition-service-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["jobs", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
+  await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
 });
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 describe("ResearchAcquisitionService (real Postgres)", () => {
   it("rejects a thread id that is not an active Question Thread", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await expect(
-      new ResearchAcquisitionService(pool).startAcquisition(identity, PROJECT, {
+      new ResearchAcquisitionService(db.pool).startAcquisition(identity, PROJECT, {
         threadId: randomUUID(),
         originRoomId: null,
         originSessionId: null,
@@ -76,12 +47,12 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
   });
 
   it("enqueues a research_pipeline_start job carrying the Thread and Room origin", async () => {
-    if (!available || !pool) return;
-    const thread = await new InquiryThreadService(pool).createThread(identity, PROJECT, {
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
       kind: "question",
       statement: "How should agents remember?",
     });
-    const result = await new ResearchAcquisitionService(pool).startAcquisition(identity, PROJECT, {
+    const result = await new ResearchAcquisitionService(db.pool).startAcquisition(identity, PROJECT, {
       threadId: String(thread.id),
       intentNote: "test kickoff",
       originRoomId: "room-1",
@@ -89,7 +60,7 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
     });
     expect(result).toEqual({ status: "queued", thread_id: String(thread.id) });
 
-    const jobs = await pool.query<{ payload_json: Record<string, unknown>; status: string }>(
+    const jobs = await db.pool.query<{ payload_json: Record<string, unknown>; status: string }>(
       `SELECT payload_json, status FROM jobs WHERE space_id=$1 AND job_type=$2`,
       [SPACE, RESEARCH_PIPELINE_START_JOB],
     );
@@ -105,12 +76,12 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
   });
 
   it("no-ops with already_starting when a pipeline job for the Thread is already pending", async () => {
-    if (!available || !pool) return;
-    const thread = await new InquiryThreadService(pool).createThread(identity, PROJECT, {
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
       kind: "question",
       statement: "What drives agent reliability?",
     });
-    const service = new ResearchAcquisitionService(pool);
+    const service = new ResearchAcquisitionService(db.pool);
     const first = await service.startAcquisition(identity, PROJECT, {
       threadId: String(thread.id),
       originRoomId: null,
@@ -125,7 +96,7 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
     });
     expect(second).toEqual({ status: "already_starting", thread_id: String(thread.id) });
 
-    const jobs = await pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
+    const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
     expect(jobs.rows).toHaveLength(1);
   });
 
@@ -135,12 +106,12 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
   // duplicating real LLM-assessment/live-search pipeline cost. Same idiom as
   // InquiryThreadProposalService's coalesce lock.
   it("serializes concurrent calls for the same Thread so only one job is enqueued", async () => {
-    if (!available || !pool) return;
-    const thread = await new InquiryThreadService(pool).createThread(identity, PROJECT, {
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
       kind: "question",
       statement: "Does concurrent start_acquisition enqueue exactly one job?",
     });
-    const service = new ResearchAcquisitionService(pool);
+    const service = new ResearchAcquisitionService(db.pool);
     const results = await Promise.all(
       Array.from({ length: 5 }, () =>
         service.startAcquisition(identity, PROJECT, { threadId: String(thread.id), originRoomId: null, originSessionId: null }),
@@ -149,7 +120,7 @@ describe("ResearchAcquisitionService (real Postgres)", () => {
     expect(results.filter((result) => result.status === "queued")).toHaveLength(1);
     expect(results.filter((result) => result.status === "already_starting")).toHaveLength(4);
 
-    const jobs = await pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
+    const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
     expect(jobs.rows).toHaveLength(1);
   });
 });

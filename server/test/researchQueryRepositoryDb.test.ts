@@ -1,57 +1,43 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, describe, expect, it } from "vitest";
 import type { ResearchContext } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import { ResearchContextRepository } from "../src/modules/projectResearch/question/researchContextRepository";
 import { ResearchQueryRepository } from "../src/modules/research/queryPlanning/repository";
 import { MAX_RESEARCH_QUERY_ATTEMPTS } from "../src/modules/research/queryPlanning/queryPolicy";
 import { loadProtocol } from "../src/modules/providers/protocolRuntime";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 const OTHER_PROJECT = "66666666-6666-4666-8666-666666666666";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    const now = new Date().toISOString();
-    await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Research','personal',$2,$2)`, [SPACE, now]);
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
-    await pool.query(
-      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
-       VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-      [randomUUID(), SPACE, USER, now],
+  if (!db.available) return;
+  const now = new Date().toISOString();
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Research','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+     VALUES ($1,$2,$3,'owner','active',$4,$4)`,
+    [randomUUID(), SPACE, USER, now],
+  );
+  for (const [id, name] of [[PROJECT, "Project"], [OTHER_PROJECT, "Other"]]) {
+    await db.pool.query(
+      `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'active',$5,$5)`,
+      [id, SPACE, USER, name, now],
     );
-    for (const [id, name] of [[PROJECT, "Project"], [OTHER_PROJECT, "Other"]]) {
-      await pool.query(
-        `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
-         VALUES ($1,$2,$3,$4,'active',$5,$5)`,
-        [id, SPACE, USER, name, now],
-      );
-    }
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[research-query-repository-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
 });
 
 describe("research query persistence (real Postgres)", () => {
   it("persists immutable context versions and an independently selected provider attempt", async () => {
-    if (!available || !pool) return;
-    const contexts = new ResearchContextRepository(pool);
+    if (!db.available) return;
+    const contexts = new ResearchContextRepository(db.pool);
     const context = await contexts.create({ spaceId: SPACE, userId: USER }, PROJECT, validContext(), {
       assessment: { answerable: true },
       provenance: { source: "question_assessment" },
@@ -62,7 +48,7 @@ describe("research query persistence (real Postgres)", () => {
     });
     expect([context.version, next.version]).toEqual([1, 2]);
 
-    const queries = new ResearchQueryRepository(pool);
+    const queries = new ResearchQueryRepository(db.pool);
     const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
       projectId: PROJECT,
       researchContextVersionId: context.id,
@@ -127,9 +113,9 @@ describe("research query persistence (real Postgres)", () => {
   });
 
   it("enforces sequential attempts, the attempt ceiling, and immutable selection", async () => {
-    if (!available || !pool) return;
-    const context = await new ResearchContextRepository(pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
-    const queries = new ResearchQueryRepository(pool);
+    if (!db.available) return;
+    const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
+    const queries = new ResearchQueryRepository(db.pool);
     const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
       projectId: PROJECT,
       researchContextVersionId: context.id,
@@ -180,9 +166,9 @@ describe("research query persistence (real Postgres)", () => {
   });
 
   it("resets an unavailable provider plan for retry, scoping new attempts into a fresh round", async () => {
-    if (!available || !pool) return;
-    const context = await new ResearchContextRepository(pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
-    const queries = new ResearchQueryRepository(pool);
+    if (!db.available) return;
+    const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
+    const queries = new ResearchQueryRepository(db.pool);
     const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
       projectId: PROJECT,
       researchContextVersionId: context.id,
@@ -248,9 +234,9 @@ describe("research query persistence (real Postgres)", () => {
   });
 
   it("resets an already-selected provider plan too, clearing its old selection so a retry can record its own — but refuses once the strategy is materialized", async () => {
-    if (!available || !pool) return;
-    const context = await new ResearchContextRepository(pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
-    const queries = new ResearchQueryRepository(pool);
+    if (!db.available) return;
+    const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
+    const queries = new ResearchQueryRepository(db.pool);
     const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
       projectId: PROJECT,
       researchContextVersionId: context.id,
@@ -307,14 +293,14 @@ describe("research query persistence (real Postgres)", () => {
 
     // Once the strategy is materialized, no further retry is allowed on this
     // plan — a source channel/binding already references the selection.
-    await pool!.query(`UPDATE research_query_strategies SET status='materialized', materialized_at=$2 WHERE id=$1`, [strategy.id, new Date().toISOString()]);
+    await db.pool.query(`UPDATE research_query_strategies SET status='materialized', materialized_at=$2 WHERE id=$1`, [strategy.id, new Date().toISOString()]);
     await expect(queries.resetProviderPlan(SPACE, plan.id)).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("does not allow a strategy to adopt a context from another project", async () => {
-    if (!available || !pool) return;
-    const context = await new ResearchContextRepository(pool).create({ spaceId: SPACE, userId: USER }, OTHER_PROJECT, validContext());
-    const queries = new ResearchQueryRepository(pool);
+    if (!db.available) return;
+    const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, OTHER_PROJECT, validContext());
+    const queries = new ResearchQueryRepository(db.pool);
     await expect(queries.createStrategy({ spaceId: SPACE, userId: USER }, {
       projectId: PROJECT,
       researchContextVersionId: context.id,

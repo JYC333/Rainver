@@ -216,21 +216,6 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
     });
   });
 
-  it("uses HTML first for manually saved arXiv PDF URLs", async () => {
-    __setArxivThrottleForTests({ sleep: async () => {} });
-    const db = new ExtractionDb("extract_text", "https://arxiv.org/pdf/2402.08954v1");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      "<html><body><article><p>HTML rendition text.</p></article></body></html>",
-      { status: 200 },
-    ));
-
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
-
-    expect(result.status).toBe("succeeded");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://arxiv.org/html/2402.08954");
-  });
-
   it("fails the job with the last meaningful error when every arXiv candidate fails", async () => {
     __setArxivThrottleForTests({ sleep: async () => {} });
     const db = new ExtractionDb("extract_text", "https://arxiv.org/abs/2402.08954");

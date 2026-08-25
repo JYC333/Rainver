@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
 import { PgUsageRepository } from "../src/modules/usage/repository";
@@ -13,57 +12,36 @@ const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const ADMIN = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OCCURRED_AT = new Date("2026-07-10T12:00:00.000Z");
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[usage-oversight] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 async function seed(mode: OversightMode): Promise<PgUsageRepository> {
   await resetTables(
-    pool!,
+    db.pool,
     ["content_access_grants", "token_usage_events", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   for (const id of [OWNER, MEMBER, ADMIN]) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
     );
   }
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, oversight_mode, created_at, updated_at)
      VALUES ($1, 'Usage Space', 'team', $2, $3, now(), now())`,
     [SPACE, OWNER, mode],
   );
   for (const [userId, role] of [[OWNER, "owner"], [MEMBER, "member"], [ADMIN, "admin"]] as const) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'active', now(), now())`,
       [randomUUID(), SPACE, userId, role],
     );
   }
 
-  const repository = new PgUsageRepository(pool!);
+  const repository = new PgUsageRepository(db.pool);
   const event = normalizeUsageObservation(
     {
       space_id: SPACE,
@@ -93,7 +71,7 @@ async function seed(mode: OversightMode): Promise<PgUsageRepository> {
 
 describe("usage oversight visibility", () => {
   it("persists catalog zero separately from an unknown cost", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const repository = await seed("none");
     await repository.appendEvent(normalizeUsageObservation(
       {
@@ -121,7 +99,7 @@ describe("usage oversight visibility", () => {
       OCCURRED_AT,
     ));
 
-    const rows = await pool.query<{
+    const rows = await db.pool.query<{
       idempotency_key: string;
       estimated_cost_usd: string | null;
       cost_accuracy: string;
@@ -155,7 +133,7 @@ describe("usage oversight visibility", () => {
   ])(
     "oversight_mode=%s exposes member-private usage to an admin as %i aggregate event(s) and %i detail event(s)",
     async (mode, aggregateCount, detailCount) => {
-      if (!available || !pool) return;
+      if (!db.available) return;
       const repository = await seed(mode);
       const filters = {
         activeSpaceId: SPACE,

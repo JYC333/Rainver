@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgProjectRepository } from "../src/modules/projects/repository";
 import { ProjectKernelService } from "../src/modules/projects/kernelService";
@@ -24,54 +23,37 @@ const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const VIEWER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const HOST = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[project-kernel-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_operations", "workspace_locations", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`,
     [SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
     [HOST, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $2, $2)`,
     [HOST, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES
        ($1, 'Owner', 'active', $4, $4), ($2, 'Outsider', 'active', $4, $4), ($3, 'Viewer', 'active', $4, $4)`,
     [OWNER, OUTSIDER, VIEWER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES
        ($1, $2, $3, 'owner', 'active', $5, $5), ($4, $2, $6, 'member', 'active', $5, $5)`,
     [randomUUID(), SPACE, OWNER, randomUUID(), now, VIEWER],
@@ -96,21 +78,21 @@ const viewerIdentity = { spaceId: SPACE, userId: VIEWER };
 
 describe("Project Kernel (real Postgres)", () => {
   it("creates a Project with Research as the default Primary Mode and an initial Mode Transition", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
     // How the Project advances is the only thing creation presets.
     expect(project.primary_mode).toBe("research");
     expect(project.active_brief_version_id).toBeTruthy();
 
-    const transitions = await new ProjectKernelService(pool).listModeTransitions(ownerIdentity, project.id as string);
+    const transitions = await new ProjectKernelService(db.pool).listModeTransitions(ownerIdentity, project.id as string);
     expect(transitions).toHaveLength(1);
     expect(transitions[0]).toMatchObject({ from_mode: null, to_mode: "research", reason: "project_created" });
   });
 
   it("loads a newly created Project summary when it has no Project Folders", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
 
     await expect(repo.summary(ownerIdentity, project.id as string)).resolves.toMatchObject({
@@ -122,10 +104,10 @@ describe("Project Kernel (real Postgres)", () => {
   /** Creation binds no Sources. The Project Template that used to do so is
    *  gone, and a Space's Sources are bound from the Project's Sources Area. */
   it("binds no Project Source at creation", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Lit Review" });
-    const bindings = await pool.query(
+    const bindings = await db.pool.query(
       `SELECT id FROM project_source_bindings WHERE space_id = $1 AND project_id = $2`,
       [SPACE, project.id],
     );
@@ -133,9 +115,9 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("moves the active Brief pointer only after review and publish", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, {
       name: "Brief Project",
       current_focus: "Ship the context cutover",
@@ -203,13 +185,13 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("binds Work Context Setup to published Project context only", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
-    const work = new WorkContextService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
+    const work = new WorkContextService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Runtime Context Project" });
     const privateAgentId = randomUUID();
-    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Private Agent','active',$4,$4,'private','full')`, [privateAgentId, SPACE, OWNER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Private Agent','active',$4,$4,'private','full')`, [privateAgentId, SPACE, OWNER, new Date().toISOString()]);
     await expect(work.create(viewerIdentity, {
       base_version: null, reason: "test setup",
       work_context_scope_id: randomUUID(), scope_kind: "direct_session", project_id: null,
@@ -222,10 +204,10 @@ describe("Project Kernel (real Postgres)", () => {
     await kernel.transitionInstruction(ownerIdentity, project.id as string, instruction.id as string, true);
 
     const policyId = randomUUID();
-    await pool.query(`INSERT INTO runtime_context_policy_versions (id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,reason,created_by_user_id,created_at) VALUES ($1,$2,'space',$2,1,'{"constraints":{},"preferences":{}}','{}','test',$3,$4)`, [policyId, SPACE, OWNER, new Date().toISOString()]);
-    await pool.query(`INSERT INTO runtime_context_policy_bindings (space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at) VALUES ($1,'space',$1,$2,$3,$4)`, [SPACE, policyId, OWNER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO runtime_context_policy_versions (id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,reason,created_by_user_id,created_at) VALUES ($1,$2,'space',$2,1,'{"constraints":{},"preferences":{}}','{}','test',$3,$4)`, [policyId, SPACE, OWNER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO runtime_context_policy_bindings (space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at) VALUES ($1,'space',$1,$2,$3,$4)`, [SPACE, policyId, OWNER, new Date().toISOString()]);
     const unboundDirectSession = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,'active',$4,$4)`,
       [unboundDirectSession, SPACE, OWNER, new Date().toISOString()],
@@ -249,7 +231,7 @@ describe("Project Kernel (real Postgres)", () => {
     )).resolves.toMatchObject({ id: bootstrappedDirect.id, version: 1 });
     const initiallyInstructionlessProject = await repo.create(ownerIdentity, { name: "Initially Instructionless" });
     const initiallyInstructionlessSession = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'active',$5,$5)`,
       [initiallyInstructionlessSession, SPACE, OWNER, initiallyInstructionlessProject.id, new Date().toISOString()],
@@ -279,7 +261,7 @@ describe("Project Kernel (real Postgres)", () => {
     );
     await kernel.transitionInstruction(ownerIdentity, initiallyInstructionlessProject.id as string, firstInstruction.id as string, false);
     await kernel.transitionInstruction(ownerIdentity, initiallyInstructionlessProject.id as string, firstInstruction.id as string, true);
-    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    await expect(new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE,
       initiallyInstructionlessProject.id as string,
       initiallyInstructionlessSession,
@@ -289,7 +271,7 @@ describe("Project Kernel (real Postgres)", () => {
     )).rejects.toMatchObject({ statusCode: 409 });
     const boundFolderId = randomUUID();
     const otherFolderId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_folders
          (id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
           protected,system_managed,created_at,updated_at)
@@ -297,7 +279,7 @@ describe("Project Kernel (real Postgres)", () => {
               ($5,$2,$3,$4,'Other Folder','active','code',false,false,false,$6,$6)`,
       [boundFolderId, SPACE, project.id, OWNER, otherFolderId, new Date().toISOString()],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO workspace_locations (
          id,space_id,project_folder_id,execution_host_id,execution_host_kind,
          execution_ready,status,preferred,created_at,updated_at
@@ -306,9 +288,9 @@ describe("Project Kernel (real Postgres)", () => {
       [SPACE, boundFolderId, otherFolderId, HOST],
     );
     const otherPrivateAgentId = randomUUID();
-    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Other Private Agent','active',$4,$4,'private','full')`, [otherPrivateAgentId, SPACE, OWNER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Other Private Agent','active',$4,$4,'private','full')`, [otherPrivateAgentId, SPACE, OWNER, new Date().toISOString()]);
     const sessionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions
          (id,space_id,user_id,project_id,project_folder_id,agent_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$7)`,
@@ -388,7 +370,7 @@ describe("Project Kernel (real Postgres)", () => {
     });
     await kernel.submitBriefForReview(ownerIdentity, project.id as string, replacementBrief.id as string);
     await kernel.publishBrief(ownerIdentity, project.id as string, replacementBrief.id as string);
-    const pinnedContext = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    const pinnedContext = await new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE,
       null,
       sessionId,
@@ -415,7 +397,7 @@ describe("Project Kernel (real Postgres)", () => {
     const replacementInstruction = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Replacement rules", instruction_text: "Use the new checklist." });
     await kernel.transitionInstruction(ownerIdentity, project.id as string, replacementInstruction.id as string, false);
     await kernel.transitionInstruction(ownerIdentity, project.id as string, replacementInstruction.id as string, true);
-    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    await expect(new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE, project.id as string, sessionId, OWNER,
       { type: "work_context_setup", id: setup.id as string, version: String(setup.version) },
       { brief: null, instruction: null },
@@ -428,7 +410,7 @@ describe("Project Kernel (real Postgres)", () => {
       retrieval_preferences: {}, continuity_preferences: {},
     });
     expect(refreshedSetup).toMatchObject({ version: 2, project_instruction_version_id: replacementInstruction.id });
-    const refreshedAuthority = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    const refreshedAuthority = await new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE, project.id as string, sessionId, OWNER,
       { type: "work_context_setup", id: refreshedSetup.id as string, version: String(refreshedSetup.version) },
       { brief: null, instruction: null },
@@ -463,24 +445,24 @@ describe("Project Kernel (real Postgres)", () => {
       excluded_refs: [{ type: "project_instruction_version", id: replacementInstruction.id as string }],
       retrieval_preferences: {}, continuity_preferences: {},
     })).rejects.toMatchObject({ statusCode: 422 });
-    const excludedBrief = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    const excludedBrief = await new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE, project.id as string, sessionId, OWNER,
       { type: "work_context_setup", id: exclusionSetup.id as string, version: String(exclusionSetup.version) },
       { brief: null, instruction: null },
     );
     expect(excludedBrief.brief).toBeNull();
 
-    await pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
     const roomId = randomUUID();
     const roomSessionId = randomUUID();
     const roomAgentId = randomUUID();
     const roomAgentMemberId = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Room Agent','active',$4,$4,'space_shared','full')`, [roomAgentId, SPACE, OWNER, now]);
-    await pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Context room','active',$5,$5)`, [roomId, SPACE, project.id, OWNER, now]);
-    await pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`, [roomAgentMemberId, SPACE, roomId, roomAgentId, now]);
-    await pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',$7,$7),($5,$2,$3,$6,'member','active',$7,$7)`, [randomUUID(), SPACE, roomId, OWNER, randomUUID(), VIEWER, now]);
-    await pool.query(`INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`, [roomSessionId, SPACE, project.id, roomId, now]);
+    await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Room Agent','active',$4,$4,'space_shared','full')`, [roomAgentId, SPACE, OWNER, now]);
+    await db.pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Context room','active',$5,$5)`, [roomId, SPACE, project.id, OWNER, now]);
+    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`, [roomAgentMemberId, SPACE, roomId, roomAgentId, now]);
+    await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',$7,$7),($5,$2,$3,$6,'member','active',$7,$7)`, [randomUUID(), SPACE, roomId, OWNER, randomUUID(), VIEWER, now]);
+    await db.pool.query(`INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`, [roomSessionId, SPACE, project.id, roomId, now]);
     const roomInput = {
       base_version: null, reason: "test room setup",
       work_context_scope_id: roomAgentMemberId, scope_kind: "room_recipient" as const, project_id: project.id as string,
@@ -504,19 +486,19 @@ describe("Project Kernel (real Postgres)", () => {
     const otherProject = await repo.create(ownerIdentity, { name: "Other Runtime Context Project" });
     await expect(work.create(ownerIdentity, { ...roomInput, project_id: otherProject.id as string }))
       .rejects.toMatchObject({ statusCode: 422 });
-    await pool.query(`UPDATE project_members SET status='revoked', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`UPDATE project_members SET status='revoked', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
     await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
-    await pool.query(`UPDATE project_members SET status='active', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
-    await pool.query(`UPDATE room_user_members SET status='removed', updated_at=$4 WHERE room_id=$1 AND space_id=$2 AND user_id=$3`, [roomId, SPACE, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`UPDATE project_members SET status='active', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`UPDATE room_user_members SET status='removed', updated_at=$4 WHERE room_id=$1 AND space_id=$2 AND user_id=$3`, [roomId, SPACE, VIEWER, new Date().toISOString()]);
     await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
-    await expect(new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    await expect(new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE, project.id as string, roomAgentMemberId, VIEWER,
       { type: "work_context_setup", id: viewerRoomSetup.id as string, version: String(viewerRoomSetup.version) },
       { brief: null, instruction: null },
     )).rejects.toMatchObject({ statusCode: 404 });
 
     const restrictivePolicyId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runtime_context_policy_versions
          (id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,reason,created_by_user_id,created_at)
        VALUES ($1,$2,'space',$2,2,$3::jsonb,'{}','restrict setup',$4,$5)`,
@@ -531,7 +513,7 @@ describe("Project Kernel (real Postgres)", () => {
         preferences: { retrieval_enabled: false },
       }), OWNER, new Date().toISOString()],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE runtime_context_policy_bindings
           SET active_version_id=$1, updated_by_user_id=$2, updated_at=$3
         WHERE space_id=$4 AND scope_type='space' AND scope_id=$4`,
@@ -550,7 +532,7 @@ describe("Project Kernel (real Postgres)", () => {
       project_instruction_version_id: null,
       project_instruction_enabled: false,
     });
-    const policyOmittedContext = await new PgRuntimeContextAcquisitionRepository(pool).loadPublishedProjectContext(
+    const policyOmittedContext = await new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
       SPACE, project.id as string, sessionId, OWNER,
       { type: "work_context_setup", id: policyOmitted.id as string, version: String(policyOmitted.version) },
       { brief: null, instruction: null },
@@ -574,11 +556,11 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("does not publish Project instructions after co-owner authority is revoked concurrently", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Authority Race Project" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'owner','active',now(),now())`,
       [randomUUID(), SPACE, project.id, VIEWER],
@@ -589,7 +571,7 @@ describe("Project Kernel (real Postgres)", () => {
     });
     await kernel.transitionInstruction(viewerIdentity, project.id as string, instruction.id as string, false);
 
-    const revocation = await pool.connect();
+    const revocation = await db.pool.connect();
     try {
       await revocation.query("BEGIN");
       await revocation.query(
@@ -624,18 +606,18 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("does not create or submit Project Brief drafts after writer authority is revoked concurrently", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Brief Writer Race Project" });
     const memberId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
       [memberId, SPACE, project.id, VIEWER],
     );
 
-    const revocation = await pool.connect();
+    const revocation = await db.pool.connect();
     try {
       await revocation.query("BEGIN");
       await revocation.query(
@@ -662,7 +644,7 @@ describe("Project Kernel (real Postgres)", () => {
       await revocation.query("COMMIT");
       await creatingRejected;
 
-      await pool.query(
+      await db.pool.query(
         `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
          VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
         [randomUUID(), SPACE, project.id, VIEWER],
@@ -706,15 +688,15 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("restricts Project Instruction drafts to owner-level authority and validates the DTO", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Instruction Authority Project" });
-    await pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, project.id, VIEWER, new Date().toISOString()]);
     await expect(kernel.createInstructionVersion(viewerIdentity, project.id as string, { title: "Unsafe", instruction_text: "Do it" })).rejects.toMatchObject({ statusCode: 403 });
     const ownerDraft = await kernel.createInstructionVersion(ownerIdentity, project.id as string, { title: "Owner draft", instruction_text: "Use the checklist" });
     await expect(kernel.transitionInstruction(viewerIdentity, project.id as string, ownerDraft.id as string, false)).rejects.toMatchObject({ statusCode: 403 });
-    await pool.query(`UPDATE project_members SET role='owner', updated_at=$4 WHERE space_id=$1 AND project_id=$2 AND user_id=$3`, [SPACE, project.id, VIEWER, new Date().toISOString()]);
+    await db.pool.query(`UPDATE project_members SET role='owner', updated_at=$4 WHERE space_id=$1 AND project_id=$2 AND user_id=$3`, [SPACE, project.id, VIEWER, new Date().toISOString()]);
     await expect(repo.get(viewerIdentity, project.id as string)).resolves.toMatchObject({
       current_user_can_approve_context: true,
     });
@@ -732,12 +714,12 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("database constraints keep the active Brief pointer inside its Project", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
     const first = await repo.create(ownerIdentity, { name: "First Brief Project" });
     const second = await repo.create(ownerIdentity, { name: "Second Brief Project" });
     await expect(
-      pool.query(
+      db.pool.query(
         `UPDATE projects SET active_brief_version_id=$1 WHERE id=$2 AND space_id=$3`,
         [second.active_brief_version_id, first.id, SPACE],
       ),
@@ -745,9 +727,9 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("a Mode transition changes presentation metadata and its append-only log while Workspace-owned data is untouched", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     projectModeProjectionRegistry.register({
       mode: "delivery",
       async getOverviewProjection() {
@@ -756,7 +738,7 @@ describe("Project Kernel (real Postgres)", () => {
     }, "project_kernel_test");
     const project = await repo.create(ownerIdentity, { name: "Mode Project" });
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
        VALUES ($1, $2, $3, 'custom', 'Untouched op', 'active', '{}'::jsonb, $4, $4)`,
       [randomUUID(), SPACE, project.id, now],
@@ -771,7 +753,7 @@ describe("Project Kernel (real Postgres)", () => {
     const updated = await repo.get(ownerIdentity, project.id as string);
     expect(updated?.primary_mode).toBe("delivery");
 
-    const opStatus = await pool.query<{ status: string }>(
+    const opStatus = await db.pool.query<{ status: string }>(
       `SELECT status FROM project_operations WHERE space_id = $1 AND project_id = $2`,
       [SPACE, project.id],
     );
@@ -782,9 +764,9 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("rejects an invalid to_mode", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Mode Project" });
     await expect(
       kernel.transitionMode(ownerIdentity, project.id as string, { to_mode: "not_a_mode" }),
@@ -792,22 +774,22 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("rejects a known Mode until its Overview adapter is registered", async () => {
-    if (!available || !pool) return;
-    const project = await new PgProjectRepository(pool).create(ownerIdentity, { name: "Unavailable Mode Project" });
+    if (!db.available) return;
+    const project = await new PgProjectRepository(db.pool).create(ownerIdentity, { name: "Unavailable Mode Project" });
     await expect(
-      new ProjectKernelService(pool).transitionMode(ownerIdentity, project.id as string, { to_mode: "learning" }),
+      new ProjectKernelService(db.pool).transitionMode(ownerIdentity, project.id as string, { to_mode: "learning" }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
 
   it("aggregates Attention items from registered adapters and respects snooze", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const attention = new ProjectAttentionService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const attention = new ProjectAttentionService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Attention Project" });
     const now = new Date().toISOString();
     const opId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
        VALUES ($1, $2, $3, 'custom', 'Needs review', 'waiting_review', '{}'::jsonb, $4, $4)`,
       [opId, SPACE, project.id, now],
@@ -831,32 +813,11 @@ describe("Project Kernel (real Postgres)", () => {
     expect(await attention.listAttentionItems(ownerIdentity, project.id as string)).toHaveLength(1);
   });
 
-  it("points a waiting-review research operation at its Operations Area row", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const attention = new ProjectAttentionService(pool);
-    const project = await repo.create(ownerIdentity, { name: "Research Attention Project" });
-    const now = new Date().toISOString();
-    const opId = randomUUID();
-    await pool.query(
-      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
-       VALUES ($1, $2, $3, 'research', 'Screening review', 'waiting_review', '{}'::jsonb, $4, $4)`,
-      [opId, SPACE, project.id, now],
-    );
-
-    const items = await attention.listAttentionItems(ownerIdentity, project.id as string);
-    expect(items).toHaveLength(1);
-    // Operations Area now renders this operation's own Checkpoint decide
-    // controls directly, so a research operation shares the same
-    // destination as every other kind instead of a special-cased detour.
-    expect(items[0]?.href).toBe(`/projects/${project.id}/operations?open=${opId}`);
-  });
-
   it("surfaces a project-scoped operational alert at its exact Operations destination", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     registerAutomationsProjectIntegration();
-    const project = await new PgProjectRepository(pool).create(ownerIdentity, { name: "Operations Project" });
-    await new OperationalAlertService(pool).emit({
+    const project = await new PgProjectRepository(db.pool).create(ownerIdentity, { name: "Operations Project" });
+    await new OperationalAlertService(db.pool).emit({
       kind: "automation_fire_failed",
       title: "Automation failed",
       message: "The scheduled health check could not start.",
@@ -867,7 +828,7 @@ describe("Project Kernel (real Postgres)", () => {
       payload: { automation_id: randomUUID() },
     });
 
-    const items = await new ProjectAttentionService(pool).listAttentionItems(ownerIdentity, project.id as string);
+    const items = await new ProjectAttentionService(db.pool).listAttentionItems(ownerIdentity, project.id as string);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       source_type: "operational_alert",
@@ -877,10 +838,10 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("composes the Overview from the Brief, Mode projection, and Attention without a registered Mode adapter", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
-    const overview = new ProjectOverviewService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
+    const overview = new ProjectOverviewService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Overview Project" });
     const brief = await kernel.createBriefVersion(ownerIdentity, project.id as string, { goal: "Ship the Project Kernel" });
     await kernel.submitBriefForReview(ownerIdentity, project.id as string, brief.id as string);
@@ -911,9 +872,9 @@ describe("Project Kernel (real Postgres)", () => {
   /** What a Project needs before it can start is a question about how it
    *  advances, not about which sources it happened to bind at creation. */
   it("requires Provider/Agent/Source setup by Mode, not by source pack", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const overview = new ProjectOverviewService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const overview = new ProjectOverviewService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Delivery Project", primary_mode: "delivery" });
 
     const result = await overview.getOverview(ownerIdentity, project.id as string);
@@ -930,9 +891,9 @@ describe("Project Kernel (real Postgres)", () => {
   });
 
   it("keeps every Project Kernel route Space- and membership-gated", async () => {
-    if (!available || !pool) return;
-    const repo = new PgProjectRepository(pool);
-    const kernel = new ProjectKernelService(pool);
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const kernel = new ProjectKernelService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Gated Project" });
 
     // Space member but not a project member/owner: read is not readable (404,
@@ -946,7 +907,7 @@ describe("Project Kernel (real Postgres)", () => {
     await expect(kernel.listModeTransitions(outsiderIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
 
     // Add as an active viewer-role project member: readable, still not a writer.
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'viewer', 'active', now(), now())`,
       [randomUUID(), SPACE, project.id, VIEWER],

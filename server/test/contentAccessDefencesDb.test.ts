@@ -1,14 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit";
 import { ContentDemotionService } from "../src/modules/contentAccess/demotion";
 import { ContentAccessService } from "../src/modules/contentAccess/service";
-import {
-  getTestPostgres,
-  isTestPostgresUnavailableError,
-  type TestPostgresDatabase,
-} from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -23,53 +18,36 @@ const SNAPSHOT = "88888888-8888-4888-8888-888888888888";
 const DELIVERY = "77777777-7777-4777-8777-777777777777";
 const CONTROL = "66666666-6666-4666-8666-666666666666";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[content-access-defences-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["content_demotion_disclosures", "content_access_logs", "invocation_snapshots", "invocation_deliveries", "execution_control_snapshots", "artifacts", "runs", "agent_versions", "agents", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   for (const [id, name] of [[OWNER, "Owner"], [VIEWER, "Viewer"]]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, $2, 'active', now(), now())`,
       [id, name],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Team', 'team', $2, now(), now())`,
     [SPACE, OWNER],
   );
   for (const userId of [OWNER, VIEWER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [randomUUID(), SPACE, userId],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO artifacts
        (id, space_id, artifact_type, title, export_formats_json, visibility,
         access_level, owner_user_id, created_at, updated_at)
@@ -80,8 +58,8 @@ beforeEach(async () => {
 
 describe("content after-the-fact defences (real PostgreSQL)", () => {
   it("writes no row for an owner read and exactly one row for a cross-person read", async () => {
-    if (!available || !pool) return;
-    const audit = new ContentAccessAuditService(pool);
+    if (!db.available) return;
+    const audit = new ContentAccessAuditService(db.pool);
     expect(await audit.recordReads({
       spaceId: SPACE,
       resourceType: "artifact",
@@ -97,7 +75,7 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
       accessType: "explicit_read",
     })).toBe(1);
 
-    const rows = await pool.query(
+    const rows = await db.pool.query(
       `SELECT resource_type, resource_id, owner_user_id, viewer_user_id
          FROM content_access_logs`,
     );
@@ -129,14 +107,14 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
   });
 
   it("discloses consuming Runs and derived outputs that remain shared", async () => {
-    if (!available || !pool) return;
-    await pool.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO agents
          (id, space_id, owner_user_id, name, status, visibility, access_level, created_at, updated_at)
        VALUES ($1,$2,$3,'Agent','active','private','full',now(),now())`,
       [AGENT, SPACE, OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions
          (id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
           context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
@@ -144,31 +122,31 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
        VALUES ($1,$2,$3,'v1','{}','{}','{}','{}','[]','[]','{}',now())`,
       [VERSION, AGENT, SPACE],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runs
          (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status,
           mode, created_at, updated_at, owner_user_id, visibility, access_level)
        VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',now(),now(),$5,'private','full')`,
       [RUN, SPACE, AGENT, VERSION, OWNER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
        VALUES ($1,$2,$3,'{}'::jsonb,now())`,
       [CONTROL, SPACE, RUN],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO invocation_deliveries
          (id,space_id,invocation_id,attempt,execution_control_snapshot_id,adapter_type,renderer_version,delivery_metadata_json,created_at)
        VALUES ($1,$2,$3,1,$4,'model_api','test.v1','{}'::jsonb,now())`,
       [DELIVERY, SPACE, RUN, CONTROL],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO invocation_snapshots
          (id,space_id,invocation_id,delivery_id,attempt,safe_snapshot_json,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,1,$5::jsonb,'accepted',now(),now())`,
       [SNAPSHOT, SPACE, RUN, DELIVERY, JSON.stringify({ source_refs: [{ type: "artifact", id: SOURCE }] })],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO artifacts
          (id, space_id, run_id, artifact_type, title, export_formats_json,
           visibility, access_level, owner_user_id, created_at, updated_at)
@@ -178,7 +156,7 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
     );
 
     const identity = { spaceId: SPACE, userId: OWNER };
-    const accessService = new ContentAccessService(pool);
+    const accessService = new ContentAccessService(db.pool);
     await expect(accessService.updatePolicy(identity, "artifact", SOURCE, {
       visibility: "private",
       access_level: "full",
@@ -186,7 +164,7 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
       grants: [],
     })).rejects.toMatchObject({ statusCode: 409 });
 
-    const disclosure = await new ContentDemotionService(pool).disclose(
+    const disclosure = await new ContentDemotionService(db.pool).disclose(
       identity,
       "artifact",
       SOURCE,
@@ -205,7 +183,7 @@ describe("content after-the-fact defences (real PostgreSQL)", () => {
       grants: [],
       demotion_confirmation_id: disclosure.confirmation_id,
     });
-    const source = await pool.query("SELECT visibility FROM artifacts WHERE id = $1", [SOURCE]);
+    const source = await db.pool.query("SELECT visibility FROM artifacts WHERE id = $1", [SOURCE]);
     expect(source.rows[0]?.visibility).toBe("private");
   });
 });

@@ -1,8 +1,7 @@
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config";
 import { buildModuleServer } from "./support/moduleServer";
 import { researchModule } from "../src/modules/research";
@@ -11,7 +10,7 @@ import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -47,66 +46,50 @@ type RefinementResult = Partial<typeof refinementOutput> & {
 };
 const invoke = vi.fn(async (_request: RefinementInvocation): Promise<RefinementResult> => refinementOutput);
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    const now = new Date().toISOString();
-    await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
-    await pool.query(
-      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-      [randomUUID(), SPACE, OWNER, now],
-    );
-    await pool.query(
-      `INSERT INTO projects (id,space_id,owner_user_id,name,description,status,created_at,updated_at) VALUES ($1,$2,$3,'Research','A project about reliable tool use.','active',$4,$4)`,
-      [PROJECT, SPACE, OWNER, now],
-    );
-    const thread = await new InquiryThreadService(pool).createThread(
-      { spaceId: SPACE, userId: OWNER }, PROJECT, { kind: "question", statement: "agent" },
-    );
-    THREAD = String(thread.id);
-    await pool.query(
-      `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
-       VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
-      [PROVIDER, SPACE, OWNER, now],
-    );
-    await pool.query(
-      `INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`,
-      [randomUUID(), PROVIDER, SPACE, OWNER, now],
-    );
-    await syncBuiltinPrompts(pool, CATALOG_ROOT);
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
-    __setQuestionRefineInvokerForTests(invoke);
-    app = buildModuleServer(loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
-      SERVER_INTERNAL_TOKEN: "test-internal-token",
-      AGENT_SPACE_HOME: "/tmp/agent-space-question-refine-test",
-    }), [projectResearchModule, researchModule]);
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[project-research-question-refine-routes-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setQuestionRefineInvokerForTests(null);
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  const now = new Date().toISOString();
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
+    [randomUUID(), SPACE, OWNER, now],
+  );
+  await db.pool.query(
+    `INSERT INTO projects (id,space_id,owner_user_id,name,description,status,created_at,updated_at) VALUES ($1,$2,$3,'Research','A project about reliable tool use.','active',$4,$4)`,
+    [PROJECT, SPACE, OWNER, now],
+  );
+  const thread = await new InquiryThreadService(db.pool).createThread(
+    { spaceId: SPACE, userId: OWNER }, PROJECT, { kind: "question", statement: "agent" },
+  );
+  THREAD = String(thread.id);
+  await db.pool.query(
+    `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
+     VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
+    [PROVIDER, SPACE, OWNER, now],
+  );
+  await db.pool.query(
+    `INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`,
+    [randomUUID(), PROVIDER, SPACE, OWNER, now],
+  );
+  await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+  __setQuestionRefineInvokerForTests(invoke);
+  app = buildModuleServer(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    SERVER_INTERNAL_TOKEN: "test-internal-token",
+    AGENT_SPACE_HOME: "/tmp/agent-space-question-refine-test",
+  }), [projectResearchModule, researchModule]);
 });
 
 describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
   it("returns an actionable structured assessment for an unanswerable query", async () => {
-    if (!available || !app) return;
+    if (!db.available || !app) return;
     const response = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${PROJECT}/research/question/refine`,
@@ -148,9 +131,9 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       suggested_questions: expect.arrayContaining([expect.stringContaining("tool-using coding agents")]),
       clarifying_questions: [{ question: "Which runtime should be studied?", options: ["Sandboxed CLI", "Managed API"], allow_multiple: false }],
     });
-    const managedAgent = await pool!.query(`SELECT id FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE]);
+    const managedAgent = await db.pool.query(`SELECT id FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE]);
     expect(managedAgent.rows).toHaveLength(1);
-    const contexts = await pool!.query(`SELECT objective,context_json,assessment_json FROM project_research_context_versions WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    const contexts = await db.pool.query(`SELECT objective,context_json,assessment_json FROM project_research_context_versions WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     expect(contexts.rows).toHaveLength(1);
     expect(contexts.rows[0]).toMatchObject({
       objective: "How do tool-using coding agents recover from failed API calls?",
@@ -171,7 +154,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         expect.objectContaining({ role: "assistant", content: expect.stringContaining("too broad") }),
       ],
     });
-    const persisted = await pool!.query(
+    const persisted = await db.pool.query(
       `SELECT role,status,turn_index FROM project_research_question_assessment_messages
         WHERE space_id=$1 ORDER BY turn_index,role`,
       [SPACE],
@@ -333,7 +316,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         manually_adjusted: true,
       }),
     ]);
-    const confirmedContext = await pool!.query(
+    const confirmedContext = await db.pool.query(
       `SELECT provenance_json FROM project_research_context_versions
         WHERE space_id=$1 AND project_id=$2
           AND provenance_json->>'source'='question_assessment_confirmation'`,
@@ -345,7 +328,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       }),
     ]);
 
-    const contextsBeforeInvalidOutput = await pool!.query<{ count: string }>(
+    const contextsBeforeInvalidOutput = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM project_research_context_versions
         WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
@@ -387,7 +370,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         expect.objectContaining({ stage: "subquestion_repair", status: "failed", message: expect.stringContaining("not saved") }),
       ]),
     });
-    const contextsAfterInvalidOutput = await pool!.query<{ count: string }>(
+    const contextsAfterInvalidOutput = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM project_research_context_versions
         WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],

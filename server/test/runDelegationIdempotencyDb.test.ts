@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository";
 
@@ -12,9 +11,6 @@ import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository";
 // actual partial UNIQUE INDEX (uq_run_delegations_parent_tool_call), which a
 // FakeDb unit test cannot verify.
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
 const SPACE = "space-1";
 const USER = "user-1";
@@ -23,51 +19,37 @@ const TARGET_AGENT = "agent-target";
 const GROUP = "group-1";
 let parentRunId = "";
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[run-delegation-idempotency] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 120_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   const now = new Date().toISOString();
   await resetTables(
-    pool,
+    db.pool,
     ["run_delegations", "agent_run_groups", "runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, USER, now],
   );
   let managerVersionId = "";
   for (const agentId of [MANAGER_AGENT, TARGET_AGENT]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
        VALUES ($1,$2,$3,'Agent','active',NULL,$4,$4,'space_shared')`,
       [agentId, SPACE, USER, now],
     );
     const versionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions (
          id, agent_id, space_id, version_label, system_prompt, model_config_json,
          runtime_config_json, context_policy_json, memory_policy_json,
@@ -76,16 +58,16 @@ beforeEach(async () => {
          '{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
       [versionId, agentId, SPACE, now],
     );
-    await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [agentId, versionId]);
+    await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [agentId, versionId]);
     if (agentId === MANAGER_AGENT) managerVersionId = versionId;
   }
   parentRunId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, adapter_type, required_sandbox_level, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5)`,
     [parentRunId, SPACE, MANAGER_AGENT, managerVersionId, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_run_groups (id, space_id, root_run_id, manager_user_id, title, goal, status, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'Room','Coordinate',$5,$6,$6)`,
     [GROUP, SPACE, parentRunId, USER, "active", now],
@@ -94,8 +76,8 @@ beforeEach(async () => {
 
 describe("run_delegations tool_call_id idempotency", () => {
   it("returns the existing delegation for a repeated tool_call_id instead of inserting a duplicate row", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgAgentGroupRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgAgentGroupRepository(db.pool);
     const first = await repo.createDelegation({
       space_id: SPACE,
       group_id: GROUP,
@@ -121,7 +103,7 @@ describe("run_delegations tool_call_id idempotency", () => {
       }),
     ).rejects.toThrow();
 
-    const rows = await pool.query(
+    const rows = await db.pool.query(
       `SELECT id FROM run_delegations WHERE space_id = $1 AND parent_run_id = $2 AND tool_call_id = $3`,
       [SPACE, parentRunId, "call-1"],
     );
@@ -129,8 +111,8 @@ describe("run_delegations tool_call_id idempotency", () => {
   });
 
   it("allows multiple delegations with no tool_call_id (partial index only applies when it is set)", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgAgentGroupRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgAgentGroupRepository(db.pool);
     const first = await repo.createDelegation({
       space_id: SPACE,
       group_id: GROUP,

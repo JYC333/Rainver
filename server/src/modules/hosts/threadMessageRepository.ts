@@ -20,13 +20,14 @@ export interface HostThreadMessage {
    */
   model_provider_id: string | null;
   model: string | null;
+  reasoning_effort: string | null;
   run_id: string | null;
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
 }
 
-const COLUMNS = `id, host_task_thread_id, task_id, prompt, status, model_provider_id, model, run_id, created_by_user_id, created_at, updated_at`;
+const COLUMNS = `id, host_task_thread_id, task_id, prompt, status, model_provider_id, model, reasoning_effort, run_id, created_by_user_id, created_at, updated_at`;
 
 export class PgHostThreadMessageRepository {
   constructor(private readonly db: Queryable) {}
@@ -36,16 +37,16 @@ export class PgHostThreadMessageRepository {
     taskId: string,
     prompt: string,
     createdByUserId: string,
-    binding: { provider_id: string | null; model: string | null } = { provider_id: null, model: null },
+    binding: { provider_id: string | null; model: string | null; reasoning_effort?: string | null } = { provider_id: null, model: null },
   ): Promise<HostThreadMessage> {
     const id = randomUUID();
     const now = new Date().toISOString();
     const result = await this.db.query<HostThreadMessage>(
       `INSERT INTO host_thread_messages (
-         id, host_task_thread_id, task_id, prompt, status, model_provider_id, model, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $8)
+         id, host_task_thread_id, task_id, prompt, status, model_provider_id, model, reasoning_effort, created_by_user_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $9)
        RETURNING ${COLUMNS}`,
-      [id, threadId, taskId, prompt, binding.provider_id, binding.model, createdByUserId, now],
+      [id, threadId, taskId, prompt, binding.provider_id, binding.model, binding.reasoning_effort ?? null, createdByUserId, now],
     );
     return result.rows[0]!;
   }
@@ -71,16 +72,18 @@ export class PgHostThreadMessageRepository {
    */
   async currentBinding(
     threadId: string,
-  ): Promise<{ provider_id: string | null; model: string | null } | null> {
-    const result = await this.db.query<{ model_provider_id: string | null; model: string | null }>(
-      `SELECT model_provider_id, model FROM host_thread_messages
+  ): Promise<{ provider_id: string | null; model: string | null; reasoning_effort: string | null } | null> {
+    const result = await this.db.query<{ model_provider_id: string | null; model: string | null; reasoning_effort: string | null }>(
+      `SELECT model_provider_id, model, reasoning_effort FROM host_thread_messages
         WHERE host_task_thread_id = $1 AND status <> 'withdrawn'
         ORDER BY created_at DESC, id DESC
         LIMIT 1`,
       [threadId],
     );
     const row = result.rows[0];
-    return row ? { provider_id: row.model_provider_id, model: row.model } : null;
+    return row
+      ? { provider_id: row.model_provider_id, model: row.model, reasoning_effort: row.reasoning_effort }
+      : null;
   }
 
   async get(threadId: string, messageId: string): Promise<HostThreadMessage | null> {

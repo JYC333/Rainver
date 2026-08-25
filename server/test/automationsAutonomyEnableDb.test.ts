@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { buildServer } from "../src/server";
 import { loadConfig } from "../src/config";
@@ -25,39 +24,24 @@ const AGENT = "44444444-4444-4444-8444-444444444444";
 const VERSION = "55555555-5555-4555-8555-555555555555";
 const NOW = "2026-07-26T12:00:00.000Z";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 let app: FastifyInstance | undefined;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    available = true;
-    app = buildServer(loadConfig({ SERVER_DATABASE_URL: database.getConnectionUri() }), { logger: false });
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[automations-autonomy-enable-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await database?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  app = buildServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), { logger: false });
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
-  await pool.query(
+  if (!db.available) return;
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Member One', 'active', $3, $3), ($2, 'Member Two', 'active', $3, $3)`,
     [MEMBER, OTHER_MEMBER, NOW],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [SPACE, MEMBER, NOW],
@@ -65,17 +49,17 @@ beforeEach(async () => {
   // Deliberately 'member', not 'owner'/'admin' — the whole point of this
   // suite is proving an ordinary member can self-service enable their own
   // Always-on without elevated Space authority.
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', $4, $4), ($5, $2, $6, 'member', 'active', $4, $4)`,
     [randomUUID(), SPACE, MEMBER, NOW, randomUUID(), OTHER_MEMBER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Agent', 'active', NULL, 'private', $4, $4)`,
     [AGENT, SPACE, MEMBER, NOW],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -84,12 +68,12 @@ beforeEach(async () => {
                '{}'::jsonb, '[]'::jsonb, '{"allowed_tools":[]}'::jsonb, '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, NOW],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
 });
 
 describe("self-service Always-on activation (autonomous_tick)", () => {
   it("lets an ordinary member enable, read back, and idempotently reconfigure their own tick", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
 
     const missing = await app!.inject({
@@ -113,7 +97,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     });
     const automationId = body.id as string;
 
-    const grant = await pool!.query(
+    const grant = await db.pool.query(
       `SELECT status FROM automation_credential_grants WHERE automation_id = $1`,
       [automationId],
     );
@@ -136,7 +120,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     expect(reconfigured.statusCode).toBe(200);
     expect(reconfigured.json().id).toBe(automationId);
 
-    const rows = await pool!.query(
+    const rows = await db.pool.query(
       `SELECT count(*)::int AS total FROM automations
         WHERE space_id = $1 AND owner_user_id = $2
           AND config_json->>'target_type' = 'autonomous_tick'`,
@@ -146,7 +130,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
   });
 
   it("scopes Always-on strictly per member: another member sees none and cannot manage it", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
     const enabled = await app!.inject({
       method: "PUT",
@@ -180,7 +164,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
   });
 
   it("reaches the autonomy dispatch end to end when the owner fires their own tick", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
     const enabled = await app!.inject({
       method: "PUT",
@@ -197,7 +181,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     expect(fired.statusCode).toBe(200);
     expect(fired.json()).toMatchObject({ mode: "observe_only", status: "succeeded" });
 
-    const ticks = await pool!.query(
+    const ticks = await db.pool.query(
       `SELECT owner_user_id, mode, status FROM autonomy_ticks WHERE space_id = $1`,
       [SPACE],
     );
@@ -205,7 +189,7 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
   });
 
   it("requires a complete autonomy_budget before enabling launch mode", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
 
     const missingBudget = await app!.inject({

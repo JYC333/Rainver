@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import {
   ProjectResearchScreeningCoordinator,
@@ -25,50 +24,21 @@ const PROJECT = "55555555-5555-4555-8555-555555555555";
 const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-screening-gate-reform-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
-  await insertResearchWorkflowFixture(pool, {
+  const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER, now,
   });
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
      VALUES ($1,$2,$3,'research','Initial literature intake','active',$4,'{}'::jsonb,$5,$5)`,
     [OPERATION, SPACE, PROJECT, OWNER, now],
@@ -89,7 +59,7 @@ type SpyPorts = ProjectResearchScreeningPorts & {
 function ports(): SpyPorts {
   const createCheckpoint: ProjectResearchScreeningPorts["createCheckpoint"] =
     (spaceId, projectId, workflowId, operationId, type, result) =>
-      upsertPendingResearchCheckpoint(pool!, {
+      upsertPendingResearchCheckpoint(db.pool, {
         spaceId, projectId, workflowId, operationId, checkpointType: type, machineResult: result,
       });
   return {
@@ -104,7 +74,7 @@ function ports(): SpyPorts {
 /** Makes `countRelevantItems` report a chosen corpus size without seeding
  * that many real classified items, which is what the gate decision reads. */
 function coordinatorWithCorpus(size: number, portsValue: ProjectResearchScreeningPorts) {
-  const coordinator = new ProjectResearchScreeningCoordinator(pool!, portsValue);
+  const coordinator = new ProjectResearchScreeningCoordinator(db.pool, portsValue);
   vi.spyOn(coordinator, "countRelevantItems").mockResolvedValue({
     total: size, relevant: size, maybe: 0, excluded: 0,
     missing_full_text: 0, evidence_count: size, failed_items: 0,
@@ -117,7 +87,7 @@ function state() {
 }
 
 async function checkpointRow(): Promise<{ status: string; user_decision: string | null; decided_by_user_id: string | null } | undefined> {
-  const row = await pool!.query<{ status: string; user_decision: string | null; decided_by_user_id: string | null }>(
+  const row = await db.pool.query<{ status: string; user_decision: string | null; decided_by_user_id: string | null }>(
     `SELECT status, user_decision, decided_by_user_id FROM project_research_checkpoints
       WHERE space_id=$1 AND checkpoint_type='screening_gate'`,
     [SPACE],
@@ -127,7 +97,7 @@ async function checkpointRow(): Promise<{ status: string; user_decision: string 
 
 describe("screening gate reform (real Postgres)", () => {
   it("records the checkpoint and continues when the corpus fits the budget", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(12, portsValue);
     const next = state();
@@ -143,7 +113,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("stops and tells the Room when the corpus exceeds the budget", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(SCREENING_AUTO_CONTINUE_CORPUS_LIMIT + 1, portsValue);
     const next = state();
@@ -161,7 +131,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("does not auto-continue while classification is still in flight", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(3, portsValue);
     const next = state();
@@ -185,7 +155,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("fails the operation when classification stalls, so retry becomes reachable", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(3, portsValue);
     const next = state();
@@ -215,7 +185,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("fails a classification that stops moving even with no failed batch to point at", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(3, portsValue);
     const inFlightSnapshot = {
@@ -255,7 +225,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("never calls a screening stuck while classification work is in flight", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(3, portsValue);
     const next = state();
@@ -276,7 +246,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("notifies the Room once per pause, not once per reconcile tick", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(SCREENING_AUTO_CONTINUE_CORPUS_LIMIT + 1, portsValue);
 
@@ -294,7 +264,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("persists the advance before waiving, so a dropped write replays", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     // A setState that never lands (the stage-advancing writer is
     // `onStale: "noop"`, so this is silent in production).
@@ -311,7 +281,7 @@ describe("screening gate reform (real Postgres)", () => {
   });
 
   it("marks the screening step done rather than blocked when it auto-continues", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const portsValue = ports();
     const coordinator = coordinatorWithCorpus(3, portsValue);
 

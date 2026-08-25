@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   CONFORMANCE_CHECKS,
@@ -8,29 +7,12 @@ import {
   type ConformanceCheck,
 } from "../src/modules/runtimeConformance";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[runtime-conformance-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["runtime_conformance_results"]);
+  if (!db.available) return;
+  await resetTables(db.pool, ["runtime_conformance_results"]);
 });
 
 function allChecks(passed: boolean) {
@@ -39,8 +21,8 @@ function allChecks(passed: boolean) {
 
 describe("runtime conformance persistence (real Postgres)", () => {
   it("persists a failed result fail-closed, then replaces it with a complete pass", async () => {
-    if (!available || !pool) return;
-    const service = new RuntimeConformanceService(pool);
+    if (!db.available) return;
+    const service = new RuntimeConformanceService(db.pool);
     const failed = await service.record({
       runtime_adapter_type: "opencode",
       runtime_version: "1.0.0",
@@ -58,8 +40,8 @@ describe("runtime conformance persistence (real Postgres)", () => {
   });
 
   it("records runner exceptions as failed checks instead of granting trust", async () => {
-    if (!available || !pool) return;
-    const result = await new RuntimeConformanceService(pool).run({
+    if (!db.available) return;
+    const result = await new RuntimeConformanceService(db.pool).run({
       runtime_adapter_type: "opencode",
       runtime_version: "1.0.0",
       runner: {

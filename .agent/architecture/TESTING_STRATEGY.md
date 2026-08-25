@@ -70,18 +70,25 @@ pure adapter boundary.
 **One container, one database per file.** Global setup
 (`server/test/setupOfficialPlugins.ts`) starts one `pgvector/pgvector:pg18`
 Testcontainers instance and applies the baseline once to a template database
-named by the migrations' content hash. Each test file calls
-`getTestPostgres(__filename)` from `test/support/sharedPostgres.ts` and gets its
-own clone of that template; the file owns and closes its `Pool`, and the
-handle's `stop()` drops only that database. Do not start a second container or
-create ad-hoc databases. A clone already carries the baseline, so never call
-`migrate()` on it; tests of the migration runner, plugin migrations, or a
-hand-authored schema request `{ empty: true }` and migrate themselves.
+named by the migrations' content hash. A test file declares
+`const db = useTestDatabase(__filename)` (`test/support/testDatabase.ts`) at
+module scope and gets its own clone of that template as `db.pool`, dropped in
+`afterAll`; tests start with `if (!db.available) return;`. Do not start a
+second container or create ad-hoc databases. A clone already carries the
+baseline, so never call `migrate()` on it; tests of the migration runner,
+plugin migrations, or a hand-authored schema pass `{ empty: true }` and
+migrate themselves.
 
-**Unavailable is narrow.** If the container cannot start or the connection
-fails (`isTestPostgresUnavailableError`), a file skips through the established
-`available = false` path and says so. Migration, schema, seed, and service
-construction errors are rethrown so they fail the suite.
+**Unavailable is narrow.** Only an unreachable container or a connection
+error (`isTestPostgresUnavailableError`) makes `db.available` false; the
+fixture rethrows migration, schema, seed, and service construction errors so
+they fail the suite.
+
+**Seed with the shared fixtures.** `test/support/domainSeeds.ts` holds the
+rows most Project-domain files need (`seedSpaceOwnerProject`,
+`seedAgentWithVersion`); inline the same INSERTs in a new file only when the
+fixture's options cannot express the difference, and promote a seed that
+appears in a third file.
 
 **Clearing rows between tests.** Use `resetTables(pool, tables, { cascade })`
 from `test/support/resetTables.ts`, never `TRUNCATE`. `cascade: true` follows
@@ -186,7 +193,7 @@ here: assuming the order in which concurrent fakes are reached, and attaching a
 rejection handler one event-loop turn after the commit that triggers the
 rejection (Vitest 4 counts that as an unhandled error).
 
-Hand-written subset schemas under `server/test/fixtures/*.sql` are a known
-drift source: nothing regenerates them, so a column renamed in
-`server/migrations/0001_baseline.sql` stays stale there until a test touches
-it. Grep them when a schema change renames or drops a column.
+There are no hand-written subset schemas any more: every real-Postgres file
+clones the migrated baseline, so a test that seeds rows the real constraints
+refuse fails for a real reason. Request `{ empty: true }` only to test the
+migration runner or a plugin's own migrations.

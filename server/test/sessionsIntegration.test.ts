@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgSessionRepository } from "../src/modules/sessions/repository";
 
@@ -12,46 +9,24 @@ import { PgSessionRepository } from "../src/modules/sessions/repository";
 // default columns (id/status/created_at/updated_at) a raw INSERT must supply,
 // the ck_messages_role CHECK, jsonb param binding, varchar lengths, and the
 // add-message + session-touch CTE. These run the actual SQL against a throwaway
-// Postgres (testcontainers) loaded with test/fixtures/sessionsSchema.sql.
 //
 // The suite skips gracefully when Docker is unavailable so `pnpm test` still runs
 // everywhere; where Docker is present (dev, CI) it always runs.
 
-const SCHEMA = readFileSync(
-  join(process.cwd(), "test/fixtures/sessionsSchema.sql"),
-  "utf8",
-);
-
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let repo: PgSessionRepository | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename, { empty: true });
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
-    repo = new PgSessionRepository(pool);
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[sessions-integration] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  repo = new PgSessionRepository(db.pool);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["sessions", "messages"], { cascade: true });
+  if (!db.available) return;
+  await resetTables(db.pool, ["sessions", "messages", "space_memberships", "users", "spaces"], { cascade: true });
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('user-1', 'user-1', 'active', now(), now()), ('user-2', 'user-2', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
 });
 
 const SPACE = "space-1";
@@ -59,7 +34,7 @@ const USER = "user-1";
 
 describe("PgSessionRepository against real Postgres", () => {
   it("creates a session supplying all NOT NULL default columns", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const out = await repo.createSession(SPACE, USER, {
       title: "new chat",
       projectFolderId: null,
@@ -78,7 +53,7 @@ describe("PgSessionRepository against real Postgres", () => {
   });
 
   it("round-trips create -> get -> list with space/user scoping", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const created = await repo.createSession(SPACE, USER, {});
 
     expect(await repo.getSession(SPACE, USER, created.id)).toMatchObject({
@@ -96,7 +71,7 @@ describe("PgSessionRepository against real Postgres", () => {
   });
 
   it("appends a message, touches the session, and returns it", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const created = await repo.createSession(SPACE, USER, {});
 
     const msg = await repo.addMessage(SPACE, USER, created.id, {
@@ -125,7 +100,7 @@ describe("PgSessionRepository against real Postgres", () => {
   });
 
   it("persists at most one assistant message for a retried chat Run", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const created = await repo.createSession(SPACE, USER, {});
 
     const first = await repo.addAssistantMessageForRun(
@@ -150,7 +125,7 @@ describe("PgSessionRepository against real Postgres", () => {
   });
 
   it("refuses to append to a session the user cannot see (null, no insert)", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     const created = await repo.createSession(SPACE, USER, {});
 
     const denied = await repo.addMessage(SPACE, "user-2", created.id, {
@@ -159,14 +134,14 @@ describe("PgSessionRepository against real Postgres", () => {
     });
     expect(denied).toBeNull();
 
-    const count = await pool.query<{ n: string }>(
+    const count = await db.pool.query<{ n: string }>(
       "SELECT count(*)::text AS n FROM messages",
     );
     expect(count.rows[0]?.n).toBe("0");
   });
 
   it("enforces the ck_messages_role CHECK from the real schema", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const created = await repo.createSession(SPACE, USER, {});
 
     await expect(
@@ -178,14 +153,14 @@ describe("PgSessionRepository against real Postgres", () => {
   });
 
   it("404s message listing for a session the user cannot see", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const owned = await repo.createSession(SPACE, USER, {});
     // A different user cannot list the owner's messages.
     expect(await repo.listMessages(SPACE, "user-2", owned.id, 100, 0)).toBeNull();
   });
 
   it("returns recent messages for context in chronological order", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const created = await repo.createSession(SPACE, USER, {});
     await repo.addMessage(SPACE, USER, created.id, {
       role: "user",

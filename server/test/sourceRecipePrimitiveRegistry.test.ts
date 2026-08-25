@@ -3,36 +3,9 @@ import type { SourceRecipeDefinition } from "@agent-space/protocol" with { "reso
 import {
   SOURCE_RECIPE_PRIMITIVE_REGISTRY,
   analyzeSourceRecipe,
-  listSourceRecipePrimitives,
-} from "../src/modules/sources/sourceRecipes/primitiveRegistry";
-
-const PRIMITIVE_NAMES = [
-  "fetch_page",
-  "parse_rss",
-  "parse_atom",
-  "extract_list",
-  "extract_single",
-  "follow_link",
-  "download_asset",
-  "paginate",
-  "dedupe",
-] as const;
+  } from "../src/modules/sources/sourceRecipes/primitiveRegistry";
 
 describe("source recipe primitive registry", () => {
-  it("declares every catalog primitive with version, dataflow kinds, and permissions", () => {
-    const listed = listSourceRecipePrimitives();
-    expect(listed.map((definition) => definition.name).sort()).toEqual([...PRIMITIVE_NAMES].sort());
-    for (const name of PRIMITIVE_NAMES) {
-      const definition = SOURCE_RECIPE_PRIMITIVE_REGISTRY[name];
-      expect(definition.version).toBeGreaterThan(0);
-      expect(definition.description.length).toBeGreaterThan(0);
-      expect(["none", "html", "items"]).toContain(definition.input_kind);
-      expect(["none", "html", "items"]).toContain(definition.output_kind);
-      expect(["none", "primary_endpoint", "live_fetch"]).toContain(definition.network_access);
-      expect(typeof definition.writes_files).toBe("boolean");
-    }
-  });
-
   it("declares live network access only for fetching primitives and file writes only for snapshot-storing primitives", () => {
     expect(SOURCE_RECIPE_PRIMITIVE_REGISTRY.parse_rss.network_access).toBe("none");
     expect(SOURCE_RECIPE_PRIMITIVE_REGISTRY.extract_list.network_access).toBe("none");

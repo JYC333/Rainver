@@ -1,7 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -22,7 +21,7 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures";
 // under distractor pressure (NamedThing), relational recall, recency/staleness,
 // per-mode precision↔recall tradeoff, and — as a hard gate — that no cross-space
 // or non-readable object ever leaks. Thresholds are conservative baselines; the
-// recall-depth workstreams (per-page max-pool, intent, typed-graph) tighten them.
+// recall-depth workstreams (per-page max-db.pool, intent, typed-graph) tighten them.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -68,46 +67,25 @@ const conceptQueryEmbedder: QueryEmbedder = {
   },
 };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-bench-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "object_relations", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
   for (const [id, name] of [[SPACE, "Bench"], [OTHER_SPACE, "Other"]] as const) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_at, updated_at)
        VALUES ($1, $2, 'team', now(), now())`,
       [id, name],
     );
   }
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'U', 'active', now(), now())`,
       [id],
@@ -119,7 +97,7 @@ beforeEach(async () => {
     [OTHER_SPACE, VIEWER],
     [OTHER_SPACE, OTHER],
   ]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [randomUUID(), spaceId, userId],
@@ -142,7 +120,7 @@ interface SeedDoc {
 
 async function seed(doc: SeedDoc): Promise<void> {
   const ts = doc.updatedAt ?? new Date().toISOString();
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: doc.spaceId ?? SPACE,
     title: doc.title,
@@ -157,7 +135,7 @@ async function seed(doc: SeedDoc): Promise<void> {
 }
 
 async function relate(fromId: string, toId: string, linkType = "related_to"): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO object_relations (
        id, space_id, from_object_id, to_object_id, link_type, status, confidence, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, $5, 'active', 0.9, now(), now())`,
@@ -166,21 +144,21 @@ async function relate(fromId: string, toId: string, linkType = "related_to"): Pr
 }
 
 async function reindex(): Promise<void> {
-  const svc = new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry);
+  const svc = new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry);
   await svc.reindexAll(SPACE);
   await svc.reindexAll(OTHER_SPACE);
 }
 
 async function reindexAndEmbed(): Promise<void> {
   await reindex();
-  await new RetrievalEmbeddingBackfillService(pool!, conceptEmbedder).backfillSpace(SPACE, {
+  await new RetrievalEmbeddingBackfillService(db.pool, conceptEmbedder).backfillSpace(SPACE, {
     embeddingDimensions: EMBED_DIMENSIONS,
   });
 }
 
 function knowledgeSearch(withVector = false): RetrievalSearchService {
   return new RetrievalSearchService(
-    pool!,
+    db.pool,
     knowledgeRetrievalRegistry,
     withVector ? { queryEmbedder: conceptQueryEmbedder } : {},
   );
@@ -201,7 +179,7 @@ function chunkCrowdingBody(term: string, segments = 70): string {
 
 describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
   it("recalls the named entity over multi-chunk distractors and reports graded quality", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // The named entity: a focused short page whose title IS the query.
     await seed({ id: "named", title: "Project Helios", content: "Project Helios is the solar roadmap." });
     // Distractors: long pages (many chunks) that mention "helios" weakly many times.
@@ -211,9 +189,9 @@ describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
 
     // Query the shared term only ("helios"), NOT the full title — so the named
     // page wins on its single dense chunk, while each distractor brings many weak
-    // chunks. Before per-page max-pool (W2), fusion summed RRF across an object's
+    // chunks. Before per-page max-db.pool (W2), fusion summed RRF across an object's
     // chunks, so distractor chunk-count inflated their score and pushed the named
-    // entity down (baseline MRR ≈ 0.33). With per-arm max-pool + the title-phrase
+    // entity down (baseline MRR ≈ 0.33). With per-arm max-db.pool + the title-phrase
     // boost (the query term is in the named entity's title), the named entity
     // ranks first and the distractors fall in behind it.
     const cases: EvalCase[] = [
@@ -233,11 +211,11 @@ describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
   });
 
   it("max-pools lexical matches before the SQL fetch window is exhausted by one chunk-heavy object", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const ts = "2026-01-01T00:00:00.000Z";
     // The distractor has >50 matching chunks. If SQL LIMIT runs before per-object
     // pooling, it can consume the entire lexical arm window and the named page never
-    // reaches the shared max-pool stage.
+    // reaches the shared max-db.pool stage.
     await seed({
       id: "crowder",
       title: "Aardvark Archive",
@@ -268,7 +246,7 @@ describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
 
 describe("Retrieval bench: relational recall (real Postgres)", () => {
   it("recalls a 1-hop neighbor reachable only through an accepted relation", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // "anchor" is an exact title hit (the seed); "neighbor" shares no query term
     // and is reachable solely via the accepted relation edge.
     await seed({ id: "anchor", title: "Migration Playbook", content: "The canonical migration guide." });
@@ -292,7 +270,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
   });
 
   it("recalls an explicit relation-intent connection query", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "anchor", title: "Migration Playbook", content: "The canonical migration guide." });
     await seed({ id: "neighbor", title: "Rollback Drill", content: "Quarterly resilience exercise notes." });
     await relate("anchor", "neighbor", "supports");
@@ -320,7 +298,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
   });
 
   it("walks two hops: a neighbor-of-a-neighbor is recalled (W4 multi-hop)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // anchor → mid → far. Only anchor matches lexically; "far" is reachable only
     // by a 2-hop traversal through "mid".
     await seed({ id: "anchor", title: "Service Mesh", content: "The canonical service mesh guide." });
@@ -346,7 +324,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
   });
 
   it("seeds the graph from a lexical match, not just an exact title (W4)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // The query matches "anchor" only LEXICALLY (no exact title / alias). Before
     // W4 the graph arm seeded from exact hits only, so the neighbor was missed.
     await seed({ id: "anchor", title: "Distributed Tracing", content: "Observability via jaeger spans." });
@@ -368,7 +346,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
   });
 
   it("never expands through a non-visible intermediate node (invariant 4)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // anchor (visible) → hidden (private, owned by OTHER) → tail. The traversal
     // must NOT surface `tail`: `hidden` is non-visible, so it is neither returned
     // nor used as a hop-2 frontier, and `tail` is reachable only through it.
@@ -396,7 +374,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
 
 describe("Retrieval bench: recency / staleness (real Postgres)", () => {
   it("ranks the fresher of two equally-matching pages first via the canonical-time recency signal", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
     const fresh = new Date().toISOString();
     // Adversarial ids: the FRESH page sorts alphabetically LAST, so the lexical
@@ -424,7 +402,7 @@ describe("Retrieval bench: recency / staleness (real Postgres)", () => {
 
 describe("Retrieval bench: intent-aware ranking (real Postgres)", () => {
   it("classifies the query end-to-end and reorders by intent without dropping recall", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
     const body = "Onboarding checklist for this year.";
     await seed({ id: "old-release", title: "Onboarding", content: body, updatedAt: old });
@@ -465,7 +443,7 @@ describe("Retrieval bench: intent-aware ranking (real Postgres)", () => {
 
 describe("Retrieval bench: per-mode precision↔recall tradeoff (real Postgres)", () => {
   it("exact trades recall for precision; hybrid recovers semantic recall lexical misses", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // "cats" page matches the query lexically AND semantically (concept: feline).
     await seed({ id: "cats", title: "Caring for cats", content: "Daily routine for a happy cat." });
     // "feline-only" page matches the concept but shares NO lexical token with the
@@ -510,7 +488,7 @@ describe("Retrieval bench: per-mode precision↔recall tradeoff (real Postgres)"
 
 describe("Retrieval bench: cross-space / visibility leak fuzz (real Postgres)", () => {
   it("never returns a cross-space or non-readable object across any mode or arm", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // Same space, readable by VIEWER.
     await seed({ id: "ok-public", title: "Shared runbook", content: "Public shared runbook xenon details." });
     await seed({ id: "ok-mine", title: "My private note", content: "My own private krypton note.", visibility: "private", owner: VIEWER });

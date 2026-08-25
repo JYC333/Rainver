@@ -1,7 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
+import { beforeEach, describe, expect, inject, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { PgPlanRepository } from "../src/modules/plans/repository";
@@ -27,46 +26,34 @@ const WORKFLOW_ASSET = "99999999-9999-4999-8999-999999999999";
 const FIXED_WORKFLOW_VERSION = "workflow-version-fixed-1";
 const BINDING_WORKFLOW_VERSION = "workflow-version-bindings";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: USER };
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-beforeAll(async () => {
-  container = await getTestPostgres(__filename);
-  pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-  available = true;
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  if (!db.available) return;
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Plan Test User', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Plan Test Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     ["66666666-6666-4666-8666-666666666666", SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO evolvable_assets (
        id, space_id, asset_type, asset_key, display_name, owner_scope_type,
        owner_scope_id, status, metadata_json, created_at, updated_at
@@ -74,7 +61,7 @@ beforeEach(async () => {
                'space', $2, 'active', '{}'::jsonb, $3, $3)`,
     [WORKFLOW_ASSET, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO evolvable_asset_versions (
        id, asset_id, space_id, scope_type, scope_id, version, status, source,
        content_json, created_at, updated_at
@@ -83,13 +70,13 @@ beforeEach(async () => {
        ($2, $3, $4, 'space', $4, 2, 'approved', 'user_authored', '{}'::jsonb, $5, $5)`,
     [FIXED_WORKFLOW_VERSION, BINDING_WORKFLOW_VERSION, WORKFLOW_ASSET, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id,
                          created_at, updated_at, visibility)
      VALUES ($1, $2, $3, 'Plan Test Agent', 'active', NULL, $4, $4, 'space_shared')`,
     [AGENT, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
@@ -101,7 +88,7 @@ beforeEach(async () => {
                '{}'::jsonb, $4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -109,7 +96,7 @@ beforeEach(async () => {
        '{}'::jsonb, true, true, $4, $4)`,
     [randomUUID(), SPACE, AGENT, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1 AND space_id = $3`, [AGENT, AGENT_VERSION, SPACE]);
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1 AND space_id = $3`, [AGENT, AGENT_VERSION, SPACE]);
 });
 
 function agentPlanDefinition() {
@@ -138,7 +125,7 @@ function agentPlanDefinition() {
 
 async function seedBudgetAutomation(): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO automations (
        id, space_id, owner_user_id, agent_id, name, trigger_type, status,
        config_json, created_at, updated_at
@@ -151,7 +138,7 @@ async function createApprovedPlanWithBudget(
   budgetSources: RunBudgetSource[],
 ): Promise<{ plans: PgPlanRepository; planId: string; versionId: string }> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO tasks (
        id, space_id, task_role, title, description, task_type, status, priority,
        risk_level, owner_user_id, visibility, access_level, created_by_user_id,
@@ -160,11 +147,11 @@ async function createApprovedPlanWithBudget(
                'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
     [TASK, SPACE, USER, now],
   );
-  const planningRun = await new PgTaskRepository(pool!).requestPlanningRun(identity, TASK, {
+  const planningRun = await new PgTaskRepository(db.pool).requestPlanningRun(identity, TASK, {
     agent_id: AGENT,
     prompt: "Plan this source task.",
   }) as { id: string };
-  await pool!.query(
+  await db.pool.query(
     `UPDATE runs
         SET contract_snapshot_json = jsonb_set(
           contract_snapshot_json,
@@ -175,7 +162,7 @@ async function createApprovedPlanWithBudget(
       WHERE space_id = $1 AND id = $2`,
     [SPACE, planningRun.id, JSON.stringify(budgetSources)],
   );
-  const plans = new PgPlanRepository(pool!);
+  const plans = new PgPlanRepository(db.pool);
   const created = await plans.createPlanFromAgent(identity, {
     sourceTaskId: TASK,
     planningRunId: planningRun.id,
@@ -186,7 +173,7 @@ async function createApprovedPlanWithBudget(
   });
   const version = created.current_version as { id: string; approval_proposal_id: string };
   const apply = PgProposalApplyService.fromConfig(loadConfig({
-    SERVER_DATABASE_URL: container!.getConnectionUri(),
+    SERVER_DATABASE_URL: db.connectionUri,
     SERVER_INTERNAL_TOKEN: "test-internal-token",
   }));
   await apply.accept(version.approval_proposal_id, identity);
@@ -195,9 +182,9 @@ async function createApprovedPlanWithBudget(
 
 describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   it("does not create a Plan for a source Task until an Agent planning Run proposes it", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO tasks (
          id, space_id, task_role, title, description, task_type, status, priority,
          risk_level, owner_user_id, visibility, access_level, created_by_user_id,
@@ -207,20 +194,20 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [TASK, SPACE, USER, now],
     );
 
-    expect((await pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
 
-    const taskRepository = new PgTaskRepository(pool);
+    const taskRepository = new PgTaskRepository(db.pool);
     const planningRun = await taskRepository.requestPlanningRun(identity, TASK, {
       agent_id: AGENT,
       prompt: "Plan this source task.",
     }) as { id: string; run_type: string };
     expect(planningRun.run_type).toBe("planning");
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT role FROM task_runs WHERE space_id = $1 AND task_id = $2 AND run_id = $3`,
       [SPACE, TASK, planningRun.id],
     )).rows[0]?.role).toBe("planning");
 
-    const plans = new PgPlanRepository(pool);
+    const plans = new PgPlanRepository(db.pool);
     const first = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
       planningRunId: planningRun.id,
@@ -245,10 +232,10 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       budgetCap: 100,
     });
     expect(replay.id).toBe(first.id);
-    expect((await pool.query(`SELECT count(*)::int AS count FROM plan_versions WHERE plan_id = $1`, [first.id])).rows[0]?.count).toBe(1);
+    expect((await db.pool.query(`SELECT count(*)::int AS count FROM plan_versions WHERE plan_id = $1`, [first.id])).rows[0]?.count).toBe(1);
 
     const apply = PgProposalApplyService.fromConfig(loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     }));
     const reviewed = await apply.accept(firstVersion.approval_proposal_id!, identity);
@@ -256,18 +243,18 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
 
     const executed = await plans.executePlan(identity, String(first.id), { agentId: AGENT });
     expect(executed.scheduled_node_ids).toHaveLength(1);
-    const nodeRun = (await pool.query<{ node_id: string; run_id: string }>(
+    const nodeRun = (await db.pool.query<{ node_id: string; run_id: string }>(
       `SELECT pnr.plan_node_id AS node_id, pnr.run_id
          FROM plan_node_runs pnr JOIN plan_nodes n ON n.id = pnr.plan_node_id
         WHERE pnr.space_id = $1 AND n.plan_version_id = $2`,
       [SPACE, firstVersion.id],
     )).rows[0];
     expect(nodeRun).toBeTruthy();
-    expect((await pool.query(`SELECT count(*)::int AS count FROM tasks WHERE space_id = $1 AND id <> $2`, [SPACE, TASK])).rows[0]?.count).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS count FROM tasks WHERE space_id = $1 AND id <> $2`, [SPACE, TASK])).rows[0]?.count).toBe(0);
 
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const planArtifactId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO artifacts (
          id, space_id, run_id, artifact_type, title, export_formats_json,
          created_at, updated_at
@@ -298,13 +285,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     });
     const reconciled = await plans.reconcilePlan(identity, String(first.id));
     expect(reconciled.status).toBe("completed");
-    expect((await pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
   });
 
   it("rejects an Agent plan proposal whose node declares a budget source that does not exist", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO tasks (
          id, space_id, task_role, title, description, task_type, status, priority,
          risk_level, owner_user_id, visibility, access_level, created_by_user_id,
@@ -313,13 +300,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
                  'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
       [TASK, SPACE, USER, now],
     );
-    const taskRepository = new PgTaskRepository(pool);
+    const taskRepository = new PgTaskRepository(db.pool);
     const planningRun = await taskRepository.requestPlanningRun(identity, TASK, {
       agent_id: AGENT,
       prompt: "Plan this source task.",
     }) as { id: string };
 
-    const plans = new PgPlanRepository(pool);
+    const plans = new PgPlanRepository(db.pool);
     const definition = agentPlanDefinition();
     (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
       ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
@@ -333,13 +320,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       definitionJson: definition,
       budgetCap: 100,
     })).rejects.toMatchObject({ code: "budget_source_not_found" });
-    expect((await pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
   });
 
   it("fails closed when a Plan node's declared budget source is already exhausted, leaving no queued Run or plan_node_runs row", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -349,7 +336,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     // Consume the Automation's single admitted slot with an unrelated direct
     // Run, the same way a manual fire would, before the Plan node ever tries
     // to inherit that budget.
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const consumedRun = await runs.createQueuedRun({
       agent_id: AGENT,
       space_id: SPACE,
@@ -359,7 +346,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trigger_origin: "manual",
       prompt: "Consume the automation's one admitted slot.",
     });
-    await new PgAutomationRepository(pool).createAutomationRun({
+    await new PgAutomationRepository(db.pool).createAutomationRun({
       automationId: AUTOMATION,
       runId: consumedRun.id,
       triggeredByUserId: USER,
@@ -367,7 +354,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       preflightSnapshot: { executable: true },
     });
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO tasks (
          id, space_id, task_role, title, description, task_type, status, priority,
          risk_level, owner_user_id, visibility, access_level, created_by_user_id,
@@ -376,13 +363,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
                  'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
       [TASK, SPACE, USER, now],
     );
-    const taskRepository = new PgTaskRepository(pool);
+    const taskRepository = new PgTaskRepository(db.pool);
     const planningRun = await taskRepository.requestPlanningRun(identity, TASK, {
       agent_id: AGENT,
       prompt: "Plan this source task.",
     }) as { id: string };
 
-    const plans = new PgPlanRepository(pool);
+    const plans = new PgPlanRepository(db.pool);
     const definition = agentPlanDefinition();
     (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
       ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
@@ -400,7 +387,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(version.approval_proposal_id).toBeTruthy();
 
     const apply = PgProposalApplyService.fromConfig(loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     }));
     await apply.accept(version.approval_proposal_id, identity);
@@ -411,24 +398,24 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
 
     // The rejected node admission must roll back the whole execute attempt:
     // no coordinator Run, no child Run, and no plan_node_runs link survive.
-    const plan = (await pool.query<{ status: string; root_run_id: string | null }>(
+    const plan = (await db.pool.query<{ status: string; root_run_id: string | null }>(
       `SELECT status, root_run_id FROM plans WHERE id = $1`,
       [created.id],
     )).rows[0];
     expect(plan).toMatchObject({ status: "active", root_run_id: null });
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM plan_node_runs
         WHERE plan_node_id IN (SELECT id FROM plan_nodes WHERE plan_version_id = $1)`,
       [version.id],
     )).rows[0]?.count).toBe(0);
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM runs WHERE space_id = $1`,
       [SPACE],
     )).rows[0]?.count).toBe(2);
   });
 
   it("inherits a Plan-level budget into child Runs and consumes the source as one logical execution", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     await seedBudgetAutomation();
     const source: RunBudgetSource = {
       source: { kind: "automation", id: AUTOMATION },
@@ -438,7 +425,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
 
     const executed = await plans.executePlan(identity, planId, { agentId: AGENT });
     expect(executed.scheduled_node_ids).toHaveLength(1);
-    const child = (await pool.query<{ root_run_id: string; contract_snapshot_json: { budget_sources: RunBudgetSource[] } }>(
+    const child = (await db.pool.query<{ root_run_id: string; contract_snapshot_json: { budget_sources: RunBudgetSource[] } }>(
       `SELECT r.root_run_id, r.contract_snapshot_json
          FROM runs r
          JOIN plan_node_runs pnr ON pnr.run_id = r.id AND pnr.space_id = r.space_id
@@ -450,13 +437,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(child?.contract_snapshot_json.budget_sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: { kind: "automation", id: AUTOMATION }, max_runs: 1 }),
     ]));
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [source])).rejects.toMatchObject({
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [source])).rejects.toMatchObject({
       code: "automation_max_runs_exceeded",
     });
   });
 
   it("serializes concurrent manual and Plan admission against one inherited Automation budget", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     await seedBudgetAutomation();
     const source: RunBudgetSource = {
       source: { kind: "automation", id: AUTOMATION },
@@ -464,7 +451,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     };
     const { plans, planId, versionId } = await createApprovedPlanWithBudget([source]);
 
-    const manualAdmission = () => withQueryableTransaction(pool!, async (client) => {
+    const manualAdmission = () => withQueryableTransaction(db.pool, async (client) => {
       await assertBudgetSourcesAvailable(client, SPACE, [source]);
       const run = await new PgRunRepository(client).createQueuedRun({
         agent_id: AGENT,
@@ -496,11 +483,11 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     const rejection = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
     expect(rejection?.reason).toMatchObject({ code: "automation_max_runs_exceeded" });
-    const automationRuns = (await pool.query<{ count: number }>(
+    const automationRuns = (await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM automation_runs WHERE automation_id = $1`,
       [AUTOMATION],
     )).rows[0]?.count ?? 0;
-    const planNodeRuns = (await pool.query<{ count: number }>(
+    const planNodeRuns = (await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count
          FROM plan_node_runs pnr
          JOIN plan_nodes n ON n.id = pnr.plan_node_id AND n.space_id = pnr.space_id
@@ -511,9 +498,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   });
 
   it("executes a fixed Workflow through Workflow Execution without creating a Plan", async () => {
-    if (!available || !pool || !container) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -522,7 +509,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     );
     const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
-      db: pool,
+      db: db.pool,
       identity,
       automation: {
         id: AUTOMATION,
@@ -577,8 +564,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       preflightSnapshot: { executable: true },
       budgetSources: [],
     });
-    expect((await pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
-    expect((await pool.query<{
+    expect((await db.pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
+    expect((await db.pool.query<{
       run_role: string;
       runtime_profile_id: string | null;
       adapter_type: string | null;
@@ -597,7 +584,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       adapter_type: null,
       attempt_count: 0,
     });
-    await new PgAutomationRepository(pool).createAutomationRun({
+    await new PgAutomationRepository(db.pool).createAutomationRun({
       automationId: AUTOMATION,
       runId: execution.rootRunId,
       workflowExecutionId: execution.workflowExecutionId,
@@ -606,16 +593,16 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       preflightSnapshot: { executable: true },
     });
 
-    const work = (await pool.query<{ node_id: string; run_id: string }>(
+    const work = (await db.pool.query<{ node_id: string; run_id: string }>(
       `SELECT wr.node_id, wr.run_id FROM workflow_execution_node_runs wr
         JOIN workflow_execution_nodes n ON n.id = wr.node_id
        WHERE wr.space_id = $1 AND n.execution_id = $2 AND n.node_key = 'work'`,
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(work).toBeTruthy();
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const artifactId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO artifacts (
          id, space_id, run_id, artifact_type, title, export_formats_json,
          created_at, updated_at
@@ -632,11 +619,11 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: work!.run_id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: new Date().toISOString() });
     await Promise.all([
-      service.reconcileForRun(pool, SPACE, work!.run_id, USER),
-      service.reconcileForRun(pool, SPACE, work!.run_id, USER),
+      service.reconcileForRun(db.pool, SPACE, work!.run_id, USER),
+      service.reconcileForRun(db.pool, SPACE, work!.run_id, USER),
     ]);
 
-    const consume = (await pool.query<{
+    const consume = (await db.pool.query<{
       run_id: string;
       resolved_inputs_json: { values: Record<string, unknown> };
       contract_snapshot_json: { upstream_inputs_json: { values: Record<string, unknown> } };
@@ -649,7 +636,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(consume).toBeTruthy();
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count
          FROM workflow_execution_node_runs wr
          JOIN workflow_execution_nodes n ON n.id = wr.node_id AND n.space_id = wr.space_id
@@ -666,17 +653,17 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await runs.markRunRunning({ run_id: consume!.run_id, space_id: SPACE, started_at: new Date().toISOString() });
     await runs.markRunTerminal({ run_id: consume!.run_id, space_id: SPACE, status: "succeeded", output_json: { result: "consumed" }, completed_at: new Date().toISOString() });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: consume!.run_id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: new Date().toISOString() });
-    await service.reconcileForRun(pool, SPACE, consume!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, consume!.run_id, USER);
 
-    const checkpoint = (await pool.query<{ proposal_id: string }>(
+    const checkpoint = (await db.pool.query<{ proposal_id: string }>(
       `SELECT approval_proposal_id AS proposal_id FROM workflow_execution_nodes WHERE space_id = $1 AND execution_id = $2 AND node_key = 'checkpoint'`,
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(checkpoint?.proposal_id).toBeTruthy();
-    const apply = PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri(), SERVER_INTERNAL_TOKEN: "test-internal-token" }));
+    const apply = PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" }));
     const accepted = await apply.accept(checkpoint!.proposal_id, identity);
     expect(accepted?.proposal.status).toBe("accepted");
-    const finalState = (await pool.query<{ execution_status: string; root_status: string; linked_execution_id: string }>(
+    const finalState = (await db.pool.query<{ execution_status: string; root_status: string; linked_execution_id: string }>(
       `SELECT e.status AS execution_status, root.status AS root_status, ar.workflow_execution_id AS linked_execution_id
          FROM workflow_executions e JOIN runs root ON root.id = e.root_run_id
          JOIN automation_runs ar ON ar.workflow_execution_id = e.id
@@ -687,9 +674,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   });
 
   it("fails closed for a missing required binding while an optional sibling continues", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -706,7 +693,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     };
     const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
-      db: pool,
+      db: db.pool,
       identity,
       automation,
       target: {
@@ -727,13 +714,13 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       },
       triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
-    const sourceRun = (await pool.query<{ run_id: string }>(
+    const sourceRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'source'`,
       [execution.workflowExecutionId],
     )).rows[0]!.run_id;
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     await runs.markRunRunning({ run_id: sourceRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({
       run_id: sourceRun,
@@ -745,9 +732,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       completed_at: now,
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(pool, SPACE, sourceRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, sourceRun, USER);
 
-    const states = (await pool.query<{
+    const states = (await db.pool.query<{
       node_key: string; status: string; blocked_reason: string | null;
       run_count: number; resolved_inputs_json: { values: Record<string, unknown>; bindings: Array<{ missing_reason: string | null }> } | null;
     }>(
@@ -768,7 +755,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   });
 
   it("dispatches 'action' nodes to a registered deterministic handler without spawning an agent run", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     actionNodeHandlerRegistry.register("test.echo_action", async (context) => ({
       output: { echoed: context.inputs.value },
@@ -781,7 +768,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       await context.db.query(`SELECT 1/0`);
       return { output: {} };
     }, "plan_graph_test");
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -798,7 +785,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     };
     const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
-      db: pool,
+      db: db.pool,
       identity,
       automation,
       target: {
@@ -835,19 +822,19 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
 
-    const sourceRun = (await pool.query<{ run_id: string }>(
+    const sourceRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'source'`,
       [execution.workflowExecutionId],
     )).rows[0]!.run_id;
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     await runs.markRunRunning({ run_id: sourceRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: { value: "world" } }), completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(pool, SPACE, sourceRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, sourceRun, USER);
 
-    const nodes = (await pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
+    const nodes = (await db.pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
       `SELECT node_key, status, blocked_reason FROM workflow_execution_nodes
         WHERE execution_id = $1 AND node_key IN ('ok_action', 'fail_action', 'sql_fail_action', 'missing_action')
         ORDER BY node_key`,
@@ -859,10 +846,10 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       { node_key: "ok_action", status: "done", blocked_reason: null },
       { node_key: "sql_fail_action", status: "failed", blocked_reason: "action_handler_error:division by zero" },
     ]);
-    expect((await pool.query<{ name: string }>(`SELECT name FROM automations WHERE id=$1`, [AUTOMATION])).rows[0]?.name)
+    expect((await db.pool.query<{ name: string }>(`SELECT name FROM automations WHERE id=$1`, [AUTOMATION])).rows[0]?.name)
       .toBe("Action node automation");
 
-    const okRun = (await pool.query<{
+    const okRun = (await db.pool.query<{
       run_type: string; status: string; output_json: { echoed: string };
       outcome_status: string;
     }>(
@@ -881,7 +868,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       outcome_status: "passed",
     });
 
-    const failRun = (await pool.query<{
+    const failRun = (await db.pool.query<{
       status: string; output_json: { partial: boolean }; outcome_status: string;
     }>(
       `SELECT r.status, r.output_json,
@@ -898,7 +885,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       outcome_status: "failed",
     });
 
-    const missingRunCount = (await pool.query<{ count: number }>(
+    const missingRunCount = (await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count
          FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes n ON n.id = link.node_id AND n.space_id = link.space_id
@@ -909,7 +896,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   });
 
   it("keeps an async Action node in progress until its delegated Run finishes", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     let delegationCount = 0;
     actionNodeHandlerRegistry.register("test.delegate_run", async (context) => {
@@ -932,7 +919,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
         value: context.inputs.value,
       },
     }), "plan_graph_test");
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -949,7 +936,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     };
     const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
-      db: pool,
+      db: db.pool,
       identity,
       automation,
       target: {
@@ -984,7 +971,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       preflightSnapshot: { executable: true },
       budgetSources: [],
     });
-    const firstDelegated = (await pool.query<{ run_id: string; status: string }>(
+    const firstDelegated = (await db.pool.query<{ run_id: string; status: string }>(
       `SELECT link.run_id, node.status
          FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes node
@@ -995,7 +982,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     )).rows[0];
     expect(firstDelegated?.status).toBe("in_progress");
 
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     await runs.markRunRunning({ run_id: firstDelegated!.run_id, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({
       run_id: firstDelegated!.run_id,
@@ -1011,9 +998,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trajectory_status: "incomplete",
       evaluated_at: now,
     });
-    await service.reconcileForRun(pool, SPACE, firstDelegated!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, firstDelegated!.run_id, USER);
 
-    const retryLinks = await pool.query<{ run_id: string; role: string }>(
+    const retryLinks = await db.pool.query<{ run_id: string; role: string }>(
       `SELECT link.run_id, link.role
          FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes node
@@ -1046,9 +1033,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trajectory_status: "acceptable",
       evaluated_at: now,
     });
-    await service.reconcileForRun(pool, SPACE, delegated!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, delegated!.run_id, USER);
 
-    const consumer = (await pool.query<{ status: string; output_json: unknown }>(
+    const consumer = (await db.pool.query<{ status: string; output_json: unknown }>(
       `SELECT node.status, run.output_json
          FROM workflow_execution_nodes node
          JOIN workflow_execution_node_runs link
@@ -1068,9 +1055,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
   });
 
   it("retries a failed node up to contract_json.max_attempts before failing it, and never retries beyond the cap", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (
          id, space_id, owner_user_id, agent_id, name, trigger_type, status,
          config_json, created_at, updated_at
@@ -1087,7 +1074,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     };
     const service = new WorkflowExecutionService(CONFIG);
     const execution = await service.start({
-      db: pool,
+      db: db.pool,
       identity,
       automation,
       target: {
@@ -1107,9 +1094,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       },
       triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
 
-    const firstFlakyRun = (await pool.query<{ run_id: string }>(
+    const firstFlakyRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'flaky'`,
@@ -1121,16 +1108,16 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     // node (attempt 1 of 2 remaining -> back to 'ready', not 'failed') and
     // immediately re-dispatches the ready node into attempt 2 — retry is not
     // a separate step the caller has to remember to trigger.
-    await service.reconcileForRun(pool, SPACE, firstFlakyRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, firstFlakyRun, USER);
 
-    const afterFirstFailure = (await pool.query<{ status: string; blocked_reason: string | null }>(
+    const afterFirstFailure = (await db.pool.query<{ status: string; blocked_reason: string | null }>(
       `SELECT status, blocked_reason FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
       [execution.workflowExecutionId],
     )).rows[0];
     expect(afterFirstFailure).toMatchObject({ status: "in_progress" });
     expect(afterFirstFailure!.blocked_reason).toContain("run_failed:failed");
 
-    const flakyRunRows = (await pool.query<{ run_id: string }>(
+    const flakyRunRows = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'flaky' ORDER BY link.created_at ASC`,
@@ -1142,14 +1129,14 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await runs.markRunRunning({ run_id: secondFlakyRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: secondFlakyRun, space_id: SPACE, status: "succeeded", output_json: {}, completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: secondFlakyRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(pool, SPACE, secondFlakyRun, USER);
-    expect((await pool.query<{ status: string }>(
+    await service.reconcileForRun(db.pool, SPACE, secondFlakyRun, USER);
+    expect((await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
       [execution.workflowExecutionId],
     )).rows[0]).toEqual({ status: "done" });
 
     // The node whose every attempt fails only fails once max_attempts (2) is exhausted, never before.
-    const alwaysFailsRun1 = (await pool.query<{ run_id: string }>(
+    const alwaysFailsRun1 = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'always_fails'`,
@@ -1157,12 +1144,12 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     )).rows[0]!.run_id;
     await runs.markRunRunning({ run_id: alwaysFailsRun1, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: alwaysFailsRun1, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
-    await service.reconcileForRun(pool, SPACE, alwaysFailsRun1, USER);
-    expect((await pool.query<{ status: string }>(
+    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun1, USER);
+    expect((await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'always_fails'`,
       [execution.workflowExecutionId],
     )).rows[0]).toEqual({ status: "in_progress" });
-    const alwaysFailsRun2 = (await pool.query<{ run_id: string }>(
+    const alwaysFailsRun2 = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
        JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
        WHERE node.execution_id = $1 AND node.node_key = 'always_fails' ORDER BY link.created_at DESC LIMIT 1`,
@@ -1171,8 +1158,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(alwaysFailsRun2).not.toBe(alwaysFailsRun1);
     await runs.markRunRunning({ run_id: alwaysFailsRun2, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: alwaysFailsRun2, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
-    await service.reconcileForRun(pool, SPACE, alwaysFailsRun2, USER);
-    const finalAlwaysFails = (await pool.query<{ status: string; count: number }>(
+    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun2, USER);
+    const finalAlwaysFails = (await db.pool.query<{ status: string; count: number }>(
       `SELECT node.status,
               (SELECT count(*)::int FROM workflow_execution_node_runs wr WHERE wr.node_id = node.id) AS count
          FROM workflow_execution_nodes node WHERE node.execution_id = $1 AND node.node_key = 'always_fails'`,

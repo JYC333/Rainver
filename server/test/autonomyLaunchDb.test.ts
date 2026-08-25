@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, inject, it } from "vitest";
 import { reconcileAutonomyRun } from "../src/modules/autonomy/finalizationReconciler";
 import { AutonomyRecoveryService } from "../src/modules/autonomy/recoveryService";
 import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry";
@@ -8,7 +7,7 @@ import { AutonomyService } from "../src/modules/autonomy/service";
 import { registerEvolutionReviewAutonomyDiscoverer } from "../src/modules/evolution/autonomyDiscoverer";
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer";
 import { PgRunRepository } from "../src/modules/runs/repository";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -39,53 +38,43 @@ function beforeNow(ms: number): string {
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-beforeAll(async () => {
-  database = await getTestPostgres(__filename);
-  pool = new Pool({ connectionString: database.getConnectionUri(), max: 5 });
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 5 });
 
 beforeEach(async () => {
-  if (!pool) return;
+  if (!db.pool) return;
   autonomyDiscovererRegistry.__resetForTests();
   registerPeriodicDigestAutonomyDiscoverer();
   registerEvolutionReviewAutonomyDiscoverer();
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   const now = NOW.toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Autonomy Owner', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Autonomy Space', 'personal', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        visibility, created_at, updated_at
      ) VALUES ($1, $2, $3, 'Autonomy Agent', 'active', NULL, 'private', $4, $4)`,
     [AGENT, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -96,8 +85,8 @@ beforeEach(async () => {
                '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -105,7 +94,7 @@ beforeEach(async () => {
                '{}'::jsonb, true, true, $4, $4)`,
     [PROFILE, SPACE, AGENT, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO automations (
        id, space_id, owner_user_id, agent_id, name, trigger_type, status,
        config_json, created_at, updated_at
@@ -113,7 +102,7 @@ beforeEach(async () => {
                '{"target_type":"autonomous_tick","observe_only":false}'::jsonb, $5, $5)`,
     [AUTOMATION, SPACE, USER, AGENT, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO automation_credential_grants (
        id, space_id, automation_id, granted_by_user_id, status, created_at
      ) VALUES ($1, $2, $3, $4, 'active', $5)`,
@@ -122,7 +111,7 @@ beforeEach(async () => {
 });
 
 async function seedProject(id: string, name: string, updatedAt: string): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO projects (
        id, space_id, owner_user_id, name, status, primary_mode,
        created_at, updated_at
@@ -136,7 +125,7 @@ async function seedEvolutionSignals(
   options: { severity?: string; triageStatus?: string; startMinute?: number } = {},
 ): Promise<string[]> {
   const targetId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolution_targets (
        id, space_id, target_type, risk_level, status, enabled,
        engine_policy_json, metadata_json, created_at, updated_at
@@ -150,7 +139,7 @@ async function seedEvolutionSignals(
     const createdAt = new Date(
       Date.parse(beforeNow(2 * HOUR_MS)) + ((options.startMinute ?? 0) + index) * 60_000,
     ).toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO evolution_signals (
          id, space_id, target_id, signal_type, source_type, source_id,
          severity, summary, payload_json, triage_status, created_at
@@ -175,7 +164,7 @@ function launch(
   dailyRunLimit = 5,
   options: { quotaCheckedAt?: string; automationMaxRuns?: number } = {},
 ) {
-  return new AutonomyService(pool!).launchCandidates({
+  return new AutonomyService(db.pool).launchCandidates({
     automation: {
       id: AUTOMATION,
       space_id: SPACE,
@@ -232,7 +221,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
     expect(result.refused).toEqual([
       expect.objectContaining({ reason: "daily_run_limit_reached" }),
     ]);
-    const runs = await pool!.query<{
+    const runs = await db.pool.query<{
       id: string;
       run_role: string;
       trigger_origin: string;
@@ -262,7 +251,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
     expect(child.permission_snapshot_json.tool_grants.map((grant) => grant.action_id)).toEqual([
       "project.summary.brief",
     ]);
-    const audit = await pool!.query<{ run_id: string; trigger_context_json: { autonomy_tick_id: string } }>(
+    const audit = await db.pool.query<{ run_id: string; trigger_context_json: { autonomy_tick_id: string } }>(
       `SELECT run_id, trigger_context_json FROM automation_runs WHERE id = $1`,
       [result.automation_run_id],
     );
@@ -276,14 +265,14 @@ describeWithPostgres("bounded periodic digest launch", () => {
     await seedProject(PROJECT_A, "Concurrent Project", beforeNow(6 * DAY_MS));
     const results = await Promise.all([launch(), launch()]);
     expect(results.reduce((total, result) => total + result.candidates_launched, 0)).toBe(1);
-    const autonomousRuns = await pool!.query<{ total: number }>(
+    const autonomousRuns = await db.pool.query<{ total: number }>(
       `SELECT count(*)::int AS total
          FROM runs
         WHERE space_id = $1 AND trigger_origin = 'autonomous'`,
       [SPACE],
     );
     expect(autonomousRuns.rows[0]?.total).toBe(1);
-    const candidate = await pool!.query<{
+    const candidate = await db.pool.query<{
       launch_tick_id: string;
       run_id: string;
     }>(
@@ -302,7 +291,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
     await seedProject(PROJECT_A, "Digest Project", beforeNow(6 * DAY_MS));
     const launched = await launch();
     const runId = launched.launched_run_ids[0]!;
-    const repeatedObservation = await new AutonomyService(pool!).observeTick({
+    const repeatedObservation = await new AutonomyService(db.pool).observeTick({
       spaceId: SPACE,
       automationId: AUTOMATION,
       ownerUserId: USER,
@@ -310,7 +299,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       now: NOW,
     });
     expect(repeatedObservation.candidate_ids).toHaveLength(1);
-    const provenance = await pool!.query<{ launch_tick_id: string; last_seen_tick_id: string }>(
+    const provenance = await db.pool.query<{ launch_tick_id: string; last_seen_tick_id: string }>(
       `SELECT launch_tick_id, last_seen_tick_id
          FROM autonomy_candidates WHERE run_id = $1`,
       [runId],
@@ -319,7 +308,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       launch_tick_id: launched.tick_id,
       last_seen_tick_id: repeatedObservation.tick_id,
     });
-    const terminal = await new PgRunRepository(pool!).markRunTerminal({
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: runId,
       space_id: SPACE,
       status: "succeeded",
@@ -334,14 +323,14 @@ describeWithPostgres("bounded periodic digest launch", () => {
       exit_code: 0,
       completed_at: NOW.toISOString(),
     });
-    await reconcileAutonomyRun(pool!, terminal!);
-    await reconcileAutonomyRun(pool!, terminal!);
-    const candidate = await pool!.query<{ status: string; artifact_id: string | null }>(
+    await reconcileAutonomyRun(db.pool, terminal!);
+    await reconcileAutonomyRun(db.pool, terminal!);
+    const candidate = await db.pool.query<{ status: string; artifact_id: string | null }>(
       `SELECT status, artifact_id FROM autonomy_candidates WHERE run_id = $1`,
       [runId],
     );
     expect(candidate.rows[0]?.status).toBe("completed");
-    const artifacts = await pool!.query<{ total: number; visibility: string; owner_user_id: string; content: string }>(
+    const artifacts = await db.pool.query<{ total: number; visibility: string; owner_user_id: string; content: string }>(
       `SELECT count(*) OVER()::int AS total, visibility, owner_user_id, content
          FROM artifacts WHERE run_id = $1 AND artifact_type = 'autonomous_periodic_digest'`,
       [runId],
@@ -352,7 +341,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       owner_user_id: USER,
       content: "# Progress\n\nThe project moved forward.",
     });
-    const coordinator = await pool!.query<{ status: string }>(
+    const coordinator = await db.pool.query<{ status: string }>(
       `SELECT status FROM runs WHERE id = $1`,
       [launched.coordinator_run_id],
     );
@@ -379,7 +368,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       expect.objectContaining({ reason: "quota_stale" }),
       expect.objectContaining({ reason: "quota_stale" }),
     ]);
-    const coordinator = await pool!.query<{ status: string }>(
+    const coordinator = await db.pool.query<{ status: string }>(
       `SELECT status FROM runs WHERE id = $1`,
       [stale.coordinator_run_id],
     );
@@ -390,16 +379,16 @@ describeWithPostgres("bounded periodic digest launch", () => {
     await seedProject(PROJECT_A, "Review Project", beforeNow(6 * DAY_MS));
     const launched = await launch();
     const runId = launched.launched_run_ids[0]!;
-    await pool!.query(
+    await db.pool.query(
       `UPDATE runs SET status = 'waiting_for_review', updated_at = $2 WHERE id = $1`,
       [runId, beforeNow(3 * HOUR_MS)],
     );
-    const recovery = new AutonomyRecoveryService(pool!);
+    const recovery = new AutonomyRecoveryService(db.pool);
     await expect(recovery.cancelStaleWaitingForReview({ maxAgeSeconds: 3_600, now: NOW }))
       .resolves.toMatchObject({ cancelled: 1, run_ids: [runId] });
     await expect(recovery.cancelStaleWaitingForReview({ maxAgeSeconds: 3_600, now: NOW }))
       .resolves.toMatchObject({ cancelled: 0, run_ids: [] });
-    const run = await pool!.query<{ status: string; error_json: { error_code: string } }>(
+    const run = await db.pool.query<{ status: string; error_json: { error_code: string } }>(
       `SELECT status, error_json FROM runs WHERE id = $1`,
       [runId],
     );
@@ -407,7 +396,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       status: "cancelled",
       error_json: { error_code: "autonomous_review_timeout" },
     });
-    const alerts = await pool!.query<{ total: number }>(
+    const alerts = await db.pool.query<{ total: number }>(
       `SELECT count(*)::int AS total FROM activity_records
         WHERE source_run_id = $1 AND activity_type = 'operational_alert'`,
       [runId],
@@ -423,7 +412,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       ...await seedEvolutionSignals(1, { triageStatus: "acknowledged", startMinute: 10 }),
     ];
     await seedEvolutionSignals(1, { triageStatus: "dismissed", startMinute: 20 });
-    const service = new AutonomyService(pool!);
+    const service = new AutonomyService(db.pool);
     const [first, second] = await Promise.all([
       service.observeTick({
         spaceId: SPACE,
@@ -443,20 +432,20 @@ describeWithPostgres("bounded evolution review launch", () => {
     expect(first.candidates_seen).toBe(1);
     expect(second.candidates_seen).toBe(1);
     expect(first.candidate_ids).toEqual(second.candidate_ids);
-    const candidates = await pool!.query<{ total: number }>(
+    const candidates = await db.pool.query<{ total: number }>(
       `SELECT count(*)::int AS total
          FROM autonomy_candidates
         WHERE candidate_kind = 'evolution_review'`,
     );
     expect(candidates.rows[0]?.total).toBe(1);
-    const links = await pool!.query<{ signal_id: string; consumed_at: string | null }>(
+    const links = await db.pool.query<{ signal_id: string; consumed_at: string | null }>(
       `SELECT signal_id, consumed_at
          FROM autonomy_candidate_evolution_signals
         ORDER BY signal_id`,
     );
     expect(links.rows.map((row) => row.signal_id).sort()).toEqual([...signalIds].sort());
     expect(links.rows.every((row) => row.consumed_at === null)).toBe(true);
-    const triage = await pool!.query<{ triage_status: string; total: number }>(
+    const triage = await db.pool.query<{ triage_status: string; total: number }>(
       `SELECT triage_status, count(*)::int AS total
          FROM evolution_signals
         GROUP BY triage_status
@@ -478,7 +467,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       candidates_launched: 1,
     });
     const runId = launched.launched_run_ids[0]!;
-    const runBefore = await pool!.query<{
+    const runBefore = await db.pool.query<{
       capability_id: string;
       visibility: string;
       permission_snapshot_json: { tool_grants: unknown[] };
@@ -492,7 +481,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       visibility: "private",
       permission_snapshot_json: { tool_grants: [] },
     });
-    const terminal = await new PgRunRepository(pool!).markRunTerminal({
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: runId,
       space_id: SPACE,
       status: "succeeded",
@@ -507,10 +496,10 @@ describeWithPostgres("bounded evolution review launch", () => {
       exit_code: 0,
       completed_at: NOW.toISOString(),
     });
-    await reconcileAutonomyRun(pool!, terminal!);
-    await reconcileAutonomyRun(pool!, terminal!);
+    await reconcileAutonomyRun(db.pool, terminal!);
+    await reconcileAutonomyRun(db.pool, terminal!);
 
-    const report = await pool!.query<{ total: number; visibility: string; content: string }>(
+    const report = await db.pool.query<{ total: number; visibility: string; content: string }>(
       `SELECT count(*) OVER()::int AS total, visibility, content
          FROM artifacts
         WHERE run_id = $1 AND artifact_type = 'autonomous_evolution_review'`,
@@ -521,7 +510,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       visibility: "private",
       content: "# Retrospective\n\nRepeated failures need a bounded repair proposal.",
     });
-    const cursor = await pool!.query<{ candidate_id: string; last_fact_id: string }>(
+    const cursor = await db.pool.query<{ candidate_id: string; last_fact_id: string }>(
       `SELECT candidate_id, last_fact_id
          FROM autonomy_review_cursors
         WHERE space_id = $1 AND owner_user_id = $2
@@ -529,19 +518,19 @@ describeWithPostgres("bounded evolution review launch", () => {
       [SPACE, USER],
     );
     expect(signalIds).toContain(cursor.rows[0]?.last_fact_id);
-    const consumed = await pool!.query<{ total: number; consumed: number }>(
+    const consumed = await db.pool.query<{ total: number; consumed: number }>(
       `SELECT count(*)::int AS total,
               count(*) FILTER (WHERE consumed_at IS NOT NULL)::int AS consumed
          FROM autonomy_candidate_evolution_signals`,
     );
     expect(consumed.rows[0]).toEqual({ total: 5, consumed: 5 });
-    const unchanged = await pool!.query<{ states: string[] }>(
+    const unchanged = await db.pool.query<{ states: string[] }>(
       `SELECT array_agg(DISTINCT triage_status ORDER BY triage_status) AS states
          FROM evolution_signals`,
     );
     expect(unchanged.rows[0]?.states).toEqual(["new"]);
-    expect((await pool!.query(`SELECT 1 FROM proposals`)).rows).toHaveLength(0);
-    expect((await pool!.query(`SELECT 1 FROM evolvable_assets`)).rows).toHaveLength(0);
+    expect((await db.pool.query(`SELECT 1 FROM proposals`)).rows).toHaveLength(0);
+    expect((await db.pool.query(`SELECT 1 FROM evolvable_assets`)).rows).toHaveLength(0);
 
     const repeated = await launch();
     expect(repeated).toMatchObject({
@@ -555,7 +544,7 @@ describeWithPostgres("bounded evolution review launch", () => {
   it("launches an error-severity signal immediately after the cursor", async () => {
     await seedEvolutionSignals(5);
     const first = await launch();
-    const terminal = await new PgRunRepository(pool!).markRunTerminal({
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: first.launched_run_ids[0]!,
       space_id: SPACE,
       status: "succeeded",
@@ -570,7 +559,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       exit_code: 0,
       completed_at: NOW.toISOString(),
     });
-    await reconcileAutonomyRun(pool!, terminal!);
+    await reconcileAutonomyRun(db.pool, terminal!);
     await seedEvolutionSignals(1, { severity: "error", startMinute: 30 });
     const urgent = await launch();
     expect(urgent).toMatchObject({
@@ -584,7 +573,7 @@ describeWithPostgres("bounded evolution review launch", () => {
     await seedEvolutionSignals(5);
     const first = await launch();
     expect(first.candidates_launched).toBe(1);
-    const terminal = await new PgRunRepository(pool!).markRunTerminal({
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: first.launched_run_ids[0]!,
       space_id: SPACE,
       status: "failed",
@@ -593,9 +582,9 @@ describeWithPostgres("bounded evolution review launch", () => {
       exit_code: 1,
       completed_at: NOW.toISOString(),
     });
-    await reconcileAutonomyRun(pool!, terminal!);
+    await reconcileAutonomyRun(db.pool, terminal!);
 
-    const failedCandidate = await pool!.query<{ status: string }>(
+    const failedCandidate = await db.pool.query<{ status: string }>(
       `SELECT status FROM autonomy_candidates WHERE candidate_kind = 'evolution_review'`,
     );
     expect(failedCandidate.rows[0]?.status).toBe("failed");
@@ -613,7 +602,7 @@ describeWithPostgres("bounded evolution review launch", () => {
     });
     expect(retry.launched_run_ids[0]).not.toBe(first.launched_run_ids[0]);
 
-    const candidates = await pool!.query<{ total: number }>(
+    const candidates = await db.pool.query<{ total: number }>(
       `SELECT count(*)::int AS total FROM autonomy_candidates WHERE candidate_kind = 'evolution_review'`,
     );
     expect(candidates.rows[0]?.total).toBe(1);

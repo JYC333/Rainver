@@ -5717,6 +5717,7 @@ CREATE TABLE "host_thread_messages" (
 	"status" varchar(16) DEFAULT 'queued' NOT NULL,
 	"model_provider_id" varchar(36),
 	"model" varchar(256),
+	"reasoning_effort" varchar(32),
 	"run_id" varchar(36),
 	"created_by_user_id" varchar(36) NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,

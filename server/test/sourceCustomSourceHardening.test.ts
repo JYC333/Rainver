@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { seedCustomSourceWorld } from "./support/customSourceWorld";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
@@ -12,7 +12,6 @@ import { CustomSourceRepairService } from "../src/modules/sources/customSources/
 import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
 import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sources/customSources/customSourceArtifactRetention";
 import { HttpError } from "../src/modules/routeUtils/common";
-import { getDbPool } from "../src/db/pool";
 
 // Real-Postgres integration tests for Phase 12 (rate limiting, artifact
 // retention, and observability). Skips gracefully when Docker is unavailable.
@@ -20,67 +19,31 @@ import { getDbPool } from "../src/db/pool";
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let config: ServerConfig | undefined;
 let createFlow: CustomSourceCreateFlowService | undefined;
 let artifactStorageRoot: string | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-custom-source-hardening] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  if (config?.databaseUrl) await getDbPool(config.databaseUrl).end().catch(() => undefined);
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', now(), now())`, [IDENTITY.userId]);
-  await pool.query(`INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space A', 'team', $2, now(), now())`, [IDENTITY.spaceId, IDENTITY.userId]);
-  await pool.query(
-    `INSERT INTO source_connectors (
-       id, connector_key, display_name, connector_type, ingestion_mode, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(`INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`);
-  await pool.query(`INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`);
+  await seedCustomSourceWorld(db.pool, IDENTITY);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-hardening-artifacts-"));
   config = {
     ...loadConfig({}),
-    databaseUrl: container!.getConnectionUri(),
+    databaseUrl: db.connectionUri,
     artifactStorageRoot,
     customSourceAllowedLanguages: ["typescript_node"],
     customSourceGenerateRateLimitPerHour: 2,
     customSourceArtifactRetentionEnabled: true,
     customSourceArtifactRetentionDays: 30,
   };
-  createFlow = new CustomSourceCreateFlowService(pool, config);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-    [randomUUID(), IDENTITY.spaceId, IDENTITY.userId],
-  );
+  createFlow = new CustomSourceCreateFlowService(db.pool, config);
 });
 
 afterEach(async () => {
@@ -102,7 +65,7 @@ async function createDraftConnection(suffix = "", actor = IDENTITY) {
 
 describe("generateHandler rate limit", () => {
   it("rejects generation past the configured per-connection-per-hour limit", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     await createFlow!.generateHandler(IDENTITY, connection.id, {});
     await createFlow!.generateHandler(IDENTITY, connection.id, {});
@@ -110,7 +73,7 @@ describe("generateHandler rate limit", () => {
   });
 
   it("serializes concurrent generation attempts before enforcing the per-connection limit", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const results = await Promise.allSettled([
       createFlow!.generateHandler(IDENTITY, connection.id, {}),
@@ -124,14 +87,14 @@ describe("generateHandler rate limit", () => {
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(HttpError);
 
-    const versionCount = await pool!.query<{ count: string }>(
+    const versionCount = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM source_handler_versions
         WHERE space_id = $1 AND source_connection_id = $2`,
       [IDENTITY.spaceId, connection.id],
     );
     expect(Number(versionCount.rows[0]?.count ?? 0)).toBe(2);
 
-    const artifactCount = await pool!.query<{ count: string }>(
+    const artifactCount = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM artifacts WHERE space_id = $1`,
       [IDENTITY.spaceId],
     );
@@ -139,15 +102,15 @@ describe("generateHandler rate limit", () => {
   });
 
   it("does not share the rate limit budget across different connections", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connectionA = await createDraftConnection();
     const identityB = { spaceId: SPACE_A, userId: "user-2" };
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'Second User', 'active', now(), now())`,
       [identityB.userId],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
       [randomUUID(), SPACE_A, identityB.userId],
@@ -159,13 +122,13 @@ describe("generateHandler rate limit", () => {
   });
 
   it("applies to repair too, since repair regenerates through generateHandler internally", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     await createFlow!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id });
     // That activation's generateHandler call already used 1 of the 2 slots.
-    const repairService = new CustomSourceRepairService(pool!, config!);
+    const repairService = new CustomSourceRepairService(db.pool, config!);
     await repairService.repairHandler(IDENTITY, connection.id, { fixture_html: FIXTURE_HTML });
     await expect(repairService.repairHandler(IDENTITY, connection.id, { fixture_html: FIXTURE_HTML })).rejects.toThrow(
       HttpError,
@@ -175,27 +138,27 @@ describe("generateHandler rate limit", () => {
 
 describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields", () => {
   it("surfaces repair_status, recent_run_status_counts, and no pending proposal for a healthy active connection", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     await createFlow!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id });
 
-    const summary = await new PgCustomSourceHandlerRepository(pool!, config!).getHandlerSummary(IDENTITY, connection.id);
+    const summary = await new PgCustomSourceHandlerRepository(db.pool, config!).getHandlerSummary(IDENTITY, connection.id);
     expect(summary.repair_status).toBe("ok");
     expect(summary.recent_run_status_counts).toMatchObject({ succeeded: 1 });
     expect(summary.pending_proposals).toEqual([]);
   });
 
   it("surfaces the pending proposal blocking activation", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     // Restrict allowed_domains only now — createDraft already ran under the
     // permissive default, so activation (not draft creation) is what hits
     // the delta.
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO settings (id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at)
        VALUES ($1, 'space', $2, 'source.custom_source.space_policy', $3::jsonb, now(), now())`,
       [
@@ -214,7 +177,7 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
     const activation = await createFlow!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id });
     expect(activation.status).toBe("pending_approval");
 
-    const summary = await new PgCustomSourceHandlerRepository(pool!, config!).getHandlerSummary(IDENTITY, connection.id);
+    const summary = await new PgCustomSourceHandlerRepository(db.pool, config!).getHandlerSummary(IDENTITY, connection.id);
     expect(summary.pending_proposals).toHaveLength(1);
     expect(summary.pending_proposals[0]).toMatchObject({
       proposal_id: activation.proposal_id,
@@ -223,9 +186,9 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
   });
 
   it("surfaces every pending proposal, not only the most recent, when a connection has more than one", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
-    const flow = new CustomSourceCreateFlowService(pool!, permissiveConfig);
+    const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
     const connection = await flow.createDraft(IDENTITY, {
       name: "Example Source",
       endpoint_url: "https://example.com/list",
@@ -249,7 +212,7 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
     const activation3 = await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v3.id });
     expect(activation3.status).toBe("pending_approval");
 
-    const summary = await new PgCustomSourceHandlerRepository(pool!, config!).getHandlerSummary(IDENTITY, connection.id);
+    const summary = await new PgCustomSourceHandlerRepository(db.pool, config!).getHandlerSummary(IDENTITY, connection.id);
     expect(summary.pending_proposals).toHaveLength(2);
     const proposalIds = summary.pending_proposals.map((p) => p.proposal_id);
     expect(proposalIds).toContain(activation2.proposal_id);
@@ -259,11 +222,11 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
 
 describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
   it("prunes an old superseded version's artifact but never the connection's most-recently-superseded version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // This test regenerates 3 times for one connection, deliberately above
     // the rate limit under test elsewhere in this file — orthogonal concern.
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
-    const flow = new CustomSourceCreateFlowService(pool!, permissiveConfig);
+    const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
     const connection = await flow.createDraft(IDENTITY, {
       name: "Example Source",
       endpoint_url: "https://example.com/list",
@@ -290,34 +253,34 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     // more recently superseded of the two even though both are old.
     const v1SupersededAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
     const v2SupersededAt = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
-    await pool!.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v1.id, v1SupersededAt]);
-    await pool!.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v2.id, v2SupersededAt]);
+    await db.pool.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v1.id, v1SupersededAt]);
+    await db.pool.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v2.id, v2SupersededAt]);
 
-    const v1Before = await pool!.query<{ handler_artifact_id: string | null }>(
+    const v1Before = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v1.id],
     );
-    const v1ArtifactPath = await pool!.query<{ storage_path: string }>(`SELECT storage_path FROM artifacts WHERE id = $1`, [
+    const v1ArtifactPath = await db.pool.query<{ storage_path: string }>(`SELECT storage_path FROM artifacts WHERE id = $1`, [
       v1Before.rows[0]!.handler_artifact_id,
     ]);
     const v1AbsolutePath = join(config!.artifactStorageRoot, v1ArtifactPath.rows[0]!.storage_path);
     await expect(stat(v1AbsolutePath)).resolves.toBeDefined();
 
-    const pruned = await pruneSupersededCustomSourceHandlerArtifacts(pool!, config!);
+    const pruned = await pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!);
     expect(pruned).toBe(1);
 
-    const v1After = await pool!.query<{ handler_artifact_id: string | null }>(
+    const v1After = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v1.id],
     );
     expect(v1After.rows[0]?.handler_artifact_id).toBeNull();
-    const v1ArtifactRow = await pool!.query(`SELECT id FROM artifacts WHERE id = $1`, [
+    const v1ArtifactRow = await db.pool.query(`SELECT id FROM artifacts WHERE id = $1`, [
       v1Before.rows[0]!.handler_artifact_id,
     ]);
     expect(v1ArtifactRow.rows).toHaveLength(0);
     await expect(stat(v1AbsolutePath)).rejects.toThrow();
 
-    const v2After = await pool!.query<{ handler_artifact_id: string | null }>(
+    const v2After = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v2.id],
     );
@@ -325,21 +288,21 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
   });
 
   it("is a no-op when disabled", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const disabledConfig = { ...config!, customSourceArtifactRetentionEnabled: false };
-    expect(await pruneSupersededCustomSourceHandlerArtifacts(pool!, disabledConfig)).toBe(0);
+    expect(await pruneSupersededCustomSourceHandlerArtifacts(db.pool, disabledConfig)).toBe(0);
   });
 
   it("agrees with rollback's default target on which version is 'most recent' when two share the same superseded_at", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // Retention's exclusion query and rollback's default-target query must
     // never disagree about which superseded version is "most recent" —
     // otherwise retention could prune the exact version a no-argument
     // rollback would target. Both use version_number DESC as a tiebreaker
     // for this reason; this test forces the tie the tiebreaker exists for.
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
-    const flow = new CustomSourceCreateFlowService(pool!, permissiveConfig);
-    const repairService = new CustomSourceRepairService(pool!, permissiveConfig);
+    const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
+    const repairService = new CustomSourceRepairService(db.pool, permissiveConfig);
     const connection = await flow.createDraft(IDENTITY, {
       name: "Example Source",
       endpoint_url: "https://example.com/list",
@@ -361,17 +324,17 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     // Force the tie: v1 and v2 (both superseded, v2 has the higher
     // version_number) now share one identical, far-past-retention timestamp.
     const tiedTimestamp = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
-    await pool!.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v1.id, tiedTimestamp]);
-    await pool!.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v2.id, tiedTimestamp]);
+    await db.pool.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v1.id, tiedTimestamp]);
+    await db.pool.query(`UPDATE source_handler_versions SET superseded_at = $2 WHERE id = $1`, [v2.id, tiedTimestamp]);
 
-    const pruned = await pruneSupersededCustomSourceHandlerArtifacts(pool!, permissiveConfig);
+    const pruned = await pruneSupersededCustomSourceHandlerArtifacts(db.pool, permissiveConfig);
     expect(pruned).toBe(1);
-    const v1AfterPrune = await pool!.query<{ handler_artifact_id: string | null }>(
+    const v1AfterPrune = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v1.id],
     );
     expect(v1AfterPrune.rows[0]?.handler_artifact_id).toBeNull();
-    const v2AfterPrune = await pool!.query<{ handler_artifact_id: string | null }>(
+    const v2AfterPrune = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v2.id],
     );

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { PgProjectRepository } from "../src/modules/projects/repository";
@@ -22,71 +21,58 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "77777777-7777-4777-8777-777777777777";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
+  if (!db.available) return;
   registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[project-archive-lifecycle-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_operations", "project_research_workflows", "source_post_processing_rules", "project_source_bindings", "automations", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agents", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
      VALUES ($1,$2,$3,'Archived target','active',$5,$5),
             ($4,$2,$3,'Unaffected project','active',$5,$5)`,
     [PROJECT, SPACE, OWNER, OTHER_PROJECT, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,visibility,created_at,updated_at)
      VALUES ($1,$2,$3,'Research Agent','active','space_shared',$4,$4)`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (
        id,connector_key,display_name,connector_type,ingestion_mode,status,capabilities_json,created_at,updated_at
      ) VALUES ($1,'archive-test','Archive Test','external_feed','pull','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id,provider_key,display_name,provider_kind,category,status,capabilities_json,created_at,updated_at)
      VALUES ($1,'archive-test','Archive Test','named','academic','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
   const mappingId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id,provider_id,connector_id,status,priority,capabilities_json,created_at,updated_at)
      VALUES ($1,$2,$2,'active',0,'{}'::jsonb,$3,$3)`,
     [mappingId, CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id,space_id,provider_connector_id,owner_user_id,name,status,capture_policy,trust_level,
        consent_json,policy_json,config_json,created_at,updated_at
@@ -94,7 +80,7 @@ beforeEach(async () => {
                $5::jsonb,'{}'::jsonb,'{}'::jsonb,$6,$6)`,
     [CONNECTION, SPACE, mappingId, OWNER, JSON.stringify({ schema_version: 1, owner_user_id: OWNER }), now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_channels (
        id,space_id,source_connection_id,created_by_user_id,name,channel_type,endpoint_url,
        query_json,provider_query_json,query_fingerprint,status,fetch_frequency,schedule_rule_json,created_at,updated_at
@@ -104,19 +90,19 @@ beforeEach(async () => {
   );
 
   for (const projectId of [PROJECT, OTHER_PROJECT]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO automations (id,space_id,owner_user_id,agent_id,project_id,name,trigger_type,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,$5,'Project Automation','schedule','active',$6,$6)`,
       [randomUUID(), SPACE, OWNER, AGENT, projectId, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_source_bindings (
          id,space_id,project_id,source_channel_id,binding_key,status,priority,delivery_scope,
          collection_notifications_enabled,filters_json,routing_policy_json,extraction_policy_json,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$5,'active',0,'project_members',true,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6,$6)`,
       [randomUUID(), SPACE, projectId, CHANNEL, projectId, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO source_post_processing_rules (
          id,space_id,source_channel_id,agent_id,project_id,name,status,trigger_type,
          trigger_config_json,input_config_json,actions_json,created_by_user_id,created_at,updated_at
@@ -125,11 +111,11 @@ beforeEach(async () => {
       [randomUUID(), SPACE, CHANNEL, AGENT, projectId, projectId, OWNER, now],
     );
     const workflowId = randomUUID();
-    await insertResearchWorkflowFixture(pool, {
+    await insertResearchWorkflowFixture(db.pool, {
       id: workflowId, spaceId: SPACE, projectId, startedByUserId: OWNER,
       currentStage: "screening", now,
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_operations (
          id,space_id,project_id,kind,title,status,progress_json,created_at,updated_at
        ) VALUES ($1,$2,$3,'research','Research Operation','active',$4::jsonb,$5,$5)`,
@@ -140,14 +126,14 @@ beforeEach(async () => {
 
 describe("Project archive lifecycle (real Postgres)", () => {
   it("atomically pauses future work, cancels active research orchestration, and does not auto-resume", async () => {
-    if (!available || !pool) return;
-    const repository = new PgProjectRepository(pool);
+    if (!db.available) return;
+    const repository = new PgProjectRepository(db.pool);
     const identity = { spaceId: SPACE, userId: OWNER };
 
     const archived = await repository.archive(identity, PROJECT);
     expect(archived.status).toBe("archived");
 
-    const statuses = await pool.query<{
+    const statuses = await db.pool.query<{
       automation_status: string;
       binding_status: string;
       rule_status: string;
@@ -177,12 +163,12 @@ describe("Project archive lifecycle (real Postgres)", () => {
       operation_status: "cancelled",
       operation_version: 2,
     });
-    await expect(new ProjectOperationService(pool).create(identity, PROJECT, {
+    await expect(new ProjectOperationService(db.pool).create(identity, PROJECT, {
       kind: "research",
       title: "Must not restart",
     })).rejects.toMatchObject({ statusCode: 409 });
 
-    const unaffected = await pool.query<{ statuses: string[] }>(
+    const unaffected = await db.pool.query<{ statuses: string[] }>(
       `SELECT ARRAY[
          (SELECT status FROM automations WHERE space_id=$1 AND project_id=$2),
          (SELECT status FROM project_source_bindings WHERE space_id=$1 AND project_id=$2),
@@ -195,7 +181,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
     expect(unaffected.rows[0]!.statuses).toEqual(["active", "active", "active", "active", "active"]);
 
     await repository.archive(identity, PROJECT);
-    const idempotent = await pool.query<{ version: number }>(
+    const idempotent = await db.pool.query<{ version: number }>(
       `SELECT version FROM project_operations WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
@@ -203,7 +189,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
 
     const reactivated = await repository.update(identity, PROJECT, { status: "active" });
     expect(reactivated.status).toBe("active");
-    const stillStopped = await pool.query<{ automation: string; workflow: string; operation: string }>(
+    const stillStopped = await db.pool.query<{ automation: string; workflow: string; operation: string }>(
       `SELECT
          (SELECT status FROM automations WHERE space_id=$1 AND project_id=$2) AS automation,
          (SELECT status FROM project_research_workflows WHERE space_id=$1 AND project_id=$2) AS workflow,
@@ -214,11 +200,11 @@ describe("Project archive lifecycle (real Postgres)", () => {
   });
 
   it("serializes archive with a research advanceOperation without deadlock", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const identity = { spaceId: SPACE, userId: OWNER };
     const results = await Promise.allSettled([
-      new PgProjectRepository(pool).archive(identity, PROJECT),
-      advanceOperation(pool, SPACE, (await pool.query<{ id: string }>(
+      new PgProjectRepository(db.pool).archive(identity, PROJECT),
+      advanceOperation(db.pool, SPACE, (await db.pool.query<{ id: string }>(
         `SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2`,
         [SPACE, PROJECT],
       )).rows[0]!.id, {
@@ -228,7 +214,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
       }),
     ]);
     expect(results.every((result) => result.status === "fulfilled")).toBe(true);
-    const final = await pool.query<{ project_status: string; workflow_status: string; operation_status: string }>(
+    const final = await db.pool.query<{ project_status: string; workflow_status: string; operation_status: string }>(
       `SELECT p.status AS project_status, w.status AS workflow_status, o.status AS operation_status
          FROM projects p
          JOIN project_research_workflows w ON w.space_id=p.space_id AND w.project_id=p.id
@@ -242,9 +228,9 @@ describe("Project archive lifecycle (real Postgres)", () => {
   });
 
   it("serializes archive with research creation and leaves no active work", async () => {
-    if (!available || !pool) return;
-    await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
-    const workflow = await pool.query<{ id: string }>(
+    if (!db.available) return;
+    await db.pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    const workflow = await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
@@ -256,8 +242,8 @@ describe("Project archive lifecycle (real Postgres)", () => {
       stage_state: "running",
     };
     await Promise.allSettled([
-      new PgProjectRepository(pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
-      new ProjectOperationService(pool).createManagedResearch({ spaceId: SPACE, userId: OWNER }, PROJECT, {
+      new PgProjectRepository(db.pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
+      new ProjectOperationService(db.pool).createManagedResearch({ spaceId: SPACE, userId: OWNER }, PROJECT, {
         title: "Concurrent operation",
         intentText: "Must be rejected or cancelled by archive",
         status: "active",
@@ -265,7 +251,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
         steps: [{ title: "Screen", status: "active" }],
       }),
     ]);
-    const final = await pool.query<{ project_status: string; active_operations: number }>(
+    const final = await db.pool.query<{ project_status: string; active_operations: number }>(
       `SELECT p.status AS project_status,
               count(o.id) FILTER (WHERE o.status IN ('draft','active','waiting_review'))::int AS active_operations
          FROM projects p
@@ -277,25 +263,25 @@ describe("Project archive lifecycle (real Postgres)", () => {
   });
 
   it("does not lose pending incremental items when archive wins the producer race", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const pendingItemId = "99999999-9999-4999-8999-999999999999";
-    await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
-    const workflow = await pool.query<{ id: string }>(
+    await db.pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    const workflow = await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
-    const binding = await pool.query<{ id: string }>(
+    const binding = await db.pool.query<{ id: string }>(
       `SELECT id FROM project_source_bindings WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
     const question = "Does archive preserve queued incremental work?";
-    const thread = await new InquiryThreadService(pool).createThread(
+    const thread = await new InquiryThreadService(db.pool).createThread(
       { spaceId: SPACE, userId: OWNER },
       PROJECT,
       { kind: "question", statement: question },
     );
-    await pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
-    await pool.query(
+    await db.pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
+    await db.pool.query(
       `UPDATE project_research_workflows
           SET state_json=$4::jsonb
         WHERE space_id=$1 AND project_id=$2 AND object_id=$3`,
@@ -312,13 +298,13 @@ describe("Project archive lifecycle (real Postgres)", () => {
       })],
     );
     await Promise.allSettled([
-      new PgProjectRepository(pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
-      new ProjectResearchOrchestrator(pool, CONFIG).triggerIncremental(
+      new PgProjectRepository(db.pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT),
+      new ProjectResearchOrchestrator(db.pool, CONFIG).triggerIncremental(
         { spaceId: SPACE, userId: OWNER }, PROJECT, workflow.rows[0]!.id,
         { idempotency_key: "archive-pending-race" },
       ),
     ]);
-    const final = await pool.query<{ project_status: string; active_operations: number; operation_count: number; pending_ids: unknown }>(
+    const final = await db.pool.query<{ project_status: string; active_operations: number; operation_count: number; pending_ids: unknown }>(
       `SELECT p.status AS project_status,
               count(o.id) FILTER (WHERE o.status IN ('draft','active','waiting_review'))::int AS active_operations,
               count(o.id)::int AS operation_count,
@@ -338,26 +324,26 @@ describe("Project archive lifecycle (real Postgres)", () => {
   });
 
   it("serializes pending incremental append with consumption without losing either item", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const firstItem = "88888888-8888-4888-8888-888888888881";
     const appendedItem = "88888888-8888-4888-8888-888888888882";
-    await pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
-    const workflow = await pool.query<{ id: string }>(
+    await db.pool.query(`DELETE FROM project_operations WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    const workflow = await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM project_research_workflows WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
-    const binding = await pool.query<{ id: string }>(
+    const binding = await db.pool.query<{ id: string }>(
       `SELECT id FROM project_source_bindings WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
     const question = "Can pending incremental work be consumed without loss?";
-    const thread = await new InquiryThreadService(pool).createThread(
+    const thread = await new InquiryThreadService(db.pool).createThread(
       { spaceId: SPACE, userId: OWNER },
       PROJECT,
       { kind: "question", statement: question },
     );
-    await pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
-    await pool.query(
+    await db.pool.query(`UPDATE projects SET current_focus=$3 WHERE space_id=$1 AND id=$2`, [SPACE, PROJECT, question]);
+    await db.pool.query(
       `UPDATE project_research_workflows SET state_json=$4::jsonb
         WHERE space_id=$1 AND project_id=$2 AND object_id=$3`,
       [SPACE, PROJECT, workflow.rows[0]!.id, JSON.stringify({
@@ -372,7 +358,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
         pending_incremental_source_item_ids: [firstItem],
       })],
     );
-    const orchestrator = new ProjectResearchOrchestrator(pool, CONFIG);
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
     const pendingAppender = orchestrator as unknown as {
       appendPendingIncrementalItems(spaceId: string, projectId: string, workflowId: string, itemIds: string[]): Promise<void>;
     };
@@ -383,7 +369,7 @@ describe("Project archive lifecycle (real Postgres)", () => {
         { idempotency_key: "pending-append-consume-race" },
       ),
     ]);
-    const durable = await pool.query<{ operation_ids: unknown; pending_ids: unknown }>(
+    const durable = await db.pool.query<{ operation_ids: unknown; pending_ids: unknown }>(
       `SELECT operation.progress_json->'source_item_ids' AS operation_ids,
               workflow.state_json->'pending_incremental_source_item_ids' AS pending_ids
          FROM project_research_workflows workflow

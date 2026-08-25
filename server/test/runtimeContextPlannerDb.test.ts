@@ -1,8 +1,7 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext";
 import { revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE_ID = "10000000-0000-4000-8000-000000000001";
@@ -12,30 +11,13 @@ const PROVIDER_ID = "10000000-0000-4000-8000-000000000004";
 const DELIVERY_ID = "10000000-0000-4000-8000-000000000006";
 const RETRY_DELIVERY_ID = "10000000-0000-4000-8000-000000000007";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[runtime-context-planner-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["context_window_reconciliations", "spaces"], { cascade: true });
-  await pool.query(
+  if (!db.available) return;
+  await resetTables(db.pool, ["context_window_reconciliations", "spaces"], { cascade: true });
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Runtime Context', 'personal', now(), now())`,
     [SPACE_ID],
@@ -44,7 +26,7 @@ beforeEach(async () => {
 
 describe("Runtime Context token reconciliation", () => {
   it("revalidates a subscription CLI against its immutable adapter authority", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const control = {
       space_id: SPACE_ID,
       egress: {
@@ -55,20 +37,20 @@ describe("Runtime Context token reconciliation", () => {
         allowed_provider_ids: [],
       },
     };
-    await expect(revalidateExecutionDestination(pool, control, "codex_cli"))
+    await expect(revalidateExecutionDestination(db.pool, control, "codex_cli"))
       .resolves.toBe("external_provider");
-    await expect(revalidateExecutionDestination(pool, control, "opencode"))
+    await expect(revalidateExecutionDestination(db.pool, control, "opencode"))
       .rejects.toThrow("not authorized by the control snapshot");
   });
 
   it("revalidates an adapter-compatible upstream through a cross-space provider grant", async () => {
-    if (!available || !pool) return;
-    await pool.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_at, updated_at)
        VALUES ($1, 'Provider Home', 'personal', now(), now())`,
       [PROVIDER_SPACE_ID],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id, space_id, name, provider_type, base_url, enabled,
          capabilities_json, config_json, created_at, updated_at
@@ -76,14 +58,14 @@ describe("Runtime Context token reconciliation", () => {
          '{}'::jsonb,'{"openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
       [PROVIDER_ID, PROVIDER_SPACE_ID],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id, provider_id, space_id, enabled, is_default, created_at, updated_at
        ) VALUES ('10000000-0000-4000-8000-000000000005',$1,$2,TRUE,FALSE,now(),now())`,
       [PROVIDER_ID, SPACE_ID],
     );
 
-    await expect(revalidateExecutionDestination(pool, {
+    await expect(revalidateExecutionDestination(db.pool, {
       space_id: SPACE_ID,
       egress: {
         destination_type: "model_provider",
@@ -96,8 +78,8 @@ describe("Runtime Context token reconciliation", () => {
   });
 
   it("persists the immutable plan and reconciles provider-reported prompt tokens once", async () => {
-    if (!available || !pool) return;
-    const repository = new ContextWindowReconciliationRepository(pool);
+    if (!db.available) return;
+    const repository = new ContextWindowReconciliationRepository(db.pool);
     await repository.recordPlan({
       spaceId: SPACE_ID,
       invocationId: INVOCATION_ID,
@@ -156,7 +138,7 @@ describe("Runtime Context token reconciliation", () => {
       deliveryId: DELIVERY_ID,
       actualPromptTokens: 625,
     })).resolves.toBeUndefined();
-    const row = (await pool.query(
+    const row = (await db.pool.query(
       `SELECT planned_prompt_tokens, actual_prompt_tokens, delta_tokens, status
          FROM context_window_reconciliations WHERE space_id=$1 AND invocation_id=$2`,
       [SPACE_ID, INVOCATION_ID],
@@ -196,7 +178,7 @@ describe("Runtime Context token reconciliation", () => {
       deliveryId: RETRY_DELIVERY_ID,
       actualPromptTokens: 601,
     });
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT delivery_id,status FROM context_window_reconciliations
         WHERE space_id=$1 AND invocation_id=$2 ORDER BY delivery_id`,
       [SPACE_ID, INVOCATION_ID],

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
   "resolution-mode": "import",
@@ -21,7 +21,6 @@ import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel";
 import { HttpError } from "../src/modules/routeUtils/common";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
-import { getDbPool } from "../src/db/pool";
 
 // Real-Postgres + real-child-process integration tests for the Custom Source
 // create flow (draft -> generate -> test -> activate/approval), matching the
@@ -31,84 +30,30 @@ import { getDbPool } from "../src/db/pool";
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
-const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
 const CUSTOM_SOURCE_INSTANCE_RUNNER_SETTINGS_KEY = "source.custom_source.runner";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let config: ServerConfig | undefined;
 let service: CustomSourceCreateFlowService | undefined;
 let artifactStorageRoot: string | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-custom-source-create-flow] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  if (config?.databaseUrl) await getDbPool(config.databaseUrl).end().catch(() => undefined);
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolution_bundle_members", "evolution_bundles", "jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'User', 'active', now(), now())`,
-    [IDENTITY.userId],
-  );
-  await pool.query(
-    `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
-     VALUES ($1, 'Space A', 'team', $2, now(), now())`,
-    [IDENTITY.spaceId, IDENTITY.userId],
-  );
-  await pool.query(
-    `INSERT INTO source_connectors (
-       id, connector_key, display_name, connector_type, ingestion_mode, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(
-    `INSERT INTO source_providers (
-       id, provider_key, display_name, provider_kind, category, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(
-    `INSERT INTO source_provider_connectors (
-       id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at
-     ) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`,
-  );
+  await seedCustomSourceWorld(db.pool, IDENTITY);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-create-flow-artifacts-"));
   config = {
     ...loadConfig({}),
-    databaseUrl: container!.getConnectionUri(),
+    databaseUrl: db.connectionUri,
     artifactStorageRoot,
     customSourceAllowedLanguages: ["typescript_node"],
   };
-  service = new CustomSourceCreateFlowService(pool, config);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-    [randomUUID(), IDENTITY.spaceId, IDENTITY.userId],
-  );
+  service = new CustomSourceCreateFlowService(db.pool, config);
 });
 
 afterEach(async () => {
@@ -132,32 +77,8 @@ async function createDraftConnection(overrides: Record<string, unknown> = {}) {
   return { ...channel, id: channel.source_connection_id };
 }
 
-async function insertCustomSourceSpacePolicy(overrides: Record<string, unknown> = {}) {
-  await pool!.query(
-    `INSERT INTO settings (
-       id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at
-     ) VALUES ($1, 'space', $2, $3, $4::jsonb, now(), now())
-     ON CONFLICT (scope_type, scope_id, settings_key)
-     DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
-    [
-      randomUUID(),
-      SPACE_A,
-      CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY,
-      JSON.stringify({
-        creator_roles: ["owner", "admin"],
-        default_capture_policy: "extract_text",
-        default_retention_policy: "full_text",
-        allowed_domains: [],
-        credentialed_sources_allowed: false,
-        same_envelope_repair_auto_apply: false,
-        ...overrides,
-      }),
-    ],
-  );
-}
-
 async function setInstanceRunnerEnabled(enabled: boolean) {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO settings (
        id, scope_type, scope_id, settings_key, settings_json, updated_by_user_id, created_at, updated_at
      ) VALUES ($1, 'instance', 'instance', $2, $3::jsonb, $4, now(), now())
@@ -174,17 +95,17 @@ async function setInstanceRunnerEnabled(enabled: boolean) {
 
 describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)", () => {
   it("createDraft rejects a raw credential_ref — a credential must be created first and referenced by credential_id", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(createDraftConnection({ credential_ref: "cred-1" })).rejects.toThrow(HttpError);
   });
 
   it("createDraft rejects a credential_id that does not exist in this space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(createDraftConnection({ credential_id: "does-not-exist" })).rejects.toThrow(HttpError);
   });
 
   it("createDraft creates a paused, generated_custom connection", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     expect(connection.handler_kind).toBe("generated_custom");
     expect(connection.status).toBe("paused");
@@ -192,12 +113,12 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("createDraft enforces Space Custom Source creator roles", async () => {
-    if (!available) return;
-    await pool!.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('member-1', 'Member', 'active', now(), now())`,
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, 'member-1', 'member', 'active', now(), now())`,
       [randomUUID(), SPACE_A],
@@ -210,7 +131,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       }),
     ).rejects.toThrow(HttpError);
 
-    await insertCustomSourceSpacePolicy({ creator_roles: ["owner", "admin", "member"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { creator_roles: ["owner", "admin", "member"] });
 
     const allowed = await service!.createDraft({ spaceId: SPACE_A, userId: "member-1" }, {
       name: "Allowed Source",
@@ -222,7 +143,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("full happy path: draft -> generate -> test (fixture) -> activate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
 
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
@@ -243,14 +164,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     expect(activation.status).toBe("active");
     expect(activation.handler_version.status).toBe("active");
 
-    const connectionRow = await pool!.query<{ active_handler_version_id: string; status: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string; status: string }>(
       `SELECT active_handler_version_id, status FROM source_connections WHERE id = $1`,
       [connection.id],
     );
     expect(connectionRow.rows[0]?.active_handler_version_id).toBe(version.id);
     expect(connectionRow.rows[0]?.status).toBe("active");
 
-    const sourceRuns = await listSourceRuns(pool!, IDENTITY, connection.source_channel_id, { limit: 10, offset: 0 });
+    const sourceRuns = await listSourceRuns(db.pool, IDENTITY, connection.source_channel_id, { limit: 10, offset: 0 });
     expect(sourceRuns.items).toEqual([
       expect.objectContaining({
         id: `handler_run:${testOutcome.run.id}`,
@@ -264,7 +185,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("testHandler fails closed when the instance runner setting is disabled", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await setInstanceRunnerEnabled(false);
@@ -281,7 +202,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("testHandler refuses to retest active handler versions", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await service!.testHandler(IDENTITY, connection.id, {
@@ -298,7 +219,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
         fixture_html: FIXTURE_HTML,
       }),
     ).rejects.toThrow(HttpError);
-    const versionRow = await pool!.query<{ status: string }>(
+    const versionRow = await db.pool.query<{ status: string }>(
       `SELECT status FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
@@ -306,17 +227,17 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("recordTestOutcome refuses to overwrite a version that stopped being testable mid-run", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     const runId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_handler_runs (
          id, space_id, source_connection_id, handler_version_id, status, created_at, started_at
        ) VALUES ($1, $2, $3, $4, 'running', now(), now())`,
       [runId, SPACE_A, connection.id, version.id],
     );
-    await pool!.query(`UPDATE source_handler_versions SET status = 'pending_approval' WHERE id = $1`, [version.id]);
+    await db.pool.query(`UPDATE source_handler_versions SET status = 'pending_approval' WHERE id = $1`, [version.id]);
 
     await expect(
       (service! as unknown as {
@@ -334,7 +255,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       }),
     ).rejects.toThrow(HttpError);
 
-    const versionRow = await pool!.query<{ status: string; test_result_json: Record<string, unknown> | null }>(
+    const versionRow = await db.pool.query<{ status: string; test_result_json: Record<string, unknown> | null }>(
       `SELECT status, test_result_json FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
@@ -342,7 +263,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("activation is blocked without a preceding successful test", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await expect(
@@ -351,14 +272,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("policy-delta activation creates a pending proposal and the proposal applier activates it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
     });
-    await insertCustomSourceSpacePolicy({ allowed_domains: ["other.example"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
 
     const activation = await service!.activateHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
@@ -368,12 +289,12 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     expect(activation.handler_version.status).toBe("pending_approval");
     expect(activation.deltas[0]).toContain("not allowed by Space Custom Source policy");
 
-    const versionRow = await pool!.query<{ status: string; proposal_id: string | null }>(
+    const versionRow = await db.pool.query<{ status: string; proposal_id: string | null }>(
       `SELECT status, proposal_id FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
     expect(versionRow.rows[0]).toMatchObject({ status: "pending_approval", proposal_id: activation.proposal_id });
-    const proposalRow = await pool!.query<{
+    const proposalRow = await db.pool.query<{
       id: string;
       space_id: string;
       proposal_type: string;
@@ -399,7 +320,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     expect(String(proposalRow.rows[0]?.payload_json.proposed_content)).toContain(
       "network origin not allowed by Space Custom Source policy",
     );
-    const connectionRow = await pool!.query<{ active_handler_version_id: string | null; status: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string | null; status: string }>(
       `SELECT active_handler_version_id, status FROM source_connections WHERE id = $1`,
       [connection.id],
     );
@@ -413,7 +334,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
 
     const result = await createDefaultProposalApplierRegistry().apply({
       config: config!,
-      db: pool!,
+      db: db.pool,
       proposal: proposalRow.rows[0]!,
       userId: IDENTITY.userId,
     });
@@ -423,12 +344,12 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       handler_version_id: version.id,
       status: "active",
     });
-    const activeConnection = await pool!.query<{ active_handler_version_id: string | null; status: string }>(
+    const activeConnection = await db.pool.query<{ active_handler_version_id: string | null; status: string }>(
       `SELECT active_handler_version_id, status FROM source_connections WHERE id = $1`,
       [connection.id],
     );
     expect(activeConnection.rows[0]).toMatchObject({ active_handler_version_id: version.id, status: "active" });
-    const activeVersion = await pool!.query<{ status: string }>(
+    const activeVersion = await db.pool.query<{ status: string }>(
       `SELECT status FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
@@ -436,18 +357,18 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("custom source proposal applier rejects non-pending and tampered handler versions", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
     });
-    await insertCustomSourceSpacePolicy({ allowed_domains: ["other.example"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
     const activation = await service!.activateHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
     });
-    const proposalRow = await pool!.query<{
+    const proposalRow = await db.pool.query<{
       id: string;
       space_id: string;
       proposal_type: string;
@@ -466,17 +387,17 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     );
 
     const registry = createDefaultProposalApplierRegistry();
-    await pool!.query(`UPDATE source_handler_versions SET status = 'draft' WHERE id = $1`, [version.id]);
+    await db.pool.query(`UPDATE source_handler_versions SET status = 'draft' WHERE id = $1`, [version.id]);
     await expect(
       registry.apply({
         config: config!,
-        db: pool!,
+        db: db.pool,
         proposal: proposalRow.rows[0]!,
         userId: IDENTITY.userId,
       }),
     ).rejects.toThrow("pending approval");
 
-    await pool!.query(
+    await db.pool.query(
       `UPDATE source_handler_versions
           SET status = 'pending_approval',
               policy_envelope_json = jsonb_set(policy_envelope_json, '{retention_policy}', '"full_snapshot"'::jsonb)
@@ -486,7 +407,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     await expect(
       registry.apply({
         config: config!,
-        db: pool!,
+        db: db.pool,
         proposal: proposalRow.rows[0]!,
         userId: IDENTITY.userId,
       }),
@@ -494,14 +415,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("proposal apply service accepts a Custom Source proposal and persists the accepted result", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
     });
-    await insertCustomSourceSpacePolicy({ allowed_domains: ["other.example"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
     const activation = await service!.activateHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
     });
@@ -518,7 +439,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     });
     expect(accepted?.proposal.status).toBe("accepted");
 
-    const proposal = await pool!.query<{ status: string; reviewed_by: string | null; payload_json: Record<string, unknown> }>(
+    const proposal = await db.pool.query<{ status: string; reviewed_by: string | null; payload_json: Record<string, unknown> }>(
       `SELECT status, reviewed_by, payload_json FROM proposals WHERE id = $1`,
       [activation.proposal_id],
     );
@@ -528,7 +449,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       accepted_by_user_id: IDENTITY.userId,
     });
 
-    const audit = await pool!.query<{ decision: string; required_approver_role: string | null }>(
+    const audit = await db.pool.query<{ decision: string; required_approver_role: string | null }>(
       `SELECT decision, required_approver_role
          FROM policy_decision_records
         WHERE proposal_id = $1 AND action = 'proposal.apply'
@@ -540,14 +461,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("rejecting a Custom Source proposal releases the handler version back to draft", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
     });
-    await insertCustomSourceSpacePolicy({ allowed_domains: ["other.example"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
     const activation = await service!.activateHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
     });
@@ -558,7 +479,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     );
     expect(rejected?.status).toBe("rejected");
 
-    const versionRow = await pool!.query<{ status: string; proposal_id: string | null }>(
+    const versionRow = await db.pool.query<{ status: string; proposal_id: string | null }>(
       `SELECT status, proposal_id FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
@@ -566,19 +487,19 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("space owner can reject an owner-required Custom Source proposal created by an allowed member", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const memberIdentity = { spaceId: SPACE_A, userId: "member-1" };
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'Member', 'active', now(), now())`,
       [memberIdentity.userId],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [randomUUID(), SPACE_A, memberIdentity.userId],
     );
-    await insertCustomSourceSpacePolicy({ creator_roles: ["owner", "admin", "member"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { creator_roles: ["owner", "admin", "member"] });
     const connection = await service!.createDraft(memberIdentity, {
       name: "Member Source",
       endpoint_url: "https://example.com/list",
@@ -590,7 +511,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
     });
-    await insertCustomSourceSpacePolicy({
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, {
       creator_roles: ["owner", "admin", "member"],
       allowed_domains: ["other.example"],
     });
@@ -605,7 +526,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       IDENTITY,
     );
     expect(rejected?.status).toBe("rejected");
-    const versionRow = await pool!.query<{ status: string; proposal_id: string | null }>(
+    const versionRow = await db.pool.query<{ status: string; proposal_id: string | null }>(
       `SELECT status, proposal_id FROM source_handler_versions WHERE id = $1`,
       [version.id],
     );
@@ -613,7 +534,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("a failing fixture test marks the version test_failed and still blocks activation", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     const version = await service!.generateHandler(IDENTITY, connection.id, {});
     // Single-page generation was requested via list_selector above; force a
@@ -633,7 +554,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   });
 
   it("cross-space connection access 404s", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createDraftConnection();
     await expect(
       service!.generateHandler({ spaceId: "space-b", userId: "user-2" }, connection.id, {}),
@@ -651,7 +572,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     };
 
     it("rejects generation_mode 'pipeline' without a valid pipeline definition", async () => {
-      if (!available) return;
+      if (!db.available) return;
       const connection = await createDraftConnection();
       await expect(
         service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline" }),
@@ -665,13 +586,13 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     });
 
     it("full happy path with a declarative pipeline handler: draft -> generate -> test (fixture) -> activate", async () => {
-      if (!available) return;
+      if (!db.available) return;
       // The shared `config`/`service!` fixture restricts allowed_languages to
       // ["typescript_node"] (see beforeEach) to keep the existing
       // code-template tests' fail-closed behavior obvious; this test needs a
       // service that also allows declarative_pipeline_v1.
       const permissiveConfig = { ...config!, customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"] };
-      const permissiveService = new CustomSourceCreateFlowService(pool!, permissiveConfig);
+      const permissiveService = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
 
       const connection = await createDraftConnection();
       const version = await permissiveService.generateHandler(IDENTITY, connection.id, {
@@ -693,7 +614,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       });
       expect(activation.status).toBe("active");
 
-      const connectionRow = await pool!.query<{ active_handler_version_id: string; status: string }>(
+      const connectionRow = await db.pool.query<{ active_handler_version_id: string; status: string }>(
         `SELECT active_handler_version_id, status FROM source_connections WHERE id = $1`,
         [connection.id],
       );
@@ -702,14 +623,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     });
 
     it("bridges a declarative pipeline handler into a paused recipe source and draft recipe version", async () => {
-      if (!available) return;
+      if (!db.available) return;
       const connection = await createDraftConnection();
       const version = await service!.generateHandler(IDENTITY, connection.id, {
         generation_mode: "pipeline",
         pipeline: PIPELINE,
       });
 
-      const bridged = await new SourceRecipePipelineBridgeService(pool!, config!).bridgePipelineHandler(
+      const bridged = await new SourceRecipePipelineBridgeService(db.pool, config!).bridgePipelineHandler(
         IDENTITY,
         connection.id,
         { handler_version_id: version.id, name: "Example Recipe Source" },
@@ -731,7 +652,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
         extract_list: 1,
       });
 
-      const oldConnectionRow = await pool!.query<{ handler_kind: string; active_recipe_version_id: string | null }>(
+      const oldConnectionRow = await db.pool.query<{ handler_kind: string; active_recipe_version_id: string | null }>(
         `SELECT handler_kind, active_recipe_version_id FROM source_connections WHERE id = $1`,
         [connection.id],
       );
@@ -739,7 +660,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
         handler_kind: "generated_custom",
         active_recipe_version_id: null,
       });
-      const newConnectionRow = await pool!.query<{
+      const newConnectionRow = await db.pool.query<{
         handler_kind: string;
         active_recipe_version_id: string | null;
         config_json: Record<string, unknown>;
@@ -758,7 +679,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
         },
       });
 
-      const dryRun = await new SourceRecipeDryRunService(pool!, config!).dryRunRecipeVersion(
+      const dryRun = await new SourceRecipeDryRunService(db.pool, config!).dryRunRecipeVersion(
         IDENTITY,
         bridged.connection.source_connection_id,
         {
@@ -769,13 +690,13 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       expect(dryRun.dry_run.status).toBe("succeeded");
       expect(dryRun.dry_run.item_count).toBe(2);
 
-      const activation = await new SourceRecipeCreateService(pool!, config!).activateRecipe(
+      const activation = await new SourceRecipeCreateService(db.pool, config!).activateRecipe(
         IDENTITY,
         bridged.connection.source_connection_id,
         { recipe_version_id: bridged.recipe_version.id },
       );
       expect(activation.status).toBe("active");
-      const activeRecipeConnection = await pool!.query<{ active_recipe_version_id: string | null; status: string }>(
+      const activeRecipeConnection = await db.pool.query<{ active_recipe_version_id: string | null; status: string }>(
         `SELECT active_recipe_version_id, status FROM source_connections WHERE id = $1`,
         [bridged.connection.source_connection_id],
       );
@@ -786,14 +707,14 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     });
 
     it("testHandler fails closed when declarative_pipeline_v1 is not in the instance allowed_languages", async () => {
-      if (!available) return;
+      if (!db.available) return;
       const connection = await createDraftConnection();
       const version = await service!.generateHandler(IDENTITY, connection.id, {
         generation_mode: "pipeline",
         pipeline: PIPELINE,
       });
       const restrictedConfig = { ...config!, customSourceAllowedLanguages: ["typescript_node"] };
-      const restrictedService = new CustomSourceCreateFlowService(pool!, restrictedConfig);
+      const restrictedService = new CustomSourceCreateFlowService(db.pool, restrictedConfig);
       const outcome = await restrictedService.testHandler(IDENTITY, connection.id, {
         handler_version_id: version.id,
         fixture_html: FIXTURE_HTML,
@@ -825,23 +746,6 @@ describe("evaluateCustomSourceActivation", () => {
       log_max_bytes: 1000,
     },
   };
-
-  it("is within envelope on first activation when Space policy has no domain allowlist", () => {
-    const result = evaluateCustomSourceActivation(baseEnvelope, {
-      activeEnvelope: null,
-      spaceAllowedDomains: [],
-    });
-    expect(result.withinEnvelope).toBe(true);
-  });
-
-  it("flags a first activation whose origin is outside the Space's allowed_domains", () => {
-    const result = evaluateCustomSourceActivation(baseEnvelope, {
-      activeEnvelope: null,
-      spaceAllowedDomains: ["other.example"],
-    });
-    expect(result.withinEnvelope).toBe(false);
-    expect(result.deltas[0]).toContain("not allowed by Space Custom Source policy");
-  });
 
   it("flags a new origin not present in the previously active version's envelope", () => {
     const result = evaluateCustomSourceActivation(

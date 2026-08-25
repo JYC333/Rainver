@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 // NC/N7: notes and evidence connect both ways. The "jot a note" affordance on
@@ -16,26 +15,12 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[note-jot-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await pool?.end();
-  await database?.stop();
+  if (!db.available) return;
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
 });
 
 const identity = { spaceId: SPACE, userId: USER };
@@ -44,12 +29,12 @@ const identity = { spaceId: SPACE, userId: USER };
 async function seedSource(title: string, opts?: { visibility?: string; ownerUserId?: string }): Promise<string> {
   const objectId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id,space_id,object_type,title,visibility,owner_user_id,created_by_user_id,created_at,updated_at)
      VALUES ($1,$2,'source',$3,$4,$5,$5,$6,$6)`,
     [objectId, SPACE, title, opts?.visibility ?? "space_shared", opts?.ownerUserId ?? USER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO sources (object_id,space_id,status,source_type,uri,metadata_json)
      VALUES ($1,$2,'processed','paper','https://example.test/p','{}'::jsonb)`,
     [objectId, SPACE],
@@ -58,22 +43,22 @@ async function seedSource(title: string, opts?: { visibility?: string; ownerUser
 }
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["note_links", "notes", "sources", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
   for (const [id, name] of [[USER, "Owner"], [OTHER, "Other"]] as const) {
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [id, name, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [id, name, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
       [randomUUID(), SPACE, id, now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, USER, now],
   );
@@ -81,8 +66,8 @@ beforeEach(async () => {
 
 describe("jot a note from an evidence card (real Postgres)", () => {
   it("creates the note and the link in one call", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const sourceId = await seedSource("Attention Is All You Need");
 
     const note = await repository.jotNoteForObject(identity, {
@@ -99,8 +84,8 @@ describe("jot a note from an evidence card (real Postgres)", () => {
   });
 
   it("appends to an existing note instead of littering the tree", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const sourceId = await seedSource("A paper");
 
     const first = await repository.jotNoteForObject(identity, {
@@ -114,15 +99,15 @@ describe("jot a note from an evidence card (real Postgres)", () => {
     expect(second.plain_text).toContain("First thought.");
     expect(second.plain_text).toContain("Second thought.");
     // One note, and one link — the second jot must not duplicate the edge.
-    const notes = await pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE]);
+    const notes = await db.pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE]);
     expect(notes.rows).toHaveLength(1);
     const links = await repository.noteLinks(identity, first.id);
     expect(links).toHaveLength(1);
   });
 
   it("shows the note from the evidence side too", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const sourceId = await seedSource("Cited work");
     const note = await repository.jotNoteForObject(identity, {
       target_id: sourceId, text: "Relevant to the replication question.",
@@ -137,22 +122,22 @@ describe("jot a note from an evidence card (real Postgres)", () => {
   });
 
   it("writes nothing when the target is not visible to the caller", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const hidden = await seedSource("Private paper", { visibility: "private", ownerUserId: OTHER });
 
     await expect(repository.jotNoteForObject(identity, { target_id: hidden, text: "Should not persist." }))
       .rejects.toThrow(/Link target not found/);
     // The point of resolving the target first: a refused jot must not leave a
     // note behind, which would itself disclose that the target exists.
-    expect((await pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
+    expect((await db.pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
   });
 
   it("hides a private note from a direct fetch, not only from the list", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const mine = await repository.createNote(identity, { title: "Private" }) as { id: string };
-    await pool.query(
+    await db.pool.query(
       `UPDATE space_objects SET visibility='private', owner_user_id=$2 WHERE id=$1`,
       [mine.id, USER],
     );
@@ -168,10 +153,10 @@ describe("jot a note from an evidence card (real Postgres)", () => {
   });
 
   it("rejects an empty jot rather than creating a blank note", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const sourceId = await seedSource("A paper");
     await expect(repository.jotNoteForObject(identity, { target_id: sourceId, text: "  " })).rejects.toThrow();
-    expect((await pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
+    expect((await db.pool.query(`SELECT object_id FROM notes WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
   });
 });

@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService";
 import { loadConfig } from "../src/config";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 // ND: promoting a passage produces a knowledge item whose provenance records
@@ -17,40 +16,26 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[note-promotion-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await pool?.end();
-  await database?.stop();
+  if (!db.available) return;
+  __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["provenance_links", "knowledge_items", "notes", "space_objects", "proposals", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
-  await pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, USER, now],
   );
@@ -61,8 +46,8 @@ const PASSAGE = "Residual connections are what make depth trainable.";
 
 describe("promote a note passage to knowledge (real Postgres)", () => {
   it("routes through the proposal gate rather than writing an item directly", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, {
       title: "Reading notes", primary_project_id: PROJECT, plain_text: PASSAGE,
     }) as { id: string };
@@ -72,12 +57,12 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
     expect(proposal.proposal_type).toBe("knowledge_create");
     expect(proposal.status).toBe("pending");
     // Nothing exists yet — promotion proposes, it does not create.
-    expect((await pool.query(`SELECT object_id FROM knowledge_items WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
+    expect((await db.pool.query(`SELECT object_id FROM knowledge_items WHERE space_id=$1`, [SPACE])).rows).toHaveLength(0);
   });
 
   it("records the originating note as provenance once approved", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, {
       title: "Reading notes", primary_project_id: PROJECT, plain_text: PASSAGE,
     }) as { id: string };
@@ -86,16 +71,16 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
     // Accepted through the real gate, not by calling the applier directly —
     // the point of ND is that promotion changes nothing about governance.
     const config = loadConfig({
-      SERVER_DATABASE_URL: database!.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     });
     await PgProposalApplyService.fromConfig(config).accept(proposal.id, identity);
 
-    const item = (await pool.query<{ id: string }>(
+    const item = (await db.pool.query<{ id: string }>(
       `SELECT object_id AS id FROM knowledge_items WHERE space_id=$1`, [SPACE],
     )).rows[0];
     expect(item).toBeTruthy();
-    const provenance = await pool.query<{ source_type: string; source_id: string }>(
+    const provenance = await db.pool.query<{ source_type: string; source_id: string }>(
       `SELECT source_type, source_id FROM provenance_links
         WHERE space_id=$1 AND target_type='knowledge' AND target_id=$2`,
       [SPACE, item!.id],
@@ -104,8 +89,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
   });
 
   it("leaves the note's content untouched — promotion is not a move", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, {
       title: "Reading notes", primary_project_id: PROJECT, plain_text: PASSAGE,
     }) as { id: string; version: number };
@@ -117,8 +102,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
   });
 
   it("promotes the selected passage, not the note's whole text", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, {
       title: "Reading notes", primary_project_id: PROJECT,
       plain_text: `${PASSAGE}\n\nA second, unrelated idea.`,
@@ -126,7 +111,7 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
 
     const proposal = await repository.promoteNoteToKnowledge(identity, note.id, { content: PASSAGE });
 
-    const payload = (await pool.query<{ payload_json: { content: string; project_id?: string; source_refs: Array<{ source_type: string; source_id: string }> } }>(
+    const payload = (await db.pool.query<{ payload_json: { content: string; project_id?: string; source_refs: Array<{ source_type: string; source_id: string }> } }>(
       `SELECT payload_json FROM proposals WHERE id=$1`, [proposal.id],
     )).rows[0]!.payload_json;
     expect(payload.content).toBe(PASSAGE);
@@ -138,8 +123,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
   });
 
   it("shows the note what it produced, once the promotion is approved", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, {
       title: "Reading notes", primary_project_id: PROJECT, plain_text: PASSAGE,
     }) as { id: string };
@@ -150,7 +135,7 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
     expect(await repository.knowledgeItemsPromotedFromNote(identity, note.id)).toEqual([]);
 
     const config = loadConfig({
-      SERVER_DATABASE_URL: database!.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
     });
     await PgProposalApplyService.fromConfig(config).accept(proposal.id, identity);
@@ -161,8 +146,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
   });
 
   it("refuses to promote from a note the caller cannot see", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     await expect(repository.promoteNoteToKnowledge(identity, randomUUID(), { content: PASSAGE }))
       .rejects.toThrow(/Note not found/);
   });

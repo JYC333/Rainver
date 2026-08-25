@@ -839,12 +839,17 @@ describe("executeVendorCliAdapter", () => {
       }>;
     };
     expect(catalog.models.map((model) => model.slug)).toEqual(["MiniMax-M3", "MiniMax-M2.7"]);
+    // Real levels, not "none". Codex resolves a bound model's effort from this
+    // list and sends it upstream as a request parameter, so declaring only
+    // "none" pinned every bound model to `model[none]` — deciding on the
+    // provider's behalf that its model cannot reason.
     expect(catalog.models[0]).toMatchObject({
-      default_reasoning_level: "none",
-      supported_reasoning_levels: [{ effort: "none", description: "Reasoning off" }],
+      default_reasoning_level: "medium",
       supports_reasoning_summaries: false,
       truncation_policy: { mode: "bytes", limit: 10000 },
     });
+    expect(catalog.models[0].supported_reasoning_levels.map((level) => level.effort))
+      .toEqual(["low", "medium", "high"]);
     expect(catalog.models[0].base_instructions).toContain("using MiniMax-M3 through MiniMax");
     expect(leases.size()).toBe(0);
     expect(result.metadata_json).toMatchObject({
@@ -2108,6 +2113,79 @@ describe("vendor structured event normalization", () => {
     expect(controller.result().error).toContain("OpenCode ACP did not apply the requested model");
     expect(controller.result().error).toContain("asked for 'provider/model'");
     expect(controller.result().error).toContain("runtime is on 'different/model'");
+  });
+
+  it("asks for a reasoning effort as its own request, in the runtime's vocabulary", () => {
+    // ACP exposes model and effort as two options and each runtime names its
+    // own — `reasoning_effort` for Codex, `effort` for Claude. They are chosen
+    // independently: the model is which brain, the effort is how long it gets.
+    const sent: Record<string, unknown>[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+      reasoning_effort: "high",
+    })!;
+    const send = (value: Record<string, unknown>) => { sent.push(value); };
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => {});
+
+    const effortRequest = sent.find((frame) => frame.method === "session/set_config_option");
+    expect(effortRequest).toMatchObject({
+      params: { configId: "reasoning_effort", value: "high" },
+    });
+    // The prompt waits until the effort has been answered.
+    expect(sent.some((frame) => frame.method === "session/prompt")).toBe(false);
+  });
+
+  it("keeps the turn when a runtime will not take the requested effort", () => {
+    // The model is already right and the answer still arrives — just with the
+    // runtime's own effort. Losing the turn over it would cost more than the
+    // setting is worth.
+    const sent: Record<string, unknown>[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "codex_cli",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+      reasoning_effort: "high",
+    })!;
+    const send = (value: Record<string, unknown>) => { sent.push(value); };
+    let closed = false;
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => {});
+    controller.receive({
+      jsonrpc: "2.0",
+      id: 3.5,
+      result: { configOptions: [{ id: "reasoning_effort", currentValue: "medium" }] },
+    }, send, () => { closed = true; });
+
+    expect(controller.result().error).toBeNull();
+    expect(closed).toBe(false);
+    expect(sent.some((frame) => frame.method === "session/prompt")).toBe(true);
+  });
+
+  it("asks for no effort when the runtime exposes none", () => {
+    // OpenCode has no effort option; sending one would be an invalid_params
+    // rejection for a setting it never offered.
+    const sent: Record<string, unknown>[] = [];
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+      model: null,
+      reasoning_effort: "high",
+    })!;
+    const send = (value: Record<string, unknown>) => { sent.push(value); };
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => {});
+
+    expect(sent.some((frame) => frame.method === "session/set_config_option")).toBe(false);
+    expect(sent.some((frame) => frame.method === "session/prompt")).toBe(true);
   });
 
   it("rejects malformed OpenCode ACP protocol envelopes", () => {

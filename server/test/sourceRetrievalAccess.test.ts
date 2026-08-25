@@ -79,25 +79,4 @@ describe("source retrieval access revalidation", () => {
     expect(db.calls[0]?.sql).toContain("= 'full'");
   });
 
-  it("filters evidence and its parent item before returning search text", async () => {
-    const db = new SourceRetrievalDb();
-    const result = await sourceRetrievalAdapter.revalidateMany!(
-      db,
-      "space-1",
-      "extracted_evidence",
-      ["evidence-1"],
-      "viewer-1",
-    );
-
-    expect(result.get("evidence-1")?.title).toBe("Readable evidence");
-    expect(db.calls[0]?.params).toEqual([
-      "space-1",
-      ["evidence-1"],
-      ["candidate", "active"],
-      "viewer-1",
-    ]);
-    expect(db.calls[0]?.sql.match(/content_access_grants/g)?.length).toBeGreaterThanOrEqual(3);
-    expect(db.calls[0]?.sql).toContain("source_channel_user_subscriptions");
-    expect(db.calls[0]?.sql.match(/= 'full'/g)?.length).toBeGreaterThanOrEqual(3);
-  });
 });

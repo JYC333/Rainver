@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
 import { withTransaction } from "../src/db/tx";
@@ -6,7 +6,7 @@ import { PgAgentRepository } from "../src/modules/agents/repository";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
 import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "version-integrity-space";
@@ -16,55 +16,34 @@ const VERSION = "version-integrity-v1";
 const PROVIDER = "version-integrity-provider";
 const CAPABILITY_KEY = "research.search";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(
-      `[core-version-integrity-db] skipped — Docker/Postgres unavailable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["capability_versions", "runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Version integrity', 'personal', $2, $2)`,
     [SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (
        id, space_id, user_id, role, status, created_at, updated_at
      ) VALUES ('version-integrity-membership', $1, $2, 'owner', 'active', $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, default_model,
        enabled, capabilities_json, config_json, created_at, updated_at
@@ -72,14 +51,14 @@ beforeEach(async () => {
                true, '{}'::jsonb, '{}'::jsonb, $4, $4)`,
     [PROVIDER, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_provider_space_grants (
        id, provider_id, space_id, owner_user_id, granted_by_user_id,
        enabled, is_default, created_at, updated_at
      ) VALUES ('version-provider-grant', $1, $2, $3, $3, true, true, $4, $4)`,
     [PROVIDER, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, agent_kind,
        current_version_id, visibility, created_at, updated_at
@@ -87,7 +66,7 @@ beforeEach(async () => {
                'system_source_post_processor', NULL, 'space_shared', $3, $3)`,
     [AGENT, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_provider_id, model_name, model_config_json, runtime_config_json, context_policy_json,
@@ -101,7 +80,7 @@ beforeEach(async () => {
      )`,
     [VERSION, AGENT, SPACE, now, PROVIDER],
   );
-  await pool.query(
+  await db.pool.query(
     `UPDATE agents SET current_version_id = $2 WHERE id = $1`,
     [AGENT, VERSION],
   );
@@ -109,8 +88,8 @@ beforeEach(async () => {
 
 describe("core version integrity", () => {
   it("publishes a new AgentVersion and leaves the historical version unchanged", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repository = new PgAgentRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
 
     const published = await repository.publishSystemManagedPrompt({
       spaceId: SPACE,
@@ -121,7 +100,7 @@ describe("core version integrity", () => {
     expect(published.changed).toBe(true);
     expect(published.versionId).not.toBe(VERSION);
 
-    const versions = await pool.query<{ id: string; version_label: string; system_prompt: string }>(
+    const versions = await db.pool.query<{ id: string; version_label: string; system_prompt: string }>(
       `SELECT id, version_label, system_prompt
          FROM agent_versions
         WHERE agent_id = $1
@@ -140,7 +119,7 @@ describe("core version integrity", () => {
       systemPrompt: "new prompt",
     });
     expect(repeated).toEqual({ changed: false, versionId: published.versionId });
-    const count = await pool.query<{ count: string }>(
+    const count = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM agent_versions WHERE agent_id = $1`,
       [AGENT],
     );
@@ -148,8 +127,8 @@ describe("core version integrity", () => {
   });
 
   it("serializes concurrent Agent version publishers without mutating history", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repository = new PgAgentRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
 
     await Promise.all([
       repository.publishSystemManagedPrompt({
@@ -165,7 +144,7 @@ describe("core version integrity", () => {
       repository.restoreVersion(SPACE, AGENT, VERSION, USER),
     ]);
 
-    const versions = await pool.query<{ id: string; version_label: string; system_prompt: string }>(
+    const versions = await db.pool.query<{ id: string; version_label: string; system_prompt: string }>(
       `SELECT id, version_label, system_prompt
          FROM agent_versions
         WHERE agent_id = $1
@@ -184,16 +163,16 @@ describe("core version integrity", () => {
       version_label: "v1",
       system_prompt: "old prompt",
     });
-    const current = await pool.query<{ current_version_id: string }>(
+    const current = await db.pool.query<{ current_version_id: string }>(
       `SELECT current_version_id FROM agents WHERE id = $1`,
       [AGENT],
     );
     expect(versions.rows.slice(1).map((row) => row.id)).toContain(current.rows[0]?.current_version_id);
   });
 
-  it("reuses transaction connections for model validation under pool saturation", async (ctx) => {
-    if (!available || !pool || !database) return ctx.skip();
-    const saturatedPool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
+  it("reuses transaction connections for model validation under db.pool saturation", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const saturatedPool = new Pool({ connectionString: db.connectionUri, max: 2 });
     try {
       const repository = new PgAgentRepository(saturatedPool);
       await Promise.all([
@@ -204,7 +183,7 @@ describe("core version integrity", () => {
       await saturatedPool.end();
     }
 
-    const versions = await pool.query<{ version_label: string }>(
+    const versions = await db.pool.query<{ version_label: string }>(
       `SELECT version_label FROM agent_versions WHERE agent_id = $1 ORDER BY version_label`,
       [AGENT],
     );
@@ -212,14 +191,14 @@ describe("core version integrity", () => {
   }, 15_000);
 
   it("does not refresh prompts for user-defined source post-processing Agents", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    await pool.query(
+    if (!db.available || !db.pool) return ctx.skip();
+    await db.pool.query(
       `UPDATE agents SET agent_kind = 'standard' WHERE space_id = $1 AND id = $2`,
       [SPACE, AGENT],
     );
 
-    await expect(refreshSourcePostProcessingAgentPrompt(pool, SPACE, AGENT)).resolves.toBeUndefined();
-    const versions = await pool.query<{ version_label: string; system_prompt: string }>(
+    await expect(refreshSourcePostProcessingAgentPrompt(db.pool, SPACE, AGENT)).resolves.toBeUndefined();
+    const versions = await db.pool.query<{ version_label: string; system_prompt: string }>(
       `SELECT version_label, system_prompt
          FROM agent_versions
         WHERE agent_id = $1
@@ -230,8 +209,8 @@ describe("core version integrity", () => {
   });
 
   it("keeps evolvable assets and workflow history references non-deletable", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const constraints = await pool.query<{ conname: string; confdeltype: string }>(
+    if (!db.available || !db.pool) return ctx.skip();
+    const constraints = await db.pool.query<{ conname: string; confdeltype: string }>(
       `SELECT conname, confdeltype
          FROM pg_constraint
         WHERE conname = ANY($1::text[])
@@ -251,7 +230,7 @@ describe("core version integrity", () => {
     ]);
 
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, owner_scope_type,
          owner_scope_id, status, metadata_json, created_at, updated_at
@@ -259,7 +238,7 @@ describe("core version integrity", () => {
                  'space', $1, 'active', '{}'::jsonb, $2, $2)`,
       [SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_asset_versions (
          id, asset_id, space_id, scope_type, scope_id, version, status,
          source, content_json, created_at, updated_at
@@ -267,15 +246,15 @@ describe("core version integrity", () => {
                  'approved', 'user_authored', '{}'::jsonb, $2, $2)`,
       [SPACE, now],
     );
-    await expect(pool.query(`DELETE FROM evolvable_assets WHERE id = 'asset-1'`)).rejects.toMatchObject({
+    await expect(db.pool.query(`DELETE FROM evolvable_assets WHERE id = 'asset-1'`)).rejects.toMatchObject({
       code: "23503",
     });
   });
 
   it("allows multiple available capability versions for independently pinned scopes", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO capability_versions (
          id, capability_key, space_id, version, source, status,
          metadata_json, created_at, updated_at
@@ -283,7 +262,7 @@ describe("core version integrity", () => {
                  'builtin', 'available', '{}'::jsonb, $2, $2)`,
       [SPACE, now],
     );
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO capability_versions (
          id, capability_key, space_id, version, source, status,
          metadata_json, created_at, updated_at
@@ -294,9 +273,9 @@ describe("core version integrity", () => {
   });
 
   it("publishes capability versions without rewriting existing scope pins", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO capability_versions (
          id, capability_key, space_id, version, source, status,
          metadata_json, created_at, updated_at
@@ -306,7 +285,7 @@ describe("core version integrity", () => {
          ('capability-v3', $1, $2, '3.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3)`,
       [CAPABILITY_KEY, SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO capability_enablements (
          id, space_id, project_id, agent_id, user_id, capability_key,
          capability_version_id, enabled, config_json, created_at, updated_at
@@ -318,7 +297,7 @@ describe("core version integrity", () => {
     );
     const registry = createDefaultProposalApplierRegistry();
     const applyAvailable = (versionId: string, proposalId: string) => withTransaction(
-      pool!,
+      db.pool,
       (db) => registry.apply({
         config: loadConfig({}),
         db,
@@ -332,7 +311,7 @@ describe("core version integrity", () => {
       applyAvailable("capability-v3", "proposal-v3"),
     ]);
 
-    const availableVersions = await pool.query<{ id: string }>(
+    const availableVersions = await db.pool.query<{ id: string }>(
       `SELECT id
          FROM capability_versions
         WHERE capability_key = $1 AND space_id = $2
@@ -344,7 +323,7 @@ describe("core version integrity", () => {
       "capability-v2",
       "capability-v3",
     ]);
-    const enablements = await pool.query<{ id: string; capability_version_id: string | null }>(
+    const enablements = await db.pool.query<{ id: string; capability_version_id: string | null }>(
       `SELECT id, capability_version_id
          FROM capability_enablements
         WHERE space_id = $1 AND capability_key = $2
@@ -359,10 +338,10 @@ describe("core version integrity", () => {
   });
 
   it("concurrently enables different versions without changing another scope's pin", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const capabilityKey = "research.extract";
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO capability_versions (
          id, capability_key, space_id, version, source, status,
          metadata_json, created_at, updated_at
@@ -372,7 +351,7 @@ describe("core version integrity", () => {
          ('extract-v3', $1, $2, '3.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3)`,
       [capabilityKey, SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO capability_enablements (
          id, space_id, project_id, agent_id, user_id, capability_key,
          capability_version_id, enabled, config_json, created_at, updated_at
@@ -383,7 +362,7 @@ describe("core version integrity", () => {
     );
     const registry = createDefaultProposalApplierRegistry();
     const applyEnable = (proposal: ApplyProposal) => withTransaction(
-      pool!,
+      db.pool,
       (db) => registry.apply({ config: loadConfig({}), db, proposal, userId: USER }),
     );
 
@@ -392,7 +371,7 @@ describe("core version integrity", () => {
       applyEnable(capabilityEnableProposal(capabilityKey, "extract-v3", "enable-user", USER)),
     ]);
 
-    const availableVersions = await pool.query<{ id: string }>(
+    const availableVersions = await db.pool.query<{ id: string }>(
       `SELECT id FROM capability_versions
         WHERE capability_key = $1 AND space_id = $2
           AND status = 'available'`,
@@ -403,7 +382,7 @@ describe("core version integrity", () => {
       "extract-v2",
       "extract-v3",
     ]);
-    const enablements = await pool.query<{ capability_version_id: string }>(
+    const enablements = await db.pool.query<{ capability_version_id: string }>(
       `SELECT capability_version_id FROM capability_enablements
         WHERE space_id = $1 AND capability_key = $2 ORDER BY id`,
       [SPACE, capabilityKey],

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService";
@@ -14,55 +13,38 @@ const VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ACTOR = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const IDENTITY = { spaceId: SPACE, userId: USER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[run-workflow-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "spaces", "users"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Workflow User', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Workflow Space', 'team', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Workflow Agent', 'active', NULL, 'space_shared', $4, $4)`,
     [AGENT, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -71,7 +53,7 @@ beforeEach(async () => {
        '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -79,8 +61,8 @@ beforeEach(async () => {
        '{}'::jsonb, true, true, $4, $4)`,
     [randomUUID(), SPACE, AGENT, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await db.pool.query(
     `INSERT INTO actors (id, space_id, actor_type, user_id, agent_id, display_name, status, metadata_json, created_at, updated_at)
      VALUES ($1, $2, 'agent', $3, $4, 'Workflow actor', 'active', '{}'::jsonb, $5, $5)`,
     [ACTOR, SPACE, USER, AGENT, now],
@@ -88,7 +70,7 @@ beforeEach(async () => {
 });
 
 async function seedRun(riskLevel: string): Promise<string> {
-  const run = await new PgRunRepository(pool!).createQueuedRun({
+  const run = await new PgRunRepository(db.pool).createQueuedRun({
     agent_id: AGENT,
     space_id: SPACE,
     user_id: USER,
@@ -104,18 +86,18 @@ async function seedRun(riskLevel: string): Promise<string> {
     },
   });
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `UPDATE runs SET status = 'succeeded', ended_at = $2, updated_at = $2, output_json = '{"result":"ok"}'::jsonb WHERE id = $1`,
     [run.id, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO run_evaluations (
        id, space_id, run_id, evaluator_type, evaluator_version, outcome_status,
        trajectory_status, evidence_json, rule_trace_json, evaluated_at
      ) VALUES ($1, $2, $3, 'deterministic_harness', 'test', 'passed', 'acceptable', '{}'::jsonb, '[]'::jsonb, $4)`,
     [randomUUID(), SPACE, run.id, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO run_steps (
        id, space_id, run_id, actor_id, step_index, step_type, status, title,
        input_summary, output_summary, metadata_json, created_at, updated_at
@@ -123,7 +105,7 @@ async function seedRun(riskLevel: string): Promise<string> {
        'input', 'done at /tmp/private-output', '{}'::jsonb, $5, $5)`,
     [randomUUID(), SPACE, run.id, ACTOR, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO verification_results (
        id, space_id, run_id, verifier_type, verifier_version, status, summary,
        evidence_refs_json, details_json, started_at, completed_at, created_at
@@ -131,7 +113,7 @@ async function seedRun(riskLevel: string): Promise<string> {
        '[]'::jsonb, '{}'::jsonb, $4, $4, $4)`,
     [randomUUID(), SPACE, run.id, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO artifacts (
        id, space_id, run_id, artifact_type, title, content, mime_type,
        export_formats_json, created_at, updated_at, visibility, access_level
@@ -143,9 +125,9 @@ async function seedRun(riskLevel: string): Promise<string> {
 
 describe("save run as workflow (real Postgres)", () => {
   it("previews and saves a sanitized low-risk draft with evidence", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const runId = await seedRun("low");
-    const service = new RunWorkflowService(pool!);
+    const service = new RunWorkflowService(db.pool);
     const preview = await service.preview(IDENTITY, {
       run_id: runId,
       asset_key: "workflow.saved.safe",
@@ -164,7 +146,7 @@ describe("save run as workflow (real Postgres)", () => {
       display_name: "Saved workflow",
     });
     expect(saved).toMatchObject({ status: "draft_saved", version_status: "draft" });
-    const row = await pool!.query<{ asset_type: string; status: string; version_status: string }>(
+    const row = await db.pool.query<{ asset_type: string; status: string; version_status: string }>(
       `SELECT a.asset_type, a.status, v.status AS version_status
          FROM evolvable_assets a JOIN evolvable_asset_versions v ON v.asset_id = a.id
         WHERE a.id = $1`,
@@ -174,19 +156,19 @@ describe("save run as workflow (real Postgres)", () => {
   });
 
   it("requires a proposal for high-risk extraction and applies it as a draft", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const runId = await seedRun("high");
-    const saved = await new RunWorkflowService(pool!).save(IDENTITY, {
+    const saved = await new RunWorkflowService(db.pool).save(IDENTITY, {
       run_id: runId,
       asset_key: "workflow.saved.review",
     });
     expect(saved).toMatchObject({ status: "proposal_required", proposal_type: "workflow_save", risk_level: "high" });
-    const proposal = await pool!.query<{ id: string; space_id: string; proposal_type: string; payload_json: Record<string, unknown>; status: string }>(
+    const proposal = await db.pool.query<{ id: string; space_id: string; proposal_type: string; payload_json: Record<string, unknown>; status: string }>(
       `SELECT id, space_id, proposal_type, payload_json, status FROM proposals WHERE id = $1`,
       [String(saved.proposal_id)],
     );
     expect(proposal.rows[0]?.status).toBe("pending");
-    const client = await pool!.connect();
+    const client = await db.pool.connect();
     try {
       await client.query("BEGIN");
       const result = await createDefaultProposalApplierRegistry().apply({
@@ -215,7 +197,7 @@ describe("save run as workflow (real Postgres)", () => {
       expect(result.result).toMatchObject({ status: "draft" });
       const versionId = String(result.result.version_id);
       expect(versionId).toBeTruthy();
-      const version = await pool!.query<{ status: string }>(
+      const version = await db.pool.query<{ status: string }>(
         `SELECT status FROM evolvable_asset_versions WHERE id = $1`,
         [versionId],
       );

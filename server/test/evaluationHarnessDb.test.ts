@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import type { ServerConfig } from "../src/config";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
@@ -22,47 +21,30 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const AGENT_VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[evaluation-harness-db] skipped — Docker/Postgres unavailable: ${String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evaluation_cases", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "evolution_experiences", "proposals", "jobs", "job_events", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Eval Space', 'team', $2, $2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Eval Owner', 'active', $2, $2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Eval Space', 'team', $2, $2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Eval Owner', 'active', $2, $2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Evaluation Agent', 'active', NULL, 'space_shared', $4, $4)`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -71,8 +53,8 @@ beforeEach(async () => {
        '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -85,15 +67,15 @@ beforeEach(async () => {
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 function assetRepo(): EvolvableAssetRepository {
-  return new EvolvableAssetRepository(pool!);
+  return new EvolvableAssetRepository(db.pool);
 }
 
 function evaluationRepo(): EvolvableAssetEvaluationRepository {
-  return new EvolvableAssetEvaluationRepository(pool!);
+  return new EvolvableAssetEvaluationRepository(db.pool);
 }
 
 async function applyProposal(proposalId: string): Promise<Record<string, unknown>> {
-  const result = await pool!.query<{
+  const result = await db.pool.query<{
     id: string;
     space_id: string;
     proposal_type: string;
@@ -104,7 +86,7 @@ async function applyProposal(proposalId: string): Promise<Record<string, unknown
   if (!row) throw new Error("proposal not found");
   const context: ProposalApplyContext = {
     config: {} as ServerConfig,
-    db: pool! as unknown as ProposalApplyContext["db"],
+    db: db.pool as unknown as ProposalApplyContext["db"],
     proposal: {
       ...row,
       status: "accepted",
@@ -160,7 +142,7 @@ async function createApprovedBaseline(): Promise<{ assetId: string; baselineId: 
 }
 
 async function createSuccessfulSourceRun(workflowVersionId: string | null = null, output: Record<string, unknown> = { ok: true }): Promise<string> {
-  const run = await new PgRunRepository(pool!).createQueuedRun({
+  const run = await new PgRunRepository(db.pool).createQueuedRun({
     agent_id: AGENT,
     space_id: SPACE,
     user_id: OWNER,
@@ -172,11 +154,11 @@ async function createSuccessfulSourceRun(workflowVersionId: string | null = null
     contract_snapshot: { source: { kind: "direct", id: null }, risk_level: "low" },
   });
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = $3, updated_at = $3 WHERE id = $1`,
     [run.id, JSON.stringify(output), now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO run_evaluations (
        id, space_id, run_id, evaluator_type, evaluator_version, outcome_status,
        trajectory_status, evidence_json, rule_trace_json, evaluated_at
@@ -197,13 +179,13 @@ async function runEvaluation(
     candidate_run_id: candidateRunId,
   });
   const registry = new JobHandlerRegistry();
-  const config = { databaseUrl: container!.getConnectionUri() } as ServerConfig;
+  const config = { databaseUrl: db.connectionUri } as ServerConfig;
   registerEvaluationHarnessHandler(registry, config);
-  const queue = new PgJobQueueRepository(pool!);
+  const queue = new PgJobQueueRepository(db.pool);
   const worker = new JobWorker(queue, registry, "evaluation-test-worker", ["evolvable_asset_evaluation"], 0);
   const processed = await worker.processOne();
   expect(processed.status).toBe("completed");
-  const row = await pool!.query<{ status: string; metrics_json: Record<string, unknown>; blockers_json: unknown[] }>(
+  const row = await db.pool.query<{ status: string; metrics_json: Record<string, unknown>; blockers_json: unknown[] }>(
     `SELECT status, metrics_json, blockers_json FROM evolvable_asset_evaluation_runs WHERE id = $1`,
     [String((started.evaluation_run as Record<string, unknown>).id)],
   );
@@ -212,9 +194,9 @@ async function runEvaluation(
 
 describe("evaluation harness (real Postgres and job worker)", () => {
   it("creates a case, executes Verification Engine checks, and detects candidate regression", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, baselineId, candidateId } = await createApprovedBaseline();
-    const service = new EvaluationHarnessService(pool!);
+    const service = new EvaluationHarnessService(db.pool);
     const sourceRunId = await createSuccessfulSourceRun();
     const evaluationCase = await service.createCaseFromRun(identity, assetId, {
       name: "Result has an ok field",
@@ -243,7 +225,7 @@ describe("evaluation harness (real Postgres and job worker)", () => {
   });
 
   it("does not allow a public record call to forge a passed engine evaluation", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, candidateId } = await createApprovedBaseline();
     await expect(
       evaluationRepo().recordEvaluationRun(identity, assetId, candidateId, {
@@ -255,14 +237,14 @@ describe("evaluation harness (real Postgres and job worker)", () => {
   });
 
   it("embeds the evaluation summary and enforces an explicit hard gate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, candidateId } = await createApprovedBaseline();
     const proposal = await evaluationRepo().createPromotionProposal(identity, assetId, candidateId, {
       target_scope_type: "space",
       target_scope_id: SPACE,
       hard_gate: true,
     });
-    const stored = await pool!.query<{ payload_json: Record<string, unknown> }>(`SELECT payload_json FROM proposals WHERE id = $1`, [proposal.proposal_id]);
+    const stored = await db.pool.query<{ payload_json: Record<string, unknown> }>(`SELECT payload_json FROM proposals WHERE id = $1`, [proposal.proposal_id]);
     expect(stored.rows[0]?.payload_json).toMatchObject({
       evaluation_policy: { mode: "hard_gate", hard_gate: true },
       evaluation_summary: { total: 0, passed: 0 },

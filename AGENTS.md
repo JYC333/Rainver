@@ -75,4 +75,7 @@ change.
   infrastructure; do not add fake DB coverage or fall back to fake DB when the
   shared fixture is unavailable. See `.agent/architecture/TESTING_STRATEGY.md`.
 - Use the smallest verification command that proves the change; broaden only
-  when the blast radius requires it.
+  when the blast radius requires it. While iterating, run only the test files
+  for the module you touched (`pnpm exec vitest run test/<pattern>`); the full
+  suite is for before committing and for CI. See
+  [`.agent/COMMANDS.md`](.agent/COMMANDS.md).

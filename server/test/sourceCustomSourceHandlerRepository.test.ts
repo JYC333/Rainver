@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
@@ -14,57 +11,52 @@ import { HttpError } from "../src/modules/routeUtils/common";
 // that only surface on the real schema (CHECK constraints, the
 // space_id + source_connection_id same-space gate, FK behavior). These run
 // the actual SQL against a throwaway Postgres (testcontainers) loaded with
-// test/fixtures/sourceCustomSourceHandlersSchema.sql.
 //
 // Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
-
-const SCHEMA = readFileSync(
-  join(process.cwd(), "test/fixtures/sourceCustomSourceHandlersSchema.sql"),
-  "utf8",
-);
 
 const SPACE_A = "space-a";
 const SPACE_B = "space-b";
 const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
 const CUSTOM_SOURCE_INSTANCE_RUNNER_SETTINGS_KEY = "source.custom_source.runner";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let repo: PgCustomSourceHandlerRepository | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename, { empty: true });
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
-    repo = new PgCustomSourceHandlerRepository(pool, loadConfig({}));
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-custom-source-handler-repository] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  repo = new PgCustomSourceHandlerRepository(db.pool, loadConfig({}));
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
-    ["source_handler_runs", "source_handler_versions", "source_connections", "settings", "space_memberships", "proposals"],
+    db.pool,
+    ["source_handler_runs", "source_handler_versions", "source_connections", "settings", "space_memberships", "proposals", "source_provider_connectors", "source_providers", "source_connectors", "users", "spaces"],
+    { cascade: true },
+  );
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('admin-1', 'admin-1', 'active', now(), now()), ('admin-2', 'admin-2', 'active', now(), now()), ('member-1', 'member-1', 'active', now(), now()), ('u', 'u', 'active', now(), now()), ('user-1', 'user-1', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(
+    `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
+     VALUES ($1, 'Space A', 'team', 'user-1', now(), now()), ($2, 'Space B', 'team', 'user-1', now(), now())`,
+    [SPACE_A, SPACE_B],
+  );
+  await db.pool.query(
+    `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
+     VALUES ('connector-1', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await db.pool.query(
+    `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
+     VALUES ('provider-1', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`,
+  );
+  await db.pool.query(
+    `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
+     VALUES ('mapping-1', 'provider-1', 'connector-1', 'active', 0, '{}'::jsonb, now(), now())`,
   );
 });
 
 async function insertMembership(spaceId: string, userId: string, role: string): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, $4, 'active', now(), now())`,
     [randomUUID(), spaceId, userId, role],
@@ -72,7 +64,7 @@ async function insertMembership(spaceId: string, userId: string, role: string): 
 }
 
 async function insertConnection(spaceId: string, id: string): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, consent_json, policy_json, config_json,
@@ -98,7 +90,7 @@ async function insertHandlerVersion(
   versionNumber: number,
   status: string,
 ): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_handler_versions (
        id, space_id, source_connection_id, version_number, language, entrypoint,
        manifest_json, policy_envelope_json, checksum, status, created_at
@@ -109,7 +101,7 @@ async function insertHandlerVersion(
 
 describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   it("requireConnection gates by space — a connection in space B is invisible to space A", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const connId = randomUUID();
     await insertConnection(SPACE_B, connId);
     await expect(repo!.listHandlerVersions({ spaceId: SPACE_A, userId: "u" }, connId, { limit: 10, offset: 0 }))
@@ -117,7 +109,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("listHandlerVersions returns only versions for the requested connection, newest first", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const connId = randomUUID();
     const otherConnId = randomUUID();
     await insertConnection(SPACE_A, connId);
@@ -134,7 +126,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("getHandlerVersion 404s when the version belongs to a different connection", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const connId = randomUUID();
     const otherConnId = randomUUID();
     await insertConnection(SPACE_A, connId);
@@ -147,12 +139,12 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("getHandlerSummary reports the active version pinned via source_connections.active_handler_version_id", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const connId = randomUUID();
     await insertConnection(SPACE_A, connId);
     const v1 = randomUUID();
     await insertHandlerVersion(SPACE_A, connId, v1, 1, "active");
-    await pool!.query(`UPDATE source_connections SET active_handler_version_id = $1 WHERE id = $2`, [v1, connId]);
+    await db.pool.query(`UPDATE source_connections SET active_handler_version_id = $1 WHERE id = $2`, [v1, connId]);
 
     const summary = await repo!.getHandlerSummary({ spaceId: SPACE_A, userId: "u" }, connId);
     expect(summary.active_handler_version?.id).toBe(v1);
@@ -160,7 +152,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("getSettings returns system defaults when no space policy row exists, and the configured row otherwise", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const defaults = await repo!.getSettings({ spaceId: SPACE_A, userId: "u" });
     expect(defaults.space.credentialed_sources_allowed).toBe(false);
     expect(defaults.space.download_bytes_max).toBe(5_242_880);
@@ -170,7 +162,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
     const defaultEffective = await repo!.getEffectiveSettings({ spaceId: SPACE_A, userId: "u" });
     expect(defaultEffective.runner.download_bytes_max).toBe(5_242_880);
 
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO settings (
          id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at
        ) VALUES ($1, 'space', $2, $3, $4::jsonb, now(), now())`,
@@ -200,7 +192,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("updateInstanceRunnerSettings upserts the singleton runner toggle", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const disabled = await repo!.updateInstanceRunnerSettings({ spaceId: SPACE_A, userId: "admin-1" }, {
       runner_enabled: false,
     });
@@ -215,7 +207,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
     });
     expect(enabled.runner_enabled).toBe(true);
 
-    const rows = await pool!.query<{ n: string; updated_by_user_id: string | null }>(
+    const rows = await db.pool.query<{ n: string; updated_by_user_id: string | null }>(
       `SELECT count(*)::text AS n, max(updated_by_user_id) AS updated_by_user_id
          FROM settings
         WHERE scope_type = 'instance' AND scope_id = 'instance' AND settings_key = $1`,
@@ -225,7 +217,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
   });
 
   it("updateSpacePolicy requires owner/admin and upserts normalized product policy", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     await insertMembership(SPACE_A, "member-1", "member");
     await expect(
       repo!.updateSpacePolicy({ spaceId: SPACE_A, userId: "member-1" }, {
@@ -254,7 +246,7 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
       same_envelope_repair_auto_apply: true,
     });
 
-    const row = await pool!.query<{
+    const row = await db.pool.query<{
       updated_by_user_id: string | null;
       settings_json: {
         creator_roles: string[];

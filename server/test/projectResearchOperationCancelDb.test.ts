@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import {
@@ -31,54 +30,39 @@ const PROJECT = "55555555-5555-4555-8555-555555555555";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let app: FastifyInstance | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
+  if (!db.available) return;
   registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    __setAuthIdentityForTests(identity);
-    app = buildModuleServer(loadConfig({
-      SERVER_DATABASE_URL: container.getConnectionUri(),
-      SERVER_INTERNAL_TOKEN: "test-internal-token",
-      AGENT_SPACE_HOME: "/tmp/agent-space-research-cancel-test",
-    }), [projectResearchModule, researchModule]);
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-operation-cancel-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
+  __setAuthIdentityForTests(identity);
+  app = buildModuleServer(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    SERVER_INTERNAL_TOKEN: "test-internal-token",
+    AGENT_SPACE_HOME: "/tmp/agent-space-research-cancel-test",
+  }), [projectResearchModule, researchModule]);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["policy_decision_records", "jobs", "runs", "project_operations", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
   for (const user of [OWNER, STRANGER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'active',$5,$5)`,
       [randomUUID(), SPACE, user, user === OWNER ? "owner" : "member", now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
@@ -87,7 +71,7 @@ beforeEach(async () => {
 
 async function seedOperation(status = "active"): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
      VALUES ($1,$2,$3,'research','Initial literature intake',$4,$5,'{}'::jsonb,$6,$6)`,
     [OPERATION, SPACE, PROJECT, status, OWNER, now],
@@ -95,11 +79,11 @@ async function seedOperation(status = "active"): Promise<void> {
 }
 
 function service(): ResearchOperationCancelService {
-  return new ResearchOperationCancelService(pool!);
+  return new ResearchOperationCancelService(db.pool);
 }
 
 async function operationStatus(): Promise<string | undefined> {
-  const row = await pool!.query<{ status: string }>(
+  const row = await db.pool.query<{ status: string }>(
     `SELECT status FROM project_operations WHERE id=$1 AND space_id=$2`,
     [OPERATION, SPACE],
   );
@@ -107,7 +91,7 @@ async function operationStatus(): Promise<string | undefined> {
 }
 
 async function cancelJobCount(): Promise<number> {
-  const row = await pool!.query<{ count: string }>(
+  const row = await db.pool.query<{ count: string }>(
     `SELECT count(*)::int AS count FROM jobs
       WHERE space_id=$1 AND job_type=$2 AND payload_json->>'operation_id'=$3`,
     [SPACE, RESEARCH_OPERATION_CANCEL_JOB, OPERATION],
@@ -116,7 +100,7 @@ async function cancelJobCount(): Promise<number> {
 }
 
 async function cancelJobReason(): Promise<string | null | undefined> {
-  const row = await pool!.query<{ reason: string | null }>(
+  const row = await db.pool.query<{ reason: string | null }>(
     `SELECT payload_json->>'reason' AS reason FROM jobs
       WHERE space_id=$1 AND job_type=$2 AND payload_json->>'operation_id'=$3`,
     [SPACE, RESEARCH_OPERATION_CANCEL_JOB, OPERATION],
@@ -126,7 +110,7 @@ async function cancelJobReason(): Promise<string | null | undefined> {
 
 describe("ResearchOperationCancelService (real Postgres)", () => {
   it("stops the operation and enqueues one durable request to kill its in-flight work", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedOperation();
 
     await expect(service().cancelOperation(identity, PROJECT, OPERATION, "Stop after the current evidence check.")).resolves.toEqual({
@@ -140,7 +124,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("enforces and records the cancel policy on the HTTP route", async () => {
-    if (!available || !pool || !app) return;
+    if (!db.available || !db.pool || !app) return;
     await seedOperation();
 
     const response = await app.inject({
@@ -151,7 +135,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
 
     expect(response.statusCode).toBe(200);
     expect(await cancelJobReason()).toBe("The user changed the research scope.");
-    const decisions = await pool.query<{
+    const decisions = await db.pool.query<{
       action: string;
       decision: string;
       resource_type: string;
@@ -171,7 +155,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("refuses a caller without project write access, leaving the operation running", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedOperation();
 
     await expect(
@@ -182,7 +166,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("treats a second cancel as success without enqueuing another stop", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedOperation();
 
     await service().cancelOperation(identity, PROJECT, OPERATION);
@@ -194,7 +178,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("does not rewrite an operation that finished on its own before the cancel arrived", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedOperation("completed");
 
     await expect(service().cancelOperation(identity, PROJECT, OPERATION)).resolves.toMatchObject({
@@ -209,25 +193,25 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("keeps reconcile inert after a cancel, so no later tick revives the operation", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedOperation();
     await service().cancelOperation(identity, PROJECT, OPERATION);
 
-    await new ProjectResearchOrchestrator(pool, CONFIG).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     expect(await operationStatus()).toBe("cancelled");
   });
 
   it("stamps a failure notification with the pass generation, so a retried failure is a new Room event", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const roomOrigin = JSON.stringify({ origin_room_id: randomUUID(), origin_session_id: randomUUID() });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, generation, created_at, updated_at)
        VALUES ($1,$2,$3,'research','Initial literature intake','active',$4,$5::jsonb,7,$6,$6)`,
       [OPERATION, SPACE, PROJECT, OWNER, roomOrigin, now],
     );
-    const orchestrator = new ProjectResearchOrchestrator(pool, CONFIG) as unknown as {
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG) as unknown as {
       notifyRoomOfOperationStatus(
         operation: { id: string; space_id: string; project_id: string; progress_json: unknown },
         status: string,
@@ -244,7 +228,7 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
     await orchestrator.notifyRoomOfOperationStatus(operation, "waiting_review", "over budget");
     await orchestrator.notifyRoomOfOperationStatus(operation, "completed", "finished");
 
-    const jobs = await pool.query<{ status: string; episode: string | null }>(
+    const jobs = await db.pool.query<{ status: string; episode: string | null }>(
       `SELECT payload_json->>'status' AS status, payload_json->>'episode' AS episode FROM jobs
         WHERE space_id=$1 AND payload_json->>'operation_id'=$2 ORDER BY payload_json->>'status'`,
       [SPACE, OPERATION],
@@ -257,9 +241,9 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
   });
 
   it("rejects an operation id belonging to another kind or project", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
        VALUES ($1,$2,$3,'source_backfill','Backfill','active',$4,'{}'::jsonb,$5,$5)`,
       [OPERATION, SPACE, PROJECT, OWNER, now],

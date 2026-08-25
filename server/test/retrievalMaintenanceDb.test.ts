@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RetrievalMaintenanceService, RetrievalProjectionService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -18,42 +17,21 @@ const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const LONG = "This page has more than enough searchable content to clear the thin threshold comfortably here.";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-maintenance-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Maint', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Maint', 'personal', now(), now())`, [SPACE]);
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('maintenance-viewer', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -67,7 +45,7 @@ async function seed(doc: {
   visibility?: string;
   owner?: string | null;
 }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -94,14 +72,14 @@ async function seedAll(): Promise<void> {
   // is an orphan and a suggested edge is projected.
   await seed({ id: "linker", title: "Linker Page", content: `See [[Target Page]] for details. ${LONG}` });
   await seed({ id: "target", title: "Target Page", content: `Target. ${LONG}` });
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 }
 
 describe("Retrieval maintenance scan (real Postgres)", () => {
   it("emits batched review candidates and clusters duplicates", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedAll();
-    const report = await new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
+    const report = await new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
 
     const duplicates = report.findings.filter((f) => f.kind === "duplicate");
     const alpha = duplicates.find((f) => f.objects.some((o) => o.object_id === "alpha-1"));
@@ -120,9 +98,9 @@ describe("Retrieval maintenance scan (real Postgres)", () => {
   });
 
   it("is access-safe: a private object owned by another user never appears, and its cluster collapses", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedAll();
-    const report = await new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
+    const report = await new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
 
     const allIds = report.findings.flatMap((f) => f.objects.map((o) => o.object_id));
     expect(allIds).not.toContain("beta-secret"); // never surfaced in any finding
@@ -134,23 +112,23 @@ describe("Retrieval maintenance scan (real Postgres)", () => {
   });
 
   it("writes nothing canonical (read-only over the derived projection)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedAll();
-    const before = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM knowledge_items`);
-    await new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
-    const after = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM knowledge_items`);
+    const before = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM knowledge_items`);
+    await new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry).scan(SPACE, VIEWER);
+    const after = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM knowledge_items`);
     expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
     // No relations were accepted; the suggested edge stays suggested, not canonical.
-    const rels = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations`);
+    const rels = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations`);
     expect(rels.rows[0]!.n).toBe("0");
   });
 
   it("respects the per-kind cap and reports truncation", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // 4 thin pages with a per-kind cap of 2 ⇒ truncated, only 2 thin findings.
     for (let i = 0; i < 4; i++) await seed({ id: `t-${i}`, title: `T${i}`, content: "x" });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
-    const report = await new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry, {
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    const report = await new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry, {
       thinTextChars: 120,
       staleAfterDays: 365,
       perKindLimit: 2,
@@ -160,7 +138,7 @@ describe("Retrieval maintenance scan (real Postgres)", () => {
   });
 
   it("flags stale objects by CANONICAL content age, not reindex time", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // `old` was edited long ago; `recent` just now. Both are reindexed together
     // (same projection/indexed time), so only the canonical source_updated_at can
     // tell them apart — `old` is stale, `recent` is not.
@@ -168,15 +146,15 @@ describe("Retrieval maintenance scan (real Postgres)", () => {
     await seed({ id: "old-doc", title: "Ancient runbook", content: "Ancient but substantial runbook content here." });
     await seed({ id: "recent-doc", title: "Fresh runbook", content: "Freshly written runbook content here." });
     // Force the canonical timestamps after seed (seed() sets root created_at/updated_at to now()).
-    await pool.query(
+    await db.pool.query(
       `UPDATE space_objects
           SET updated_at = $2
         WHERE id = $1 AND object_type = 'knowledge_item'`,
       ["old-doc", longAgo],
     );
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
-    const report = await new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry, {
+    const report = await new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry, {
       thinTextChars: 120,
       staleAfterDays: 365,
       perKindLimit: 50,

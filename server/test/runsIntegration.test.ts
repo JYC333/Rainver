@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgRunRepository } from "../src/modules/runs/repository";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
@@ -20,62 +19,41 @@ import {
 // The whole suite skips gracefully when Docker is unavailable so `pnpm test`
 // still runs everywhere; where Docker is present (dev, CI) it always runs.
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[runs-integration] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   const now = new Date().toISOString();
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   await resetTables(
-    pool,
+    db.pool,
     ["content_access_grants", "space_memberships", "actors", "agents", "agent_versions", "agent_runtime_profiles", "agent_run_groups", "agent_run_group_members", "agent_run_messages", "runs", "run_delegations", "run_steps", "run_events", "run_execution_locks", "run_evaluations", "verification_results", "run_finalizations", "jobs", "job_events", "artifacts", "tasks", "task_runs", "task_evaluations"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ('user-1', 'Runs Test User', 'active', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ('space-1', 'Runs Test Space', 'team', 'user-1', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, 'space-1', 'user-1', 'owner', 'active', $2, $2)`,
     [randomUUID(), now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        created_at, updated_at, visibility
      ) VALUES ('agent-1', 'space-1', 'user-1', 'Runs Test Agent', 'active', NULL, $1, $1, 'space_shared')`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
@@ -86,8 +64,8 @@ beforeEach(async () => {
        '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $1)`,
     [now],
   );
-  await pool.query("UPDATE agents SET current_version_id = 'version-1' WHERE id = 'agent-1'");
-  await pool.query(
+  await db.pool.query("UPDATE agents SET current_version_id = 'version-1' WHERE id = 'agent-1'");
+  await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, enabled,
        capabilities_json, config_json, created_at, updated_at
@@ -112,14 +90,14 @@ async function seedAgent(
   const versionId = overrides.version_id ?? randomUUID();
   const spaceId = overrides.space_id ?? "space-1";
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        created_at, updated_at, visibility
      ) VALUES ($1,$2,'user-1','Agent',$3,NULL,$4,$4,'space_shared')`,
     [agentId, spaceId, overrides.status ?? "active", now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -135,7 +113,7 @@ async function seedAgent(
       JSON.stringify(overrides.runtime_config_json ?? {}),
     ],
   );
-  await pool!.query(
+  await db.pool.query(
     `UPDATE agents SET current_version_id = $2 WHERE id = $1 AND space_id = $3`,
     [agentId, versionId, spaceId],
   );
@@ -169,7 +147,7 @@ async function seedRuntimeProfile(
   const id = overrides.id ?? randomUUID();
   const adapterType = overrides.adapter_type ?? "model_api";
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, model_provider_id,
        model_name, runtime_config_json, runtime_policy_json, enabled,
@@ -204,7 +182,7 @@ async function seedRun(
 ): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
        status, mode, adapter_type, model_provider_id,
@@ -237,7 +215,7 @@ async function seedJob(
 ): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO jobs (
        id, space_id, job_type, status, priority, payload_json, attempts,
        max_attempts, scheduled_at, created_at, updated_at, claimed_by, heartbeat_at
@@ -258,8 +236,8 @@ async function seedJob(
 
 describe("runs repositories against real PostgreSQL", () => {
   it("creates a queued run without a legacy context snapshot", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const { agentId, versionId } = await seedAgent();
 
     const run = await repo.createQueuedRun({
@@ -274,7 +252,7 @@ describe("runs repositories against real PostgreSQL", () => {
 
     expect(run.status).toBe("queued");
     expect(run.agent_version_id).toBe(versionId);
-    const snapshots = await pool!.query(
+    const snapshots = await db.pool.query(
       "SELECT id FROM invocation_snapshots WHERE invocation_id = $1",
       [run.id],
     );
@@ -286,8 +264,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("creates an unrouted Run without copying AgentVersion runtime config", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const { agentId } = await seedAgent({
       runtime_config_json: { adapter_type: "claude_code" },
       skip_runtime_profile: true,
@@ -308,11 +286,11 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("leaves the space default ModelProvider to Router selection", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const { agentId } = await seedAgent();
     const providerId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id, space_id, owner_user_id, name, provider_type, default_model,
          enabled, capabilities_json, config_json, created_at, updated_at
@@ -320,7 +298,7 @@ describe("runs repositories against real PostgreSQL", () => {
          true,'{}'::jsonb,'{"is_default": true}'::jsonb,$2,$2)`,
       [providerId, new Date().toISOString()],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id, provider_id, space_id, owner_user_id, granted_by_user_id,
          enabled, is_default, created_at, updated_at
@@ -344,8 +322,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("does not stamp CLI execution state before Router selection", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const { agentId } = await seedAgent({
       runtime_config_json: { adapter_type: "claude_code" },
     });
@@ -366,8 +344,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("persists a requested runtime profile without preselecting or snapshotting it", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const { agentId } = await seedAgent({
       runtime_config_json: { adapter_type: "model_api" },
     });
@@ -397,7 +375,7 @@ describe("runs repositories against real PostgreSQL", () => {
     expect(run.adapter_type).toBeNull();
     expect(run.runtime_profile_snapshot_json).toBeNull();
 
-    await pool!.query(
+    await db.pool.query(
       `UPDATE agent_runtime_profiles
           SET runtime_config_json = '{"adapter_type":"model_api"}'::jsonb
         WHERE id = $1`,
@@ -410,8 +388,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("appends run events with a DB-computed monotonic event_index", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
     const e0 = await repo.appendRunEvent({
@@ -434,8 +412,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("accepts delegation lifecycle run events", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
     const event = await repo.appendRunEvent({
@@ -454,8 +432,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("rejects an event_type outside ck_run_events_event_type", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
     // "run_orchestration_failed" is NOT in the CHECK list — this is exactly why
@@ -471,8 +449,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("creates a coarse run step and enforces actor_id length + step_type CHECK", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
     const actorId = await repo.resolveRunActorId(
       { space_id: "space-1", instructed_by_user_id: null },
@@ -502,8 +480,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("resolves/creates real actors and reuses them per type", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
 
     const user1 = await repo.resolveRunActorId(
       { space_id: "space-1", instructed_by_user_id: "user-1" },
@@ -525,7 +503,7 @@ describe("runs repositories against real PostgreSQL", () => {
     );
     expect(new Set([user1, jobActor, systemActor]).size).toBe(3);
 
-    const rows = await pool!.query<{ actor_type: string; service_name: string | null }>(
+    const rows = await db.pool.query<{ actor_type: string; service_name: string | null }>(
       "SELECT actor_type, service_name FROM actors WHERE id = ANY($1)",
       [[jobActor, systemActor]],
     );
@@ -535,8 +513,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("marks running then terminal, guarding against overwriting a cancel", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
     const running = await repo.markRunRunning({
@@ -570,8 +548,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("finalizes a terminal run idempotently with evaluation and run_finalized event", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun({ status: "succeeded" });
     await repo.appendRunEvent({
       run_id: runId,
@@ -610,23 +588,23 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("bridges a linked run evaluation into one task evaluation idempotently", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun({ status: "succeeded" });
     const taskId = randomUUID();
     const artifactId = randomUUID();
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO tasks (id, space_id, title, status, created_at, updated_at)
        VALUES ($1,'space-1','Task bridge target','ready',$2,$2)`,
       [taskId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
        VALUES ($1,'space-1',$2,$3,'primary',$4)`,
       [randomUUID(), taskId, runId, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO artifacts (
          id, space_id, run_id, artifact_type, title,
          export_formats_json, created_at, updated_at
@@ -647,7 +625,7 @@ describe("runs repositories against real PostgreSQL", () => {
     expect(second.id).toBe(first.id);
     expect(first.task_evaluation_id).toBeTruthy();
     expect(first.skipped_reasons_json).toEqual([]);
-    const rows = await pool!.query<{
+    const rows = await db.pool.query<{
       id: string;
       task_id: string;
       run_id: string;
@@ -679,8 +657,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("rejects finalization for non-terminal runs", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun({ status: "running" });
 
     await expect(
@@ -689,8 +667,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("persists the canonical run_output.v1 summary on the terminal write", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
     await repo.markRunRunning({
       run_id: runId,
@@ -711,7 +689,7 @@ describe("runs repositories against real PostgreSQL", () => {
       completed_at: new Date().toISOString(),
     });
 
-    const row = await pool!.query<{ output_json: { schema_version?: string; summary?: string } }>(
+    const row = await db.pool.query<{ output_json: { schema_version?: string; summary?: string } }>(
       "SELECT output_json FROM runs WHERE id = $1",
       [runId],
     );
@@ -720,8 +698,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("acquires the execution lock once (ON CONFLICT DO NOTHING)", async (ctx) => {
-    if (!available) return ctx.skip();
-    const repo = new PgRunRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
     const first = await repo.tryAcquireExecutionLock({ run_id: runId, worker_id: "w1" });
@@ -735,8 +713,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("claims an agent_run job through the real CTE (no ambiguous id)", async (ctx) => {
-    if (!available) return ctx.skip();
-    const jobs = new PgJobQueueRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
     await seedJob({ job_type: "memory_consolidation", status: "pending" }); // must be ignored
     const target = await seedJob({ job_type: "agent_run", status: "pending" });
 
@@ -752,8 +730,8 @@ describe("runs repositories against real PostgreSQL", () => {
   });
 
   it("reclaims stuck jobs through the multi-CTE statement", async (ctx) => {
-    if (!available) return ctx.skip();
-    const jobs = new PgJobQueueRepository(pool!);
+    if (!db.available) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
     const old = new Date(Date.now() - 3600_000).toISOString();
     const retryableId = await seedJob({
       job_type: "agent_run",
@@ -781,7 +759,7 @@ describe("runs repositories against real PostgreSQL", () => {
       }),
     ]);
 
-    const rows = await pool!.query<{ id: string; status: string }>(
+    const rows = await db.pool.query<{ id: string; status: string }>(
       "SELECT id, status FROM jobs WHERE id = ANY($1::text[]) ORDER BY id",
       [[retryableId, exhaustedId]],
     );

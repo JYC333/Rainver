@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // Every test here drops and reapplies the whole baseline, so each one costs
 // 5-10s alone and considerably more under parallel load. The global 30s ceiling
 // was failing them on contention rather than on anything being wrong.
 vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadMigrations, migrate } from "../src/db/migrator";
 
@@ -54,29 +54,12 @@ const REPRESENTATIVE_TABLES = [
   "evolution_selector_decisions",
 ];
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename, { empty: true });
 
 beforeAll(async () => {
-  try {
-    // The tests below apply the baseline themselves; start from nothing.
-    container = await getTestPostgres(__filename, { empty: true });
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[baseline-schema] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  // The tests below apply the baseline themselves; start from nothing.
 });
 
 /**
@@ -343,29 +326,29 @@ describe("server runner applies the baseline schema", () => {
   });
 
   it("applies the baseline and creates representative server-owned tables", async () => {
-    if (!available || !pool) return;
-    await resetSchema(pool);
+    if (!db.available) return;
+    await resetSchema(db.pool);
 
     const expectedVersions = loadMigrations(MIGRATIONS_DIR).map((f) => f.version);
-    const result = await migrate(pool, MIGRATIONS_DIR);
+    const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
     expect(result.applied).toContain("0001");
 
-    const recorded = await pool.query(
+    const recorded = await db.pool.query(
       `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0001'`,
     );
     expect(recorded.rowCount).toBe(1);
 
-    const tables = await baselineTableNames(pool);
+    const tables = await baselineTableNames(db.pool);
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
   }, 120_000);
 
   it("creates the Machine/Host/Location topology from the baseline alone", async () => {
-    if (!available || !pool) return;
-    await migrate(pool, MIGRATIONS_DIR);
-    const topology = await pool.query<{ table_name: string }>(
+    if (!db.available) return;
+    await migrate(db.pool, MIGRATIONS_DIR);
+    const topology = await db.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
@@ -373,7 +356,7 @@ describe("server runner applies the baseline schema", () => {
       [["machines", "workspace_locations"]],
     );
     expect(topology.rows.map((row) => row.table_name).sort()).toEqual(["machines", "workspace_locations"]);
-    const columns = await pool.query<{ table_name: string; column_name: string }>(
+    const columns = await db.pool.query<{ table_name: string; column_name: string }>(
       `SELECT table_name, column_name
          FROM information_schema.columns
         WHERE table_schema = 'public'
@@ -388,32 +371,32 @@ describe("server runner applies the baseline schema", () => {
       { table_name: "runs", column_name: "trust_mode" },
     ]));
     expect(columns.rows.some((row) => row.table_name === "project_folders" && ["host_id", "host_kind", "root_path", "display_path"].includes(row.column_name))).toBe(false);
-    const applied = await pool.query<{ version: string }>(
+    const applied = await db.pool.query<{ version: string }>(
       `SELECT version FROM public.${RUNNER_TABLE} ORDER BY version`,
     );
     expect(applied.rows.map((row) => row.version)).toEqual(["0001"]);
   }, 120_000);
 
   it("rejects unknown user states, and constrains object_type by format only", async () => {
-    if (!available || !pool) return;
-    await migrate(pool, MIGRATIONS_DIR);
-    await resetTables(pool, ["users", "spaces"], { cascade: true });
+    if (!db.available) return;
+    await migrate(db.pool, MIGRATIONS_DIR);
+    await resetTables(db.pool, ["users", "spaces"], { cascade: true });
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('invalid-user', 'Invalid', 'pending', now(), now())`,
     )).rejects.toMatchObject({ code: "23514" });
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('user-1', 'User', 'active', now(), now())`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('space-1', 'Space', 'team', 'user-1', now(), now())`,
     );
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO memory_entries (
          id, space_id, scope_type, memory_type, content, status, visibility,
          access_level, sensitivity_level, confidence, importance, version,
@@ -427,7 +410,7 @@ describe("server runner applies the baseline schema", () => {
     // a format constraint (B12F), because a database CHECK cannot express that
     // a type needs a registered implementation — and every new domain would
     // otherwise need a migration to declare itself.
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES (
          'object-bad', 'space-1', 'Not A Type', 'Bad format',
          'private', 'full', 'user-1', now(), now()
@@ -437,7 +420,7 @@ describe("server runner applies the baseline schema", () => {
     // A registered domain root is accepted at the database level; whether a
     // given string names a registered entity is the registry's decision, and
     // `ontologyRegistryGuard` is where that is enforced.
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES (
          'object-1', 'space-1', 'project', 'A Project',
          'private', 'full', 'user-1', now(), now()
@@ -446,20 +429,20 @@ describe("server runner applies the baseline schema", () => {
   }, 120_000);
 
   it("enforces object kind registry constraints in Postgres", async () => {
-    if (!available || !pool) return;
-    await migrate(pool, MIGRATIONS_DIR);
-    await resetTables(pool, ["users", "spaces"], { cascade: true });
-    await pool.query(
+    if (!db.available) return;
+    await migrate(db.pool, MIGRATIONS_DIR);
+    await resetTables(db.pool, ["users", "spaces"], { cascade: true });
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('user-1', 'User', 'active', now(), now())`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES
          ('space-1', 'Space 1', 'team', 'user-1', now(), now()),
          ('space-2', 'Space 2', 'team', 'user-1', now(), now())`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO proposals (
          id, space_id, proposal_type, status, risk_level, urgency, title,
          payload_json, created_by_user_id, created_at, updated_at
@@ -468,7 +451,7 @@ describe("server runner applies the baseline schema", () => {
          ('proposal-2', 'space-2', 'object_profile_create', 'accepted', 'high', 'normal', 'Create kind', '{}'::jsonb, 'user-1', now(), now())`,
     );
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -479,7 +462,7 @@ describe("server runner applies the baseline schema", () => {
        )`,
     );
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
@@ -487,7 +470,7 @@ describe("server runner applies the baseline schema", () => {
        )`,
     )).rejects.toThrow();
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -497,7 +480,7 @@ describe("server runner applies the baseline schema", () => {
          'user-1', 'proposal-2', 'proposal-2', now(), now()
        )`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status,
          created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -508,7 +491,7 @@ describe("server runner applies the baseline schema", () => {
        )`,
     );
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
@@ -516,7 +499,7 @@ describe("server runner applies the baseline schema", () => {
        )`,
     )).rejects.toThrow();
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_from_proposal_id, created_at, updated_at
        ) VALUES (
@@ -524,14 +507,14 @@ describe("server runner applies the baseline schema", () => {
        )`,
     )).rejects.toThrow();
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
          'kind-archived', 'space-1', 'email', 'Email', 'source', 'archived', now(), now()
        )`,
     );
-    await expect(pool.query(
+    await expect(db.pool.query(
       `INSERT INTO space_object_profiles (
          id, space_id, key, label, base_object_type, status, created_at, updated_at
        ) VALUES (
@@ -541,14 +524,14 @@ describe("server runner applies the baseline schema", () => {
   }, 120_000);
 
   it("is idempotent on an already-migrated database", async () => {
-    if (!available || !pool) return;
-    await resetSchema(pool);
-    const first = await migrate(pool, MIGRATIONS_DIR);
+    if (!db.available) return;
+    await resetSchema(db.pool);
+    const first = await migrate(db.pool, MIGRATIONS_DIR);
     expect(first.applied).toContain("0001");
 
-    const result = await migrate(pool, MIGRATIONS_DIR);
+    const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.applied).toEqual([]);
-    const tables = await baselineTableNames(pool);
+    const tables = await baselineTableNames(db.pool);
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }

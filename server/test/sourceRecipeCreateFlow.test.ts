@@ -1,15 +1,13 @@
-import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
 import { PgSourcesRepository } from "../src/modules/sources/repository";
 import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel";
 import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService";
@@ -19,88 +17,34 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService";
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
-const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let config: ServerConfig | undefined;
 let createService: SourceRecipeCreateService | undefined;
 let dryRunService: SourceRecipeDryRunService | undefined;
 let artifactStorageRoot: string | undefined;
 let fixtureServer: Server | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-source-recipe-create-flow] skipped - Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  if (config?.databaseUrl) await getDbPool(config.databaseUrl).end().catch(() => undefined);
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolution_bundle_members", "evolution_bundles", "jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
     { cascade: true },
   );
   // The real schema enforces the connector/provider mapping and the
   // space/user chain that the hand-maintained schema copy this suite used to
   // load did not carry.
-  await pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'User', 'active', now(), now())`,
-    [IDENTITY.userId],
-  );
-  await pool.query(
-    `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
-     VALUES ($1, 'Space A', 'team', $2, now(), now())`,
-    [IDENTITY.spaceId, IDENTITY.userId],
-  );
-  await pool.query(
-    `INSERT INTO source_connectors (
-       id, connector_key, display_name, connector_type, ingestion_mode, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(
-    `INSERT INTO source_providers (
-       id, provider_key, display_name, provider_kind, category, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(
-    `INSERT INTO source_provider_connectors (
-       id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at
-     ) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-    [randomUUID(), IDENTITY.spaceId, IDENTITY.userId],
-  );
+  await seedCustomSourceWorld(db.pool, IDENTITY);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "source-recipe-create-flow-artifacts-"));
   config = {
     ...loadConfig({}),
-    databaseUrl: container!.getConnectionUri(),
+    databaseUrl: db.connectionUri,
     artifactStorageRoot,
   };
-  createService = new SourceRecipeCreateService(pool, config);
-  dryRunService = new SourceRecipeDryRunService(pool, config);
+  createService = new SourceRecipeCreateService(db.pool, config);
+  dryRunService = new SourceRecipeDryRunService(db.pool, config);
 });
 
 afterEach(async () => {
@@ -171,37 +115,13 @@ async function createDryRunActivatedRecipeSource(endpointUrl: string) {
   return { plan, created, dryRun, activation };
 }
 
-async function insertCustomSourceSpacePolicy(overrides: Record<string, unknown> = {}) {
-  await pool!.query(
-    `INSERT INTO settings (
-       id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at
-     ) VALUES ($1, 'space', $2, $3, $4::jsonb, now(), now())
-     ON CONFLICT (scope_type, scope_id, settings_key)
-     DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
-    [
-      randomUUID(),
-      SPACE_A,
-      CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY,
-      JSON.stringify({
-        creator_roles: ["owner", "admin"],
-        default_capture_policy: "extract_text",
-        default_retention_policy: "full_text",
-        allowed_domains: [],
-        credentialed_sources_allowed: false,
-        same_envelope_repair_auto_apply: false,
-        ...overrides,
-      }),
-    ],
-  );
-}
-
 describe("SourceRecipeCreateService (real Postgres)", () => {
   it("plans, creates, dry-runs, activates, and scans a recipe source into Source", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const endpointUrl = await startFixtureServer(RSS_FIXTURE);
     const { created, dryRun, activation } = await createDryRunActivatedRecipeSource(endpointUrl);
 
-    const connectionRow = await pool!.query<{
+    const connectionRow = await db.pool.query<{
       handler_kind: string;
       active_recipe_version_id: string | null;
       status: string;
@@ -218,7 +138,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
     });
     expect(activation.recipe_version.status).toBe("active");
 
-    const repo = new PgSourcesRepository(pool!, config!);
+    const repo = new PgSourcesRepository(db.pool, config!);
     const queued = await repo.scanChannel(IDENTITY, created.connection.source_channel_id);
     expect(queued.metadata_json).toMatchObject({
       implementation: "recipe",
@@ -228,7 +148,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
     expect(completed.status).toBe("succeeded");
     expect(completed.items_created).toBe(2);
 
-    const items = await pool!.query<{
+    const items = await db.pool.query<{
       title: string;
       source_external_id: string | null;
       content_state: string;
@@ -242,7 +162,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
       { title: "Two", source_external_id: "guid-2", content_state: "excerpt_saved", metadata_json: { capture_method: "source_recipe" } },
     ]);
 
-    const sourceRuns = await listSourceRuns(pool!, IDENTITY, created.connection.source_channel_id, { limit: 10, offset: 0 });
+    const sourceRuns = await listSourceRuns(db.pool, IDENTITY, created.connection.source_channel_id, { limit: 10, offset: 0 });
     expect(sourceRuns.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -266,7 +186,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
       ]),
     );
 
-    const firstItem = await pool!.query<{ id: string }>(
+    const firstItem = await db.pool.query<{ id: string }>(
       `SELECT id FROM source_items WHERE connection_id = $1 ORDER BY title ASC LIMIT 1`,
       [created.connection.id],
     );
@@ -299,7 +219,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
   });
 
   it("routes policy-envelope deltas through a source_recipe_activation proposal applier", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const endpointUrl = await startFixtureServer(RSS_FIXTURE);
     const plan = await createService!.planSource(IDENTITY, {
       name: "Policy Recipe Feed",
@@ -321,7 +241,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
       fixture_content: RSS_FIXTURE,
     });
 
-    await insertCustomSourceSpacePolicy({ allowed_domains: ["other.example"] });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
     const activation = await createService!.activateRecipe(IDENTITY, created.connection.id, {
       recipe_version_id: dryRun.recipe_version.id,
       schedule_rule: HOURLY_SCHEDULE_RULE,
@@ -330,7 +250,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
     expect(activation.proposal_id).toEqual(expect.any(String));
     expect(activation.deltas[0]).toContain("not allowed by Space Custom Source policy");
 
-    const pendingVersion = await pool!.query<{ status: string; proposal_id: string | null }>(
+    const pendingVersion = await db.pool.query<{ status: string; proposal_id: string | null }>(
       `SELECT status, proposal_id FROM source_recipe_versions WHERE id = $1`,
       [dryRun.recipe_version.id],
     );
@@ -351,7 +271,7 @@ describe("SourceRecipeCreateService (real Postgres)", () => {
     });
     expect(accepted?.proposal.status).toBe("accepted");
 
-    const activeConnection = await pool!.query<{ active_recipe_version_id: string | null; status: string }>(
+    const activeConnection = await db.pool.query<{ active_recipe_version_id: string | null; status: string }>(
       `SELECT active_recipe_version_id, status FROM source_connections WHERE id = $1`,
       [created.connection.id],
     );

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { MemoryMaintenanceService } from "../src/modules/memory/maintenance";
 import {
@@ -21,51 +20,30 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[memory-maintenance-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["content_access_logs", "memory_entries", "artifacts", "proposals", "project_members", "projects", "users", "spaces"],
     { cascade: true },
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Maintenance Space', 'household', $2, now(), now())`,
     [SPACE, VIEWER],
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships
          (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
@@ -121,7 +99,7 @@ async function insertMemory(input: InsertMemoryInput): Promise<void> {
     const value = row[name];
     return name === "tags" ? JSON.stringify(value) : value;
   });
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (${names.join(", ")})
      VALUES (${placeholders.join(", ")})`,
     values,
@@ -129,7 +107,7 @@ async function insertMemory(input: InsertMemoryInput): Promise<void> {
 }
 
 async function scan(overrides: Partial<Parameters<MemoryMaintenanceService["scan"]>[0]> = {}) {
-  return new MemoryMaintenanceService(pool!).scan({
+  return new MemoryMaintenanceService(db.pool).scan({
     spaceId: SPACE,
     userId: VIEWER,
     limit: 100,
@@ -142,7 +120,7 @@ async function scan(overrides: Partial<Parameters<MemoryMaintenanceService["scan
 
 describe("Memory maintenance scan (real Postgres)", () => {
   it("respects selected-user grants and space-shared visibility", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({
       id: "selected-visible",
       owner_user_id: OTHER,
@@ -161,7 +139,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
       visibility: "selected_users",
       title: "Shared maintenance title",
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO content_access_grants
          (id, space_id, resource_type, resource_id, grantee_user_id, granted_by_user_id,
           access_level, created_at, updated_at)
@@ -185,7 +163,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
   });
 
   it("uses owner summary_only full content for thin checks without putting content in the report", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({
       id: "summary-owner",
       owner_user_id: VIEWER,
@@ -212,7 +190,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
   });
 
   it("excludes highly_restricted rows from maintenance even for the owner", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({
       id: "high-1",
       owner_user_id: VIEWER,
@@ -235,12 +213,12 @@ describe("Memory maintenance scan (real Postgres)", () => {
   });
 
   it("rolls back report artifact, packet proposal, and maintenance access logs together", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertMemory({ id: "rollback-1", title: "Rollback duplicate" });
     await insertMemory({ id: "rollback-2", title: "Rollback duplicate" });
 
     await expect(
-      withDbTransaction(pool, async (client) => {
+      withDbTransaction(db.pool, async (client) => {
         const result = await new MemoryMaintenanceService(client).scan({
           spaceId: SPACE,
           userId: VIEWER,
@@ -272,7 +250,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
       }),
     ).rejects.toThrow("force rollback");
 
-    const counts = await pool.query<{ artifacts: string; proposals: string; access_logs: string }>(
+    const counts = await db.pool.query<{ artifacts: string; proposals: string; access_logs: string }>(
       `SELECT
          (SELECT count(*) FROM artifacts) AS artifacts,
          (SELECT count(*) FROM proposals) AS proposals,
@@ -283,7 +261,7 @@ describe("Memory maintenance scan (real Postgres)", () => {
       proposals: "0",
       access_logs: "0",
     });
-    const memoryCounts = await pool.query<{ total_access_count: string }>(
+    const memoryCounts = await db.pool.query<{ total_access_count: string }>(
       `SELECT COALESCE(sum(access_count), 0)::text AS total_access_count FROM memory_entries`,
     );
     expect(memoryCounts.rows[0]?.total_access_count).toBe("0");

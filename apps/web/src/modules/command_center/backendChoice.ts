@@ -69,3 +69,18 @@ export function backendLabel(
   const name = provider?.name ?? `Unavailable provider (${providerId.slice(0, 8)})`
   return model ? `${name} · ${model}` : name
 }
+
+/**
+ * What a runtime reported it can be set to, as the host's capability probe
+ * asked it over ACP.
+ *
+ * Never a hardcoded list: Claude offers `default/low/medium/high/xhigh/max`
+ * where a guess had three, and its model ids carry brackets of their own
+ * (`claude-fable-5[1m]`), so neither the values nor their shape can be assumed.
+ */
+export interface RuntimeOptions {
+  models?: string[]
+  current_model?: string | null
+  efforts?: string[]
+  current_effort?: string | null
+}

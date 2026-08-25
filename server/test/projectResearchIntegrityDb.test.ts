@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
@@ -19,69 +19,40 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SAME_SPACE_MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-integrity-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_research_claim_links", "project_research_reports", "project_research_checkpoints", "project_research_workflows", "experiment_definitions", "claim_sources", "claims", "academic_papers", "sources", "space_objects", "project_corpus_items", "artifacts", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
+  await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
 });
 
 function repo(): ProjectResearchRepository {
-  return new ProjectResearchRepository(pool!);
+  return new ProjectResearchRepository(db.pool);
 }
 
 function experimentDefinitions(): ExperimentDefinitionService {
-  return new ExperimentDefinitionService(pool!);
+  return new ExperimentDefinitionService(db.pool);
 }
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 async function makeSharedSpace(): Promise<void> {
-  await pool!.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+  await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
 }
 
 async function addSpaceMember(userId: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [
     userId,
     now,
   ]);
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'member','active',$4,$4)`,
     [randomUUID(), SPACE, userId, now],
@@ -91,7 +62,7 @@ async function addSpaceMember(userId: string): Promise<void> {
 async function seedWorkflow(): Promise<string> {
   const workflowId = randomUUID();
   const now = new Date().toISOString();
-  await insertResearchWorkflowFixture(pool!, {
+  await insertResearchWorkflowFixture(db.pool, {
     id: workflowId, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER, now,
   });
   return workflowId;
@@ -103,7 +74,7 @@ async function seedClaim(
 ): Promise<string> {
   const now = new Date().toISOString();
   const objectId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1,$2,'claim',$3,$4,$5,$6,$7,$7)`,
     [
       objectId,
@@ -115,7 +86,7 @@ async function seedClaim(
       now,
     ],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO claims (
        object_id, space_id, subject_text, claim_kind, claim_text, normalized_claim_hash,
        confidence_method, resolution_state, metadata_json
@@ -128,17 +99,17 @@ async function seedClaim(
 async function seedPaperObject(arxivId: string): Promise<string> {
   const now = new Date().toISOString();
   const objectId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
      VALUES ($1,$2,'source','Paper',$3,$3)`,
     [objectId, SPACE, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
      VALUES ($1,$2,'paper',$3,'{}'::jsonb)`,
     [objectId, SPACE, `https://arxiv.org/abs/${arxivId}`],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO academic_papers (object_id, space_id, arxiv_id, paper_type, created_at, updated_at)
      VALUES ($1,$2,$3,'preprint',$4,$4)`,
     [objectId, SPACE, arxivId, now],
@@ -149,13 +120,13 @@ async function seedPaperObject(arxivId: string): Promise<string> {
 async function seedGenericDocumentObject(): Promise<string> {
   const now = new Date().toISOString();
   const objectId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (
        id, space_id, object_type, title, primary_project_id, created_by_user_id, created_at, updated_at
      ) VALUES ($1,$2,'source','General web document',$3,$4,$5,$5)`,
     [objectId, SPACE, PROJECT, OWNER, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
      VALUES ($1,$2,'webpage','https://example.test/general','{}'::jsonb)`,
     [objectId, SPACE],
@@ -165,7 +136,7 @@ async function seedGenericDocumentObject(): Promise<string> {
 
 async function addEvidence(claimId: string, sourceObjectId: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO claim_sources (
        id, space_id, claim_id, source_object_id, evidence_role, created_at
      ) VALUES ($1,$2,$3,$4,'supports',$5)`,
@@ -175,7 +146,7 @@ async function addEvidence(claimId: string, sourceObjectId: string): Promise<voi
 
 async function addToCorpus(objectId: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_corpus_items (
        id, space_id, project_id, object_id, role, status, triage_status, read_status, metadata_json, created_at, updated_at
      ) VALUES ($1,$2,$3,$4,'candidate','active','included','unread','{}'::jsonb,$5,$5)`,
@@ -185,7 +156,7 @@ async function addToCorpus(objectId: string): Promise<void> {
 
 describe("Project Research claim links + integrity gate (real Postgres)", () => {
   it("creates a claim link only against an existing claim, and rejects an unknown claim_id", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const claimId = await seedClaim();
     const link = await repo().createClaimLink(identity, PROJECT, { claim_id: claimId, support_status: "supported" });
     expect(link).toMatchObject({ claim_id: claimId, support_status: "supported" });
@@ -194,7 +165,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("rejects linking a claim that is not readable by the project writer", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await makeSharedSpace();
     await addSpaceMember(SAME_SPACE_MEMBER);
     const hiddenClaimId = await seedClaim("Private claim", {
@@ -207,14 +178,14 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("rejects linking the same claim to the project twice", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const claimId = await seedClaim();
     await repo().createClaimLink(identity, PROJECT, { claim_id: claimId });
     await expect(repo().createClaimLink(identity, PROJECT, { claim_id: claimId })).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("flags a claim with no evidence and no declared gap as a high-severity finding", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     await repo().createClaimLink(identity, PROJECT, { claim_id: claimId, workflow_id: workflowId });
@@ -226,7 +197,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("does not let an unrelated workflow claim link block the current workflow integrity gate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const currentWorkflowId = await seedWorkflow();
     const otherWorkflowId = await seedWorkflow();
     const claimId = await seedClaim();
@@ -239,7 +210,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("does not flag a claim with an explicit gap even without evidence", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     await repo().createClaimLink(identity, PROJECT, {
@@ -256,7 +227,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("flags a citation anchor that is not a readable object in the Project corpus", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     const paperObjectId = await seedPaperObject("2401.00001");
@@ -275,7 +246,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("accepts a generic document object as a citation anchor", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim("A policy page documents the current rule");
     const documentObjectId = await seedGenericDocumentObject();
@@ -294,7 +265,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("flags evidence whose source object is not in the project corpus, and passes once it is added", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     const paperObjectId = await seedPaperObject("2401.00002");
@@ -313,7 +284,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("flags an experiment-backed claim with no Experiment Definition, and passes once the planned Experiment is declared", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const workflowId = await seedWorkflow();
     const claimId = await seedClaim();
     const paperObjectId = await seedPaperObject("2401.00003");
@@ -340,7 +311,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   });
 
   it("updates a claim link's support status and gap fields", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const claimId = await seedClaim();
     const link = await repo().createClaimLink(identity, PROJECT, { claim_id: claimId });
     const updated = await repo().updateClaimLink(identity, PROJECT, link.id as string, {

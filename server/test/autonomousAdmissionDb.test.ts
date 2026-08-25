@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, inject, it } from "vitest";
 import {
   admitAutonomousRun,
   type AutonomousAdmissionPolicy,
   type AutonomousQuotaSnapshot,
 } from "../src/modules/runs/autonomousAdmission";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -29,44 +28,34 @@ const freshQuota: AutonomousQuotaSnapshot = {
   source: "live_probe",
 };
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-beforeAll(async () => {
-  database = await getTestPostgres(__filename);
-  pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!pool) return;
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
-  await pool.query(
+  if (!db.pool) return;
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Autonomy Owner', 'active', $2, $2)`,
     [USER, NOW.toISOString()],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Autonomy Space', 'personal', $2, $3, $3)`,
     [SPACE, USER, NOW.toISOString()],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        visibility, created_at, updated_at
      ) VALUES ($1, $2, $3, 'Autonomy Agent', 'active', NULL, 'private', $4, $4)`,
     [AGENT, SPACE, USER, NOW.toISOString()],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -75,12 +64,12 @@ beforeEach(async () => {
                '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, NOW.toISOString()],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
 });
 
 describeWithPostgres("autonomous admission transaction", () => {
-  it("serializes a Space/owner/day pool and admits only one concurrent root Run", async () => {
-    const create = (suffix: string) => admitAutonomousRun(pool!, {
+  it("serializes a Space/owner/day db.pool and admits only one concurrent root Run", async () => {
+    const create = (suffix: string) => admitAutonomousRun(db.pool, {
       spaceId: SPACE,
       ownerUserId: USER,
       policy,
@@ -110,14 +99,14 @@ describeWithPostgres("autonomous admission transaction", () => {
     const [first, second] = await Promise.all([create("a"), create("b")]);
     expect([first.allowed, second.allowed].sort()).toEqual([false, true]);
     expect([first, second].find((decision) => !decision.allowed)?.reason).toBe("daily_run_limit_reached");
-    const rows = await pool!.query<{ total: number }>(
+    const rows = await db.pool.query<{ total: number }>(
       `SELECT count(*)::int AS total FROM runs WHERE trigger_origin = 'autonomous'`,
     );
     expect(rows.rows[0]?.total).toBe(1);
   });
 
   it("refuses unavailable, stale, and over-utilized subscription quota with stable reasons", async () => {
-    const decide = (quota: AutonomousQuotaSnapshot) => admitAutonomousRun(pool!, {
+    const decide = (quota: AutonomousQuotaSnapshot) => admitAutonomousRun(db.pool, {
       spaceId: SPACE,
       ownerUserId: USER,
       policy: { ...policy, daily_run_limit: 5 },
@@ -140,7 +129,7 @@ describeWithPostgres("autonomous admission transaction", () => {
   });
 
   it("rolls back both the Run and decision when the callback fails", async () => {
-    await expect(admitAutonomousRun(pool!, {
+    await expect(admitAutonomousRun(db.pool, {
       spaceId: SPACE,
       ownerUserId: USER,
       policy: { ...policy, daily_run_limit: 5 },
@@ -157,7 +146,7 @@ describeWithPostgres("autonomous admission transaction", () => {
         throw new Error("callback failure");
       },
     })).rejects.toThrow("callback failure");
-    const row = await pool!.query(`SELECT 1 FROM settings WHERE settings_key = 'test.rollback'`);
+    const row = await db.pool.query(`SELECT 1 FROM settings WHERE settings_key = 'test.rollback'`);
     expect(row.rowCount).toBe(0);
   });
 });

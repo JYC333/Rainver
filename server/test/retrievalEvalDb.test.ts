@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -44,48 +43,27 @@ function loadFixture<Doc>(name: string): Fixture<Doc> {
   ) as Fixture<Doc>;
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-eval-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "memory_entries", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Eval', 'personal', now(), now())`,
     [SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [OWNER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('eval-owner', $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, OWNER],
@@ -93,7 +71,7 @@ beforeEach(async () => {
 });
 
 async function seedKnowledge(doc: KnowledgeDoc): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -104,7 +82,7 @@ async function seedKnowledge(doc: KnowledgeDoc): Promise<void> {
 }
 
 async function seedMemory(doc: MemoryDoc): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (
        id, space_id, scope_type, memory_type, status, visibility, sensitivity_level,
        confidence, importance, version, access_count, title, content, owner_user_id,
@@ -119,12 +97,12 @@ async function seedMemory(doc: MemoryDoc): Promise<void> {
 
 describe("Retrieval recall@k eval (real Postgres)", () => {
   it(`knowledge recall@${K} hits every golden expected id`, async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     for (const doc of knowledgeFixture.docs) await seedKnowledge(doc);
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const report = await runRecallCases(
-      new RetrievalSearchService(pool, knowledgeRetrievalRegistry),
+      new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry),
       { spaceId: SPACE, viewerUserId: OWNER, objectTypes: ["knowledge_item"] },
       knowledgeFixture.cases,
       K,
@@ -135,12 +113,12 @@ describe("Retrieval recall@k eval (real Postgres)", () => {
   });
 
   it(`memory recall@${K} hits every golden expected id`, async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     for (const doc of memoryFixture.docs) await seedMemory(doc);
-    await new RetrievalProjectionService(pool, memoryRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, memoryRetrievalRegistry).reindexAll(SPACE);
 
     const report = await runRecallCases(
-      new RetrievalSearchService(pool, memoryRetrievalRegistry),
+      new RetrievalSearchService(db.pool, memoryRetrievalRegistry),
       { spaceId: SPACE, viewerUserId: OWNER, objectTypes: ["memory_entry"] },
       memoryFixture.cases,
       K,

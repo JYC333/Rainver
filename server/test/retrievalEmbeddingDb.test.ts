@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -31,38 +30,17 @@ function fakeEmbedder(dim: number, model = "fake-embed-v1"): RetrievalEmbedder {
   };
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-embedding-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Embed', 'personal', now(), now())`,
     [SPACE],
@@ -71,13 +49,13 @@ beforeEach(async () => {
     ["embed-1", "Vector search", "Approximate nearest neighbor search over embeddings."],
     ["embed-2", "Keyword search", "Lexical matching with tsvector and ranking."],
   ] as const) {
-    await insertKnowledgeItem(pool, { id, spaceId: SPACE, title, content, slug: id });
+    await insertKnowledgeItem(db.pool, { id, spaceId: SPACE, title, content, slug: id });
   }
-  await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 });
 
 async function pendingCount(): Promise<number> {
-  const r = await pool!.query<{ n: number }>(
+  const r = await db.pool.query<{ n: number }>(
     "SELECT count(*)::int AS n FROM retrieval_chunks WHERE embedding IS NULL",
   );
   return r.rows[0].n;
@@ -85,16 +63,16 @@ async function pendingCount(): Promise<number> {
 
 describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
   it("embeds pending chunks, records the model, and is idempotent", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     expect(await pendingCount()).toBeGreaterThan(0);
 
-    const service = new RetrievalEmbeddingBackfillService(pool, fakeEmbedder(EMBED_DIMENSIONS));
+    const service = new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS));
     const first = await service.backfillSpace(SPACE, { batchLimit: 100 });
     expect(first.embedded).toBeGreaterThan(0);
     expect(first.embedded).toBe(first.scanned);
     expect(await pendingCount()).toBe(0);
 
-    const row = await pool.query(
+    const row = await db.pool.query(
       "SELECT embedding_model, (embedding IS NOT NULL) AS has_vec FROM retrieval_chunks LIMIT 1",
     );
     expect(row.rows[0]).toMatchObject({ embedding_model: "fake-embed-v1", has_vec: true });
@@ -105,12 +83,12 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
   });
 
   it("supports a vector distance query through the pgvector column/index", async () => {
-    if (!available || !pool) return;
-    await new RetrievalEmbeddingBackfillService(pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
+    if (!db.available) return;
+    await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
 
     const probe = new Array<number>(EMBED_DIMENSIONS).fill(0);
     probe[0] = 1;
-    const nearest = await pool.query<{ id: string }>(
+    const nearest = await db.pool.query<{ id: string }>(
       `SELECT id FROM retrieval_chunks
         WHERE embedding IS NOT NULL
         ORDER BY embedding <=> $1::vector
@@ -121,7 +99,7 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
   });
 
   it("leaves chunks pending when the embedder returns a wrong-dimension vector", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const stderrWrites: string[] = [];
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
       stderrWrites.push(String(chunk));
@@ -129,7 +107,7 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
     }) as typeof process.stderr.write);
     const before = await pendingCount();
     try {
-      const result = await new RetrievalEmbeddingBackfillService(pool, fakeEmbedder(8)).backfillSpace(SPACE);
+      const result = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(8)).backfillSpace(SPACE);
       expect(result.embedded).toBe(0);
       expect(await pendingCount()).toBe(before);
       expect(stderrWrites.join("")).toContain(
@@ -141,7 +119,7 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
   });
 
   it("stops retrying a chunk after the attempt cap (poison-chunk guard)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const stderrWrites: string[] = [];
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
       stderrWrites.push(String(chunk));
@@ -150,7 +128,7 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
     // Repeatedly fail with a wrong-dimension embedder until the cap is reached.
     try {
       for (let attempt = 0; attempt < EMBED_MAX_ATTEMPTS; attempt += 1) {
-        const failed = await new RetrievalEmbeddingBackfillService(pool, fakeEmbedder(8)).backfillSpace(SPACE);
+        const failed = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(8)).backfillSpace(SPACE);
         expect(failed.embedded).toBe(0);
         expect(failed.scanned).toBeGreaterThan(0);
       }
@@ -159,11 +137,11 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
       );
       // At the cap, even a correctly-sized embedder claims nothing: poison chunks
       // are excluded from future claims (no more provider egress for them).
-      const after = await new RetrievalEmbeddingBackfillService(pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
+      const after = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
       expect(after.scanned).toBe(0);
       expect(after.embedded).toBe(0);
 
-      const capped = await pool.query<{ n: number }>(
+      const capped = await db.pool.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM retrieval_chunks
           WHERE embedding IS NULL AND embedding_attempts >= $1`,
         [EMBED_MAX_ATTEMPTS],

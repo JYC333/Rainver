@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import {
@@ -10,53 +7,32 @@ import {
   PgMemoryProposalRepository,
 } from "../src/modules/memory/proposalRepository";
 
-const SCHEMA = readFileSync(
-  join(process.cwd(), "test/fixtures/memorySchema.sql"),
-  "utf8",
-);
-
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let repo: PgMemoryProposalRepository | undefined;
-let available = false;
 
 const SPACE = "space-1";
 const USER = "user-1";
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename, { empty: true });
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    await pool.query(SCHEMA);
-    repo = new PgMemoryProposalRepository(
-      pool,
-      loadConfig({
-        SERVER_DATABASE_URL: container.getConnectionUri(),
-      }),
-    );
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[memory-proposal-integration] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
+const db = useTestDatabase(__filename, { max: 10 });
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  repo = new PgMemoryProposalRepository(
+    db.pool,
+    loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+    }),
+  );
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
-    ["content_access_grants", "space_memberships", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "provenance_links", "proposals", "memory_entries", "projects"],
+    db.pool,
+    ["content_access_grants", "space_memberships", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "provenance_links", "proposals", "memory_entries", "projects", "users", "spaces"],
   );
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('other', 'other', 'active', now(), now()), ('user-1', 'user-1', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
     ["membership-1", SPACE, USER],
@@ -69,7 +45,9 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
     space_id: SPACE,
     scope_type: "user",
     memory_type: "fact",
+    content: "memory content",
     status: "active",
+    access_count: 0,
     visibility: "space_shared",
     access_level: "full",
     sensitivity_level: "normal",
@@ -91,7 +69,7 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
         : JSON.stringify(cols[n])
       : cols[n],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (${names.join(", ")}) VALUES (${placeholders.join(", ")})`,
     values,
   );
@@ -99,8 +77,8 @@ async function insertMemory(over: Record<string, unknown>): Promise<void> {
 
 describe("PgMemoryProposalRepository against real Postgres", () => {
   it("creates a pending memory_create proposal without inserting active memory", async () => {
-    if (!available || !repo || !pool) return;
-    const before = await pool.query("SELECT count(*)::int AS count FROM memory_entries");
+    if (!db.available || !repo || !db.pool) return;
+    const before = await db.pool.query("SELECT count(*)::int AS count FROM memory_entries");
 
     const out = await repo.createMemoryProposal(SPACE, USER, {
       operation: "create",
@@ -133,9 +111,9 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
     });
 
     expect(out).toMatchObject({ proposal_type: "memory_create", status: "pending" });
-    const after = await pool.query("SELECT count(*)::int AS count FROM memory_entries");
+    const after = await db.pool.query("SELECT count(*)::int AS count FROM memory_entries");
     expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
-    const proposal = await pool.query(
+    const proposal = await db.pool.query(
       "SELECT proposal_type, status, payload_json FROM proposals WHERE id = $1",
       [out.id],
     );
@@ -156,7 +134,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
   });
 
   it("creates update/archive proposals without mutating the target memory", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     await insertMemory({
       id: "memory-1",
       owner_user_id: USER,
@@ -190,12 +168,12 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
 
     expect(update.proposal_type).toBe("memory_update");
     expect(archive.proposal_type).toBe("memory_archive");
-    const memory = await pool.query(
+    const memory = await db.pool.query(
       "SELECT content, status, deleted_at FROM memory_entries WHERE id = 'memory-1'",
     );
     expect(memory.rows[0]).toMatchObject({ content: "unchanged", status: "active" });
     expect(memory.rows[0]?.deleted_at).toBeNull();
-    const proposals = await pool.query(
+    const proposals = await db.pool.query(
       "SELECT proposal_type FROM proposals ORDER BY created_at ASC",
     );
     expect(proposals.rows.map((row) => row.proposal_type).sort()).toEqual([
@@ -205,7 +183,7 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
   });
 
   it("hides non-readable target memories on update", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     await insertMemory({
       id: "private-other",
       owner_user_id: "other",

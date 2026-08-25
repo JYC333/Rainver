@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
 import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter";
@@ -18,62 +17,45 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "44444444-4444-4444-8444-444444444444";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[source-annotation-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["source_item_annotations", "source_item_user_states", "source_channel_item_links", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
   for (const [id, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {
-    await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,$2,'personal',$3,$3)`, [id, name, now]);
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,$2,'personal',$3,$3)`, [id, name, now]);
   }
   for (const user of [OWNER, READER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,'owner','active',$4,$4)`,
       [randomUUID(), SPACE, user, now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'rss','RSS','external_feed','pull','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'rss','RSS','named','general','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
   const mappingId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$2,$3,'active',0,'{}'::jsonb,$4,$4)`,
     [mappingId, CONNECTOR, CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
@@ -96,7 +78,7 @@ beforeEach(async () => {
       now,
     ],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_channels (
        id, space_id, source_connection_id, created_by_user_id, name, channel_type, endpoint_url,
        query_json, provider_query_json, query_fingerprint, status, fetch_frequency, schedule_rule_json, created_at, updated_at
@@ -110,7 +92,7 @@ async function seedItem(options: { title?: string; firstSeenAt?: string; linkToC
   const now = new Date().toISOString();
   const firstSeen = options.firstSeenAt ?? now;
   const spaceId = options.spaceId ?? SPACE;
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, source_uri, excerpt,
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
@@ -127,7 +109,7 @@ async function seedItem(options: { title?: string; firstSeenAt?: string; linkToC
     ],
   );
   if (options.linkToChannel !== false && spaceId === SPACE) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_channel_item_links (id, space_id, source_channel_id, source_item_id, status, matched_at, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'active',$5,$5,$5)`,
       [randomUUID(), spaceId, CHANNEL, itemId, now],
@@ -136,11 +118,11 @@ async function seedItem(options: { title?: string; firstSeenAt?: string; linkToC
   return itemId;
 }
 
-const repo = () => new PgSourceAnnotationRepository(pool!);
+const repo = () => new PgSourceAnnotationRepository(db.pool);
 
 describe("source annotation queue", () => {
   it("enqueues a channel's recent items exactly once", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const first = await seedItem();
     const second = await seedItem();
     const since = new Date(Date.now() - ANNOTATION_ENQUEUE_WINDOW_MS).toISOString();
@@ -153,14 +135,14 @@ describe("source annotation queue", () => {
     const requeued = await repo().enqueueRecentItems(SPACE, { sourceChannelId: CHANNEL, sourceConnectionId: CONNECTION }, since);
     expect(requeued).toBe(0);
 
-    const rows = await pool!.query(`SELECT source_item_id, status FROM source_item_annotations WHERE space_id = $1`, [SPACE]);
+    const rows = await db.pool.query(`SELECT source_item_id, status FROM source_item_annotations WHERE space_id = $1`, [SPACE]);
     expect(rows.rows).toHaveLength(2);
     expect(rows.rows.every((row) => row.status === "pending")).toBe(true);
     expect(rows.rows.map((row) => row.source_item_id).sort()).toEqual([first, second].sort());
   });
 
   it("does not reach back past the window and turn a scan into a backfill", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     await seedItem({ firstSeenAt: old, title: "Ancient history" });
     const recent = await seedItem({ title: "Today" });
@@ -169,12 +151,12 @@ describe("source annotation queue", () => {
     const queued = await repo().enqueueRecentItems(SPACE, { sourceChannelId: CHANNEL, sourceConnectionId: CONNECTION }, since);
 
     expect(queued).toBe(1);
-    const rows = await pool!.query(`SELECT source_item_id FROM source_item_annotations WHERE space_id = $1`, [SPACE]);
+    const rows = await db.pool.query(`SELECT source_item_id FROM source_item_annotations WHERE space_id = $1`, [SPACE]);
     expect(rows.rows.map((row) => row.source_item_id)).toEqual([recent]);
   });
 
   it("falls back to the connection when a scan has no channel", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedItem({ linkToChannel: false });
     const since = new Date(Date.now() - ANNOTATION_ENQUEUE_WINDOW_MS).toISOString();
 
@@ -186,7 +168,7 @@ describe("source annotation queue", () => {
   });
 
   it("hands out the oldest pending items with the fields the prompt needs", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const older = await seedItem({ title: "First" });
     const newer = await seedItem({ title: "Second" });
     await repo().enqueueItems(SPACE, [older], CHANNEL);
@@ -200,16 +182,16 @@ describe("source annotation queue", () => {
   });
 
   it("does not offer deleted items to a model", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
-    await pool!.query(`UPDATE source_items SET deleted_at = now() WHERE id = $1`, [itemId]);
+    await db.pool.query(`UPDATE source_items SET deleted_at = now() WHERE id = $1`, [itemId]);
 
     expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
   });
 
   it("keeps spaces isolated", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const mine = await seedItem();
     const theirs = await seedItem({ spaceId: OTHER_SPACE });
     await repo().enqueueItems(SPACE, [mine], CHANNEL);
@@ -222,7 +204,7 @@ describe("source annotation queue", () => {
 
 describe("annotation outcomes", () => {
   it("stores a succeeded annotation and reads it back", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
@@ -250,7 +232,7 @@ describe("annotation outcomes", () => {
   });
 
   it("retries a failed attempt until the budget is spent, then parks it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
@@ -270,7 +252,7 @@ describe("annotation outcomes", () => {
   });
 
   it("parks an unanswered item without retrying it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
@@ -281,20 +263,20 @@ describe("annotation outcomes", () => {
   });
 
   it("refuses a succeeded row missing the fields ranking reads", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
     // Without this constraint a partially parsed result looks usable and then
     // ranks against a NULL domain.
-    await expect(pool!.query(
+    await expect(db.pool.query(
       `UPDATE source_item_annotations SET status = 'succeeded' WHERE space_id = $1 AND source_item_id = $2`,
       [SPACE, itemId],
     )).rejects.toThrow(/ck_source_item_annotations_succeeded_complete/);
   });
 
   it("returns parked rows to the queue when the blocking condition changes", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const denied = await seedItem();
     const brokeDown = await seedItem();
     const unanswerable = await seedItem();
@@ -323,7 +305,7 @@ describe("annotation outcomes", () => {
   });
 
   it("leaves succeeded annotations alone when requeueing", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const done = await seedItem();
     await repo().enqueueItems(SPACE, [done], CHANNEL);
     await repo().markSucceeded(SPACE, {
@@ -344,10 +326,10 @@ describe("annotation outcomes", () => {
   });
 
   it("rejects an unknown status", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
-    await expect(pool!.query(
+    await expect(db.pool.query(
       `UPDATE source_item_annotations SET status = 'maybe' WHERE space_id = $1 AND source_item_id = $2`,
       [SPACE, itemId],
     )).rejects.toThrow(/ck_source_item_annotations_status/);

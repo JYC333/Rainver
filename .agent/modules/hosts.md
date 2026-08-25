@@ -363,6 +363,55 @@ Sending a bare name to OpenCode names no provider it knows, against an endpoint
 that looks correctly configured — so a rejection names both the model asked for
 and the one the runtime is on.
 
+The capability probe also reports the model **and reasoning effort** each
+installed CLI is *configured* to use (`capabilities_json.models` and
+`.reasoning`, keyed by capability probe), read from that CLI's own config — Claude's `settings.json`, Codex's top-level `config.toml`
+key, OpenCode's `opencode.json{,c}`. This is the one thing the control plane
+cannot otherwise know: with no binding, an unbound run's model is the CLI's
+business, so the composer could offer "this machine's login" without being able
+to say whether that meant opus or sonnet. It is the configured model, not a
+runtime-negotiated one — a session switched with an in-CLI command differs until
+written back — and it is read rather than probed by starting each runtime,
+because this runs on every heartbeat.
+
+The Codex catalog a binding writes declares real reasoning levels
+(`low`/`medium`/`high`, defaulting to `medium` — Codex's own fallback). Codex
+encodes effort into the model id it works with (`model[effort]`) and sends it
+upstream as a request parameter, so this is the *model's* reasoning, not a
+harness behaviour: declaring only `none`, which this did until 2026-08-25, told
+Codex that every bound provider's model cannot reason, and pinned a reasoning
+model like MiniMax-M3 to `model[none]` on every bound run. We cannot know which
+levels a given third-party endpoint honours, so it answers for itself; an
+endpoint that ignores the parameter behaves exactly as before. **Unverified
+against a real third-party endpoint** — see below.
+
+Beyond the configured values, the probe asks each ACP runtime **what it can be
+set to** (`capabilities_json.options`): its model list, its effort list, and
+which of each is current. It opens one throwaway ACP session in a temp
+directory, reads `configOptions`, and kills it — cached for 15 minutes, because
+each ask starts an agent process while the capability probe itself runs every
+heartbeat. A runtime that cannot be asked (absent, not logged in, slow) falls
+back to reading its config, and offers no lists rather than guessed ones.
+
+Asking rather than guessing is not a refinement. A hardcoded
+`low/medium/high` was wrong for both runtimes — Claude offers
+`default/low/medium/high/xhigh/max`, Codex adds `ultra` — and, worse, model ids
+carry brackets that are **part of the name**: `claude-fable-5[1m]` is one
+model, not a model and an effort. Any encoding of the pair into one string is
+therefore undecodable, which is why `host_thread_messages.reasoning_effort` is
+its own column and the two travel as two fields all the way to two ACP
+`session/set_config_option` calls. Each runtime names its own option
+(`reasoning_effort` for Codex, `effort` for Claude; OpenCode exposes none, and
+asking for one it never offered would be rejected as `invalid_params`).
+
+A runtime that refuses the effort does **not** lose the turn: the model is
+already right and the answer still arrives, so the mismatch is reported and the
+prompt proceeds.
+
+Both are settable per dispatch, including on an unbound run — that is where it
+matters most, since an unbound run's model is the CLI's own and the effort is
+otherwise the only part of it the control plane could set.
+
 **Not yet observed on a real paired host.** Until this landed,
 `session/set_config_option` never fired on the remote path at all —
 `RunExecuteRequestSchema` carries no model, so the controller's model was
@@ -376,6 +425,19 @@ before. The server-host path has been sending these exact shapes and working,
 which lowers the risk materially, but it runs the server's own binaries rather
 than the host's and versions can differ. Read the first bound remote run after
 a host upgrade as a go/no-go on that host, not as a feature check.
+
+Codex's `applyModelChange` shows how that failure arrives: it looks the
+requested model up in the catalog the binding wrote, and if it is absent it
+accepts the value only when it equals the session's current model — otherwise
+it answers `invalid_params` and the run fails. So a catalog Codex does not read
+turns every bound run on that host into a rejected model change, not a run that
+quietly uses the wrong model. The same lookup is what resolves the run's
+reasoning effort.
+
+Declaring real reasoning levels is also unverified in the same way: the effort
+now travels upstream as a request parameter where it previously did not. An
+endpoint that rejects the parameter outright — rather than ignoring it — would
+fail runs that worked before.
 
 **Which model a run is recorded as having used is the server's own answer, not
 the runtime's echo of it.** The controller takes `attributed_model` separately

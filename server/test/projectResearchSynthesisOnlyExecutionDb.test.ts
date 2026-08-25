@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { seedRelevantCorpusItem } from "./support/researchSeeds";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedAgentWithVersion } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
@@ -30,52 +31,39 @@ const VERSION = "84444444-4444-4444-8444-444444444444";
 const RUNTIME_PROFILE = "83333333-3333-4333-8333-333333333333";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
+  if (!db.available) return;
   registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    await syncBuiltinPrompts(pool, CATALOG_ROOT);
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[project-research-synthesis-only-execution-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["runs", "agent_versions", "agents", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces", "automations"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, current_focus, created_at, updated_at) VALUES ($1,$2,$3,'Research','active','Does X improve Y?',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
-  const thread = await new InquiryThreadService(pool).createThread(
+  const thread = await new InquiryThreadService(db.pool).createThread(
     identity,
     PROJECT,
     { kind: "question", statement: "Does X improve Y?" },
   );
-  await insertResearchWorkflowFixture(pool, {
+  await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
     currentStage: "synthesis", primaryThreadId: String(thread.id), state: {
       research_question: "Does X improve Y?", research_question_version: 1, report_depth: "quick",
@@ -83,24 +71,8 @@ beforeEach(async () => {
       agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE, question_refine_skipped: true,
     }, now,
   });
-  await pool.query(
-    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
-     VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,
-    [AGENT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'Test agent.',
-               '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-               '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
-    [VERSION, AGENT, SPACE, now],
-  );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
-  await pool.query(
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, systemPrompt: "Test agent.", now });
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id,space_id,agent_id,name,adapter_type,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
      ) VALUES ($1,$2,$3,'Research','model_api','{}'::jsonb,'{}'::jsonb,true,true,$4,$4)`,
@@ -109,34 +81,8 @@ beforeEach(async () => {
   // TRUNCATE ... spaces CASCADE above also empties evolvable_assets (it has
   // a nullable FK to spaces), which wipes the system-scoped builtin prompt
   // catalog synced in beforeAll — re-sync every test, not just once.
-  await syncBuiltinPrompts(pool, CATALOG_ROOT);
+  await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
 });
-
-async function seedRelevantCorpus(): Promise<void> {
-  const now = new Date().toISOString();
-  const sourceItemId = randomUUID();
-  const corpusItemId = randomUUID();
-  await pool!.query(
-    `INSERT INTO source_items (
-       id,space_id,owner_user_id,visibility,item_type,title,excerpt,
-       first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at
-     ) VALUES ($1,$2,$3,'space_shared','external_url','Relevant paper','Relevant evidence.',
-       $4,$4,'excerpt_saved','summary_only',$4,$4)`,
-    [sourceItemId, SPACE, OWNER, now],
-  );
-  await pool!.query(
-    `INSERT INTO project_corpus_items (
-       id,space_id,project_id,source_item_id,role,status,triage_status,
-       triage_confirmed_by_user,relevance,confidence,reason,created_at,updated_at
-     ) VALUES ($1,$2,$3,$4,'candidate','active','relevant',false,'relevant',0.9,'In scope',$5,$5)`,
-    [corpusItemId, SPACE, PROJECT, sourceItemId, now],
-  );
-  await pool!.query(
-    `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
-  );
-}
 
 const validReport = {
   schema_version: "research_report.v1",
@@ -150,15 +96,15 @@ const validReport = {
 
 describe("synthesis_only under execution-per-pass WorkflowExecution authority (real Postgres)", () => {
   it("runs synthesize -> materialize_report through a real WorkflowExecution", async () => {
-    if (!available || !pool || !container) return;
-    await seedRelevantCorpus();
-    const config = loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri(), SERVER_INTERNAL_TOKEN: "test-internal-token" });
-    const orchestrator = new ProjectResearchOrchestrator(pool, config);
+    if (!db.available) return;
+    await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" });
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, config);
 
     const created = await orchestrator.generateReportSnapshot(identity, PROJECT) as { id: string };
     const operationId = created.id;
 
-    const afterStart = await pool.query<{
+    const afterStart = await db.pool.query<{
       status: string; current_execution_id: string | null; generation: number;
       current_stage: string;
     }>(
@@ -170,13 +116,13 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     const executionId = afterStart.rows[0]!.current_execution_id;
     expect(executionId).toBeTruthy();
 
-    const execution = await pool.query<{ status: string; research_operation_id: string }>(
+    const execution = await db.pool.query<{ status: string; research_operation_id: string }>(
       `SELECT status, research_operation_id FROM workflow_executions WHERE id=$1 AND space_id=$2`,
       [executionId, SPACE],
     );
     expect(execution.rows[0]).toEqual({ status: "running", research_operation_id: operationId });
 
-    const nodes = await pool.query<{ node_key: string; node_kind: string; status: string }>(
+    const nodes = await db.pool.query<{ node_key: string; node_kind: string; status: string }>(
       `SELECT node_key, node_kind, status FROM workflow_execution_nodes WHERE execution_id=$1 ORDER BY node_key`,
       [executionId],
     );
@@ -191,7 +137,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     // index on workflow_executions.research_operation_id.
     await expect(orchestrator.generateReportSnapshot(identity, PROJECT)).rejects.toMatchObject({ statusCode: 409 });
 
-    const synthesizeRun = (await pool.query<{ run_id: string }>(
+    const synthesizeRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes node ON node.id=link.node_id AND node.space_id=link.space_id
         WHERE node.execution_id=$1 AND node.node_key='synthesize'`,
@@ -200,7 +146,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
 
     const archiveArtifactId = randomUUID();
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO artifacts (
          id,space_id,run_id,project_id,artifact_type,surface_role,title,content,mime_type,
          exportable,export_formats_json,canonical_format,preview,created_at,updated_at,visibility,owner_user_id,trust_level
@@ -208,7 +154,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
          true,'["json"]'::jsonb,'json',false,$6,$6,'space_shared',$7,'high')`,
       [archiveArtifactId, SPACE, synthesizeRun, PROJECT, JSON.stringify(validReport), now, OWNER],
     );
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     await runs.markRunRunning({ run_id: synthesizeRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({
       run_id: synthesizeRun, space_id: SPACE, status: "succeeded",
@@ -217,9 +163,9 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: synthesizeRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
 
-    await new WorkflowExecutionService(config).reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
+    await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun, OWNER);
 
-    const finalNodes = await pool.query<{ node_key: string; status: string }>(
+    const finalNodes = await db.pool.query<{ node_key: string; status: string }>(
       `SELECT node_key, status FROM workflow_execution_nodes WHERE execution_id=$1 ORDER BY node_key`,
       [executionId],
     );
@@ -228,7 +174,7 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
       { node_key: "synthesize", status: "done" },
     ]);
 
-    const finalOperation = await pool.query<{ status: string; current_stage: string }>(
+    const finalOperation = await db.pool.query<{ status: string; current_stage: string }>(
       `SELECT status, progress_json->>'current_stage' AS current_stage FROM project_operations WHERE id=$1`,
       [operationId],
     );
@@ -237,12 +183,12 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     // advertising a review that will never be asked for.
     expect(finalOperation.rows[0]).toEqual({ status: "active", current_stage: "idea_review" });
 
-    const report = await pool.query<{ synthesis_run_id: string; run_kind: string; status: string }>(
+    const report = await db.pool.query<{ synthesis_run_id: string; run_kind: string; status: string }>(
       `SELECT synthesis_run_id, run_kind, status FROM project_research_reports WHERE operation_id=$1`,
       [operationId],
     );
     expect(report.rows).toEqual([{ synthesis_run_id: synthesizeRun, run_kind: "synthesis_only", status: "awaiting_review" }]);
-    const checkpoint = await pool.query<{ checkpoint_type: string; status: string; operation_id: string }>(
+    const checkpoint = await db.pool.query<{ checkpoint_type: string; status: string; operation_id: string }>(
       `SELECT checkpoint_type, status, machine_result_json->>'operation_id' AS operation_id
          FROM project_research_checkpoints
         WHERE space_id=$1 AND machine_result_json->>'operation_id'=$2`,
@@ -262,8 +208,8 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
     // reconcile() call that dispatched it — after that call's own
     // isComplete() check already ran. The next periodic-reconciler tick
     // picks up the now-all-done node graph and finishes the execution.
-    await new WorkflowExecutionService(config).reconcile(pool, SPACE, executionId!, OWNER);
-    const finalExecution = await pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
+    await new WorkflowExecutionService(config).reconcile(db.pool, SPACE, executionId!, OWNER);
+    const finalExecution = await db.pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
     expect(finalExecution.rows[0]).toEqual({ status: "completed" });
 
     // The pass is terminal, but the long-lived operation remains blocked on
@@ -273,38 +219,38 @@ describe("synthesis_only under execution-per-pass WorkflowExecution authority (r
   });
 
   it("fails the operation when the synthesis run produces an invalid report, without retrying (max_attempts defaults to 1)", async () => {
-    if (!available || !pool || !container) return;
-    await seedRelevantCorpus();
-    const config = loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri(), SERVER_INTERNAL_TOKEN: "test-internal-token" });
-    const orchestrator = new ProjectResearchOrchestrator(pool, config);
+    if (!db.available) return;
+    await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" });
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, config);
     const created = await orchestrator.generateReportSnapshot(identity, PROJECT) as { id: string };
     const operationId = created.id;
-    const executionId = (await pool.query<{ current_execution_id: string }>(
+    const executionId = (await db.pool.query<{ current_execution_id: string }>(
       `SELECT current_execution_id FROM project_operations WHERE id=$1`, [operationId],
     )).rows[0]!.current_execution_id;
-    const synthesizeRun = (await pool.query<{ run_id: string }>(
+    const synthesizeRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes node ON node.id=link.node_id AND node.space_id=link.space_id
         WHERE node.execution_id=$1 AND node.node_key='synthesize'`,
       [executionId],
     )).rows[0]!.run_id;
     const now = new Date().toISOString();
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     await runs.markRunRunning({ run_id: synthesizeRun, space_id: SPACE, started_at: now });
     await runs.markRunTerminal({ run_id: synthesizeRun, space_id: SPACE, status: "failed", error_json: { error_code: "provider_error" }, completed_at: now });
-    await new WorkflowExecutionService(config).reconcileForRun(pool, SPACE, synthesizeRun, OWNER);
+    await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun, OWNER);
 
-    const node = await pool.query<{ status: string }>(
+    const node = await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id=$1 AND node_key='synthesize'`,
       [executionId],
     );
     expect(node.rows[0]).toEqual({ status: "failed" });
-    const execution = await pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
+    const execution = await db.pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
     expect(execution.rows[0]).toEqual({ status: "failed" });
     // The Project Research module owns the outcome projection through the
     // registered WorkflowExecution outcome handler. A failed pass must free
     // the Project from a permanently-active operation.
-    const operation = await pool.query<{ status: string; current_stage: string }>(
+    const operation = await db.pool.query<{ status: string; current_stage: string }>(
       `SELECT status, progress_json->>'current_stage' AS current_stage
          FROM project_operations WHERE id=$1`,
       [operationId],

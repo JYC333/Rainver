@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { Pool } from "pg";
 import {
   InvocationSnapshotService,
   PgInvocationDeliveryAuthorizer,
@@ -14,7 +13,7 @@ import {
   normalizeContextItem,
 } from "../src/modules/runtimeContext";
 import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
@@ -31,67 +30,50 @@ const FOLDER = "30000000-0000-4000-8000-000000000012";
 const HOST = "30000000-0000-4000-8000-000000000014";
 const THREAD = "30000000-0000-4000-8000-000000000013";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[runtime-context-delivery-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["context_checkpoint_corrections", "context_semantic_checkpoints", "context_micro_checkpoints", "context_capture_gaps", "context_events", "context_event_scopes", "sealed_invocation_payload_access_audits", "sealed_invocation_payloads", "invocation_snapshots", "invocation_deliveries", "context_window_reconciliations", "execution_control_snapshots", "workspace_locations", "users", "spaces", "hosts", "machines"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
     [HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,'owner','active',now(),now())`,
     ["30000000-0000-4000-8000-000000000010", SPACE, USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,agent_kind,created_at,updated_at,visibility,access_level)
      VALUES ($1,$2,$3,'Agent','active','standard',now(),now(),'private','full')`,
     [AGENT, SPACE, USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
      VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{}','{}',now())`,
     [VERSION, AGENT, SPACE],
   );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
+  await db.pool.query(
     `INSERT INTO runs (id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,adapter_type,required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5,now(),now())`,
     [RUN, SPACE, AGENT, VERSION, USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
      VALUES ($1,$2,$3,$4::jsonb,now())`,
     [CONTROL, SPACE, RUN, JSON.stringify(control())],
@@ -219,8 +201,8 @@ function runtimeHostRequest(delivery: InvocationDelivery): RuntimeHostExecuteReq
 
 describe("Context Event continuity and checkpoints", () => {
   it("allocates dense idempotent scope sequences and exposes durable gaps", async () => {
-    if (!available || !pool) return;
-    const continuity = new RuntimeContextContinuityService(pool);
+    if (!db.available) return;
+    const continuity = new RuntimeContextContinuityService(db.pool);
     const input = {
       invocation_id: RUN,
       event_type: "run_observed",
@@ -254,14 +236,14 @@ describe("Context Event continuity and checkpoints", () => {
     expect(checkpoint.capture_gaps).toEqual([
       expect.objectContaining({ code: "adapter_event_missing", after_cursor: 1 }),
     ]);
-    const state = await pool.query<{ event_head_cursor: number; checkpoint_cursor: number; capture_status: string }>(
+    const state = await db.pool.query<{ event_head_cursor: number; checkpoint_cursor: number; capture_status: string }>(
       `SELECT event_head_cursor,checkpoint_cursor,capture_status FROM context_event_scopes
         WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
     );
     expect(state.rows[0]).toMatchObject({ event_head_cursor: 2, checkpoint_cursor: 0, capture_status: "partial" });
     expect(await continuity.recoverOpenCaptureGaps(SPACE, RUN)).toBe(1);
-    const recovered = await pool.query<{ scope_sequence: number; capture_status: string }>(
+    const recovered = await db.pool.query<{ scope_sequence: number; capture_status: string }>(
       `SELECT scope_sequence,capture_status FROM context_events
         WHERE space_id=$1 AND work_context_scope_id=$2 AND event_type='buffered_runtime_notice'`,
       [SPACE, RUN],
@@ -271,9 +253,9 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("marks a snapshot complete only with its committed terminal event and checkpoint", async () => {
-    if (!available || !pool) return;
-    const continuity = new RuntimeContextContinuityService(pool);
-    const snapshots = new InvocationSnapshotService(pool, undefined, undefined, continuity);
+    if (!db.available) return;
+    const continuity = new RuntimeContextContinuityService(db.pool);
+    const snapshots = new InvocationSnapshotService(db.pool, undefined, undefined, continuity);
     const created = await snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
@@ -284,7 +266,7 @@ describe("Context Event continuity and checkpoints", () => {
       model: "gpt-4o",
       usageSourceId: "continuity-finalize",
     });
-    const taint = await pool.query<{
+    const taint = await db.pool.query<{
       has_context_taint: boolean;
       context_taint_json: { narrowest_visibility: string; input_owner_user_ids: string[] };
     }>(`SELECT has_context_taint,context_taint_json FROM runs WHERE id=$1`, [RUN]);
@@ -307,17 +289,17 @@ describe("Context Event continuity and checkpoints", () => {
       deliveryId: created.delivery.id,
     });
     expect(finalized).toMatchObject({ capture_status: "complete", checkpoint_cursor: 0 });
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT scope_sequence,event_type,canonical_ref_json->>'id' AS ref_id
          FROM context_events WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
     )).rows).toEqual([{ scope_sequence: 1, event_type: "invocation_finalized", ref_id: created.snapshot.id }]);
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM jobs WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
       [SPACE],
     )).rows[0]?.count).toBe(1);
     let semanticCalls = 0;
-    const semanticContinuity = new RuntimeContextContinuityService(pool, {
+    const semanticContinuity = new RuntimeContextContinuityService(db.pool, {
       async extract() {
         semanticCalls += 1;
         throw new Error("terminal-only continuity must not invoke semantic extraction");
@@ -331,14 +313,14 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("validates extractor citations and derives confirmation only from canonical user evidence", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const sessionId = randomUUID();
     const messageId = randomUUID();
-    await pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await pool.query(`INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES ($1,$2,$3,$4,'user','Use the unified gateway.',now())`, [messageId, SPACE, sessionId, USER]);
-    await pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
+    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
+    await db.pool.query(`INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES ($1,$2,$3,$4,'user','Use the unified gateway.',now())`, [messageId, SPACE, sessionId, USER]);
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
     const setupDecisionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
          decision,risk_level,policy_source,metadata_json,created_at
@@ -346,7 +328,7 @@ describe("Context Event continuity and checkpoints", () => {
                  'allow','medium','test','{}',now())`,
       [setupDecisionId, SPACE, USER, SETUP],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO work_context_setups (
          id,space_id,work_context_scope_id,scope_kind,version,user_id,agent_id,
          runtime_ref_json,pinned_refs_json,excluded_refs_json,retrieval_preferences_json,
@@ -358,7 +340,7 @@ describe("Context Event continuity and checkpoints", () => {
       [SETUP, SPACE, RUN, USER, AGENT, setupDecisionId],
     );
     const observedEgress: boolean[] = [];
-    const continuity = new RuntimeContextContinuityService(pool, {
+    const continuity = new RuntimeContextContinuityService(db.pool, {
       async extract({ events, egressPolicy }) {
         observedEgress.push(egressPolicy.externalEgressEnabled);
         const correction = events.find((event) => event.event_type === "checkpoint_corrected");
@@ -395,7 +377,7 @@ describe("Context Event continuity and checkpoints", () => {
       expect.objectContaining({ confirmation_authority: "canonical_user" }),
     ]);
     expect(observedEgress).toEqual([true]);
-    const authorityLock = await pool.connect();
+    const authorityLock = await db.pool.connect();
     await authorityLock.query("BEGIN");
     await authorityLock.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
       `work-context:${SPACE}:${RUN}`,
@@ -415,7 +397,7 @@ describe("Context Event continuity and checkpoints", () => {
     authorityLock.release();
     expect(settledWhileAuthorityLocked).toBe(false);
     const correctionId = await correctionPromise;
-    expect((await pool.query<{ jobs: number; micros: number }>(
+    expect((await db.pool.query<{ jobs: number; micros: number }>(
       `SELECT
         (SELECT count(*)::int FROM jobs WHERE space_id=$1 AND job_type='runtime_context_checkpoint') AS jobs,
         (SELECT count(*)::int FROM context_micro_checkpoints WHERE space_id=$1 AND work_context_scope_id=$2) AS micros`,
@@ -431,7 +413,7 @@ describe("Context Event continuity and checkpoints", () => {
       decisions: [{ text: "Use the corrected gateway decision.", confirmation_state: "corrected" }],
       correction_refs: [{ type: "checkpoint_correction", id: correctionId }],
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET owner_user_id=NULL,instructed_by_user_id=NULL WHERE id=$1`,
       [RUN],
     );
@@ -443,7 +425,7 @@ describe("Context Event continuity and checkpoints", () => {
       canonicalRef: { type: "message", id: messageId },
       correction: { decision: "This revoked mutation must not commit." },
     })).rejects.toMatchObject({ statusCode: 404 });
-    const versions = await pool.query<{ id: string; status: string; supersedes_id: string | null }>(
+    const versions = await db.pool.query<{ id: string; status: string; supersedes_id: string | null }>(
       `SELECT id,status,supersedes_id FROM context_semantic_checkpoints
         WHERE space_id=$1 AND work_context_scope_id=$2 ORDER BY version`,
       [SPACE, RUN],
@@ -455,20 +437,20 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("rejects canonical Messages that belong to a different work scope", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const otherSessionId = randomUUID();
     const otherMessageId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,'active',now(),now())`,
       [otherSessionId, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at)
        VALUES ($1,$2,$3,$4,'user','private other scope',now())`,
       [otherMessageId, SPACE, otherSessionId, USER],
     );
-    const continuity = new RuntimeContextContinuityService(pool);
+    const continuity = new RuntimeContextContinuityService(db.pool);
     await expect(continuity.ingest({
       invocation_id: RUN,
       event_type: "user_message_received",
@@ -479,21 +461,21 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("loads the checkpoint and raw tail at the triggering Message watermark", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const sessionId = randomUUID();
     const earlierId = randomUUID();
     const currentId = randomUUID();
     const futureId = randomUUID();
-    await pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
+    await db.pool.query(
       `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES
        ($1,$4,$5,$6,'user','earlier',now()-interval '3 minutes'),
        ($2,$4,$5,$6,'user','current',now()-interval '2 minutes'),
        ($3,$4,$5,$6,'user','future',now()-interval '1 minute')`,
       [earlierId, currentId, futureId, SPACE, sessionId, USER],
     );
-    await pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
-    const continuity = new RuntimeContextContinuityService(pool, {
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
+    const continuity = new RuntimeContextContinuityService(db.pool, {
       async extract() {
         return {
           extraction: { goals: [], user_intent: [], decisions: [], constraints: [], facts: [], open_questions: [], tasks: [], artifact_refs: [], tool_refs: [], correction_refs: [] },
@@ -510,7 +492,7 @@ describe("Context Event continuity and checkpoints", () => {
     await ingestMessage(currentId);
     await ingestMessage(futureId);
     await continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    const visible = await loadConversationContinuityThroughMessage(pool, {
+    const visible = await loadConversationContinuityThroughMessage(db.pool, {
       spaceId: SPACE, sessionId, workContextScopeId: RUN, currentMessageId: currentId,
     });
     expect(visible.checkpoint?.id).toBe(earlierCheckpoint?.id);
@@ -518,18 +500,18 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("keeps earlier messages that share the triggering message timestamp", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const sessionId = randomUUID();
     const earlierId = "30000000-0000-4000-8000-000000000020";
     const currentId = "30000000-0000-4000-8000-000000000021";
     const futureId = "30000000-0000-4000-8000-000000000022";
     const timestamp = "2026-08-17T14:00:00.000Z";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,'active',now(),now())`,
       [sessionId, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES
        ($1,$4,$5,$6,'user','earlier same timestamp',$7),
        ($2,$4,$5,$6,'user','current same timestamp',$7),
@@ -537,7 +519,7 @@ describe("Context Event continuity and checkpoints", () => {
       [earlierId, currentId, futureId, SPACE, sessionId, USER, timestamp],
     );
 
-    const visible = await loadConversationContinuityThroughMessage(pool, {
+    const visible = await loadConversationContinuityThroughMessage(db.pool, {
       spaceId: SPACE,
       sessionId,
       workContextScopeId: RUN,
@@ -551,9 +533,9 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("rejects concurrent extraction output based on a superseded checkpoint", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const releases: Array<() => void> = [];
-    const continuity = new RuntimeContextContinuityService(pool, {
+    const continuity = new RuntimeContextContinuityService(db.pool, {
       async extract() {
         await new Promise<void>((resolve) => releases.push(resolve));
         return {
@@ -592,15 +574,15 @@ describe("Context Event continuity and checkpoints", () => {
   });
 
   it("builds each Micro Checkpoint from the prior Micro event head", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const sessionId = randomUUID();
     const assistantId = randomUUID();
-    await pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await pool.query(`INSERT INTO messages (id,space_id,session_id,sender_agent_id,role,content,created_at) VALUES ($1,$2,$3,$4,'assistant','done',now())`, [assistantId, SPACE, sessionId, AGENT]);
-    await pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
-    const continuity = new RuntimeContextContinuityService(pool);
+    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
+    await db.pool.query(`INSERT INTO messages (id,space_id,session_id,sender_agent_id,role,content,created_at) VALUES ($1,$2,$3,$4,'assistant','done',now())`, [assistantId, SPACE, sessionId, AGENT]);
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
+    const continuity = new RuntimeContextContinuityService(db.pool);
     const first = await continuity.finalizeChatTurn({ invocationId: RUN, messageId: assistantId });
-    await pool.query(
+    await db.pool.query(
       `UPDATE jobs SET status='failed' WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
       [SPACE],
     );
@@ -608,7 +590,7 @@ describe("Context Event continuity and checkpoints", () => {
     expect(first.message_refs).toEqual([{ type: "message", id: assistantId }]);
     expect(second.message_refs).toEqual([]);
     expect(second.event_head_cursor).toBe(first.event_head_cursor);
-    expect((await pool.query<{ count: number }>(
+    expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM jobs
         WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
       [SPACE],
@@ -618,7 +600,7 @@ describe("Context Event continuity and checkpoints", () => {
 
 describe("Invocation Delivery and Snapshot persistence", () => {
   it("resolves direct Chat by invocation id and carries prior session turns behind the Gateway", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const sessionId = randomUUID();
     const priorMessageId = randomUUID();
     const priorReplyId = randomUUID();
@@ -628,12 +610,12 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     // the triggering point, not before it.
     const futureMessageId = "30000000-0000-4000-8000-000000000008";
     const decisionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at)
        VALUES ($1,$2,$3,'active',now(),now())`,
       [sessionId, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages
          (id,session_id,space_id,user_id,sender_agent_id,role,content,metadata_json,created_at)
        VALUES
@@ -643,7 +625,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
          ($9,$4,$5,$6,NULL,'user','This later turn must stay invisible.','{}',now()-interval '1 minute')`,
       [priorMessageId, priorReplyId, MESSAGE, sessionId, SPACE, USER, AGENT, RUN, futureMessageId],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
          decision,risk_level,policy_source,metadata_json,created_at
@@ -651,7 +633,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'allow','medium','test','{}',now())`,
       [decisionId, SPACE, USER, SETUP],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO work_context_setups (
          id,space_id,work_context_scope_id,scope_kind,version,user_id,
          project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
@@ -664,24 +646,24 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'test',$6,$4,now())`,
       [SETUP, SPACE, sessionId, USER, AGENT, decisionId],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
        ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
       [randomUUID(), PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE agent_versions SET model_config_json='{"model":"gpt-4o"}'::jsonb WHERE id=$1`,
       [VERSION],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET session_id=$2,prompt='What code did I choose?',model_provider_id=$3,
          model_override_json=$4::jsonb WHERE id=$1`,
       [RUN, sessionId, PROVIDER, JSON.stringify({
@@ -705,12 +687,12 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     };
     authoritative.egress.sensitivity_ceiling = "highly_restricted";
     authoritative.readable_scope.sensitivity_ceiling = "highly_restricted";
-    await pool.query(
+    await db.pool.query(
       `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
       [CONTROL, JSON.stringify(authoritative)],
     );
 
-    const result = await createProductionRuntimeContextPlanningService(pool).planExecution({
+    const result = await createProductionRuntimeContextPlanningService(db.pool).planExecution({
       identity: { spaceId: SPACE, userId: USER },
       invocationId: RUN,
       deliveryId: randomUUID(),
@@ -735,7 +717,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     expect(continuity?.payload.text).not.toContain("This later turn must stay invisible.");
     expect(continuity?.payload.text).not.toContain("What code did I choose?");
     const snapshots = new InvocationSnapshotService(
-      pool,
+      db.pool,
       undefined,
       new PgInvocationDeliveryAuthorizer(),
     );
@@ -752,14 +734,14 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       requireLiveAuthorization: true,
     });
     await expect(create()).resolves.toBeDefined();
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET model_override_json=jsonb_set(model_override_json,'{chat_turn,user_message_id}',$2::jsonb)
         WHERE id=$1`,
       [RUN, JSON.stringify(priorMessageId)],
     );
     await expect(create()).rejects.toMatchObject({ statusCode: 409 });
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET model_override_json=jsonb_set(model_override_json,'{chat_turn,user_message_id}',$2::jsonb)
         WHERE id=$1`,
@@ -788,13 +770,13 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     expect(trimmedEnvelope.window_plan.decisions.find((entry) => entry.item_id === continuity?.id))
       .toMatchObject({ decision: "trimmed", planned_tokens: 12 });
     await expect(create(trimmedEnvelope)).resolves.toBeDefined();
-    await pool.query(`UPDATE sessions SET status='archived',updated_at=now() WHERE id=$1`, [sessionId]);
+    await db.pool.query(`UPDATE sessions SET status='archived',updated_at=now() WHERE id=$1`, [sessionId]);
     await expect(create()).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("binds and atomically consumes the exact Runtime Host request", async () => {
-    if (!available || !pool) return;
-    const snapshots = new InvocationSnapshotService(pool);
+    if (!db.available) return;
+    const snapshots = new InvocationSnapshotService(db.pool);
     const first = await snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
@@ -806,10 +788,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: `run:${RUN}:dispatch:1`,
     });
     const request = runtimeHostRequest(first.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(pool, request)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(pool, request)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(pool, request)).rejects.toMatchObject({ statusCode: 409 });
-    const dispatched = (await pool.query<{ safe_snapshot_json: Record<string, unknown> }>(
+    await expect(bindRuntimeHostDeliveryRequest(db.pool, request)).resolves.toBeUndefined();
+    await expect(authorizeRuntimeHostDelivery(db.pool, request)).resolves.toBeUndefined();
+    await expect(authorizeRuntimeHostDelivery(db.pool, request)).rejects.toMatchObject({ statusCode: 409 });
+    const dispatched = (await db.pool.query<{ safe_snapshot_json: Record<string, unknown> }>(
       `SELECT safe_snapshot_json FROM invocation_snapshots WHERE id=$1`,
       [first.snapshot.id],
     )).rows[0]?.safe_snapshot_json;
@@ -828,12 +810,12 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: `run:${RUN}:dispatch:2`,
     });
     const secondRequest = runtimeHostRequest(second.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(pool, secondRequest)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(pool, {
+    await expect(bindRuntimeHostDeliveryRequest(db.pool, secondRequest)).resolves.toBeUndefined();
+    await expect(authorizeRuntimeHostDelivery(db.pool, {
       ...secondRequest,
       max_tokens: 999,
     })).rejects.toMatchObject({ statusCode: 409 });
-    await expect(authorizeRuntimeHostDelivery(pool, secondRequest)).resolves.toBeUndefined();
+    await expect(authorizeRuntimeHostDelivery(db.pool, secondRequest)).resolves.toBeUndefined();
 
     const third = await snapshots.createAttempt({
       spaceId: SPACE,
@@ -846,7 +828,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: `run:${RUN}:dispatch:3`,
     });
     const thirdRequest = runtimeHostRequest(third.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(pool, {
+    await expect(bindRuntimeHostDeliveryRequest(db.pool, {
       ...thirdRequest,
       messages: [
         ...thirdRequest.messages!,
@@ -865,9 +847,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
   });
 
   it("stores safe attempts separately and audits authorized sealed replay reads", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const cipher = new SealedPayloadCipher(Buffer.alloc(32, 9));
-    const snapshots = new InvocationSnapshotService(pool, cipher);
+    const snapshots = new InvocationSnapshotService(db.pool, cipher);
     const first = await snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
@@ -880,7 +862,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       rawReplayPayload: { rendered_prompt: "never expose this raw replay" },
     });
     expect(first.snapshot.attempt).toBe(1);
-    const stored = (await pool.query(
+    const stored = (await db.pool.query(
       `SELECT d.delivery_metadata_json,s.safe_snapshot_json,p.encrypted_payload
          FROM invocation_deliveries d
          JOIN invocation_snapshots s ON s.delivery_id=d.id
@@ -930,7 +912,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       status: "accepted",
       actualTokens: 17,
     })).resolves.toEqual(finalized);
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT delivery_id FROM context_window_reconciliations WHERE delivery_id=$1`,
       [first.delivery.id],
     )).rows).toEqual([{ delivery_id: first.delivery.id }]);
@@ -964,17 +946,17 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       deliveryId: second.delivery.id,
     })).rejects.toMatchObject({ statusCode: 409 });
 
-    const denied = new SealedPayloadService(pool, cipher, { async authorize() { return false; } });
+    const denied = new SealedPayloadService(db.pool, cipher, { async authorize() { return false; } });
     await expect(denied.read({
       spaceId: SPACE,
       snapshotId: first.snapshot.id,
       viewerUserId: USER,
       reason: "incident review",
     })).rejects.toMatchObject({ statusCode: 403 });
-    expect((await pool.query("SELECT 1 FROM sealed_invocation_payload_access_audits")).rows).toHaveLength(0);
+    expect((await db.pool.query("SELECT 1 FROM sealed_invocation_payload_access_audits")).rows).toHaveLength(0);
 
     let authorizationDb: unknown;
-    const sealed = new SealedPayloadService(pool, cipher, {
+    const sealed = new SealedPayloadService(db.pool, cipher, {
       async authorize(db) {
         authorizationDb = db;
         await db.query("SELECT 1");
@@ -987,10 +969,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       viewerUserId: USER,
       reason: "incident review",
     })).resolves.toEqual({ rendered_prompt: "never expose this raw replay" });
-    expect(authorizationDb).not.toBe(pool);
-    expect((await pool.query("SELECT reason FROM sealed_invocation_payload_access_audits")).rows)
+    expect(authorizationDb).not.toBe(db.pool);
+    expect((await db.pool.query("SELECT reason FROM sealed_invocation_payload_access_audits")).rows)
       .toEqual([{ reason: "incident review" }]);
-    await pool.query(
+    await db.pool.query(
       `UPDATE sealed_invocation_payloads SET retention_deadline=retention_deadline+interval '1 hour'
         WHERE invocation_snapshot_id=$1`,
       [first.snapshot.id],
@@ -1004,8 +986,8 @@ describe("Invocation Delivery and Snapshot persistence", () => {
   });
 
   it("rejects caller controls that differ from the persisted authority", async () => {
-    if (!available || !pool) return;
-    const snapshots = new InvocationSnapshotService(pool, new SealedPayloadCipher(Buffer.alloc(32, 11)));
+    if (!db.available) return;
+    const snapshots = new InvocationSnapshotService(db.pool, new SealedPayloadCipher(Buffer.alloc(32, 11)));
     const forged = control(60);
     forged.egress.allowed_provider_ids = ["30000000-0000-4000-8000-000000000099"];
     await expect(snapshots.createAttempt({
@@ -1018,30 +1000,30 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       model: "gpt-4o",
       usageSourceId: "usage-forged",
     })).rejects.toMatchObject({ statusCode: 409 });
-    expect((await pool.query("SELECT 1 FROM invocation_deliveries")).rows).toHaveLength(0);
+    expect((await db.pool.query("SELECT 1 FROM invocation_deliveries")).rows).toHaveLength(0);
   });
 
   it("reauthorizes the persisted Run adapter and provider inside attempt creation", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const authoritative = control(0);
     authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
     authoritative.project_id = PROJECT;
     authoritative.project_folder_id = FOLDER;
     authoritative.readable_scope.retrieval_enabled = true;
     authoritative.readable_scope.retrieval_max_candidates = 10;
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
        VALUES ($1,$2,$3,'Delivery Project','active',now(),now())`,
       [PROJECT, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_folders (
          id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
          protected,system_managed,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,'Delivery Folder','active','code',TRUE,FALSE,FALSE,now(),now())`,
       [FOLDER, SPACE, PROJECT, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO workspace_locations (
          id,space_id,project_folder_id,execution_host_id,execution_host_kind,
          execution_ready,status,preferred,created_at,updated_at
@@ -1049,7 +1031,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       [SPACE, FOLDER, HOST],
     );
     const instructionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_instruction_versions (
          id,space_id,project_id,version,title,instruction_text,status,
          reviewed_by_user_id,reviewed_at,published_by_user_id,published_at,
@@ -1058,7 +1040,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  $4,now(),$4,now(),$4,now())`,
       [instructionId, SPACE, PROJECT, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE projects SET active_instruction_version_id=$1 WHERE id=$2 AND space_id=$3`,
       [instructionId, PROJECT, SPACE],
     );
@@ -1067,7 +1049,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       id: instructionId,
       version: "v1",
     };
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
          decision,risk_level,policy_source,metadata_json,created_at
@@ -1075,10 +1057,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'allow','medium','test','{}',now())`,
       [randomUUID(), SPACE, USER, SETUP],
     );
-    const decision = (await pool.query<{ id: string }>(
+    const decision = (await db.pool.query<{ id: string }>(
       `SELECT id FROM policy_decision_records WHERE resource_id=$1`, [SETUP],
     )).rows[0]!.id;
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO work_context_setups (
          id,space_id,work_context_scope_id,scope_kind,version,user_id,
          project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
@@ -1090,24 +1072,24 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  NULL,NULL,TRUE,'[]','delivery-authority',NULL,'{}','test',$6,$4,now())`,
       [SETUP, SPACE, RUN, USER, AGENT, decision, PROJECT, FOLDER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
        ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
       [randomUUID(), PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET model_provider_id=$2,project_id=$3,project_folder_id=$4,prompt='Private question' WHERE id=$1`,
       [RUN, PROVIDER, PROJECT, FOLDER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
       [CONTROL, JSON.stringify(authoritative)],
     );
@@ -1153,7 +1135,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       directItems: [runRequest, instruction],
     });
     const snapshots = new InvocationSnapshotService(
-      pool,
+      db.pool,
       undefined,
       new PgInvocationDeliveryAuthorizer(),
     );
@@ -1171,21 +1153,21 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
     await expect(create("model_api")).resolves.toBeDefined();
     await expect(create("ts_agent_host")).rejects.toMatchObject({ statusCode: 409 });
-    await pool.query(
+    await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=FALSE WHERE provider_id=$1 AND space_id=$2`,
       [PROVIDER, SPACE],
     );
     await expect(create("model_api")).rejects.toMatchObject({ statusCode: 409 });
-    await pool.query(
+    await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=TRUE WHERE provider_id=$1 AND space_id=$2`,
       [PROVIDER, SPACE],
     );
-    await pool.query(`UPDATE project_folders SET status='archived',updated_at=now() WHERE id=$1`, [FOLDER]);
+    await db.pool.query(`UPDATE project_folders SET status='archived',updated_at=now() WHERE id=$1`, [FOLDER]);
     await expect(create("model_api")).rejects.toMatchObject({ statusCode: 404 });
 
-    await pool.query(`UPDATE project_folders SET status='active',updated_at=now() WHERE id=$1`, [FOLDER]);
+    await db.pool.query(`UPDATE project_folders SET status='active',updated_at=now() WHERE id=$1`, [FOLDER]);
     const sourceUpdatedAt = "2026-08-09T01:00:00.000Z";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_public_summaries (
          id,space_id,project_id,summary_text,topics_json,highlights_json,source_refs_json,
          redaction_version,review_status,updated_by_user_id,created_at,updated_at
@@ -1233,18 +1215,18 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       requireLiveAuthorization: true,
     });
     await expect(createWithSource()).resolves.toBeDefined();
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_public_summaries SET review_status='archived',updated_at=now() WHERE project_id=$1`,
       [PROJECT],
     );
     await expect(createWithSource()).rejects.toMatchObject({ statusCode: 409 });
 
     const replacementInstructionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_instruction_versions SET status='archived' WHERE id=$1`,
       [instructionId],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_instruction_versions (
          id,space_id,project_id,version,title,instruction_text,status,
          reviewed_by_user_id,reviewed_at,published_by_user_id,published_at,
@@ -1253,7 +1235,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  $4,now(),$4,now(),$4,now())`,
       [replacementInstructionId, SPACE, PROJECT, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE projects SET active_instruction_version_id=$1 WHERE id=$2 AND space_id=$3`,
       [replacementInstructionId, PROJECT, SPACE],
     );
@@ -1269,29 +1251,29 @@ describe("Invocation Delivery and Snapshot persistence", () => {
    * happily; only a real server refuses it.
    */
   it("locks Inquiry Thread membership without tripping PostgreSQL's outer-join lock rule", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const authoritative = control(0);
     authoritative.project_id = PROJECT;
     authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
     authoritative.readable_scope.retrieval_enabled = true;
     authoritative.readable_scope.retrieval_max_candidates = 10;
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
        VALUES ($1,$2,$3,'Inquiry Project','active',now(),now())`,
       [PROJECT, SPACE, USER],
     );
     const threadSessionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,
       [threadSessionId, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (id,space_id,session_id,user_id,role,content,metadata_json,created_at)
        VALUES ($1,$2,$3,$4,'user','Private question',$5::jsonb,now())`,
       [MESSAGE, SPACE, threadSessionId, USER, JSON.stringify({ run_id: RUN })],
     );
     const setupDecisionId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
          decision,risk_level,policy_source,metadata_json,created_at
@@ -1299,7 +1281,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'allow','medium','test','{}',now())`,
       [setupDecisionId, SPACE, USER, SETUP],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO work_context_setups (
          id,space_id,work_context_scope_id,scope_kind,version,user_id,project_id,agent_id,
          runtime_ref_json,pinned_refs_json,excluded_refs_json,retrieval_preferences_json,
@@ -1312,30 +1294,30 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     );
     const statement = "Does the control group hold?";
     const threadUpdatedAt = "2026-08-12T02:00:00.000Z";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_objects (id,space_id,object_type,title,visibility,access_level,owner_user_id,primary_project_id,created_at,updated_at)
        VALUES ($1,$2,'inquiry_thread',$3,'space_shared','full',$4,$5,$6,$6)`,
       [THREAD, SPACE, statement, USER, PROJECT, threadUpdatedAt],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO inquiry_threads (object_id,space_id,project_id,kind,statement,lifecycle_status)
        VALUES ($1,$2,$3,'question',$4,'active')`,
       [THREAD, SPACE, PROJECT, statement],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
        ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
       [randomUUID(), PROVIDER, SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET model_provider_id=$2,project_id=$3,session_id=$4,prompt='Private question',
          model_override_json=$5::jsonb WHERE id=$1`,
       [RUN, PROVIDER, PROJECT, threadSessionId, JSON.stringify({
@@ -1350,7 +1332,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         },
       })],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
       [CONTROL, JSON.stringify(authoritative)],
     );
@@ -1389,7 +1371,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       retrievalItems: [thread],
     });
     const snapshots = new InvocationSnapshotService(
-      pool,
+      db.pool,
       new SealedPayloadCipher(Buffer.alloc(32, 13)),
       new PgInvocationDeliveryAuthorizer(),
     );
@@ -1411,14 +1393,14 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     // A non-member has no membership row to pin, which is an ordinary outcome
     // and not an error — the reason the join was written outer in the first
     // place. Personal-Space read authority still admits the read.
-    await pool.query(`DELETE FROM project_members WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
+    await db.pool.query(`DELETE FROM project_members WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     await expect(createAttempt()).resolves.toBeDefined();
   });
 
   it("rolls back the window plan when Delivery rendering fails", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const deliveryId = "30000000-0000-4000-8000-000000000099";
-    const snapshots = new InvocationSnapshotService(pool);
+    const snapshots = new InvocationSnapshotService(db.pool);
     await expect(snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
@@ -1430,16 +1412,16 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: "failed-render",
       deliveryId,
     })).rejects.toThrow("planned model");
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT 1 FROM context_window_reconciliations WHERE delivery_id=$1`, [deliveryId],
     )).rows).toHaveLength(0);
   });
 
   it("fails closed when retention disables raw persistence and deletes expired ciphertext", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const cipher = new SealedPayloadCipher(Buffer.alloc(32, 10));
-    const snapshots = new InvocationSnapshotService(pool, cipher);
-    await pool.query(
+    const snapshots = new InvocationSnapshotService(db.pool, cipher);
+    await db.pool.query(
       `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
       [CONTROL, JSON.stringify(control(0))],
     );
@@ -1454,9 +1436,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: "usage-disabled",
       rawReplayPayload: { raw: true },
     })).rejects.toThrow("prohibit");
-    expect((await pool.query("SELECT 1 FROM invocation_snapshots")).rows).toHaveLength(0);
+    expect((await db.pool.query("SELECT 1 FROM invocation_snapshots")).rows).toHaveLength(0);
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
       [CONTROL, JSON.stringify(control(60))],
     );
@@ -1471,19 +1453,19 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       usageSourceId: "usage-expiring",
       rawReplayPayload: { raw: true },
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE sealed_invocation_payloads SET retention_deadline=now()-interval '1 second'
         WHERE invocation_snapshot_id=$1`,
       [created.snapshot.id],
     );
-    const sealed = new SealedPayloadService(pool, cipher, { async authorize() { return true; } });
+    const sealed = new SealedPayloadService(db.pool, cipher, { async authorize() { return true; } });
     await expect(sealed.read({
       spaceId: SPACE,
       snapshotId: created.snapshot.id,
       viewerUserId: USER,
       reason: "expired check",
     })).rejects.toMatchObject({ statusCode: 410 });
-    expect((await pool.query(
+    expect((await db.pool.query(
       `SELECT encrypted_payload,deleted_at FROM sealed_invocation_payloads WHERE invocation_snapshot_id=$1`,
       [created.snapshot.id],
     )).rows[0]).toMatchObject({ encrypted_payload: null });

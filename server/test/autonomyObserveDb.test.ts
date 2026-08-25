@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, inject, it } from "vitest";
 import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry";
 import { AutonomyService } from "../src/modules/autonomy/service";
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -15,52 +14,42 @@ const AUTOMATION = "55555555-5555-4555-8555-555555555555";
 const PROJECT = "66666666-6666-4666-8666-666666666666";
 const NOW = new Date("2026-07-26T12:00:00.000Z");
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-beforeAll(async () => {
-  database = await getTestPostgres(__filename);
-  pool = new Pool({ connectionString: database.getConnectionUri(), max: 5 });
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 5 });
 
 beforeEach(async () => {
-  if (!pool) return;
+  if (!db.pool) return;
   autonomyDiscovererRegistry.__resetForTests();
   registerPeriodicDigestAutonomyDiscoverer();
-  await resetTables(pool, ["spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   const now = NOW.toISOString();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Autonomy Owner', 'active', $2, $2)`,
     [USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Autonomy Space', 'personal', $2, $3, $3)`,
     [SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        visibility, created_at, updated_at
      ) VALUES ($1, $2, $3, 'Autonomy Agent', 'active', NULL, 'private', $4, $4)`,
     [AGENT, SPACE, USER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -69,8 +58,8 @@ beforeEach(async () => {
                '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await db.pool.query(
     `INSERT INTO automations (
        id, space_id, owner_user_id, agent_id, name, trigger_type, status,
        config_json, created_at, updated_at
@@ -82,14 +71,14 @@ beforeEach(async () => {
 
 describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
   it("deduplicates one logical candidate across repeated and concurrent ticks without creating a Run", async () => {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO projects (
          id, space_id, owner_user_id, name, status, primary_mode,
          created_at, updated_at
        ) VALUES ($1, $2, $3, 'Digest Project', 'active', 'delivery', $4, $4)`,
       [PROJECT, SPACE, USER, "2026-07-24T12:00:00.000Z"],
     );
-    const tick = () => new AutonomyService(pool!).observeTick({
+    const tick = () => new AutonomyService(db.pool).observeTick({
       spaceId: SPACE,
       automationId: AUTOMATION,
       ownerUserId: USER,
@@ -99,7 +88,7 @@ describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
     const [first, second] = await Promise.all([tick(), tick()]);
     expect(first.candidate_ids).toHaveLength(1);
     expect(second.candidate_ids).toEqual(first.candidate_ids);
-    const counts = await pool!.query<{
+    const counts = await db.pool.query<{
       ticks: number;
       candidates: number;
       links: number;
@@ -115,14 +104,14 @@ describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
   });
 
   it("persists a successful zero-candidate coordinator audit", async () => {
-    const result = await new AutonomyService(pool!).observeTick({
+    const result = await new AutonomyService(db.pool).observeTick({
       spaceId: SPACE,
       automationId: AUTOMATION,
       ownerUserId: USER,
       now: NOW,
     });
     expect(result).toMatchObject({ status: "succeeded", candidates_seen: 0, candidates_launched: 0 });
-    const row = await pool!.query<{ status: string; summary_json: { zero_candidate_tick: boolean } }>(
+    const row = await db.pool.query<{ status: string; summary_json: { zero_candidate_tick: boolean } }>(
       `SELECT status, summary_json FROM autonomy_ticks WHERE id = $1`,
       [result.tick_id],
     );

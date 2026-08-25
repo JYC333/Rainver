@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -24,44 +23,27 @@ const USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const AGENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const RUN = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let dbUrl = "";
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    dbUrl = container.getConnectionUri();
-    pool = new Pool({ connectionString: dbUrl, max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-tool-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  dbUrl = db.connectionUri;
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "policy_decision_records", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Tool', 'team', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Tool', 'team', now(), now())`, [SPACE]);
   for (const id of [USER_A, USER_B]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('tool-user-a', $1, $2, 'owner', 'active', now(), now()),
             ('tool-user-b', $1, $3, 'member', 'active', now(), now())`,
@@ -70,7 +52,7 @@ beforeEach(async () => {
 });
 
 async function seed(doc: { id: string; title: string; content: string; visibility?: string; owner?: string | null }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -83,16 +65,16 @@ async function seed(doc: { id: string; title: string; content: string; visibilit
 }
 
 function toolService(): RetrievalToolService {
-  return new RetrievalToolService(new RetrievalSearchService(pool!, knowledgeRetrievalRegistry));
+  return new RetrievalToolService(new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry));
 }
 
 describe("Retrieval tool surface (real Postgres)", () => {
   it("searches under the instructing user's visibility — an agent cannot exceed it", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "shared", title: "Quarterly widget plan", content: "The widget rollout plan is shared." });
     // Private, owned by USER_B: USER_A (and an agent acting for USER_A) must not see it.
     await seed({ id: "b-private", title: "Secret widget memo", content: "The secret widget memo about pricing.", visibility: "private", owner: USER_B });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const res = await toolService().toolSearch(
       { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN },
@@ -104,9 +86,9 @@ describe("Retrieval tool surface (real Postgres)", () => {
   });
 
   it("audits the tool call as the agent/run actor with pointer metadata only", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "shared", title: "Widget plan", content: "Shared widget plan." });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const actor = { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN };
     const params = { query: "widget", mode: "lexical" as const, maxResults: 10 };
@@ -122,7 +104,7 @@ describe("Retrieval tool surface (real Postgres)", () => {
     });
     await toolService().toolSearch(actor, params);
 
-    const audit = await pool.query<{
+    const audit = await db.pool.query<{
       actor_type: string; actor_id: string; action: string; run_id: string | null; metadata_json: Record<string, unknown>;
     }>(
       `SELECT actor_type, actor_id, action, run_id, metadata_json
@@ -141,9 +123,9 @@ describe("Retrieval tool surface (real Postgres)", () => {
   });
 
   it("builds a deterministic-only brief through the tool (no synthesizer) and audits it", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seed({ id: "shared", title: "Widget plan", content: "Shared widget plan with sufficient content to not be thin enough here." });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const actor = { spaceId: SPACE, instructedByUserId: USER_A, agentId: AGENT, runId: RUN };
     const params = { query: "widget", mode: "lexical" as const, maxResults: 10 };
@@ -161,7 +143,7 @@ describe("Retrieval tool surface (real Postgres)", () => {
     expect(res.brief.synthesized).toBe(false); // no synthesizer wired
     expect(res.items.map((i) => i.object_id)).toContain("shared");
 
-    const audit = await pool.query<{ n: string }>(
+    const audit = await db.pool.query<{ n: string }>(
       `SELECT count(*) AS n FROM policy_decision_records WHERE action = 'retrieval.brief'`,
     );
     expect(audit.rows[0]!.n).toBe("1");

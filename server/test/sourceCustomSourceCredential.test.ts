@@ -2,84 +2,46 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
 import { CustomSourceCredentialService } from "../src/modules/sources/customSources/customSourceCredentialService";
 import { HttpError } from "../src/modules/routeUtils/common";
-import { getDbPool } from "../src/db/pool";
 
 // Real-Postgres integration tests for Phase 10 (Custom Source credentials).
 // Skips gracefully when Docker is unavailable.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
-const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let config: ServerConfig | undefined;
 let createFlow: CustomSourceCreateFlowService | undefined;
 let credentialService: CustomSourceCredentialService | undefined;
 let artifactStorageRoot: string | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-custom-source-credential] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  if (config?.databaseUrl) await getDbPool(config.databaseUrl).end().catch(() => undefined);
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', now(), now())`, [IDENTITY.userId]);
-  await pool.query(`INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space A', 'team', $2, now(), now())`, [IDENTITY.spaceId, IDENTITY.userId]);
-  await pool.query(
-    `INSERT INTO source_connectors (
-       id, connector_key, display_name, connector_type, ingestion_mode, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(`INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`);
-  await pool.query(`INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`);
+  await seedCustomSourceWorld(db.pool, IDENTITY);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-credential-artifacts-"));
   config = {
     ...loadConfig({}),
-    databaseUrl: container!.getConnectionUri(),
+    databaseUrl: db.connectionUri,
     artifactStorageRoot,
     customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
     agentSpaceHome: artifactStorageRoot,
   };
-  createFlow = new CustomSourceCreateFlowService(pool, config);
-  credentialService = new CustomSourceCredentialService(pool, config);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-    [randomUUID(), IDENTITY.spaceId, IDENTITY.userId],
-  );
+  createFlow = new CustomSourceCreateFlowService(db.pool, config);
+  credentialService = new CustomSourceCredentialService(db.pool, config);
 });
 
 afterEach(async () => {
@@ -87,42 +49,18 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function insertCustomSourceSpacePolicy(overrides: Record<string, unknown> = {}) {
-  await pool!.query(
-    `INSERT INTO settings (
-       id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at
-     ) VALUES ($1, 'space', $2, $3, $4::jsonb, now(), now())
-     ON CONFLICT (scope_type, scope_id, settings_key)
-     DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
-    [
-      randomUUID(),
-      SPACE_A,
-      CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY,
-      JSON.stringify({
-        creator_roles: ["owner", "admin"],
-        default_capture_policy: "extract_text",
-        default_retention_policy: "full_text",
-        allowed_domains: [],
-        credentialed_sources_allowed: false,
-        same_envelope_repair_auto_apply: false,
-        ...overrides,
-      }),
-    ],
-  );
-}
-
 const FIXTURE_HTML = `<html><body>
   <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
 </body></html>`;
 
 describe("CustomSourceCredentialService", () => {
   it("rejects credential creation from a non-admin member", async () => {
-    if (!available) return;
-    await pool!.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('member-1', 'Member', 'active', now(), now())`,
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, 'member-1', 'member', 'active', now(), now())`,
       [randomUUID(), SPACE_A],
@@ -133,7 +71,7 @@ describe("CustomSourceCredentialService", () => {
   });
 
   it("create + list never expose the plaintext secret, and resolveCredentialHeader returns the decrypted value with the configured header/prefix", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const created = await credentialService!.create(IDENTITY, {
       name: "Feed key",
       secret: "s3cr3t-value",
@@ -151,7 +89,7 @@ describe("CustomSourceCredentialService", () => {
     const resolved = await credentialService!.resolveCredentialHeader(SPACE_A, created.id);
     expect(resolved).toEqual({ header_name: "X-Api-Key", header_value: "s3cr3t-value" });
 
-    const dbRow = await pool!.query<{ secret_ref: string }>(`SELECT secret_ref FROM credentials WHERE id = $1`, [
+    const dbRow = await db.pool.query<{ secret_ref: string }>(`SELECT secret_ref FROM credentials WHERE id = $1`, [
       created.id,
     ]);
     expect(dbRow.rows[0]?.secret_ref).not.toContain("s3cr3t-value");
@@ -159,7 +97,7 @@ describe("CustomSourceCredentialService", () => {
   });
 
   it("resolveCredentialHeader returns null for no credential, and requireOwnCredential 404s across spaces", async () => {
-    if (!available) return;
+    if (!db.available) return;
     expect(await credentialService!.resolveCredentialHeader(SPACE_A, null)).toBeNull();
     expect(await credentialService!.resolveCredentialHeader(SPACE_A, undefined)).toBeNull();
 
@@ -173,7 +111,7 @@ describe("CustomSourceCredentialService", () => {
 
 describe("Custom Source credentialed handler flow", () => {
   it("carries credential_ref through generateHandler's policy envelope", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const credential = await credentialService!.create(IDENTITY, { name: "Feed key", secret: "s3cr3t" });
     const connection = await createFlow!.createDraft(IDENTITY, {
       name: "Credentialed Source",
@@ -186,7 +124,7 @@ describe("Custom Source credentialed handler flow", () => {
   });
 
   it("testHandler injects the resolved credential header into the live pre-fetch", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const credential = await credentialService!.create(IDENTITY, {
       name: "Feed key",
       secret: "s3cr3t-value",
@@ -210,8 +148,8 @@ describe("Custom Source credentialed handler flow", () => {
   });
 
   it("first activation with a credential auto-activates when Space policy allows credentialed sources", async () => {
-    if (!available) return;
-    await insertCustomSourceSpacePolicy({ credentialed_sources_allowed: true });
+    if (!db.available) return;
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { credentialed_sources_allowed: true });
     const credential = await credentialService!.create(IDENTITY, { name: "Feed key", secret: "s3cr3t" });
     const connection = await createFlow!.createDraft(IDENTITY, {
       name: "Credentialed Source",
@@ -228,7 +166,7 @@ describe("Custom Source credentialed handler flow", () => {
   });
 
   it("first activation with a credential creates a custom_source_credentialed_source proposal when Space policy disallows it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // credentialed_sources_allowed defaults to false — no override needed.
     const credential = await credentialService!.create(IDENTITY, { name: "Feed key", secret: "s3cr3t" });
     const connection = await createFlow!.createDraft(IDENTITY, {
@@ -245,7 +183,7 @@ describe("Custom Source credentialed handler flow", () => {
     expect(activation.status).toBe("pending_approval");
     if (activation.status !== "pending_approval") throw new Error("unreachable");
 
-    const proposalRow = await pool!.query<{ proposal_type: string }>(`SELECT proposal_type FROM proposals WHERE id = $1`, [
+    const proposalRow = await db.pool.query<{ proposal_type: string }>(`SELECT proposal_type FROM proposals WHERE id = $1`, [
       activation.proposal_id,
     ]);
     expect(proposalRow.rows[0]?.proposal_type).toBe("custom_source_credentialed_source");

@@ -1,9 +1,8 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import * as poolModule from "../src/db/pool";
 import { runBuiltInSeeds } from "../src/db/seeds";
 import { loadConfig } from "../src/config";
@@ -18,43 +17,26 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    // Built-in evolution strategy assets (e.g. "repair.runtime_failure") are
-    // seeded at runtime, not embedded in the migration — see
-    // server/src/db/seeds.ts. Tests below select strategies by key and need
-    // them present.
-    await runBuiltInSeeds(pool, { info: () => {} }, CATALOG_ROOT);
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[evolution-repository] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  // Built-in evolution strategy assets (e.g. "repair.runtime_failure") are
+  // seeded at runtime, not embedded in the migration — see
+  // server/src/db/seeds.ts. Tests below select strategies by key and need
+  // them present.
+  await runBuiltInSeeds(db.pool, { info: () => {} }, CATALOG_ROOT);
 });
 
 describe("EvolutionRepository core", () => {
   it("creates a queued evolution run with selector decision and prompt", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const agentId = await seedAgent(identity);
     const targetId = await seedTarget(identity, { agentId, maxStrategyRisk: "medium" });
     await seedSignal(identity, targetId, "runtime_failure");
-    const repository = new EvolutionRepository(pool);
+    const repository = new EvolutionRepository(db.pool);
 
     const result = await repository.recordRunSetup(identity, targetId, agentId, {});
 
@@ -66,7 +48,7 @@ describe("EvolutionRepository core", () => {
     expect(result.runId).toBeTruthy();
     expect(result.selectorDecisionId).toBeTruthy();
 
-    const run = await pool.query<{
+    const run = await db.pool.query<{
       status: string;
       run_type: string;
       agent_id: string;
@@ -85,7 +67,7 @@ describe("EvolutionRepository core", () => {
     expect(run.rows[0]!.prompt).toContain(result.selectorDecisionId);
     expect(run.rows[0]!.instruction).toContain("agent-space Evolution planner");
 
-    const decision = await pool.query<{ run_id: string; selected_strategy_asset_id: string | null }>(
+    const decision = await db.pool.query<{ run_id: string; selected_strategy_asset_id: string | null }>(
       "SELECT run_id, selected_strategy_asset_id FROM evolution_selector_decisions WHERE id = $1 AND space_id = $2",
       [result.selectorDecisionId, identity.spaceId],
     );
@@ -96,11 +78,11 @@ describe("EvolutionRepository core", () => {
   });
 
   it("rejects runs with no signals unless allow_no_signal is set", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const agentId = await seedAgent(identity);
     const targetId = await seedTarget(identity, { agentId, maxStrategyRisk: "medium" });
-    const repository = new EvolutionRepository(pool);
+    const repository = new EvolutionRepository(db.pool);
 
     await expect(repository.recordRunSetup(identity, targetId, agentId, {})).rejects.toThrow(
       "Evolution target has no recent signals",
@@ -108,12 +90,12 @@ describe("EvolutionRepository core", () => {
   });
 
   it("rejects live evolution mode in v1", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const agentId = await seedAgent(identity);
     const targetId = await seedTarget(identity, { agentId, maxStrategyRisk: "medium" });
     await seedSignal(identity, targetId, "runtime_failure");
-    const repository = new EvolutionRepository(pool);
+    const repository = new EvolutionRepository(db.pool);
 
     await expect(repository.recordRunSetup(identity, targetId, agentId, { mode: "live" })).rejects.toThrow(
       "live evolution execution is not supported in v1; use dry_run",
@@ -121,12 +103,12 @@ describe("EvolutionRepository core", () => {
   });
 
   it("lists system and current-space strategies without leaking other spaces", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const other = await seedIdentity();
     await seedStrategy(identity.spaceId, "space.only");
     await seedStrategy(other.spaceId, "other.only");
-    const repository = new EvolutionRepository(pool);
+    const repository = new EvolutionRepository(db.pool);
 
     const strategies = await repository.listStrategies(identity, {
       status: "active",
@@ -142,13 +124,13 @@ describe("EvolutionRepository core", () => {
   });
 
   it("serves seeded strategies through the HTTP route after fresh migration", async (ctx) => {
-    if (!available || !pool || !container) return ctx.skip();
+    if (!db.available) return ctx.skip();
     const identity = await seedIdentity();
     __setAuthIdentityForTests({ spaceId: identity.spaceId, userId: identity.userId });
-    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
+    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(db.pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [evolutionModule]);
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [evolutionModule]);
       const response = await app.inject({
         method: "GET",
         url: "/api/v1/evolution/strategies?status=active&limit=100",
@@ -176,17 +158,17 @@ describe("EvolutionRepository core", () => {
   });
 
   it("requires an explicit Agent instead of creating a system evolver fallback", async (ctx) => {
-    if (!available || !pool || !container) return ctx.skip();
+    if (!db.available) return ctx.skip();
     const identity = await seedIdentity();
     const targetId = await seedTarget(identity, {
       agentId: null,
       maxStrategyRisk: "medium",
     });
     __setAuthIdentityForTests({ spaceId: identity.spaceId, userId: identity.userId });
-    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
+    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(db.pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [evolutionModule], {
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [evolutionModule], {
         logger: false,
       });
       const response = await app.inject({
@@ -199,7 +181,7 @@ describe("EvolutionRepository core", () => {
       expect(response.json()).toMatchObject({
         detail: "agent_id is required in the request or target metadata",
       });
-      const agents = await pool.query<{ count: string }>(
+      const agents = await db.pool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM agents WHERE space_id = $1",
         [identity.spaceId],
       );
@@ -212,7 +194,7 @@ describe("EvolutionRepository core", () => {
   });
 
   it("returns deterministic validation results from target metadata", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const targetId = await seedTarget(identity, {
       agentId: null,
@@ -230,7 +212,7 @@ describe("EvolutionRepository core", () => {
       },
     });
     await seedSignal(identity, targetId, "run_validation_failed");
-    const repository = new EvolutionRepository(pool);
+    const repository = new EvolutionRepository(db.pool);
 
     const results = await repository.listValidationResults(identity);
 
@@ -252,12 +234,12 @@ async function seedIdentity(): Promise<SpaceUserIdentity> {
   const userId = randomUUID();
   const spaceId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'User', 'active', $2, $2)`,
     [userId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [spaceId, userId, now],
@@ -270,14 +252,14 @@ async function seedAgent(identity: SpaceUserIdentity): Promise<string> {
   const versionId = randomUUID();
   const runtimeProfileId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,
        created_at, updated_at, visibility
      ) VALUES ($1, $2, $3, 'Evolution Agent', 'active', NULL, $4, $4, 'space_shared')`,
     [agentId, identity.spaceId, identity.userId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -287,11 +269,11 @@ async function seedAgent(identity: SpaceUserIdentity): Promise<string> {
        '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
     [versionId, agentId, identity.spaceId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     "UPDATE agents SET current_version_id = $3, updated_at = $4 WHERE id = $1 AND space_id = $2",
     [agentId, identity.spaceId, versionId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -313,7 +295,7 @@ async function seedTarget(
     ...(options.agentId ? { agent_id: options.agentId } : {}),
     ...(options.validation ? { validation: options.validation } : {}),
   };
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolution_targets (
        id, space_id, target_type, risk_level, status, enabled,
        engine_policy_json, metadata_json, created_at, updated_at
@@ -337,7 +319,7 @@ async function seedSignal(
   targetId: string,
   signalType: string,
 ): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolution_signals (
        id, space_id, target_id, signal_type, source_type, severity,
        summary, payload_json, created_at
@@ -348,7 +330,7 @@ async function seedSignal(
 
 async function seedStrategy(spaceId: string, strategyKey: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolution_strategy_assets (
        id, space_id, strategy_key, name, description, category, target_type,
        status, risk_level, signals_match_json, preconditions_json,

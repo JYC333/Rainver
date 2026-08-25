@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { PgHostRepository } from "../src/modules/hosts/repository";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 // Real-Postgres coverage for ADR 0016's hosts model: the seeded server host
@@ -12,30 +11,13 @@ import { resetTables } from "./support/resetTables";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[hosts-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["hosts", "users"], { cascade: true });
-  await pool.query(
+  if (!db.available) return;
+  await resetTables(db.pool, ["hosts", "users"], { cascade: true });
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now()), ($2, 'Other', 'active', now(), now())`,
     [OWNER, OTHER_USER],
@@ -44,21 +26,21 @@ beforeEach(async () => {
 
 describe("hosts repository", () => {
   it("bootstraps exactly one server host, idempotently", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const first = await repo.ensureServerHostId();
     const second = await repo.ensureServerHostId();
     expect(first).toBe(second);
-    const rows = await pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM hosts WHERE kind = 'server'`);
+    const rows = await db.pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM hosts WHERE kind = 'server'`);
     expect(rows.rows[0]?.count).toBe("1");
   });
 
   it("rejects a second server host at the database level", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     await repo.ensureServerHostId();
     await expect(
-      pool.query(
+      db.pool.query(
         `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
          VALUES ($1, NULL, (SELECT machine_id FROM hosts WHERE kind = 'server' LIMIT 1), 'server-2', 'server', 'server', 'online', now(), now())`,
         [randomUUID()],
@@ -67,8 +49,8 @@ describe("hosts repository", () => {
   });
 
   it("issues a pairing code and completes registration into a bearer token", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "Desktop");
     if ("statusCode" in issued) throw new Error("expected success");
     expect(issued.pairing_code).toBeTruthy();
@@ -93,15 +75,15 @@ describe("hosts repository", () => {
   });
 
   it("rejects an expired or unknown pairing code", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const bogus = await repo.registerViaPairingCode("not-a-real-code", {});
     expect("statusCode" in bogus && bogus.statusCode).toBe(401);
   });
 
   it("never authenticates a pending pairing code as a bearer token", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "Unexchanged");
     if ("statusCode" in issued) throw new Error("expected success");
     // The pairing code shares the token_hash column with the real bearer
@@ -111,8 +93,8 @@ describe("hosts repository", () => {
   });
 
   it("lets only one of two concurrent exchanges of the same pairing code succeed", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "Raced");
     if ("statusCode" in issued) throw new Error("expected success");
     const [first, second] = await Promise.all([
@@ -131,8 +113,8 @@ describe("hosts repository", () => {
   });
 
   it("enforces one name per owner but allows the same name across different owners", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const first = await repo.issuePairingCode(OWNER, "Laptop");
     expect("statusCode" in first).toBe(false);
     const duplicate = await repo.issuePairingCode(OWNER, "Laptop");
@@ -142,8 +124,8 @@ describe("hosts repository", () => {
   });
 
   it("reports heartbeat staleness without a background sweep", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "Stale Box");
     if ("statusCode" in issued) throw new Error("expected success");
     const registered = await repo.registerViaPairingCode(issued.pairing_code, {});
@@ -154,15 +136,15 @@ describe("hosts repository", () => {
     expect(freshHost?.status).toBe("online");
 
     // Backdate the heartbeat past the staleness window instead of sleeping in the test.
-    await pool.query(`UPDATE hosts SET last_heartbeat_at = now() - interval '5 minutes' WHERE id = $1`, [registered.host_id]);
+    await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() - interval '5 minutes' WHERE id = $1`, [registered.host_id]);
     const stale = await repo.listVisibleTo(OWNER);
     const staleHost = stale.find((h) => h.id === registered.host_id);
     expect(staleHost?.status).toBe("offline");
   });
 
   it("keeps the in-process server host online without a daemon heartbeat", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const serverHostId = await repo.ensureServerHostId();
 
     const visible = await repo.listVisibleTo(OWNER);
@@ -171,8 +153,8 @@ describe("hosts repository", () => {
   });
 
   it("scopes visibility to the server host plus the caller's own remote hosts", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const serverHostId = await repo.ensureServerHostId();
     const mine = await repo.issuePairingCode(OWNER, "Mine");
     if ("statusCode" in mine) throw new Error("expected success");
@@ -187,8 +169,8 @@ describe("hosts repository", () => {
   });
 
   it("revokes only a host the caller owns, and a revoked host cannot authenticate again", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const repo = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "ToRevoke");
     if ("statusCode" in issued) throw new Error("expected success");
     const registered = await repo.registerViaPairingCode(issued.pairing_code, {});
@@ -204,22 +186,22 @@ describe("hosts repository", () => {
   });
 
   it("rejects a remote host row with no owner and a server host row with an owner at the database level", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const machineId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
        VALUES ($1, NULL, 'Validation machine', 'desktop', now(), now())`,
       [machineId],
     );
     await expect(
-      pool.query(
+      db.pool.query(
         `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
          VALUES ($1, NULL, $2, 'Orphan Remote', 'remote', 'linux_native', 'offline', now(), now())`,
         [randomUUID(), machineId],
       ),
     ).rejects.toMatchObject({ code: "23514" });
     await expect(
-      pool.query(
+      db.pool.query(
         `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
          VALUES ($1, $2, $3, 'Owned Server', 'server', 'server', 'online', now(), now())`,
         [randomUUID(), OWNER, machineId],

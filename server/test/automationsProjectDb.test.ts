@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import type { ServerConfig } from "../src/config";
 
@@ -63,62 +63,54 @@ const config = {
   databaseUrl: "postgresql://test@test:5432/test",
 } as unknown as ServerConfig;
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 const sharedPostgres = inject("sharedPostgres");
 const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-beforeAll(async () => {
-  container = await getTestPostgres(__filename);
-  pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-  dbPoolMock.current = pool;
-  available = true;
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  dbPoolMock.current = db.pool;
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "automation_runs", "automation_credential_grants", "automations", "scheduler_tasks", "jobs", "runs", "agent_runtime_profiles", "agent_versions", "agents", "source_items", "project_source_item_links", "project_source_bindings", "source_connections", "source_connectors", "project_folders", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
   for (const [spaceId, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,$2,'personal',$3,$3)`,
       [spaceId, name, now],
     );
   }
   for (const userId of [OWNER, MEMBER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`,
       [userId, now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4), ($5,$2,$6,'member','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now, randomUUID(), MEMBER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$6,NULL,'Elsewhere','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, OTHER_PROJECT, OTHER_SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Agent','active',NULL,$4,$4,'space_shared')`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt, model_config_json,
        runtime_config_json, context_policy_json, memory_policy_json,
@@ -127,8 +119,8 @@ beforeEach(async () => {
        '{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
-  await pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, model_provider_id, model_name,
        runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -136,7 +128,7 @@ beforeEach(async () => {
        '{"adapter_type":"model_api"}'::jsonb,'{"default_adapter_type":"model_api"}'::jsonb,true,true,$4,$4)`,
     [randomUUID(), SPACE, AGENT, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, enabled,
        capabilities_json, config_json, created_at, updated_at
@@ -146,13 +138,13 @@ beforeEach(async () => {
 });
 
 function service(): AutomationService {
-  return new AutomationService(config, new PgAutomationRepository(pool!));
+  return new AutomationService(config, new PgAutomationRepository(db.pool));
 }
 
 describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("joins an existing transaction for project-fenced create and update", async () => {
-    if (!available || !pool) return;
-    const client = await pool.connect();
+    if (!db.available) return;
+    const client = await db.pool.connect();
     let automationId = "";
     try {
       await client.query("BEGIN");
@@ -174,12 +166,12 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     } finally {
       client.release();
     }
-    const persisted = await pool.query(`SELECT 1 FROM automations WHERE id=$1`, [automationId]);
+    const persisted = await db.pool.query(`SELECT 1 FROM automations WHERE id=$1`, [automationId]);
     expect(persisted.rows).toHaveLength(0);
   });
 
   it("creates a project-bound automation, exposes project_id, and clears it on update", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const created = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -193,7 +185,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     });
     expect(created.project_id).toBe(PROJECT);
 
-    const fetched = await new PgAutomationRepository(pool!).get(SPACE, created.id);
+    const fetched = await new PgAutomationRepository(db.pool).get(SPACE, created.id);
     expect(fetched?.project_id).toBe(PROJECT);
 
     const cleared = await service().update({
@@ -214,7 +206,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("lists automations filtered by project_id", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const bound = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -237,7 +229,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       },
     });
 
-    const repo = new PgAutomationRepository(pool!);
+    const repo = new PgAutomationRepository(db.pool);
     await expect(repo.list(SPACE, { projectId: PROJECT })).resolves.toMatchObject([
       { id: bound.id, project_id: PROJECT },
     ]);
@@ -247,7 +239,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("rejects project binding for non-agent_run targets with 422", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().create({
         spaceId: SPACE,
@@ -264,7 +256,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("requires project writer authority to bind: plain space member gets 403", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().create({
         spaceId: SPACE,
@@ -280,7 +272,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
     // Becoming an active project member grants bind authority.
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, PROJECT, MEMBER, now],
@@ -299,7 +291,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("rejects binding a project from another space (404 from writer check)", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().create({
         spaceId: SPACE,
@@ -315,10 +307,10 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("database composite FK rejects a cross-space project even on direct insert", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     await expect(
-      pool!.query(
+      db.pool.query(
         `INSERT INTO automations (
            id, space_id, owner_user_id, agent_id, project_id, name,
            trigger_type, status, created_at, updated_at
@@ -329,7 +321,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("fire creates the run with the automation's project_id", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const created = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -347,7 +339,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       actorUserId: OWNER,
       prompt: "Analyze new papers",
     });
-    const run = await pool!.query<{ project_id: string | null; trigger_origin: string }>(
+    const run = await db.pool.query<{ project_id: string | null; trigger_origin: string }>(
       `SELECT project_id, trigger_origin FROM runs WHERE id = $1`,
       [String(result.run_id)],
     );
@@ -356,7 +348,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("enforces an automation max_runs cap across direct fires", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const created = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -374,7 +366,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     await expect(
       service().fire({ spaceId: SPACE, automationId: created.id, actorUserId: OWNER }),
     ).rejects.toMatchObject({ statusCode: 409 });
-    const count = await pool!.query<{ total: string }>(
+    const count = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM automation_runs WHERE automation_id = $1`,
       [created.id],
     );
@@ -382,7 +374,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("checks every effective max_runs source and rejects Task admission before task_runs", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const automation = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -396,7 +388,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     const fired = await service().fire({ spaceId: SPACE, automationId: automation.id, actorUserId: OWNER });
 
     const taskId = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO tasks (
          id, space_id, title, task_type, status, risk_level,
          created_by_user_id, owner_user_id, assigned_agent_id,
@@ -416,18 +408,18 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     );
 
     await expect(
-      new PgTaskRepository(pool!).createTaskRun(
+      new PgTaskRepository(db.pool).createTaskRun(
         { spaceId: SPACE, userId: OWNER },
         taskId,
         { agent_id: AGENT },
       ),
     ).rejects.toMatchObject({ statusCode: 409, code: "automation_max_runs_exceeded" });
-    expect((await pool!.query<{ count: string }>(
+    expect((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM task_runs WHERE space_id = $1 AND task_id = $2`,
       [SPACE, taskId],
     )).rows[0]?.count).toBe("0");
 
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
        VALUES ($1, $2, $3, $4, 'primary', $5)`,
       [randomUUID(), SPACE, taskId, String(fired.run_id), new Date().toISOString()],
@@ -436,10 +428,10 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       { source: { kind: "task" as const, id: taskId }, max_runs: 1 },
       { source: { kind: "automation" as const, id: automation.id }, max_runs: 1 },
     ];
-    await expect(assertBudgetSourcesAvailable(pool!, SPACE, multiSource)).rejects.toMatchObject({
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, multiSource)).rejects.toMatchObject({
       code: "task_max_runs_exceeded",
     });
-    const dispatch = await checkRunBudget(pool!, {
+    const dispatch = await checkRunBudget(db.pool, {
       id: randomUUID(),
       space_id: SPACE,
       root_run_id: null,
@@ -452,9 +444,9 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("fails closed for missing sources and admits direct Workflow Runs atomically", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description,
          owner_scope_type, status, metadata_json, created_at, updated_at
@@ -462,7 +454,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
                  'Budget workflow', 'system', 'active', '{}'::jsonb, $2, $2)`,
       [WORKFLOW_ASSET, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_asset_versions (
          id, asset_id, space_id, scope_type, version, status, source,
          content_hash, content_json, created_at, updated_at
@@ -470,10 +462,10 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       [WORKFLOW_VERSION, WORKFLOW_ASSET, now],
     );
 
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "automation", id: randomUUID() }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
-    const invalidDispatch = await checkRunBudget(pool, {
+    const invalidDispatch = await checkRunBudget(db.pool, {
       id: randomUUID(),
       space_id: SPACE,
       root_run_id: null,
@@ -484,7 +476,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     } as Pick<RunRecord, "id" | "space_id" | "root_run_id" | "contract_snapshot_json">);
     expect(invalidDispatch).toMatchObject({ allowed: false, error_code: "budget_source_not_found" });
 
-    const repo = new PgRunRepository(pool);
+    const repo = new PgRunRepository(db.pool);
     const input = {
       agent_id: AGENT,
       space_id: SPACE,
@@ -504,32 +496,32 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     await expect(repo.createQueuedRunWithBudgetAdmission(input)).rejects.toMatchObject({
       code: "workflow_max_runs_exceeded",
     });
-    const runs = await pool.query<{ count: string }>(
+    const runs = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM runs WHERE space_id = $1`,
       [SPACE],
     );
     expect(runs.rows[0]?.count).toBe("1");
 
-    await pool.query(`UPDATE evolvable_assets SET status = 'disabled' WHERE id = $1`, [WORKFLOW_ASSET]);
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await db.pool.query(`UPDATE evolvable_assets SET status = 'disabled' WHERE id = $1`, [WORKFLOW_ASSET]);
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
-    await pool.query(`UPDATE evolvable_assets SET status = 'active' WHERE id = $1`, [WORKFLOW_ASSET]);
-    await pool.query(
+    await db.pool.query(`UPDATE evolvable_assets SET status = 'active' WHERE id = $1`, [WORKFLOW_ASSET]);
+    await db.pool.query(
       `UPDATE evolvable_asset_versions SET scope_type = 'space', scope_id = $2 WHERE id = $1`,
       [WORKFLOW_VERSION, SPACE],
     );
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
   });
 
   it("rejects a space-scoped Workflow budget source that belongs to another space", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const otherAsset = randomUUID();
     const otherVersion = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description,
          owner_scope_type, status, metadata_json, created_at, updated_at
@@ -537,7 +529,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
                  'Other space workflow', 'space', 'active', '{}'::jsonb, $3, $3)`,
       [otherAsset, OTHER_SPACE, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_asset_versions (
          id, asset_id, space_id, scope_type, scope_id, version, status, source,
          content_hash, content_json, created_at, updated_at
@@ -548,30 +540,30 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     // Approved, active, and correctly scoped — but only within OTHER_SPACE.
     // A caller in SPACE must never admit against it, and a caller in
     // OTHER_SPACE must be able to.
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
-    await expect(assertBudgetSourcesAvailable(pool, OTHER_SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, OTHER_SPACE, [
       { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE evolvable_asset_versions
           SET scope_type = 'system', scope_id = NULL
         WHERE id = $1`,
       [otherVersion],
     );
-    await expect(assertBudgetSourcesAvailable(pool, OTHER_SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, OTHER_SPACE, [
       { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
   });
 
   it("rejects a Workflow Version whose scope is forbidden by its parent Asset ownership", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const privateAsset = randomUUID();
     const mismatchedVersion = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description,
          owner_scope_type, owner_scope_id, status, metadata_json, created_at, updated_at
@@ -579,7 +571,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
                  'Private workflow', 'user', $3, 'active', '{}'::jsonb, $4, $4)`,
       [privateAsset, SPACE, OWNER, now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO evolvable_asset_versions (
          id, asset_id, space_id, scope_type, scope_id, version, status, source,
          content_hash, content_json, created_at, updated_at
@@ -588,43 +580,43 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       [mismatchedVersion, privateAsset, SPACE, now],
     );
 
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE evolvable_asset_versions
           SET scope_type = 'user', scope_id = $2
         WHERE id = $1`,
       [mismatchedVersion, OWNER],
     );
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE evolvable_assets
           SET owner_scope_type = 'space', owner_scope_id = NULL
         WHERE id = $1`,
       [privateAsset],
     );
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE evolvable_assets
           SET metadata_json = '{"allow_user_override":true}'::jsonb
         WHERE id = $1`,
       [privateAsset],
     );
-    await expect(assertBudgetSourcesAvailable(pool, SPACE, [
+    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
       { source: { kind: "workflow", id: mismatchedVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
   });
 
   it("resolves a pinned workflow target and launches one execution with bounded input", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const now = new Date().toISOString();
     const definition = {
       schema_version: "workflow_definition.v1",
@@ -656,21 +648,21 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         scope_json: { inputs: ["query"] },
       },
     };
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description,
          owner_scope_type, status, metadata_json, created_at, updated_at
        ) VALUES ($1,NULL,'workflow_template','workflow.automation-test','Automation workflow',$2,'system','active','{}'::jsonb,$3,$3)`,
       [WORKFLOW_ASSET, definition.description, now],
     );
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO evolvable_asset_versions (
          id, asset_id, space_id, scope_type, version, status, source,
          content_hash, content_json, created_at, updated_at
        ) VALUES ($1,$2,NULL,'system',1,'approved','built_in','automation-test',$3::jsonb,$4,$4)`,
       [WORKFLOW_VERSION, WORKFLOW_ASSET, JSON.stringify(definition), now],
     );
-    await pool!.query(
+    await db.pool.query(
       `UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`,
       [WORKFLOW_ASSET, WORKFLOW_VERSION],
     );
@@ -703,13 +695,13 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       actorUserId: OWNER,
     });
     expect(fired).toMatchObject({ target_type: "workflow", workflow_version_id: WORKFLOW_VERSION });
-    const execution = await pool!.query<{ status: string; input_json: Record<string, unknown> }>(
+    const execution = await db.pool.query<{ status: string; input_json: Record<string, unknown> }>(
       `SELECT status, input_json FROM workflow_executions WHERE id = $1`,
       [String(fired.workflow_execution_id)],
     );
     expect(execution.rows[0]?.status).toBe("running");
     expect(execution.rows[0]?.input_json).toMatchObject({ query: "bounded" });
-    const root = await pool!.query<{ trigger_origin: string; workflow_input_json: Record<string, unknown> }>(
+    const root = await db.pool.query<{ trigger_origin: string; workflow_input_json: Record<string, unknown> }>(
       `SELECT trigger_origin, contract_snapshot_json->'workflow_input_json' AS workflow_input_json FROM runs WHERE id = $1`,
       [String(fired.root_run_id)],
     );
@@ -721,18 +713,18 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       service().fire({ spaceId: SPACE, automationId: automation.id, actorUserId: OWNER }),
     ).rejects.toMatchObject({ statusCode: 409 });
 
-    const linkedBeforeArchive = await pool!.query<{ count: number }>(
+    const linkedBeforeArchive = await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count
          FROM workflow_execution_node_runs link
          JOIN workflow_execution_nodes node ON node.id=link.node_id AND node.space_id=link.space_id
         WHERE node.space_id=$1 AND node.execution_id=$2`,
       [SPACE, String(fired.workflow_execution_id)],
     );
-    await new PgProjectRepository(pool!).archive({ spaceId: SPACE, userId: OWNER }, PROJECT);
+    await new PgProjectRepository(db.pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT);
     await expect(new WorkflowExecutionService(config).reconcile(
-      pool!, SPACE, String(fired.workflow_execution_id), OWNER,
+      db.pool, SPACE, String(fired.workflow_execution_id), OWNER,
     )).rejects.toMatchObject({ statusCode: 409 });
-    const stopped = await pool!.query<{ execution_status: string; linked_runs: number }>(
+    const stopped = await db.pool.query<{ execution_status: string; linked_runs: number }>(
       `SELECT execution.status AS execution_status,
               count(link.id)::int AS linked_runs
          FROM workflow_executions execution
@@ -748,7 +740,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       execution_status: "cancelled",
       linked_runs: linkedBeforeArchive.rows[0]!.count,
     });
-    const terminal = await pool!.query<{
+    const terminal = await db.pool.query<{
       root_status: string;
       node_statuses: string[];
       child_statuses: string[];
@@ -779,7 +771,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("rejects follow resolution for unattended workflow triggers", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().create({
         spaceId: SPACE,
@@ -800,7 +792,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("rejects source event automations", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(
       service().create({
         spaceId: SPACE,
@@ -817,7 +809,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   });
 
   it("fire preflight fails when the bound project was soft-deleted after binding", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const created = await service().create({
       spaceId: SPACE,
       ownerUserId: OWNER,
@@ -828,7 +820,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         trigger_type: "manual",
       },
     });
-    await pool!.query(`UPDATE projects SET deleted_at = NOW(), status = 'deleted' WHERE id = $1`, [PROJECT]);
+    await db.pool.query(`UPDATE projects SET deleted_at = NOW(), status = 'deleted' WHERE id = $1`, [PROJECT]);
     await expect(
       service().fire({
         spaceId: SPACE,

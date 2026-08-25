@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -87,49 +86,28 @@ function tokenize(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-rerank-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "space_objects", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Rerank', 'team', now(), now())`,
     [SPACE],
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'U', 'active', now(), now())`,
       [id],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [id, SPACE, id],
@@ -146,7 +124,7 @@ async function seedKnowledge(doc: {
   visibility?: string;
   owner?: string | null;
 }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: doc.id,
     spaceId: SPACE,
     title: doc.title,
@@ -161,13 +139,13 @@ async function seedKnowledge(doc: {
 
 describe("Retrieval reranker (real Postgres)", () => {
   it("reorders the visible results by the reranker's scores", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge({ id: "alpha", title: "Alpha report", content: "quarterly report data" });
     await seedKnowledge({ id: "beta", title: "Beta report", content: "quarterly report data" });
     await seedKnowledge({ id: "gamma", title: "Gamma report", content: "quarterly report data" });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       reranker: preferenceReranker({ gamma: 1, beta: 0.5, alpha: 0.1 }),
     });
     const result = await search.search({
@@ -183,7 +161,7 @@ describe("Retrieval reranker (real Postgres)", () => {
   });
 
   it("never sends a non-readable candidate to the reranker (revalidate-before-rerank)", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // 'secret' matches the query lexically but is private to OTHER, so revalidate
     // must drop it BEFORE the reranker stage sees any of its content.
     await seedKnowledge({ id: "public", title: "Public report", content: "shared report data" });
@@ -194,10 +172,10 @@ describe("Retrieval reranker (real Postgres)", () => {
       visibility: "private",
       owner: OTHER,
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const sent: RerankCandidate[] = [];
-    const search = new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const search = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       reranker: capturingReranker(sent),
     });
     const result = await search.search({
@@ -217,10 +195,10 @@ describe("Retrieval reranker (real Postgres)", () => {
   });
 
   it("degrades to the fused order when the reranker returns null", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedKnowledge({ id: "alpha", title: "Alpha report", content: "quarterly report data" });
     await seedKnowledge({ id: "beta", title: "Beta report", content: "quarterly report data" });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const params = {
       spaceId: SPACE,
@@ -230,8 +208,8 @@ describe("Retrieval reranker (real Postgres)", () => {
       maxResults: 10,
       mode: "hybrid_rerank" as const,
     };
-    const baseline = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search({ ...params });
-    const withNullReranker = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+    const baseline = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search({ ...params });
+    const withNullReranker = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
       reranker: capturingReranker([]), // returns null
     }).search({ ...params });
 
@@ -241,12 +219,12 @@ describe("Retrieval reranker (real Postgres)", () => {
   });
 
   it(`keeps golden recall@${K} under a sensible reranker (eval gate)`, async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     for (const doc of knowledgeFixture.docs) await seedKnowledge(doc);
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 
     const report = await runRecallCases(
-      new RetrievalSearchService(pool, knowledgeRetrievalRegistry, {
+      new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry, {
         reranker: lexicalOverlapReranker(),
       }),
       { spaceId: SPACE, viewerUserId: VIEWER, objectTypes: ["knowledge_item"], mode: "hybrid_rerank" },

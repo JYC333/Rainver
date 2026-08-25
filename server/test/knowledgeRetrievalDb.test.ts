@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import {
   RetrievalProjectionService,
@@ -22,49 +21,28 @@ const ITEM_B = "44444444-4444-4444-8444-444444444444";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[knowledge-retrieval-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_edges", "knowledge_items", "space_objects"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Test Space', 'personal', now(), now()) ON CONFLICT (id) DO NOTHING`,
     [SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Viewer', 'active', now(), now()), ($2, 'Other', 'active', now(), now())
      ON CONFLICT (id) DO NOTHING`,
     [VIEWER, OTHER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())
      ON CONFLICT (space_id, user_id) DO NOTHING`,
@@ -81,7 +59,7 @@ async function insertItem(over: {
   status?: string;
   visibility?: string;
 }): Promise<void> {
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: over.id,
     spaceId: SPACE,
     title: over.title,
@@ -95,7 +73,7 @@ async function insertItem(over: {
 
 describe("Knowledge zero-LLM retrieval (real Postgres)", () => {
   it("indexes a KnowledgeItem and finds it by title, alias, and lexical content", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertItem({
       id: ITEM_A,
       title: "Alpha",
@@ -103,8 +81,8 @@ describe("Knowledge zero-LLM retrieval (real Postgres)", () => {
       slug: "alpha",
       aliases: ["Hall of Light"],
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindex(SPACE, "knowledge_item", ITEM_A);
-    const service = new RetrievalSearchService(pool, knowledgeRetrievalRegistry);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindex(SPACE, "knowledge_item", ITEM_A);
+    const service = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry);
 
     const byTitle = await service.search({ spaceId: SPACE, viewerUserId: VIEWER, query: "Alpha" });
     expect(byTitle.items[0]).toMatchObject({ object_id: ITEM_A, evidence: { kind: "exact_title_match" } });
@@ -117,14 +95,14 @@ describe("Knowledge zero-LLM retrieval (real Postgres)", () => {
   });
 
   it("projects a wikilink into an edge and expands graph neighbors", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await insertItem({ id: ITEM_B, title: "Beta", content: "Beta reference content.", slug: "beta" });
     await insertItem({ id: ITEM_A, title: "Alpha", content: "Alpha links to [[Beta]].", slug: "alpha" });
-    const projection = new RetrievalProjectionService(pool, knowledgeRetrievalRegistry);
+    const projection = new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry);
     await projection.reindex(SPACE, "knowledge_item", ITEM_B);
     await projection.reindex(SPACE, "knowledge_item", ITEM_A);
 
-    const out = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search({
+    const out = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search({
       spaceId: SPACE,
       viewerUserId: VIEWER,
       query: "Alpha",
@@ -136,8 +114,8 @@ describe("Knowledge zero-LLM retrieval (real Postgres)", () => {
   });
 
   it("drops a non-visible item during canonical revalidation", async () => {
-    if (!available || !pool) return;
-    await insertKnowledgeItem(pool, {
+    if (!db.available) return;
+    await insertKnowledgeItem(db.pool, {
       id: ITEM_A,
       spaceId: SPACE,
       title: "Alpha",
@@ -147,9 +125,9 @@ describe("Knowledge zero-LLM retrieval (real Postgres)", () => {
       ownerUserId: OTHER,
       createdByUserId: OTHER,
     });
-    await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindex(SPACE, "knowledge_item", ITEM_A);
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindex(SPACE, "knowledge_item", ITEM_A);
 
-    const out = await new RetrievalSearchService(pool, knowledgeRetrievalRegistry).search({
+    const out = await new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry).search({
       spaceId: SPACE,
       viewerUserId: VIEWER,
       query: "Alpha",

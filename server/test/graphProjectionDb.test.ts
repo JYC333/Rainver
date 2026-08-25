@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import * as poolModule from "../src/db/pool";
 import { loadConfig } from "../src/config";
@@ -14,34 +13,13 @@ import { GraphProjectionRepository } from "../src/modules/graph/projectionReposi
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
 import { loadProtocol } from "../src/modules/providers/protocolRuntime";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[graph-projection-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["graph_view_states", "object_relations", "knowledge_items", "notes", "sources", "claims", "space_objects", "users", "spaces"],
     { cascade: true },
   );
@@ -49,7 +27,7 @@ beforeEach(async () => {
 
 describe("GraphProjectionBuilder real-DB projections", () => {
   it("builds a capped global projection without leaking private objects or hidden-edge endpoints", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "global",
@@ -72,7 +50,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("applies global node and edge allowlists to object and structural edges", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "global",
@@ -88,7 +66,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("keeps global projections within the requested node cap", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "global",
@@ -101,7 +79,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("uses a recursive local projection with depth caps and visibility trimming", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
 
     const depthOne = await builder().build(ids.identity, {
@@ -126,7 +104,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("returns search matches plus a one-hop visible neighborhood", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "search",
@@ -142,7 +120,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("caps raw object edges by descending weight before recency", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
     const root = await seedSpaceObject(identity, {
       objectType: "knowledge_item",
@@ -177,7 +155,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
       updatedAt: "2026-07-04T12:02:00.000Z",
     });
 
-    const rows = await new GraphProjectionRepository(pool).listEdgesForNodeIds(
+    const rows = await new GraphProjectionRepository(db.pool).listEdgesForNodeIds(
       identity,
       [root, low, high, mid],
       { limit: 2 },
@@ -188,7 +166,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("applies node kind filters before local traversal and search matching", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
 
     const local = await builder().build(ids.identity, {
@@ -214,7 +192,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("expands cluster roots by graph cluster id", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "cluster",
@@ -233,7 +211,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("expands cluster roots by visible object id", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
     const projection = await builder().build(ids.identity, {
       mode: "cluster",
@@ -247,7 +225,7 @@ describe("GraphProjectionBuilder real-DB projections", () => {
   });
 
   it("treats invisible or missing local roots as not found", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();
 
     await expect(builder().build(ids.identity, {
@@ -286,13 +264,13 @@ describe("Graph routes", () => {
   });
 
   it("serves projection and upserts per-user view state through HTTP", async (ctx) => {
-    if (!available || !pool || !container) return ctx.skip();
+    if (!db.available) return ctx.skip();
     const ids = await seedGraphFixture();
     __setAuthIdentityForTests({ spaceId: ids.identity.spaceId, userId: ids.identity.userId });
-    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(pool);
+    const poolSpy = vi.spyOn(poolModule, "getDbPool").mockReturnValue(db.pool);
     let app: FastifyInstance | undefined;
     try {
-      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [graphModule]);
+      app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [graphModule]);
       const projectionResponse = await app.inject({
         method: "GET",
         url: `/api/v1/graph/projection?mode=local&root_id=${ids.alpha}&depth=1&limit=10`,
@@ -358,7 +336,7 @@ describe("Graph routes", () => {
 });
 
 function builder(): GraphProjectionBuilder {
-  return new GraphProjectionBuilder(new GraphProjectionRepository(pool!));
+  return new GraphProjectionBuilder(new GraphProjectionRepository(db.pool));
 }
 
 interface SeededGraph {
@@ -376,7 +354,7 @@ async function seedGraphFixture(): Promise<SeededGraph> {
   const identity = await seedIdentity();
   const otherUserId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Other', 'active', $2, $2)`,
     [otherUserId, now],
@@ -424,17 +402,17 @@ async function seedIdentity(): Promise<SpaceUserIdentity> {
   const userId = randomUUID();
   const spaceId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Viewer', 'active', $2, $2)`,
     [userId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Graph Space', 'team', $2, $3, $3)`,
     [spaceId, userId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', $3, $3)`,
     [spaceId, userId, now],
@@ -455,7 +433,7 @@ async function seedSpaceObject(
 ): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
     [
       id,
@@ -473,13 +451,13 @@ async function seedSpaceObject(
   // always has one — seeding a root row alone would not be a shape the
   // application can produce.
   if (input.objectType === "knowledge_item") {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO knowledge_items (object_id, space_id, status, knowledge_kind, content, content_format, content_schema_version, verification_status, reflection_status, tags_json, version)
        VALUES ($1, $2, $3, 'concept', $4, 'markdown', 1, 'unverified', 'unreviewed', '[]'::jsonb, 1)`,
       [id, identity.spaceId, input.status, `${input.title} body`],
     );
   } else if (input.objectType === "note") {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO notes (object_id, space_id, status, content_format, content_schema_version, plain_text, version)
        VALUES ($1, $2, $3, 'markdown', 1, $4, 1)`,
       [id, identity.spaceId, input.status, `${input.title} body`],
@@ -500,7 +478,7 @@ async function seedRelation(
   const id = randomUUID();
   const now = options.updatedAt ?? new Date().toISOString();
   const confidence = options.confidence === undefined ? 0.8 : options.confidence;
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO object_relations (
        id, space_id, from_object_id, to_object_id, link_type,
        status, confidence, evidence_summary, created_at, updated_at

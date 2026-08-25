@@ -1,7 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { buildModuleServer } from "./support/moduleServer";
 import { projectsModule } from "../src/modules/projects";
@@ -22,89 +21,74 @@ const OTHER_PROJECT = "55555555-5555-4555-8555-555555555555";
 const FOLDER = "44444444-4444-4444-8444-444444444444";
 const HOST = "66666666-6666-4666-8666-666666666666";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 let app: FastifyInstance | undefined;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: container.getConnectionUri() }), [projectFolderExecutionConfigsModule, projectFoldersModule, projectsModule]);
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-folder-execution-configs-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
+const db = useTestDatabase(__filename);
 
-afterAll(async () => {
-  __setAuthIdentityForTests(null);
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [projectFolderExecutionConfigsModule, projectFoldersModule, projectsModule]);
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["project_folder_execution_configs", "workspace_locations", "project_folders", "projects", "users", "spaces", "hosts", "machines"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'User', 'active', now(), now()),
             ($2, 'Viewer', 'active', now(), now())`,
     [USER, VIEWER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
     [HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ($1, 'Space', 'household', $2, now(), now())`,
       [spaceId, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())`,
       [spaceId, USER],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Project','active',now(),now()),
             ($4,$2,$3,'Other Project','active',now(),now())`,
     [PROJECT, SPACE, USER, OTHER_PROJECT],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'Folder','active','code',true,false,false,now(),now())`,
     [FOLDER, SPACE, PROJECT, USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind,
        execution_ready, status, preferred, created_at, updated_at
      ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',true,now(),now())`,
     [SPACE, FOLDER, HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, 'member', 'active', now(), now())`,
     [SPACE, VIEWER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'viewer', 'active', now(), now())`,
     [SPACE, PROJECT, VIEWER],
@@ -113,7 +97,7 @@ beforeEach(async () => {
 
 describe("project folder execution config routes", () => {
   it("404s before creation, then creates/reads/updates in real Postgres", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
 
     const missing = await app!.inject({
@@ -149,7 +133,7 @@ describe("project folder execution config routes", () => {
     expect(updated.json().repo_type).toBe("python");
     expect(updated.json().test_commands_json).toEqual(["npm test"]);
 
-    const row = await pool!.query(
+    const row = await db.pool.query(
       `SELECT space_id, project_folder_id FROM project_folder_execution_configs WHERE project_folder_id = $1`,
       [FOLDER],
     );
@@ -157,7 +141,7 @@ describe("project folder execution config routes", () => {
   });
 
   it("rejects creation against a Folder outside the caller's space", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: OTHER_SPACE, userId: USER });
     const response = await app!.inject({
       method: "POST",
@@ -168,7 +152,7 @@ describe("project folder execution config routes", () => {
   });
 
   it("isolates reads across spaces", async (ctx) => {
-    if (!available || !pool || !app) return ctx.skip();
+    if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     await app!.inject({
       method: "POST",
@@ -185,7 +169,7 @@ describe("project folder execution config routes", () => {
   });
 
   it("allows Project viewers to read but not mutate execution config", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     await app.inject({
       method: "POST",
@@ -209,7 +193,7 @@ describe("project folder execution config routes", () => {
   });
 
   it("rejects a Folder that belongs to another Project in the route", async (ctx) => {
-    if (!available || !app) return ctx.skip();
+    if (!db.available || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     const response = await app.inject({
       method: "POST",

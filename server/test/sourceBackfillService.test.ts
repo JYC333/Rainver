@@ -1,11 +1,10 @@
+import { nextBackfillRetryAt } from "../src/modules/sources/sourceBackfillRetry";
 import { describe,expect,it,vi } from "vitest";import { SourceBackfillPlanningService } from "../src/modules/sources/sourceBackfillService";import type { Queryable } from "../src/modules/routeUtils/common";
 const identity={spaceId:"space-1",userId:"user-1"};
 const allowed=(sql:string)=>sql.includes("effective_access_level")?{rows:[{effective_access_level:"full"}],rowCount:1}:sql.includes("SELECT c.connector_key")?{rows:[{connector_key:"arxiv_api"}],rowCount:1}:{rows:[{one:1}],rowCount:1};
 describe("SourceBackfillPlanningService",()=>{
  it("previews deterministic bounded date segments without durable writes",async()=>{const query=vi.fn(async(sql:string)=>allowed(sql));const service=new SourceBackfillPlanningService({query} as Queryable);const out=await service.preview(identity,"connection-1",{strategy:{window_unit:"date_window",from:"2026-01-01T00:00:00.000Z",to:"2026-03-01T00:00:00.000Z",window_size:30,max_items:500}});expect(out.segments).toHaveLength(2);expect(out.segments[0]).toMatchObject({to:"2026-03-01T00:00:00.000Z"});expect(query).toHaveBeenCalledTimes(2);});
  it("rejects invalid windows",async()=>{const query=vi.fn(async(sql:string)=>allowed(sql));const service=new SourceBackfillPlanningService({query} as Queryable);await expect(service.preview(identity,"connection-1",{strategy:{from:"2026-03-01",to:"2026-01-01"}})).rejects.toMatchObject({statusCode:422});});
- it("keeps the plan budget separate from date-window pagination",async()=>{const query=vi.fn(async(sql:string)=>allowed(sql));const out=await new SourceBackfillPlanningService({query} as Queryable).preview(identity,"connection-1",{strategy:{from:"2026-01-01",to:"2026-07-01",window_size:30,max_items:17}});expect(out.segments.length).toBeGreaterThan(1);expect(out.segments.every(segment => Number(segment.max_items) === 17)).toBe(true);});
-
  it("never emits a zero-item segment when the item budget is smaller than the window count", async () => {
    const query = vi.fn(async (sql: string) => allowed(sql));
    const service = new SourceBackfillPlanningService({ query } as Queryable);
@@ -15,6 +14,7 @@ describe("SourceBackfillPlanningService",()=>{
    const out = await service.preview(identity, "connection-1", {
      strategy: { from: "2026-01-01", to: "2026-07-01", window_size: 30, max_items: 3 },
    });
+   expect(out.segments.length).toBeGreaterThan(1);
    expect(out.segments.every((segment) => Number(segment.max_items) > 0)).toBe(true);
    expect(out.segments.every((segment) => Number(segment.max_items) === 3)).toBe(true);
  });
@@ -90,4 +90,18 @@ describe("SourceBackfillPlanningService",()=>{
   expect(query.mock.calls.some(call=>String(call[0]).includes("INSERT INTO proposals"))).toBe(false);
   expect(query.mock.calls.some(call=>String(call[0]).includes("action_idempotency_key"))).toBe(false);
  });
+});
+
+describe("source backfill deferred retry", () => {
+  const now = new Date("2026-07-30T20:00:00.000Z");
+
+  it("backs off repeated extraction jobs and caps at one retry per day", () => {
+    expect(nextBackfillRetryAt(1, now)).toBe("2026-07-30T20:01:00.000Z");
+    expect(nextBackfillRetryAt(2, now)).toBe("2026-07-30T20:05:00.000Z");
+    expect(nextBackfillRetryAt(3, now)).toBe("2026-07-30T20:30:00.000Z");
+    expect(nextBackfillRetryAt(4, now)).toBe("2026-07-30T22:00:00.000Z");
+    expect(nextBackfillRetryAt(5, now)).toBe("2026-07-31T02:00:00.000Z");
+    expect(nextBackfillRetryAt(6, now)).toBe("2026-07-31T20:00:00.000Z");
+    expect(nextBackfillRetryAt(20, now)).toBe("2026-07-31T20:00:00.000Z");
+  });
 });

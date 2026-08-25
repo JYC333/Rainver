@@ -1,8 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 
 // Every static SQL string in server/src is PREPAREd against a migrated
 // database. PREPARE parses, resolves names, and deduces parameter types
@@ -116,35 +115,16 @@ function collectStaticStatements(): StaticStatement[] {
   return statements;
 }
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[static-sql-prepare] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 1 });
 
 describe("static SQL", () => {
   it("parses, resolves, and types every statement against the migrated schema", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const statements = collectStaticStatements();
     expect(statements.length).toBeGreaterThan(500);
 
-    const client = await pool.connect();
+    const client = await db.pool.connect();
     const failures: string[] = [];
     try {
       let index = 0;

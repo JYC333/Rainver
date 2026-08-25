@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures";
@@ -13,48 +13,29 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[relation-discovery-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["artifacts", "activity_records", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "knowledge_items", "space_objects", "users", "spaces"],
     { cascade: true },
   );
   for (const id of [VIEWER, OTHER]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Discovery Space', 'household', $2, now(), now())`,
     [SPACE, VIEWER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())`,
     [SPACE, VIEWER],
@@ -62,7 +43,7 @@ beforeEach(async () => {
 });
 
 async function insertNote(pool: Pool, input: { id: string; title: string; plainText: string }): Promise<void> {
-  await pool.query(
+  await db.pool.query(
     `WITH obj AS (
        INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'note', $3, left($4, 200), 'space_shared', $5, $5, now(), now())
      )
@@ -73,7 +54,7 @@ async function insertNote(pool: Pool, input: { id: string; title: string; plainT
 }
 
 async function insertActivity(pool: Pool, input: { id: string; title: string; content: string }): Promise<void> {
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO activity_records (
        id, space_id, user_id, owner_user_id, activity_type, title, content,
        payload_json, occurred_at, created_at, updated_at, status, visibility
@@ -86,7 +67,7 @@ async function insertArtifact(
   pool: Pool,
   input: { id: string; title: string; content: string; ownerUserId?: string; metadata?: Record<string, unknown> },
 ): Promise<void> {
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO artifacts (
        id, space_id, artifact_type, title, content, mime_type, export_formats_json,
        created_at, updated_at, metadata_json, visibility, owner_user_id
@@ -99,19 +80,19 @@ async function insertSourceConnection(
   pool: Pool,
   input: { id: string; connectorId: string; ownerUserId: string; allowSpaceAdmins?: boolean; allowedReaderUserIds?: string[] },
 ): Promise<void> {
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (
        id, connector_key, display_name, connector_type, ingestion_mode, status,
        capabilities_json, created_at, updated_at
      ) VALUES ($1, $2, 'Test connector', 'external_url', 'manual', 'active', '{}'::jsonb, now(), now())`,
     [input.connectorId, `test-${input.connectorId}`],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1, $2, 'Test provider', 'generic', 'test', 'active', '{}'::jsonb, now(), now())`,
     [input.connectorId, `test-${input.connectorId}`],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$1,$1,'active',0,'{}'::jsonb,now(),now())`,
     [input.connectorId],
@@ -129,7 +110,7 @@ async function insertSourceConnection(
     schema_version: 1,
     source_egress_class: "external_provider_allowed",
   };
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, topic_hints_json, consent_json, policy_json,
@@ -145,11 +126,11 @@ async function insertSourceConnection(
 
 describe("Slice F relation discovery (real Postgres)", () => {
   it("resolves a wikilink to a visible item and proposes a relation", async () => {
-    if (!available || !pool) return;
-    await insertKnowledgeItem(pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
-    await insertKnowledgeItem(pool, { id: "item-a", spaceId: SPACE, title: "Alpha", content: "Alpha depends on [[Beta]].", slug: "alpha", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    if (!db.available) return;
+    await insertKnowledgeItem(db.pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    await insertKnowledgeItem(db.pool, { id: "item-a", spaceId: SPACE, title: "Alpha", content: "Alpha depends on [[Beta]].", slug: "alpha", ownerUserId: VIEWER, createdByUserId: VIEWER });
 
-    const { report } = await runRelationDiscoveryScan(pool, {
+    const { report } = await runRelationDiscoveryScan(db.pool, {
       spaceId: SPACE,
       userId: VIEWER,
       request: {
@@ -172,11 +153,11 @@ describe("Slice F relation discovery (real Postgres)", () => {
   });
 
   it("a note source proposes an object_relation_create for a resolved wikilink", async () => {
-    if (!available || !pool) return;
-    await insertKnowledgeItem(pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
-    await insertNote(pool, { id: "note-a", title: "Daily note", plainText: "Talked about [[Beta]] today." });
+    if (!db.available) return;
+    await insertKnowledgeItem(db.pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    await insertNote(db.pool, { id: "note-a", title: "Daily note", plainText: "Talked about [[Beta]] today." });
 
-    const { report } = await runRelationDiscoveryScan(pool, {
+    const { report } = await runRelationDiscoveryScan(db.pool, {
       spaceId: SPACE,
       userId: VIEWER,
       request: {
@@ -201,13 +182,13 @@ describe("Slice F relation discovery (real Postgres)", () => {
   });
 
   it("does not resolve a wikilink to an item the viewer cannot read", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     // Target is private to OTHER -> invisible to VIEWER; the link must not wire
     // to a hidden object, and the unresolved stub stays off by default.
-    await insertKnowledgeItem(pool, { id: "secret", spaceId: SPACE, title: "Secret", content: "hidden", slug: "secret", visibility: "private", ownerUserId: OTHER, createdByUserId: OTHER });
-    await insertKnowledgeItem(pool, { id: "item-a", spaceId: SPACE, title: "Alpha", content: "Alpha links to [[Secret]].", slug: "alpha", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    await insertKnowledgeItem(db.pool, { id: "secret", spaceId: SPACE, title: "Secret", content: "hidden", slug: "secret", visibility: "private", ownerUserId: OTHER, createdByUserId: OTHER });
+    await insertKnowledgeItem(db.pool, { id: "item-a", spaceId: SPACE, title: "Alpha", content: "Alpha links to [[Secret]].", slug: "alpha", ownerUserId: VIEWER, createdByUserId: VIEWER });
 
-    const { report } = await runRelationDiscoveryScan(pool, {
+    const { report } = await runRelationDiscoveryScan(db.pool, {
       spaceId: SPACE,
       userId: VIEWER,
       request: {
@@ -225,12 +206,12 @@ describe("Slice F relation discovery (real Postgres)", () => {
   });
 
   it("scans visible activity and artifact text as review-only relation evidence", async () => {
-    if (!available || !pool) return;
-    await insertKnowledgeItem(pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
-    await insertActivity(pool, { id: "activity-a", title: "Inbox", content: "Captured [[supports::Beta]]." });
-    await insertArtifact(pool, { id: "artifact-a", title: "Report", content: "Report says depends_on -> [[Beta]]." });
+    if (!db.available) return;
+    await insertKnowledgeItem(db.pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    await insertActivity(db.pool, { id: "activity-a", title: "Inbox", content: "Captured [[supports::Beta]]." });
+    await insertArtifact(db.pool, { id: "artifact-a", title: "Report", content: "Report says depends_on -> [[Beta]]." });
 
-    const { report } = await runRelationDiscoveryScan(pool, {
+    const { report } = await runRelationDiscoveryScan(db.pool, {
       spaceId: SPACE,
       userId: VIEWER,
       request: {
@@ -253,16 +234,16 @@ describe("Slice F relation discovery (real Postgres)", () => {
   });
 
   it("fails closed for artifact text whose source policy denies the viewer", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const connectionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    await insertKnowledgeItem(pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
-    await insertSourceConnection(pool, {
+    await insertKnowledgeItem(db.pool, { id: "item-b", spaceId: SPACE, title: "Beta", content: "Beta page.", slug: "beta", ownerUserId: VIEWER, createdByUserId: VIEWER });
+    await insertSourceConnection(db.pool, {
       id: connectionId,
       connectorId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       ownerUserId: OTHER,
       allowSpaceAdmins: false,
     });
-    await insertArtifact(pool, {
+    await insertArtifact(db.pool, {
       id: "artifact-denied",
       title: "Denied Report",
       content: "Denied source says [[Beta]].",
@@ -270,7 +251,7 @@ describe("Slice F relation discovery (real Postgres)", () => {
       metadata: { source_connection_ids: [connectionId] },
     });
 
-    const { report } = await runRelationDiscoveryScan(pool, {
+    const { report } = await runRelationDiscoveryScan(db.pool, {
       spaceId: SPACE,
       userId: VIEWER,
       request: {

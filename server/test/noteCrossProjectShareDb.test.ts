@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../src/db/tx";
 import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders";
 import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 /**
@@ -32,25 +31,8 @@ const BETA = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 /** Member of Project A only; must not learn which other Projects receive its notes. */
 const GAMMA = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[note-cross-project-share-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 let projectA = "";
 let projectB = "";
@@ -58,17 +40,17 @@ let folderA = "";
 let folderB = "";
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["notes", "note_collections", "note_collection_items", "space_object_project_shares", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Team','team',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Team','team',$2,$2)`, [SPACE, now]);
   for (const [user, name] of [[ALPHA, "Alpha"], [BETA, "Beta"], [GAMMA, "Gamma"]] as const) {
-    await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [user, name, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$2,'active',$3,$3)`, [user, name, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
       [randomUUID(), SPACE, user, now],
     );
@@ -77,19 +59,19 @@ beforeEach(async () => {
   projectB = await makeProject("Project B", BETA);
   await addProjectMember(projectB, ALPHA);
   await addProjectMember(projectA, GAMMA);
-  folderA = await withTransaction(pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectA));
-  folderB = await withTransaction(pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectB));
+  folderA = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectA));
+  folderB = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectB));
 });
 
 async function makeProject(name: string, ownerUserId: string): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
      VALUES ($1,$2,$3,'active',$4,$5,$5)`,
     [id, SPACE, name, ownerUserId, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'owner','active',$5,$5)`,
     [randomUUID(), SPACE, id, ownerUserId, now],
@@ -99,7 +81,7 @@ async function makeProject(name: string, ownerUserId: string): Promise<string> {
 
 async function addProjectMember(projectId: string, userId: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
     [randomUUID(), SPACE, projectId, userId, now],
@@ -111,13 +93,13 @@ const beta = { spaceId: SPACE, userId: BETA };
 const gamma = { spaceId: SPACE, userId: GAMMA };
 
 async function noteInProjectA(): Promise<string> {
-  const repository = new PgKnowledgeRepository(pool!);
+  const repository = new PgKnowledgeRepository(db.pool);
   const note = await repository.createNote(alpha, {
     title: "Alpha finding",
     collection_id: folderA,
   }) as { id: string };
   // Space-shared: the share must be what lets Beta in, not the visibility.
-  await pool!.query(`UPDATE space_objects SET visibility = 'space_shared' WHERE id = $1`, [note.id]);
+  await db.pool.query(`UPDATE space_objects SET visibility = 'space_shared' WHERE id = $1`, [note.id]);
   return note.id;
 }
 
@@ -127,8 +109,8 @@ function placements(note: unknown): Array<{ collection_id: string }> {
 
 describe("cross-project note sharing (real Postgres)", () => {
   it("hides an unshared note in Project A from a member of Project B", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     expect(await repository.getNote(beta, noteId)).toBeNull();
@@ -141,8 +123,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("refuses a cross-project placement until the share is confirmed, and names the case", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     await expect(repository.addNotePlacement(alpha, noteId, folderB))
@@ -154,8 +136,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("makes the note readable by Project B once the share is confirmed", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     await repository.addNotePlacement(alpha, noteId, folderB, true);
@@ -165,15 +147,15 @@ describe("cross-project note sharing (real Postgres)", () => {
       expect.objectContaining({ project_id: projectB, project_name: "Project B", shared_by_user_id: ALPHA }),
     ]);
     // Governance ownership does not move (U7).
-    const owner = await pool.query<{ primary_project_id: string }>(
+    const owner = await db.pool.query<{ primary_project_id: string }>(
       `SELECT primary_project_id FROM space_objects WHERE id = $1`, [noteId],
     );
     expect(owner.rows[0]?.primary_project_id).toBe(projectA);
   });
 
   it("keeps a shared note read-only for the receiving Project", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
     await repository.updateNote(alpha, noteId, {
       content_json: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Original" }] }] },
@@ -201,8 +183,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("does not reveal receiving Project metadata to other owning-Project members", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
     await repository.addNotePlacement(alpha, noteId, folderB, true);
 
@@ -211,10 +193,10 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("shares scope, not visibility — a private note stays private", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
-    await pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [noteId]);
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [noteId]);
 
     await repository.addNotePlacement(alpha, noteId, folderB, true);
 
@@ -225,8 +207,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("takes the note out of Project B's tree the moment the share is revoked", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
     await repository.addNotePlacement(alpha, noteId, folderB, true);
     expect(await repository.getNote(beta, noteId)).toMatchObject({ id: noteId });
@@ -242,11 +224,11 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("does not let the receiving side pass the note on to a third Project", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
     const projectC = await makeProject("Project C", BETA);
-    const folderC = await withTransaction(pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectC));
+    const folderC = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectC));
 
     // Alpha opens the note to Beta's Project B. Beta can now read it — and that
     // is the whole of what they gained. Sharing it onward into a Project of
@@ -262,8 +244,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("gives a caller who cannot see the note nothing to act on", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     // Not 403: telling Beta "you may not share this" would confirm it exists.
@@ -274,11 +256,11 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("keeps the drag path refused — a share is never a side effect of a move", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
-    await expect(withTransaction(pool, (client) => persistNotesTreeReorder(client, alpha, {
+    await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, alpha, {
       kind: "notes",
       updates: [{ noteId, fromCollectionId: folderA, collectionId: folderB, sortOrder: 0 }],
     }))).rejects.toMatchObject({ statusCode: 409 });
@@ -289,15 +271,15 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("re-uses the row on re-share so the history survives a revoke cycle", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     await repository.addNotePlacement(alpha, noteId, folderB, true);
     await repository.revokeNoteProjectShare(alpha, noteId, projectB);
     await repository.addNotePlacement(alpha, noteId, folderB, true);
 
-    const rows = await pool.query<{ revoked_at: string | null }>(
+    const rows = await db.pool.query<{ revoked_at: string | null }>(
       `SELECT revoked_at FROM space_object_project_shares WHERE space_id = $1 AND object_id = $2`,
       [SPACE, noteId],
     );
@@ -306,8 +288,8 @@ describe("cross-project note sharing (real Postgres)", () => {
   });
 
   it("counts in the knowledge summary only what the viewer can read", async () => {
-    if (!available || !pool) return;
-    const repository = new PgKnowledgeRepository(pool);
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
     const noteId = await noteInProjectA();
 
     // A count is a weaker leak than a list, but it is still an answer about

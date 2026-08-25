@@ -1,5 +1,7 @@
 import { arch, platform } from "node:os";
 import { detectCapabilities, type DaemonCapabilities } from "./capabilities.js";
+import { probeAcpOptions } from "./acpProbe.js";
+import { resolveAcpEntrypoint } from "./execution.js";
 import { collectWorkspaceStatus, type WorkspaceStatusReport } from "./workspaceStatus.js";
 
 const DAEMON_VERSION = "0.1.0";
@@ -34,6 +36,33 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
+/**
+ * Asks a runtime what it can be set to, over ACP. Wired here rather than
+ * inside `detectCapabilities` so the capability module stays free of the ACP
+ * adapter resolution that only the execution path knows about.
+ */
+async function askRuntimeOptions(bin: string) {
+  const command = bin === "claude" ? "claude-agent-acp" : bin === "codex" ? "codex-acp" : null;
+  if (!command) return null;
+  const entrypoint = resolveAcpEntrypoint(command);
+  if (!entrypoint) return null;
+  const options = await probeAcpOptions(
+    process.execPath,
+    [entrypoint],
+    // Same environment the execution path gives codex-acp: drive the host's
+    // own codex, and never try to open a browser on a headless machine.
+    bin === "codex" ? { CODEX_PATH: "codex", NO_BROWSER: "1" } : {},
+  );
+  return options
+    ? {
+        models: options.models,
+        current_model: options.currentModel,
+        efforts: options.efforts,
+        current_effort: options.currentEffort,
+      }
+    : null;
+}
+
 async function helloInfo(workspaces: Record<string, string> = {}, serverUrl?: string): Promise<{
   platform: string;
   arch: string;
@@ -50,7 +79,7 @@ async function helloInfo(workspaces: Record<string, string> = {}, serverUrl?: st
    */
   server_url?: string;
 }> {
-  const capabilities = await detectCapabilities();
+  const capabilities = await detectCapabilities(askRuntimeOptions);
   const currentPlatform = platform();
   const environment_kind = currentPlatform === "win32"
     ? "windows_native"

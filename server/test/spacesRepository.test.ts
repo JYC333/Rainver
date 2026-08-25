@@ -1,38 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let repo: PgSpaceRepository | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    repo = new PgSpaceRepository(pool);
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[spaces-repository] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+  if (!db.available) return;
+  repo = new PgSpaceRepository(db.pool);
 });
 
 async function seedUser(): Promise<string> {
   const id = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Creator', 'active', now(), now())`,
     [id],
@@ -46,7 +28,7 @@ function isFailure(value: SpaceResult | SpaceFailure): value is SpaceFailure {
 
 describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy", () => {
   it("accepts a valid oversight_mode and stores it", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const userId = await seedUser();
 
     const result = await repo.createSpace(userId, { name: "Full Oversight Team", type: "team", oversight_mode: "full" });
@@ -57,7 +39,7 @@ describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy
       egress_notifications_enabled: true,
       role: "owner",
     });
-    const row = await pool!.query(
+    const row = await db.pool.query(
       `SELECT oversight_mode, egress_notifications_enabled FROM spaces WHERE id = $1`,
       [(result as SpaceResult).id],
     );
@@ -68,7 +50,7 @@ describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy
   });
 
   it("defaults oversight_mode to 'none' when omitted", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const userId = await seedUser();
 
     const result = await repo.createSpace(userId, { name: "Default Team", type: "team" });
@@ -78,18 +60,18 @@ describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy
   });
 
   it("rejects an unknown oversight_mode with 422 and creates no row", async () => {
-    if (!available || !repo || !pool) return;
+    if (!db.available || !repo || !db.pool) return;
     const userId = await seedUser();
 
     const result = await repo.createSpace(userId, { name: "Bad Team", type: "team", oversight_mode: "godmode" });
 
     expect(result).toMatchObject({ statusCode: 422 });
-    const rows = await pool.query("SELECT id FROM spaces WHERE name = 'Bad Team'");
+    const rows = await db.pool.query("SELECT id FROM spaces WHERE name = 'Bad Team'");
     expect(rows.rowCount).toBe(0);
   });
 
   it("still rejects explicit personal-type creation regardless of oversight_mode", async () => {
-    if (!available || !repo) return;
+    if (!db.available || !repo) return;
     const userId = await seedUser();
 
     const result = await repo.createSpace(userId, { name: "Sneaky Personal", type: "personal", oversight_mode: "full" });

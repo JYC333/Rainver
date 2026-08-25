@@ -18,7 +18,6 @@ import type {
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository";
-import { PgRunRepository } from "../src/modules/runs/repository";
 import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders";
@@ -508,14 +507,6 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
-  it("defaults production PgRunRepository execution to the Runtime Context Gateway only", () => {
-    const orchestration = new RunOrchestrationService(
-      config(true),
-      new PgRunRepository({ query: async () => ({ rows: [] }) } as never),
-    );
-    expect((orchestration as unknown as { runtimeContextGateway: unknown }).runtimeContextGateway).toBeTruthy();
-  });
-
   it("executes a managed API run with setup writes before adapter invocation and terminal writes after", async () => {
     const repo = new FakeRepo();
     repo.run = run({

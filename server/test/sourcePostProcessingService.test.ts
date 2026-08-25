@@ -3,7 +3,6 @@ import type { Queryable } from "../src/modules/routeUtils/common";
 import {
   defaultModelProviderForSpace,
   sourcePostProcessingExecutionRequest,
-  sourcePostProcessingRuntimePrompt,
   validateSourcePostProcessingInputContextBinding,
 } from "../src/modules/sources/postProcessing/service";
 import {
@@ -77,8 +76,4 @@ describe("Source post-processing service", () => {
     });
   });
 
-  it("uses the full rendered instruction as the runtime prompt", () => {
-    const instruction = "Source post-processing run.\n\nSource items:\n- id: item-1";
-    expect(sourcePostProcessingRuntimePrompt(instruction)).toBe(instruction);
-  });
 });

@@ -1,17 +1,15 @@
-import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { loadConfig, type ServerConfig } from "../src/config";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
 import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService";
 import { HttpError } from "../src/modules/routeUtils/common";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import { getDbPool } from "../src/db/pool";
 
 // Real-Postgres integration tests for Phase 9 (repair/rollback), matching
 // the project-wide preference for real DB tests over fakes.
@@ -19,68 +17,31 @@ import { getDbPool } from "../src/db/pool";
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
-const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let config: ServerConfig | undefined;
 let createFlow: CustomSourceCreateFlowService | undefined;
 let repairService: CustomSourceRepairService | undefined;
 let artifactStorageRoot: string | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri() });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[source-custom-source-repair] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 120_000);
-
-afterAll(async () => {
-  if (config?.databaseUrl) await getDbPool(config.databaseUrl).end().catch(() => undefined);
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 10 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "policy_decision_records", "proposal_approvals", "proposals", "runs", "space_memberships", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_connections", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "credentials", "source_provider_connectors", "source_providers", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', now(), now())`, [IDENTITY.userId]);
-  await pool.query(`INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, 'Space A', 'team', $2, now(), now())`, [IDENTITY.spaceId, IDENTITY.userId]);
-  await pool.query(
-    `INSERT INTO source_connectors (
-       id, connector_key, display_name, connector_type, ingestion_mode, status,
-       capabilities_json, created_at, updated_at
-     ) VALUES ('connector-custom-source', 'custom_source', 'Custom Source', 'external_url', 'pull', 'active', '{}'::jsonb, now(), now())`,
-  );
-  await pool.query(`INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at) VALUES ('provider-custom-source', 'custom_source', 'Custom Source', 'named', 'general', 'active', '{}'::jsonb, now(), now())`);
-  await pool.query(`INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at) VALUES ('mapping-custom-source', 'provider-custom-source', 'connector-custom-source', 'active', 0, '{}'::jsonb, now(), now())`);
+  await seedCustomSourceWorld(db.pool, IDENTITY);
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-repair-artifacts-"));
   config = {
     ...loadConfig({}),
-    databaseUrl: container!.getConnectionUri(),
+    databaseUrl: db.connectionUri,
     artifactStorageRoot,
     customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
   };
-  createFlow = new CustomSourceCreateFlowService(pool, config);
-  repairService = new CustomSourceRepairService(pool, config);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-    [randomUUID(), IDENTITY.spaceId, IDENTITY.userId],
-  );
+  createFlow = new CustomSourceCreateFlowService(db.pool, config);
+  repairService = new CustomSourceRepairService(db.pool, config);
 });
 
 afterEach(async () => {
@@ -91,30 +52,6 @@ const FIXTURE_HTML = `<html><body>
   <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
   <div class="article"><a href="/a2">Second Title</a><p>Second excerpt text.</p></div>
 </body></html>`;
-
-async function insertCustomSourceSpacePolicy(overrides: Record<string, unknown> = {}) {
-  await pool!.query(
-    `INSERT INTO settings (
-       id, scope_type, scope_id, settings_key, settings_json, created_at, updated_at
-     ) VALUES ($1, 'space', $2, $3, $4::jsonb, now(), now())
-     ON CONFLICT (scope_type, scope_id, settings_key)
-     DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
-    [
-      randomUUID(),
-      SPACE_A,
-      CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY,
-      JSON.stringify({
-        creator_roles: ["owner", "admin"],
-        default_capture_policy: "extract_text",
-        default_retention_policy: "full_text",
-        allowed_domains: [],
-        credentialed_sources_allowed: false,
-        same_envelope_repair_auto_apply: false,
-        ...overrides,
-      }),
-    ],
-  );
-}
 
 async function createActiveConnection(): Promise<{ connectionId: string; activeVersionId: string }> {
   const connection = await createFlow!.createDraft(IDENTITY, {
@@ -165,9 +102,9 @@ async function createActivePipelineConnection(): Promise<{ connectionId: string;
 
 describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", () => {
   it("auto-activates an unchanged-envelope repair reusing the active version's stored pipeline", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId, activeVersionId } = await createActivePipelineConnection();
-    await insertCustomSourceSpacePolicy({ same_envelope_repair_auto_apply: true });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     expect(result.status).toBe("active");
@@ -175,7 +112,7 @@ describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", ()
     expect(result.handler_version.language).toBe("declarative_pipeline_v1");
     expect(result.previous_handler_version_id).toBe(activeVersionId);
 
-    const connectionRow = await pool!.query<{ active_handler_version_id: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string }>(
       `SELECT active_handler_version_id FROM source_connections WHERE id = $1`,
       [connectionId],
     );
@@ -183,9 +120,9 @@ describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", ()
   });
 
   it("accepts an explicit pipeline override in the repair request instead of reusing the active version's", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActivePipelineConnection();
-    await insertCustomSourceSpacePolicy({ same_envelope_repair_auto_apply: true });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
     const updatedPipeline = {
       ...PIPELINE,
       steps: [...PIPELINE.steps, { type: "follow_link", items_var: "items", max_follow: 0 }],
@@ -203,7 +140,7 @@ describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", ()
 
 describe("CustomSourceRepairService.repairHandler", () => {
   it("rejects repair for a connection with no active handler version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const connection = await createFlow!.createDraft(IDENTITY, {
       name: "Draft Only",
       endpoint_url: "https://example.com/list",
@@ -215,9 +152,9 @@ describe("CustomSourceRepairService.repairHandler", () => {
   });
 
   it("rejects a repair call while one is already in progress for the same connection", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActiveConnection();
-    await pool!.query(`UPDATE source_connections SET repair_status = 'repair_pending' WHERE id = $1`, [connectionId]);
+    await db.pool.query(`UPDATE source_connections SET repair_status = 'repair_pending' WHERE id = $1`, [connectionId]);
 
     await expect(
       repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML }),
@@ -226,9 +163,9 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
 
   it("auto-activates an unchanged-envelope repair when Space policy allows it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId, activeVersionId } = await createActiveConnection();
-    await insertCustomSourceSpacePolicy({ same_envelope_repair_auto_apply: true });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     expect(result.status).toBe("active");
@@ -236,7 +173,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
     expect(result.handler_version.id).not.toBe(activeVersionId);
     expect(result.previous_handler_version_id).toBe(activeVersionId);
 
-    const connectionRow = await pool!.query<{ active_handler_version_id: string; repair_status: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string; repair_status: string }>(
       `SELECT active_handler_version_id, repair_status FROM source_connections WHERE id = $1`,
       [connectionId],
     );
@@ -244,7 +181,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
       active_handler_version_id: result.handler_version.id,
       repair_status: "ok",
     });
-    const previousVersionRow = await pool!.query<{ status: string }>(
+    const previousVersionRow = await db.pool.query<{ status: string }>(
       `SELECT status FROM source_handler_versions WHERE id = $1`,
       [activeVersionId],
     );
@@ -252,7 +189,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
   });
 
   it("creates a custom_source_repair_activation proposal when the envelope is unchanged but Space policy disallows auto-apply", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId, activeVersionId } = await createActiveConnection();
     // same_envelope_repair_auto_apply defaults to false.
 
@@ -263,7 +200,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
     const proposalColumns = `id, space_id, proposal_type, title, payload_json, project_folder_id, visibility,
               created_by_user_id, created_by_run_id, project_id`;
-    const proposalRow = await pool!.query<{
+    const proposalRow = await db.pool.query<{
       id: string;
       space_id: string;
       proposal_type: string;
@@ -283,7 +220,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
       envelope_unchanged: true,
     });
 
-    const connectionRow = await pool!.query<{ active_handler_version_id: string; repair_status: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string; repair_status: string }>(
       `SELECT active_handler_version_id, repair_status FROM source_connections WHERE id = $1`,
       [connectionId],
     );
@@ -292,7 +229,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
     // Accepting through the real proposal applier registry activates the repaired version.
     const applied = await createDefaultProposalApplierRegistry().apply({
       config: config!,
-      db: pool!,
+      db: db.pool,
       proposal: proposalRow.rows[0]!,
       userId: IDENTITY.userId,
     });
@@ -300,9 +237,9 @@ describe("CustomSourceRepairService.repairHandler", () => {
   });
 
   it("routes a permission-broadening repair through custom_source_policy_delta, not custom_source_repair_activation", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId, activeVersionId } = await createActiveConnection();
-    await insertCustomSourceSpacePolicy({ same_envelope_repair_auto_apply: true });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
 
     // capture_policy broadens extract_text -> archive_original
     // relative to the active version's envelope, independent of any fixture
@@ -316,19 +253,19 @@ describe("CustomSourceRepairService.repairHandler", () => {
     if (result.status !== "pending_approval") throw new Error("unreachable");
     expect(result.deltas.length).toBeGreaterThan(0);
 
-    const proposalRow = await pool!.query<{ proposal_type: string }>(`SELECT proposal_type FROM proposals WHERE id = $1`, [
+    const proposalRow = await db.pool.query<{ proposal_type: string }>(`SELECT proposal_type FROM proposals WHERE id = $1`, [
       result.proposal_id,
     ]);
     expect(proposalRow.rows[0]?.proposal_type).toBe("custom_source_policy_delta");
 
-    const versionRow = await pool!.query<{ status: string }>(`SELECT status FROM source_handler_versions WHERE id = $1`, [
+    const versionRow = await db.pool.query<{ status: string }>(`SELECT status FROM source_handler_versions WHERE id = $1`, [
       activeVersionId,
     ]);
     expect(versionRow.rows[0]?.status).toBe("active");
   });
 
   it("marks repair_status back to repair_required when the regenerated version fails its fixture test", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActiveConnection();
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, {
@@ -336,7 +273,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
     });
     expect(result.status).toBe("test_failed");
 
-    const connectionRow = await pool!.query<{ repair_status: string }>(
+    const connectionRow = await db.pool.query<{ repair_status: string }>(
       `SELECT repair_status FROM source_connections WHERE id = $1`,
       [connectionId],
     );
@@ -346,15 +283,15 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
 describe("CustomSourceRepairService.rollbackHandler", () => {
   it("404s when there is no superseded version to roll back to", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActiveConnection();
     await expect(repairService!.rollbackHandler(IDENTITY, connectionId, {})).rejects.toThrow(HttpError);
   });
 
   it("rolls back to the most recently superseded version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId, activeVersionId } = await createActiveConnection();
-    await insertCustomSourceSpacePolicy({ same_envelope_repair_auto_apply: true });
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
     const repaired = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     expect(repaired.status).toBe("active");
     if (repaired.status !== "active") throw new Error("unreachable");
@@ -364,13 +301,13 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
     expect(rollback.handler_version.id).toBe(activeVersionId);
     expect(rollback.previous_handler_version_id).toBe(repaired.handler_version.id);
 
-    const connectionRow = await pool!.query<{ active_handler_version_id: string }>(
+    const connectionRow = await db.pool.query<{ active_handler_version_id: string }>(
       `SELECT active_handler_version_id FROM source_connections WHERE id = $1`,
       [connectionId],
     );
     expect(connectionRow.rows[0]?.active_handler_version_id).toBe(activeVersionId);
 
-    const repairedVersionRow = await pool!.query<{ status: string }>(
+    const repairedVersionRow = await db.pool.query<{ status: string }>(
       `SELECT status FROM source_handler_versions WHERE id = $1`,
       [repaired.handler_version.id],
     );
@@ -378,7 +315,7 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
   });
 
   it("rejects rolling back to a draft/never-active version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActiveConnection();
     const draftVersion = await createFlow!.generateHandler(IDENTITY, connectionId, {});
     await expect(
@@ -387,7 +324,7 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
   });
 
   it("cross-space connection access 404s", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { connectionId } = await createActiveConnection();
     await expect(
       repairService!.repairHandler({ spaceId: "space-b", userId: "user-2" }, connectionId, {}),

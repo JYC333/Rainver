@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { ContextOpsService } from "../src/modules/contextOps";
 import { RetrievalMaintenanceService, RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
@@ -24,44 +23,23 @@ const SOURCE = "source-restricted-1";
 const CONNECTOR = "connector-1";
 const LONG = "This page has more than enough searchable content to clear the thin threshold comfortably here.";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-source-policy-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_object_profiles", "space_objects", "provenance_links", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'SP', 'personal', now(), now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'SP', 'personal', now(), now())`, [SPACE]);
   for (const id of [OWNER, READER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
   }
   const memberships: Array<[string, string, string]> = [["mem-owner", OWNER, "owner"], ["mem-reader", READER, "member"]];
   for (const [id, user, role] of memberships) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'active', now(), now())`,
       [id, SPACE, user, role],
@@ -71,22 +49,22 @@ beforeEach(async () => {
 
 async function seedRestrictedAndOpen(): Promise<void> {
   // Restricted source: only OWNER may read (no allowed readers, admins denied).
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
      VALUES ($1, 'rss', 'RSS', 'external_feed', 'pull', 'active', '{}'::jsonb, now(), now())`,
     [CONNECTOR],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1, 'test-rss', 'RSS', 'generic', 'test', 'active', '{}'::jsonb, now(), now())`,
     [CONNECTOR],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$1,$1,'active',0,'{}'::jsonb,now(),now())`,
     [CONNECTOR],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
@@ -109,7 +87,7 @@ async function seedRestrictedAndOpen(): Promise<void> {
     ],
   );
 
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_object_profiles (
        id, space_id, key, label, base_object_type, status, created_at, updated_at
      ) VALUES
@@ -118,7 +96,7 @@ async function seedRestrictedAndOpen(): Promise<void> {
     [SPACE],
   );
 
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: "restricted-doc",
     spaceId: SPACE,
     title: "Alpha Restricted",
@@ -126,7 +104,7 @@ async function seedRestrictedAndOpen(): Promise<void> {
     slug: "restricted-doc",
     knowledgeKind: "concept",
   });
-  await insertKnowledgeItem(pool!, {
+  await insertKnowledgeItem(db.pool, {
     id: "open-doc",
     spaceId: SPACE,
     title: "Alpha Open",
@@ -137,7 +115,7 @@ async function seedRestrictedAndOpen(): Promise<void> {
 
   // Connector linkage: source_item carries the connection id; a provenance_link
   // ties the knowledge object to it (source_type = source_item).
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, first_seen_at, last_seen_at,
        content_state, retention_policy, created_at, updated_at
@@ -147,20 +125,20 @@ async function seedRestrictedAndOpen(): Promise<void> {
      )`,
     [SOURCE, SPACE, OWNER, SOURCE],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO provenance_links (id, space_id, target_type, target_id, source_type, source_id, source_trust, created_at)
      VALUES ($1, $2, 'knowledge', 'restricted-doc', 'source_item', $3, 'trusted_external', now())`,
     ["prov-1", SPACE, SOURCE],
   );
 
-  await new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry).reindexAll(SPACE);
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 }
 
 describe("Retrieval source policy closure (real Postgres)", () => {
   it("G4: projects source_connection_ids from the connector provenance chain", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedRestrictedAndOpen();
-    const row = await pool.query<{ source_connection_ids_json: unknown }>(
+    const row = await db.pool.query<{ source_connection_ids_json: unknown }>(
       `SELECT source_connection_ids_json FROM retrieval_objects WHERE space_id = $1 AND object_id = 'restricted-doc'`,
       [SPACE],
     );
@@ -168,9 +146,9 @@ describe("Retrieval source policy closure (real Postgres)", () => {
   });
 
   it("G4: search fails closed for a non-allowed reader and open for the owner", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedRestrictedAndOpen();
-    const service = new RetrievalSearchService(pool, knowledgeRetrievalRegistry);
+    const service = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry);
 
     const ownerResults = await service.search({ spaceId: SPACE, viewerUserId: OWNER, query: "alpha" });
     expect(ownerResults.items.map((i) => i.object_id).sort()).toEqual(["open-doc", "restricted-doc"]);
@@ -183,9 +161,9 @@ describe("Retrieval source policy closure (real Postgres)", () => {
   });
 
   it("G2: object_profile filters do not reveal source-restricted kind distributions", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedRestrictedAndOpen();
-    const service = new RetrievalSearchService(pool, knowledgeRetrievalRegistry);
+    const service = new RetrievalSearchService(db.pool, knowledgeRetrievalRegistry);
 
     const ownerConcept = await service.search({
       spaceId: SPACE,
@@ -219,9 +197,9 @@ describe("Retrieval source policy closure (real Postgres)", () => {
   });
 
   it("G1: maintenance scan hides the source-restricted object from a non-allowed operator", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedRestrictedAndOpen();
-    const service = new RetrievalMaintenanceService(pool, knowledgeRetrievalRegistry);
+    const service = new RetrievalMaintenanceService(db.pool, knowledgeRetrievalRegistry);
 
     const ownerReport = await service.scan(SPACE, OWNER);
     const ownerIds = ownerReport.findings.flatMap((f) => f.objects.map((o) => o.object_id));
@@ -234,9 +212,9 @@ describe("Retrieval source policy closure (real Postgres)", () => {
   });
 
   it("G5: Context Ops drill-down hides the source-restricted object from a non-allowed operator", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedRestrictedAndOpen();
-    const service = new ContextOpsService(pool);
+    const service = new ContextOpsService(db.pool);
 
     const ownerDrilldown = await service.getDrilldown({
       spaceId: SPACE,

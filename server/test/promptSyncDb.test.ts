@@ -2,9 +2,8 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
@@ -23,37 +22,20 @@ const SPACE = "33333333-1111-4111-8111-111111111111";
 const OWNER = "3baaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-1111-4111-8111-555555555555";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[prompt-sync-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
@@ -63,7 +45,7 @@ beforeEach(async () => {
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 function evolvableRepo(): EvolvableAssetRepository {
-  return new EvolvableAssetRepository(pool!);
+  return new EvolvableAssetRepository(db.pool);
 }
 
 let tempCatalogRoot: string | undefined;
@@ -111,12 +93,12 @@ function yamlDump(value: unknown, indent = 0): string {
 
 describe("syncBuiltinPrompts (real Postgres)", () => {
   it("syncs the real catalog/prompts manifests into system-scope approved built-in versions", async () => {
-    if (!available) return;
-    const result = await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    const result = await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
     expect(result.assetKeys).toContain("retrieval.query_rewrite");
     expect(result.versionsCreated).toContain("retrieval.query_rewrite");
 
-    const row = await pool!.query<{
+    const row = await db.pool.query<{
       status: string;
       source: string;
       space_id: string | null;
@@ -132,12 +114,12 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   });
 
   it("is idempotent: re-running sync creates no new versions when content is unchanged", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
-    const second = await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
+    const second = await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
     expect(second.versionsCreated).toEqual([]);
 
-    const count = await pool!.query<{ count: string }>(
+    const count = await db.pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM evolvable_asset_versions v
          JOIN evolvable_assets a ON a.id = v.asset_id
         WHERE a.asset_key = 'retrieval.query_rewrite'`,
@@ -146,23 +128,23 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   });
 
   it("preserves out-of-band metadata_json keys on an asset across re-sync", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
-    await pool!.query(
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
+    await db.pool.query(
       `UPDATE evolvable_assets SET metadata_json = metadata_json || '{"allow_user_override": true}'::jsonb
         WHERE asset_key = 'retrieval.query_rewrite'`,
     );
 
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
-    const row = await pool!.query<{ metadata_json: Record<string, unknown> }>(
+    const row = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
       `SELECT metadata_json FROM evolvable_assets WHERE asset_key = 'retrieval.query_rewrite'`,
     );
     expect(row.rows[0]?.metadata_json).toEqual({ prompt_type: "retrieval_query", allow_user_override: true });
   });
 
   it("does not mutate a same-key non-prompt system asset when sync hits a key collision", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const assetKey = "test.conflicting_key";
     const dir = await singleManifestCatalog(assetKey, {
       schema_version: "prompt_asset.v1",
@@ -170,7 +152,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
       template: "hello",
     });
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
          status, metadata_json, created_at, updated_at
@@ -178,9 +160,9 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
       [randomUUID(), assetKey, now],
     );
 
-    await expect(syncBuiltinPrompts(pool!, dir)).rejects.toThrow(/was not created before version sync/);
+    await expect(syncBuiltinPrompts(db.pool, dir)).rejects.toThrow(/was not created before version sync/);
 
-    const row = await pool!.query<{ asset_type: string; metadata_json: Record<string, unknown> }>(
+    const row = await db.pool.query<{ asset_type: string; metadata_json: Record<string, unknown> }>(
       `SELECT asset_type, metadata_json FROM evolvable_assets WHERE asset_key = $1 AND space_id IS NULL`,
       [assetKey],
     );
@@ -188,17 +170,17 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   });
 
   it("adds a new immutable version and moves current_system_version_id when content changes, without touching the old version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const assetKey = "test.changing_prompt";
     const v1Dir = await singleManifestCatalog(assetKey, {
       schema_version: "prompt_asset.v1",
       prompt_type: "text",
       template: "v1 text",
     });
-    const first = await syncBuiltinPrompts(pool!, v1Dir);
+    const first = await syncBuiltinPrompts(db.pool, v1Dir);
     expect(first.versionsCreated).toEqual([assetKey]);
 
-    const v1 = await pool!.query<{ id: string; content_json: { template: string } }>(
+    const v1 = await db.pool.query<{ id: string; content_json: { template: string } }>(
       `SELECT v.id, v.content_json FROM evolvable_asset_versions v
          JOIN evolvable_assets a ON a.id = v.asset_id WHERE a.asset_key = $1`,
       [assetKey],
@@ -213,10 +195,10 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
       prompt_type: "text",
       template: "v2 text",
     });
-    const second = await syncBuiltinPrompts(pool!, v2Dir);
+    const second = await syncBuiltinPrompts(db.pool, v2Dir);
     expect(second.versionsCreated).toEqual([assetKey]);
 
-    const versions = await pool!.query<{ id: string; version: number; content_json: { template: string } }>(
+    const versions = await db.pool.query<{ id: string; version: number; content_json: { template: string } }>(
       `SELECT v.id, v.version, v.content_json FROM evolvable_asset_versions v
          JOIN evolvable_assets a ON a.id = v.asset_id WHERE a.asset_key = $1 ORDER BY v.version ASC`,
       [assetKey],
@@ -225,7 +207,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     expect(versions.rows[0]?.content_json.template).toBe("v1 text");
     expect(versions.rows[1]?.content_json.template).toBe("v2 text");
 
-    const asset = await pool!.query<{ current_system_version_id: string }>(
+    const asset = await db.pool.query<{ current_system_version_id: string }>(
       `SELECT current_system_version_id FROM evolvable_assets WHERE asset_key = $1`,
       [assetKey],
     );
@@ -233,34 +215,34 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   });
 
   it("re-points current_system_version_id back to a matching existing version instead of duplicating it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const assetKey = "test.reverted_prompt";
     const v1Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v1 text" };
     const v2Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v2 text" };
 
     const v1Dir = await singleManifestCatalog(assetKey, v1Content);
-    await syncBuiltinPrompts(pool!, v1Dir);
+    await syncBuiltinPrompts(db.pool, v1Dir);
     await rm(v1Dir, { recursive: true, force: true });
     tempCatalogRoot = undefined;
 
     const v2Dir = await singleManifestCatalog(assetKey, v2Content);
-    await syncBuiltinPrompts(pool!, v2Dir);
+    await syncBuiltinPrompts(db.pool, v2Dir);
     await rm(v2Dir, { recursive: true, force: true });
     tempCatalogRoot = undefined;
 
     // Manifest content reverted to v1 (e.g. a bad edit got git-reverted).
     const v1AgainDir = await singleManifestCatalog(assetKey, v1Content);
-    const third = await syncBuiltinPrompts(pool!, v1AgainDir);
+    const third = await syncBuiltinPrompts(db.pool, v1AgainDir);
     expect(third.versionsCreated).toEqual([]); // no duplicate version for content that already has one
 
-    const versions = await pool!.query<{ id: string; content_json: { template: string } }>(
+    const versions = await db.pool.query<{ id: string; content_json: { template: string } }>(
       `SELECT v.id, v.content_json FROM evolvable_asset_versions v
          JOIN evolvable_assets a ON a.id = v.asset_id WHERE a.asset_key = $1 ORDER BY v.version ASC`,
       [assetKey],
     );
     expect(versions.rows).toHaveLength(2); // still just v1 and v2 — no v3
 
-    const asset = await pool!.query<{ current_system_version_id: string }>(
+    const asset = await db.pool.query<{ current_system_version_id: string }>(
       `SELECT current_system_version_id FROM evolvable_assets WHERE asset_key = $1`,
       [assetKey],
     );
@@ -269,14 +251,14 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
   });
 
   it("maintains system production deployment refs and rolls back to the previous built-in version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const assetKey = "test.rollback_prompt";
     const v1Dir = await singleManifestCatalog(assetKey, {
       schema_version: "prompt_asset.v1",
       prompt_type: "text",
       template: "rollback v1",
     });
-    await syncBuiltinPrompts(pool!, v1Dir);
+    await syncBuiltinPrompts(db.pool, v1Dir);
     await rm(v1Dir, { recursive: true, force: true });
     tempCatalogRoot = undefined;
 
@@ -285,9 +267,9 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
       prompt_type: "text",
       template: "rollback v2",
     });
-    await syncBuiltinPrompts(pool!, v2Dir);
+    await syncBuiltinPrompts(db.pool, v2Dir);
 
-    const refsBefore = await pool!.query<{ version_id: string; status: string }>(
+    const refsBefore = await db.pool.query<{ version_id: string; status: string }>(
       `SELECT d.version_id, d.status
          FROM prompt_deployment_refs d
          JOIN evolvable_assets a ON a.id = d.asset_id
@@ -299,11 +281,11 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     const archivedVersionId = refsBefore.rows.find((row) => row.status === "archived")?.version_id;
     expect(archivedVersionId).toBeTruthy();
 
-    const repo = new PromptRepository(pool!);
+    const repo = new PromptRepository(db.pool);
     const rolledBack = await repo.rollbackDeployment(identity, assetKey, { scope_type: "system", label: "production" });
     expect(rolledBack).toMatchObject({ version_id: archivedVersionId, scope_type: "system", label: "production", status: "active" });
 
-    const resolved = await resolvePrompt(pool!, { spaceId: SPACE, userId: OWNER, assetKey });
+    const resolved = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey });
     expect(resolved.resolution_trace[0]).toContain("production:system");
     expect(resolved.rendered_text).toBe("rollback v1");
   });
@@ -311,10 +293,10 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
 
 describe("resolvePrompt (real Postgres)", () => {
   it("resolves a synced built-in prompt and renders it with the supplied variables", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
-    const result = await resolvePrompt(pool!, {
+    const result = await resolvePrompt(db.pool, {
       spaceId: SPACE,
       userId: OWNER,
       assetKey: "retrieval.query_rewrite",
@@ -330,10 +312,10 @@ describe("resolvePrompt (real Postgres)", () => {
   });
 
   it("resolves structured built-in prompts through the central resolver", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
-    const synthesis = await resolvePrompt(pool!, {
+    const synthesis = await resolvePrompt(db.pool, {
       spaceId: SPACE,
       userId: OWNER,
       projectId: PROJECT,
@@ -354,36 +336,36 @@ describe("resolvePrompt (real Postgres)", () => {
   });
 
   it("reports a missing required variable as a validation error and leaves the placeholder unrendered", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
-    const result = await resolvePrompt(pool!, { spaceId: SPACE, userId: OWNER, assetKey: "retrieval.query_rewrite", variables: {} });
+    const result = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey: "retrieval.query_rewrite", variables: {} });
     expect(result.validation_errors).toEqual(["Missing required variable 'query'"]);
     const userMessage = result.rendered_messages?.find((m) => m.role === "user");
     expect(userMessage?.content).toContain("{query}");
   });
 
   it("fails closed with 404 when the asset key is unknown", async () => {
-    if (!available) return;
-    await expect(resolvePrompt(pool!, { spaceId: SPACE, userId: OWNER, assetKey: "does.not.exist" })).rejects.toMatchObject({
+    if (!db.available) return;
+    await expect(resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey: "does.not.exist" })).rejects.toMatchObject({
       statusCode: 404,
     });
   });
 
   it("ignores a same-key generic prompt_template row that is outside the prompt registry view", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
     await evolvableRepo().createAsset(identity, {
       asset_type: "prompt_template",
       asset_key: "retrieval.query_rewrite",
       display_name: "Generic Shadow",
     });
 
-    const repo = new PromptRepository(pool!);
+    const repo = new PromptRepository(db.pool);
     const asset = await repo.getAsset(identity, "retrieval.query_rewrite");
     expect(asset).toMatchObject({ asset_key: "retrieval.query_rewrite", space_id: null, prompt_type: "retrieval_query" });
 
-    const result = await resolvePrompt(pool!, {
+    const result = await resolvePrompt(db.pool, {
       spaceId: SPACE,
       userId: OWNER,
       assetKey: "retrieval.query_rewrite",
@@ -395,8 +377,8 @@ describe("resolvePrompt (real Postgres)", () => {
   }, 15_000);
 
   it("rejects same-key prompt registry rows that would shadow a built-in prompt", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
     await expect(
       evolvableRepo().createAsset(identity, {
@@ -409,10 +391,10 @@ describe("resolvePrompt (real Postgres)", () => {
   });
 
   it("prefers the canonical built-in prompt asset over a same-key space prompt row", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO evolvable_assets (
          id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
          status, metadata_json, created_at, updated_at
@@ -421,7 +403,7 @@ describe("resolvePrompt (real Postgres)", () => {
       [randomUUID(), SPACE, now],
     );
 
-    const repo = new PromptRepository(pool!);
+    const repo = new PromptRepository(db.pool);
     const asset = await repo.getAsset(identity, "retrieval.query_rewrite");
     expect(asset).toMatchObject({ asset_key: "retrieval.query_rewrite", space_id: null, prompt_type: "retrieval_query" });
   });
@@ -429,10 +411,10 @@ describe("resolvePrompt (real Postgres)", () => {
 
 describe("M1 facade surfaces what M2 sync wrote (real Postgres)", () => {
   it("lists and reads back a built-in prompt asset synced by syncBuiltinPrompts", async () => {
-    if (!available) return;
-    await syncBuiltinPrompts(pool!, REAL_CATALOG_ROOT);
+    if (!db.available) return;
+    await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);
 
-    const repo = new PromptRepository(pool!);
+    const repo = new PromptRepository(db.pool);
     const list = await repo.listAssets(identity, { promptType: "retrieval_query" });
     expect(list.map((a) => a.asset_key)).toEqual(
       expect.arrayContaining([

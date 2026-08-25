@@ -1,14 +1,9 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CaptureFilingService } from "../src/modules/captureFiling/service";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit";
 import { PgActivityRepository } from "../src/modules/activity/repository";
 import { PgAnnotationRepository } from "../src/modules/reader/repository";
-import {
-  getTestPostgres,
-  isTestPostgresUnavailableError,
-  type TestPostgresDatabase,
-} from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -18,58 +13,41 @@ const TEAM = "22222222-2222-4222-8222-222222222222";
 const PROJECT = "33333333-3333-4333-8333-333333333333";
 const CAPTURE = "44444444-4444-4444-8444-444444444444";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 4 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[capture-filing-db] skipped: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["content_access_logs", "activity_records", "notes", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now()),
             ($2, 'Stranger', 'active', now(), now())`,
     [OWNER, STRANGER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Personal', 'personal', $3, now(), now()),
             ($2, 'Team', 'team', $3, now(), now())`,
     [PERSONAL, TEAM, OWNER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ('m-personal', $1, $3, 'owner', 'active', now(), now()),
             ('m-team-owner', $2, $3, 'member', 'active', now(), now()),
             ('m-team-stranger', $2, $4, 'member', 'active', now(), now())`,
     [PERSONAL, TEAM, OWNER, STRANGER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)
      VALUES ($1, $2, 'Team Project', 'active', $3, now(), now())`,
     [PROJECT, TEAM, OWNER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO activity_records
        (id, space_id, user_id, owner_user_id, activity_type, title, content,
         payload_json, status, visibility, occurred_at, created_at, updated_at)
@@ -80,12 +58,12 @@ beforeEach(async () => {
 });
 
 function filing(): CaptureFilingService {
-  return new CaptureFilingService(pool!);
+  return new CaptureFilingService(db.pool);
 }
 
 describe("filing a personal capture into a Project (real Postgres)", () => {
   it("creates a new object in the target Space and leaves the capture as provenance", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const result = await filing().file({
       userId: OWNER,
       activityId: CAPTURE,
@@ -95,7 +73,7 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
     expect(result.target_space_id).toBe(TEAM);
     expect(result.visibility).toBe("space_shared");
 
-    const object = await pool.query(
+    const object = await db.pool.query(
       `SELECT space_id, primary_project_id, visibility FROM space_objects WHERE id = $1`,
       [result.object_id],
     );
@@ -107,7 +85,7 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
 
     // The capture is not copied or moved: it stays in the personal Space and
     // records where it went.
-    const capture = await pool.query(
+    const capture = await db.pool.query(
       `SELECT space_id, status, payload_json FROM activity_records WHERE id = $1`,
       [CAPTURE],
     );
@@ -121,7 +99,7 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
   });
 
   it("refuses to file someone else's capture", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await expect(filing().file({
       userId: STRANGER,
       activityId: CAPTURE,
@@ -130,8 +108,8 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
   });
 
   it("refuses a target Project the caller cannot write", async () => {
-    if (!available || !pool) return;
-    await pool.query(`DELETE FROM space_memberships WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER]);
+    if (!db.available) return;
+    await db.pool.query(`DELETE FROM space_memberships WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER]);
     await expect(filing().file({
       userId: OWNER,
       activityId: CAPTURE,
@@ -140,7 +118,7 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
   });
 
   it("refuses to file the same capture twice", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await filing().file({ userId: OWNER, activityId: CAPTURE, targetProjectId: PROJECT });
     await expect(filing().file({
       userId: OWNER,
@@ -152,19 +130,19 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
 
 describe("cross-person detail reads are audited (real Postgres)", () => {
   it("records a stranger's activity read but not the owner's own", async () => {
-    if (!available || !pool) return;
-    await pool.query(
+    if (!db.available) return;
+    await db.pool.query(
       `UPDATE activity_records SET visibility = 'space_shared', space_id = $2 WHERE id = $1`,
       [CAPTURE, TEAM],
     );
-    const repository = new PgActivityRepository(pool);
+    const repository = new PgActivityRepository(db.pool);
 
     await repository.get({ spaceId: TEAM, userId: OWNER }, CAPTURE);
-    const own = await pool.query(`SELECT count(*)::int AS n FROM content_access_logs`);
+    const own = await db.pool.query(`SELECT count(*)::int AS n FROM content_access_logs`);
     expect(own.rows[0].n).toBe(0);
 
     await repository.get({ spaceId: TEAM, userId: STRANGER }, CAPTURE);
-    const logs = await new ContentAccessAuditService(pool).listForOwner({
+    const logs = await new ContentAccessAuditService(db.pool).listForOwner({
       spaceId: TEAM,
       resourceType: "activity",
       resourceId: CAPTURE,
@@ -188,7 +166,7 @@ describe("annotations on a shared document stay personal (real Postgres)", () =>
   }
 
   function annotate(body: Record<string, unknown>) {
-    return new PgAnnotationRepository(pool!).createAnnotation(
+    return new PgAnnotationRepository(db.pool).createAnnotation(
       { spaceId: TEAM, userId: OWNER },
       {
         annotation_type: "comment",
@@ -207,13 +185,13 @@ describe("annotations on a shared document stay personal (real Postgres)", () =>
   }
 
   it("defaults a margin note to private even though the document is space_shared", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const documentId = await sharedNotebookId();
 
     const annotation = await annotate({ document_id: documentId, label: "I do not buy this" });
 
     expect(annotation.visibility).toBe("private");
-    const stranger = await pool.query(
+    const stranger = await db.pool.query(
       `SELECT id FROM reader_annotations WHERE id = $1 AND ${"owner_user_id = $2"}`,
       [annotation.id, STRANGER],
     );
@@ -221,7 +199,7 @@ describe("annotations on a shared document stay personal (real Postgres)", () =>
   });
 
   it("lets the author opt in to sharing it", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const documentId = await sharedNotebookId();
 
     const annotation = await annotate({ document_id: documentId, visibility: "space_shared" });
@@ -230,9 +208,9 @@ describe("annotations on a shared document stay personal (real Postgres)", () =>
   });
 
   it("refuses to make an annotation wider than the document it sits on", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const documentId = await sharedNotebookId();
-    await pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [documentId]);
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [documentId]);
 
     await expect(annotate({ document_id: documentId, visibility: "space_shared" }))
       .rejects.toMatchObject({ statusCode: 422 });

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery";
 import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
@@ -41,62 +40,41 @@ const MEMBERSHIPS: readonly [string, "owner" | "admin" | "member", "active" | "r
   [INACTIVE, "member", "removed"],
 ];
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[content-access-equivalence] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 async function seedSpace(oversightMode: OversightMode): Promise<void> {
   await resetTables(
-    pool!,
+    db.pool,
     ["content_access_grants", "artifacts", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   for (const id of [...MEMBERSHIPS.map(([memberId]) => memberId), CROSS_SPACE]) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ($1, 'User', 'active', now(), now())`,
       [id],
     );
   }
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, oversight_mode, created_at, updated_at)
      VALUES ($1, 'Access Space', 'household', $2, $3, now(), now())`,
     [SPACE, OWNER, oversightMode],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, oversight_mode, created_at, updated_at)
      VALUES ($1, 'Other Space', 'team', $2, 'none', now(), now())`,
     [OTHER_SPACE, OWNER],
   );
   for (const [id, role, status] of MEMBERSHIPS) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO space_memberships
          (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, now(), now())`,
       [randomUUID(), SPACE, id, role, status],
     );
   }
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO space_memberships
        (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
@@ -120,7 +98,7 @@ interface Fixture {
 
 async function seedArtifact(fixture: Fixture): Promise<string> {
   const id = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO artifacts
        (id, space_id, artifact_type, title, export_formats_json, visibility,
         access_level, owner_user_id, created_at, updated_at)
@@ -137,7 +115,7 @@ async function insertGrant(
   granteeUserId: string,
   accessLevel: "full" | "summary",
 ): Promise<void> {
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO content_access_grants
        (id, space_id, resource_type, resource_id, grantee_user_id, granted_by_user_id,
         access_level, created_at, updated_at, revoked_at)
@@ -148,7 +126,7 @@ async function insertGrant(
 
 async function seedHighlyRestrictedMemory(): Promise<string> {
   const id = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO memory_entries
        (id, space_id, scope_type, memory_type, content, status, owner_user_id,
         sensitivity_level, visibility, access_level, confidence, importance,
@@ -162,7 +140,7 @@ async function seedHighlyRestrictedMemory(): Promise<string> {
 
 async function memoryDecisionFromDb(userId: string, memoryId: string): Promise<"deny" | "summary" | "full"> {
   const definition = contentResourceDefinition("memory")!;
-  const result = await pool!.query<{ effective_access_level: string }>(
+  const result = await db.pool.query<{ effective_access_level: string }>(
     `SELECT ${contentAccessLevelSql({ definition, alias: "me", userExpr: "$3" })} AS effective_access_level
        FROM memory_entries me
       WHERE me.space_id = $1
@@ -189,14 +167,14 @@ describe("content access SQL/in-memory equivalence", () => {
   it.each(OVERSIGHT_MODES)(
     "agrees with the in-memory policy across the visibility matrix — oversight_mode=%s",
     async (oversightMode) => {
-      if (!available || !pool) return;
+      if (!db.available) return;
       await seedSpace(oversightMode);
       for (const fixture of FIXTURES) {
         const id = await seedArtifact(fixture);
         for (const viewer of VIEWERS) {
           const isCrossSpaceViewer = viewer === CROSS_SPACE;
           const viewerSpaceId = isCrossSpaceViewer ? OTHER_SPACE : SPACE;
-          const sqlDecision = await contentDecisionFromDb(pool, { spaceId: viewerSpaceId, userId: viewer }, "artifact", id);
+          const sqlDecision = await contentDecisionFromDb(db.pool, { spaceId: viewerSpaceId, userId: viewer }, "artifact", id);
           const memoryDecision = decideContentAccess(
             {
               id,
@@ -225,12 +203,12 @@ describe("content access SQL/in-memory equivalence", () => {
   );
 
   it("merges an admin's summary grant with full oversight using widest-wins", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedSpace("full");
     const id = await seedArtifact({ visibility: "selected_users", accessLevel: "summary" });
     await insertGrant(id, ADMIN, "summary");
 
-    const sqlDecision = await contentDecisionFromDb(pool, { spaceId: SPACE, userId: ADMIN }, "artifact", id);
+    const sqlDecision = await contentDecisionFromDb(db.pool, { spaceId: SPACE, userId: ADMIN }, "artifact", id);
     const memoryDecision = decideContentAccess(
       {
         id,
@@ -256,7 +234,7 @@ describe("content access SQL/in-memory equivalence", () => {
   it.each(OVERSIGHT_MODES)(
     "keeps highly_restricted memory owner-only unless oversight_mode=%s",
     async (oversightMode) => {
-      if (!available || !pool) return;
+      if (!db.available) return;
       await seedSpace(oversightMode);
       const id = await seedHighlyRestrictedMemory();
       const adminSqlDecision = await memoryDecisionFromDb(ADMIN, id);

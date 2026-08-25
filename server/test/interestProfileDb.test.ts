@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
 import { InterestProfileService } from "../src/modules/interestProfile/service";
@@ -21,60 +20,43 @@ const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[interest-profile-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["interest_topic_observations", "interest_topic_candidates", "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','team',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','team',$2,$2)`, [SPACE, now]);
   for (const user of [OWNER, OTHER]) {
-    await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
-    await pool.query(
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,
       [randomUUID(), SPACE, user, now],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'rss','RSS','external_feed','pull','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
      VALUES ($1,'rss','RSS','named','general','active','{}'::jsonb,$2,$2)`,
     [CONNECTOR, now],
   );
   const mappingId = randomUUID();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
      VALUES ($1,$2,$3,'active',0,'{}'::jsonb,$4,$4)`,
     [mappingId, CONNECTOR, CONNECTOR, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_connections (
        id, space_id, provider_connector_id, owner_user_id, name, status,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
@@ -83,9 +65,9 @@ beforeEach(async () => {
   );
 });
 
-const annotations = () => new PgSourceAnnotationRepository(pool!);
-const profiles = () => new PgInterestProfileRepository(pool!);
-const service = () => new InterestProfileService(pool!);
+const annotations = () => new PgSourceAnnotationRepository(db.pool);
+const profiles = () => new PgInterestProfileRepository(db.pool);
+const service = () => new InterestProfileService(db.pool);
 
 async function seedAnnotatedItem(options: {
   domain: string;
@@ -94,7 +76,7 @@ async function seedAnnotatedItem(options: {
 }): Promise<string> {
   const itemId = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
@@ -115,7 +97,7 @@ async function seedAnnotatedItem(options: {
     stance_confidence: 0,
   }, null);
   for (const state of options.readBy ?? []) {
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_item_user_states (id, space_id, source_item_id, user_id, library_status, read_status, last_opened_at, progress_json, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'new',$5,$6,'{}'::jsonb,$7,$7)`,
       [randomUUID(), SPACE, itemId, state.user, state.readStatus, state.openedAt ?? now, now],
@@ -126,7 +108,7 @@ async function seedAnnotatedItem(options: {
 
 describe("coverage derivation", () => {
   it("counts only what the reader engaged with", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedAnnotatedItem({ domain: "artificial_intelligence", readBy: [{ user: OWNER, readStatus: "read" }] });
     await seedAnnotatedItem({ domain: "artificial_intelligence", readBy: [{ user: OWNER, readStatus: "skimmed" }] });
     // Arrived and was passed on. Counting it would let a high-volume source the
@@ -141,7 +123,7 @@ describe("coverage derivation", () => {
   });
 
   it("keeps one member's reading out of another's profile", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedAnnotatedItem({ domain: "sports", readBy: [{ user: OTHER, readStatus: "read" }] });
     await seedAnnotatedItem({ domain: "cooking", readBy: [{ user: OWNER, readStatus: "read" }] });
 
@@ -150,7 +132,7 @@ describe("coverage derivation", () => {
   });
 
   it("weights recent reading above old reading", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const longAgo = new Date(Date.now() - 540 * 24 * 60 * 60 * 1000).toISOString();
     await seedAnnotatedItem({ domain: "history", readBy: [{ user: OWNER, readStatus: "read", openedAt: longAgo }] });
     await seedAnnotatedItem({ domain: "climate", readBy: [{ user: OWNER, readStatus: "read" }] });
@@ -164,7 +146,7 @@ describe("coverage derivation", () => {
   });
 
   it("reports uncovered domains, and nearly everything when cold", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const snapshot = await service().snapshot(SPACE, OWNER);
     const uncovered = await service().uncoveredDomains(SPACE, OWNER);
     // Cold start: an empty distribution makes almost every domain a gap, which
@@ -178,7 +160,7 @@ describe("coverage derivation", () => {
 
 describe("controlled topic growth", () => {
   it("does not create a topic from a phrase seen once", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedAnnotatedItem({
       domain: "artificial_intelligence",
       topics: ["retrieval-augmented generation"],
@@ -194,7 +176,7 @@ describe("controlled topic growth", () => {
   });
 
   it("promotes a phrase to ready once it recurs on material actually read", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD; i += 1) {
       await seedAnnotatedItem({
         domain: "artificial_intelligence",
@@ -213,7 +195,7 @@ describe("controlled topic growth", () => {
   });
 
   it("does not promote a phrase the reader never engages with", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD + 3; i += 1) {
       await seedAnnotatedItem({
         domain: "sports",
@@ -228,7 +210,7 @@ describe("controlled topic growth", () => {
   });
 
   it("counts phrase spellings as one candidate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (const phrase of ["Large Language Models", "large language model", "LARGE  LANGUAGE  MODELS", "large-language-models"]) {
       await seedAnnotatedItem({
         domain: "artificial_intelligence",
@@ -244,7 +226,7 @@ describe("controlled topic growth", () => {
   });
 
   it("is idempotent: re-running does not double-count toward the threshold", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedAnnotatedItem({
       domain: "artificial_intelligence",
       topics: ["model evaluation"],
@@ -263,7 +245,7 @@ describe("controlled topic growth", () => {
   });
 
   it("counts the read when the reader opens an item after the pass already saw it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     // The real ordering: material is annotated on arrival, the pass runs while
     // it is still unread, and the reader opens it days later. A ledger that
     // only recorded "seen" would freeze every item unread and the read
@@ -282,7 +264,7 @@ describe("controlled topic growth", () => {
 
     const now = new Date().toISOString();
     for (const itemId of itemIds.slice(0, NEW_TOPIC_READ_THRESHOLD)) {
-      await pool!.query(
+      await db.pool.query(
         `INSERT INTO source_item_user_states (id, space_id, source_item_id, user_id, library_status, read_status, last_opened_at, progress_json, created_at, updated_at)
          VALUES ($1,$2,$3,$4,'new','read',$5,'{}'::jsonb,$5,$5)`,
         [randomUUID(), SPACE, itemId, OWNER, now],
@@ -298,12 +280,12 @@ describe("controlled topic growth", () => {
   });
 
   it("counts an item's read exactly once however often it is reopened", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const itemId = await seedAnnotatedItem({ domain: "energy", topics: ["grid storage"] });
     await service().runFactLayer(SPACE, OWNER);
 
     const now = new Date().toISOString();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO source_item_user_states (id, space_id, source_item_id, user_id, library_status, read_status, last_opened_at, progress_json, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'new','read',$5,'{}'::jsonb,$5,$5)`,
       [randomUUID(), SPACE, itemId, OWNER, now],
@@ -317,7 +299,7 @@ describe("controlled topic growth", () => {
   });
 
   it("resolves a phrase to an existing topic instead of re-proposing it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const profile = await profiles().ensureProfile(SPACE, OWNER);
     await profiles().upsertTopic({
       spaceId: SPACE,
@@ -339,7 +321,7 @@ describe("controlled topic growth", () => {
 
 describe("the confirmation boundary", () => {
   it("persists validated settings and supports direct topic editing without changing its stable key", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const updatedSettings = await service().updateSettings(SPACE, OWNER, {
       interest_slots: 3,
       serendipity_slots: 1,
@@ -378,7 +360,7 @@ describe("the confirmation boundary", () => {
   });
 
   it("creates a topic only when the owner accepts a candidate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD; i += 1) {
       await seedAnnotatedItem({
         domain: "climate",
@@ -400,7 +382,7 @@ describe("the confirmation boundary", () => {
   });
 
   it("keeps a dismissed phrase dismissed however often it recurs", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await seedAnnotatedItem({ domain: "sports", topics: ["cricket"], readBy: [{ user: OWNER, readStatus: "read" }] });
     await service().runFactLayer(SPACE, OWNER);
     expect(await service().dismissCandidate(SPACE, OWNER, "cricket")).toBe(true);
@@ -420,7 +402,7 @@ describe("the confirmation boundary", () => {
   });
 
   it("refuses a topic that cannot sit on the coverage axis", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const profile = await profiles().ensureProfile(SPACE, OWNER);
     await expect(profiles().upsertTopic({
       spaceId: SPACE,
@@ -432,7 +414,7 @@ describe("the confirmation boundary", () => {
   });
 
   it("revives an archived topic rather than duplicating it", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const profile = await profiles().ensureProfile(SPACE, OWNER);
     await profiles().upsertTopic({
       spaceId: SPACE, userId: OWNER, profileId: profile.id,
@@ -453,7 +435,7 @@ describe("the confirmation boundary", () => {
 
 describe("profile maturity over real data", () => {
   it("moves from cold through warming as reading accumulates", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const domains = ["artificial_intelligence", "climate", "economics", "history", "cooking", "medicine"];
     for (let i = 0; i < 20; i += 1) {
       await seedAnnotatedItem({ domain: domains[i % domains.length], readBy: [{ user: OWNER, readStatus: "read" }] });

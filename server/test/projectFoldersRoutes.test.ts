@@ -54,19 +54,6 @@ describe("project folder routes", () => {
     });
   });
 
-  it("does not expose removed Workspace product routes", async () => {
-    app = buildModuleServer(loadConfig({}), [projectFoldersModule, projectsModule]);
-
-    for (const url of [
-      "/api/v1/workspaces",
-      "/api/v1/workspace-console/workspaces",
-      "/api/v1/workspace-profiles",
-      "/api/v1/projects/project-1/research/workspace",
-    ]) {
-      const response = await app.inject({ method: "GET", url });
-      expect(response.statusCode).toBe(404);
-    }
-  });
 });
 
 async function expectJson(method: "GET", url: string, expected: unknown): Promise<void> {

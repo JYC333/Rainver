@@ -2,14 +2,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository";
 import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox";
 import { PgHostRepository } from "../src/modules/hosts/repository";
 import type { RunRecord } from "../src/modules/runs/repository";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -20,56 +20,39 @@ const SECOND_PROJECT = "44444444-4444-4444-8444-444444444444";
 const OTHER_PROJECT = "55555555-5555-4555-8555-555555555555";
 const HOST = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[project-folders-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename, { max: 4 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["workspace_locations", "project_folders", "projects", "space_memberships", "users", "spaces", "hosts", "machines"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
     [HOST],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
     [HOST],
   );
   for (const spaceId of [SPACE, OTHER_SPACE]) {
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ($1, 'Space', 'household', $2, now(), now())`,
       [spaceId, USER],
     );
   }
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES
        ($1,$4,$5,'One','active',now(),now()),
@@ -112,14 +95,14 @@ async function insertFolder(
 
 describe("Project Folder database invariants", () => {
   it("lists and gets Project-inherited Folders without a Folder-local visibility ACL", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const folderId = "60606060-6060-4060-8060-606060606060";
-    await insertFolder(pool, {
+    await insertFolder(db.pool, {
       id: folderId,
       rootPath: "/managed/readable",
     });
     const repo = new PgProjectFolderRepository(
-      pool,
+      db.pool,
       loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
@@ -131,10 +114,10 @@ describe("Project Folder database invariants", () => {
   });
 
   it("rejects a cross-space Project ownership reference", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
 
     await expect(
-      insertFolder(pool, {
+      insertFolder(db.pool, {
         id: "66666666-6666-4666-8666-666666666666",
         spaceId: SPACE,
         projectId: OTHER_PROJECT,
@@ -144,15 +127,15 @@ describe("Project Folder database invariants", () => {
   });
 
   it("prevents one physical root from being registered to two Projects", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const rootPath = "/managed/shared";
-    await insertFolder(pool, {
+    await insertFolder(db.pool, {
       id: "77777777-7777-4777-8777-777777777777",
       rootPath,
     });
 
     await expect(
-      insertFolder(pool, {
+      insertFolder(db.pool, {
         id: "88888888-8888-4888-8888-888888888888",
         projectId: SECOND_PROJECT,
         rootPath,
@@ -161,14 +144,14 @@ describe("Project Folder database invariants", () => {
   });
 
   it("allows at most one primary Folder under concurrent inserts", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const attempts = await Promise.allSettled([
-      insertFolder(pool, {
+      insertFolder(db.pool, {
         id: "99999999-9999-4999-8999-999999999999",
         rootPath: "/managed/primary-a",
         primary: true,
       }),
-      insertFolder(pool, {
+      insertFolder(db.pool, {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         rootPath: "/managed/primary-b",
         primary: true,
@@ -177,7 +160,7 @@ describe("Project Folder database invariants", () => {
 
     expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(1);
-    const count = await pool.query<{ count: string }>(
+    const count = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM project_folders
         WHERE project_id = $1 AND is_primary`,
@@ -187,7 +170,7 @@ describe("Project Folder database invariants", () => {
   });
 
   it("prepares a zero-copy read-only Folder without requiring Git or writing context into it", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const root = await mkdtemp(join(tmpdir(), "aspace-read-only-folder-"));
     try {
       const workspaceRoot = join(root, "workspaces");
@@ -196,12 +179,12 @@ describe("Project Folder database invariants", () => {
       await mkdir(folderRoot, { recursive: true });
       await writeFile(join(folderRoot, "source.txt"), "authoritative source");
       const folderId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-      await insertFolder(pool, { id: folderId, rootPath: folderRoot });
+      await insertFolder(db.pool, { id: folderId, rootPath: folderRoot });
       const manager = new PgRunSandboxManager(loadConfig({
         AGENT_SPACE_HOME: root,
         WORKSPACE_ROOT: workspaceRoot,
         SANDBOX_ROOT: sandboxRoot,
-      }), pool);
+      }), db.pool);
       const prepared = await manager.prepareRunWorkspace({
         id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
         space_id: SPACE,
@@ -237,14 +220,14 @@ describe("Project Folder database invariants", () => {
   });
 
   it("stamps a new Folder to the server host (ADR 0016)", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgProjectFolderRepository(
-      pool,
+      db.pool,
       loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
     const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
-    const row = await pool.query<{ execution_host_id: string; execution_host_kind: string }>(
+    const row = await db.pool.query<{ execution_host_id: string; execution_host_kind: string }>(
       `SELECT execution_host_id, execution_host_kind FROM workspace_locations WHERE project_folder_id = $1`,
       [created.id],
     );
@@ -252,19 +235,19 @@ describe("Project Folder database invariants", () => {
   });
 
   it("refuses local-filesystem reads and sandbox prep for a remote-host Folder (ADR 0016 B62-B64)", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
-    const hosts = new PgHostRepository(pool);
+    if (!db.available || !db.pool) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
     const issued = await hosts.issuePairingCode(USER, "Remote Test Box");
     if ("statusCode" in issued) throw new Error("expected success");
     const remoteFolderId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_folders (
          id, space_id, project_id, created_by_user_id, name, status,
          kind, is_primary, protected, system_managed, registered_from, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'Remote Folder','active','code',false,false,false,'daemon_registered',now(),now())`,
       [remoteFolderId, SPACE, PROJECT, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO workspace_locations (
          id, space_id, project_folder_id, execution_host_id, execution_host_kind,
          root_path, execution_ready, status, preferred, created_at, updated_at
@@ -272,7 +255,7 @@ describe("Project Folder database invariants", () => {
       [randomUUID(), SPACE, remoteFolderId, issued.host_id],
     );
     const repo = new PgProjectFolderRepository(
-      pool,
+      db.pool,
       loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
@@ -284,7 +267,7 @@ describe("Project Folder database invariants", () => {
 
     const manager = new PgRunSandboxManager(
       loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
-      pool,
+      db.pool,
     );
     await expect(
       manager.prepareRunWorkspace({
@@ -297,9 +280,9 @@ describe("Project Folder database invariants", () => {
   });
 
   it("rejects a remote-host Folder that carries a root_path at the database level", async (ctx) => {
-    if (!available || !pool) return ctx.skip();
+    if (!db.available || !db.pool) return ctx.skip();
     const folderId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_folders (
          id, space_id, project_id, created_by_user_id, name, status,
          kind, is_primary, protected, system_managed, created_at, updated_at
@@ -307,7 +290,7 @@ describe("Project Folder database invariants", () => {
       [folderId, SPACE, PROJECT, USER],
     );
     await expect(
-      pool.query(
+      db.pool.query(
         `INSERT INTO workspace_locations (
            id, space_id, project_folder_id, execution_host_id, execution_host_kind,
            root_path, execution_ready, status, preferred, created_at, updated_at

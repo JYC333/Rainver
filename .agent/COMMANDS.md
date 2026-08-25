@@ -31,6 +31,17 @@ pnpm run build
 pnpm run typecheck
 pnpm test
 
+# Local iteration: run only the files for the module you touched. The full
+# server suite is ~1:40 (web ~40s); one file is 5–20s. Real-Postgres files
+# work alone — each clones its own database from the shared template.
+pnpm exec vitest run test/memoryApply*                 # a file or glob
+pnpm exec vitest run test/roomsDb.test.ts -t "dedupe"  # one test by name
+# Do not reach for `vitest --changed` / `vitest related` here: the backend
+# import graph is one large cycle, so a single source change selects a
+# quarter of the suite (~70s) — barely faster than running everything.
+# Run the full suite before committing, or leave it to CI, which runs it on
+# every push. Every run prints the ten slowest files by import and test time.
+
 # Real-Postgres tests share one tuned container and reuse it across local runs.
 # Opt out when a CI/job boundary requires the container to be stopped afterward.
 TESTCONTAINERS_REUSE_ENABLE=false pnpm test

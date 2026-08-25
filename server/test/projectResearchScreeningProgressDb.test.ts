@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { upsertPendingResearchCheckpoint } from "../src/modules/projectResearch/checkpointWriter";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { seedArxivSourceChain, seedResearchOperation } from "./support/researchSeeds";
+import { useTestDatabase } from "./support/testDatabase";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
 import { resetTables } from "./support/resetTables";
 import { loadConfig } from "../src/config";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
@@ -33,101 +34,30 @@ const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
+
+const db = useTestDatabase(__filename);
 
 beforeAll(async () => {
+  if (!db.available) return;
   registerProjectResearchExecutionHandlers();
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[project-research-screening-progress-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["source_post_processing_item_decisions", "source_post_processing_runs", "jobs", "source_items", "source_backfill_plans", "project_research_checkpoints", "project_research_workflows", "project_operations", "agents", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
-    [PROJECT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO source_connectors (id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, created_at, updated_at)
-     VALUES ($1,'arxiv_api','arXiv','external_feed','pull','active','{}'::jsonb,$2,$2)`,
-    [CONNECTOR, now],
-  );
-  const providerId = randomUUID();
-  const mappingId = randomUUID();
-  await pool.query(
-    `INSERT INTO source_providers (id, provider_key, display_name, provider_kind, category, status, capabilities_json, created_at, updated_at)
-     VALUES ($1,'arxiv','arXiv','generic','academic','active','{}'::jsonb,$2,$2)`,
-    [providerId, now],
-  );
-  await pool.query(
-    `INSERT INTO source_provider_connectors (id, provider_id, connector_id, status, priority, capabilities_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'active',0,'{}'::jsonb,$4,$4)`,
-    [mappingId, providerId, CONNECTOR, now],
-  );
-  await pool.query(
-    `INSERT INTO source_connections (
-       id, space_id, provider_connector_id, owner_user_id, name, status,
-       capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'arXiv','active','reference_only','normal',$5::jsonb,$6::jsonb,'{}'::jsonb,$7,$7)`,
-    [
-      CONNECTION, SPACE, mappingId, OWNER,
-      JSON.stringify({ schema_version: 1, owner_user_id: OWNER, allowed_reader_user_ids: [], allowed_agent_ids: [], allow_space_admins: true, allow_local_provider_egress: true, allow_external_model_egress: true }),
-      JSON.stringify({ schema_version: 1, source_egress_class: "external_provider_allowed" }),
-      now,
-    ],
-  );
-  await pool.query(
-    `INSERT INTO source_channels (
-       id, space_id, source_connection_id, created_by_user_id, name, channel_type, endpoint_url,
-       query_json, provider_query_json, query_fingerprint, status, fetch_frequency, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'Monitor','search','https://export.arxiv.org/api/query','{}'::jsonb,'{}'::jsonb,'fp-a','active','daily',$5,$5)`,
-    [CHANNEL, SPACE, CONNECTION, OWNER, now],
-  );
-  await insertResearchWorkflowFixture(pool, {
+  const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await seedArxivSourceChain(db.pool, { connector: CONNECTOR, connection: CONNECTION, channel: CHANNEL, space: SPACE, owner: OWNER, now });
+  await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
     currentStage: "backfill", now,
   });
-  await pool.query(
-    `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
-     VALUES ($1,$2,$3,'Screening Agent','active',NULL,$4,$4,'space_shared')`,
-    [AGENT, SPACE, OWNER, now],
-  );
-  await pool.query(
-    `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Test research agent.','{}','{}','{}','{}','[]','{}','{}',$4)`,
-    [AGENT_VERSION, AGENT, SPACE, now],
-  );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, name: "Screening Agent", now });
   await seedOperation();
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO source_backfill_plans (
        id, space_id, source_channel_id, project_operation_id, requested_by_user_id, origin,
        strategy_json, quota_policy_json, status, segments_total, segments_completed, segments_failed,
@@ -144,7 +74,7 @@ beforeEach(async () => {
 
 async function seedSourceItem(id: string, title: string): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, first_seen_at, last_seen_at,
        content_state, retention_policy, metadata_json, created_at, updated_at
@@ -156,12 +86,12 @@ async function seedSourceItem(id: string, title: string): Promise<void> {
 async function seedClassifiedDecision(sourceItemId: string, relevance: string): Promise<void> {
   const now = new Date().toISOString();
   const runId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_post_processing_runs (id, space_id, source_channel_id, agent_id, project_id, trigger_type, status, created_at)
      VALUES ($1,$2,$3,$4,$5,'manual','succeeded',$6)`,
     [runId, SPACE, CHANNEL, AGENT, PROJECT, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO source_post_processing_item_decisions (
        id, space_id, source_channel_id, run_id, project_id, source_item_id, relevance, review_status, created_at, updated_at
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',$8,$8)`,
@@ -171,7 +101,7 @@ async function seedClassifiedDecision(sourceItemId: string, relevance: string): 
 
 async function seedRecoveryJob(status: string, resultJson: Record<string, unknown> | null): Promise<void> {
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO jobs (id, space_id, job_type, status, priority, payload_json, result_json, attempts, max_attempts, created_at, updated_at)
      VALUES ($1,$2,'source_post_processing_event',$3,0,$4::jsonb,$5::jsonb,0,3,$6,$6)`,
     [
@@ -202,16 +132,12 @@ async function seedOperation(): Promise<void> {
     source_post_processing_rule_id: null,
     watermark: { before: null, after: null, overlap_hours: 48 },
   };
-  await pool!.query(
-    `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'research','Initial literature intake','active',$4,$5::jsonb,$6,$6)`,
-    [OPERATION, SPACE, PROJECT, OWNER, JSON.stringify(progress), now],
-  );
+  await seedResearchOperation(db.pool, { id: OPERATION, space: SPACE, project: PROJECT, owner: OWNER, progress: progress, now });
 }
 
 describe("ProjectResearchOrchestrator.reconcileOperation screening progress (real Postgres)", () => {
   it("refreshes classified/batch counts on a tick while a recovery batch is still running, instead of waiting for the whole pipeline to drain", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedSourceItem("item-1", "Paper one");
     await seedSourceItem("item-2", "Paper two");
     await seedSourceItem("item-3", "Paper three");
@@ -221,9 +147,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
     await seedRecoveryJob("completed", { status: "succeeded" });
     await seedRecoveryJob("running", null);
 
-    await new ProjectResearchOrchestrator(pool!, CONFIG).reconcileOperation(SPACE, OPERATION);
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
 
-    const operation = await pool!.query<{ status: string; progress_json: { screening_progress?: Record<string, unknown> } }>(
+    const operation = await db.pool.query<{ status: string; progress_json: { screening_progress?: Record<string, unknown> } }>(
       `SELECT status, progress_json FROM project_operations WHERE id=$1`,
       [OPERATION],
     );
@@ -243,7 +169,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
     // transition — and the screening_gate checkpoint it creates — must not
     // have fired yet, even though the display numbers above are already fresh.
     expect(operation.rows[0]!.status).toBe("active");
-    const execution = await pool!.query<{ status: string; current: boolean }>(
+    const execution = await db.pool.query<{ status: string; current: boolean }>(
       `SELECT execution.status,
               operation.current_execution_id=execution.id AS current
          FROM workflow_executions execution
@@ -254,7 +180,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
       [SPACE, OPERATION],
     );
     expect(execution.rows).toEqual([{ status: "completed", current: true }]);
-    const checkpoints = await pool!.query<{ id: string }>(
+    const checkpoints = await db.pool.query<{ id: string }>(
       `SELECT id FROM project_research_checkpoints WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
@@ -269,14 +195,14 @@ describe("ProjectResearchOrchestrator.reconcileOperation screening progress (rea
 async function seedCorpusRelevance(sourceItemId: string, relevance: "relevant" | "maybe" | "not_relevant"): Promise<void> {
   const now = new Date().toISOString();
   const corpusItemId = randomUUID();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_corpus_items (
        id, space_id, project_id, source_item_id, role, status, triage_status, relevance,
        metadata_json, created_at, updated_at
      ) VALUES ($1,$2,$3,$4,'candidate','active','new',$5,'{}'::jsonb,$6,$6)`,
     [corpusItemId, SPACE, PROJECT, sourceItemId, relevance, now],
   );
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO project_corpus_item_sources (id, corpus_item_id, space_id, project_id, source_item_id, created_at)
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
@@ -301,16 +227,12 @@ async function seedIncrementalOperation(sourceItemIds: string[]): Promise<void> 
     source_post_processing_rule_id: null,
     watermark: { before: null, after: null, overlap_hours: 48 },
   };
-  await pool!.query(
-    `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
-     VALUES ($1,$2,$3,'research','Incremental scan','active',$4,$5::jsonb,$6,$6)`,
-    [INCREMENTAL_OPERATION, SPACE, PROJECT, OWNER, JSON.stringify(progress), now],
-  );
+  await seedResearchOperation(db.pool, { id: INCREMENTAL_OPERATION, space: SPACE, project: PROJECT, owner: OWNER, progress: progress, now, title: "Incremental scan" });
 }
 
 describe("ProjectResearchRepository checkpointReview classified count (real Postgres)", () => {
   it("reflects material classified after the screening_gate checkpoint was first created, not just at creation time", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await seedSourceItem("item-1", "Paper one");
     await seedSourceItem("item-2", "Paper two");
     await seedSourceItem("item-3", "Paper three");
@@ -319,15 +241,15 @@ describe("ProjectResearchRepository checkpointReview classified count (real Post
     // beforeEach seeds a baseline OPERATION on the same workflow; only one
     // active research operation per workflow is allowed, and this test needs
     // its own incremental operation instead.
-    await pool!.query(`UPDATE project_operations SET status='completed' WHERE id=$1`, [OPERATION]);
+    await db.pool.query(`UPDATE project_operations SET status='completed' WHERE id=$1`, [OPERATION]);
     // item-2 and item-3 are not classified yet when the gate is first opened —
     // this mirrors an incremental scan, which opens the screening_gate as soon
     // as the operation enters "screening", then refreshes it on every
     // subsequent reconcile tick while classification is still in flight.
     await seedIncrementalOperation(["item-1", "item-2", "item-3"]);
 
-    const orchestrator = new ProjectResearchOrchestrator(pool!, CONFIG);
-    const repo = new ProjectResearchRepository(pool!);
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    const repo = new ProjectResearchRepository(db.pool);
 
     await orchestrator.reconcileOperation(SPACE, INCREMENTAL_OPERATION);
     const firstPass = await repo.listCheckpoints(identity, PROJECT, WORKFLOW);
@@ -345,7 +267,7 @@ describe("ProjectResearchRepository checkpointReview classified count (real Post
     await seedCorpusRelevance("item-3", "not_relevant");
     await orchestrator.reconcileOperation(SPACE, INCREMENTAL_OPERATION);
 
-    const checkpointRows = await pool!.query<{ id: string }>(
+    const checkpointRows = await db.pool.query<{ id: string }>(
       `SELECT id FROM project_research_checkpoints WHERE space_id=$1 AND project_id=$2`,
       [SPACE, PROJECT],
     );
@@ -365,7 +287,7 @@ describe("ProjectResearchRepository checkpointReview classified count (real Post
 // was handed the same intake to approve again.
 describe("research checkpoints are one decision point per operation (real Postgres)", () => {
   it("does not open a second gate for an operation whose gate was already decided", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     const operationId = randomUUID();
     const input = {
       spaceId: SPACE,
@@ -376,19 +298,19 @@ describe("research checkpoints are one decision point per operation (real Postgr
       machineResult: { operation_id: operationId, total: 16 },
     };
 
-    const first = await upsertPendingResearchCheckpoint(pool!, input);
+    const first = await upsertPendingResearchCheckpoint(db.pool, input);
     // A tick before the decision keeps refreshing the pending gate in place.
-    expect(await upsertPendingResearchCheckpoint(pool!, { ...input, machineResult: { operation_id: operationId, total: 20 } })).toBe(first);
+    expect(await upsertPendingResearchCheckpoint(db.pool, { ...input, machineResult: { operation_id: operationId, total: 20 } })).toBe(first);
 
-    await pool!.query(
+    await db.pool.query(
       `UPDATE project_research_checkpoints
           SET status='approved', user_decision='approved', decided_at=now(), updated_at=now()
         WHERE id=$1 AND space_id=$2`,
       [first, SPACE],
     );
 
-    expect(await upsertPendingResearchCheckpoint(pool!, input)).toBe(first);
-    const rows = await pool!.query<{ count: string }>(
+    expect(await upsertPendingResearchCheckpoint(db.pool, input)).toBe(first);
+    const rows = await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM project_research_checkpoints
         WHERE space_id=$1 AND checkpoint_type='screening_gate'
           AND machine_result_json->>'operation_id'=$2`,
@@ -396,7 +318,7 @@ describe("research checkpoints are one decision point per operation (real Postgr
     );
     expect(rows.rows[0]!.count).toBe("1");
 
-    const decided = await pool!.query<{ status: string; total: string }>(
+    const decided = await db.pool.query<{ status: string; total: string }>(
       `SELECT status, machine_result_json->>'total' AS total
          FROM project_research_checkpoints WHERE id=$1 AND space_id=$2`,
       [first, SPACE],

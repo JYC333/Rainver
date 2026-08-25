@@ -3466,6 +3466,25 @@ export interface ProjectFolderScanCandidate {
 export interface HostCapabilities {
   runtimes?: string[]
   versions?: Record<string, string>
+  /**
+   * What each installed CLI is configured to run on, keyed by capability
+   * probe. Only meaningful for a run with no binding: with one, the server
+   * chose the model and this is what the machine would otherwise have used.
+   */
+  models?: Record<string, string>
+  /** How hard each CLI is configured to have its model think. */
+  reasoning?: Record<string, string>
+  /**
+   * What each runtime said it can be set to, asked over ACP. Never a guessed
+   * list: effort levels differ per runtime, and model ids can carry brackets
+   * that are part of the name.
+   */
+  options?: Record<string, {
+    models?: string[]
+    current_model?: string | null
+    efforts?: string[]
+    current_effort?: string | null
+  }>
 }
 
 export interface Host {

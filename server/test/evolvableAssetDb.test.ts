@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
 import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService";
@@ -21,53 +20,36 @@ const AGENT = "66666666-6666-4666-8666-666666666666";
 const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[evolvable-asset-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "agents", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$2,$3,'Second','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, PROJECT_B],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Screening Agent','active',$4,$4,'space_shared')`,
     [AGENT, SPACE, OWNER, now],
   );
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OUTSIDER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OUTSIDER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'member','active',$4,$4)`,
     [randomUUID(), SPACE, OUTSIDER, now],
@@ -75,7 +57,7 @@ beforeEach(async () => {
 });
 
 function repo(): EvolvableAssetRepository {
-  return new EvolvableAssetRepository(pool!);
+  return new EvolvableAssetRepository(db.pool);
 }
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
@@ -111,7 +93,7 @@ async function createApprovedVersion(
   await repo().transitionVersionStatus(identity, assetId, version.id as string, { status: "candidate" });
   await repo().transitionVersionStatus(identity, assetId, version.id as string, { status: "testing" });
   const now = new Date().toISOString();
-  await pool!.query(`UPDATE evolvable_asset_versions SET status = 'approved', updated_at = $3 WHERE asset_id = $1 AND id = $2`, [
+  await db.pool.query(`UPDATE evolvable_asset_versions SET status = 'approved', updated_at = $3 WHERE asset_id = $1 AND id = $2`, [
     assetId,
     version.id,
     now,
@@ -122,7 +104,7 @@ async function createApprovedVersion(
 async function createSystemAsset(assetKey: string): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolvable_assets (
        id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
        status, metadata_json, created_at, updated_at
@@ -142,7 +124,7 @@ async function insertApprovedVersion(
 ): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  await pool!.query(
+  await db.pool.query(
     `INSERT INTO evolvable_asset_versions (
        id, asset_id, space_id, scope_type, scope_id, version, status, source,
        content_json, created_at, updated_at
@@ -154,7 +136,7 @@ async function insertApprovedVersion(
 
 describe("Evolvable asset/version/pin (real Postgres)", () => {
   it("rejects capability rows because CapabilityVersion is the canonical model", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await expect(repo().createAsset(identity, {
       asset_type: "capability",
       asset_key: "research.search",
@@ -163,13 +145,13 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("rejects a duplicate asset_key in the same space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     await createAsset();
     await expect(createAsset()).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("requires space owner/admin for public assets but allows member-owned private assets", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const outsiderIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
 
     await expect(
@@ -198,7 +180,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("only lets the owner evolve a user-owned private asset", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const outsiderIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
     const privateAsset = await repo().createAsset(outsiderIdentity, {
       asset_type: "prompt_template",
@@ -223,7 +205,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("allows editing a draft version but rejects edits once it is a candidate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const version = await repo().createVersion(identity, asset.id as string, {
       scope_type: "space",
@@ -241,7 +223,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("enforces scope authority and normalizes space scope when creating versions", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const outsiderIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
 
@@ -266,7 +248,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("only lists scoped versions visible to the caller", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset("academic.visible_scopes", { metadata_json: { allow_user_override: true } });
     const spaceVersion = await repo().createVersion(identity, asset.id as string, { scope_type: "space", content_json: { prompt: "space" } });
     const projectVersion = await repo().createVersion(identity, asset.id as string, {
@@ -304,7 +286,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("rejects transitioning a version directly to approved or deprecated", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const version = await repo().createVersion(identity, asset.id as string, { scope_type: "space", content_json: {} });
     await expect(
@@ -313,7 +295,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("allows two candidates to share a parent without merging (no automatic conflict)", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const parentId = await createApprovedVersion(asset.id as string, "space", { system_prompt: "base" });
     const childA = await repo().createVersion(identity, asset.id as string, {
@@ -332,7 +314,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("marks a candidate stale once another version becomes the current approved version for its scope", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const parentId = await createApprovedVersion(asset.id as string, "space", { system_prompt: "base" });
     const stale = await repo().createVersion(identity, asset.id as string, {
@@ -351,7 +333,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("only allows pinning an approved version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const draft = await repo().createVersion(identity, asset.id as string, { scope_type: "project", scope_id: PROJECT, content_json: {} });
     await expect(
@@ -360,7 +342,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("archives the previous active pin when a new pin is set for the same scope", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const v1 = await createApprovedVersion(asset.id as string, "project", { system_prompt: "v1" });
     const v2 = await createApprovedVersion(asset.id as string, "project", { system_prompt: "v2" });
@@ -373,7 +355,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("pinning one project does not archive a different project's active pin on the same asset", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const vA = await createApprovedVersion(asset.id as string, "project", { system_prompt: "for project A" });
     const vB = await createApprovedVersion(asset.id as string, "project", { system_prompt: "for project B" }, PROJECT_B);
@@ -387,7 +369,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("rejects setting a project pin without project writer authority, a space pin without space owner/admin, and user/agent pins without ownership", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const version = await createApprovedVersion(asset.id as string, "project", { system_prompt: "v1" });
     const outsiderIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
@@ -410,7 +392,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("rejects user-scoped versions and pins on public assets unless user override is enabled", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset("public.no_user_override");
     await expect(
       repo().createVersion(identity, asset.id as string, {
@@ -433,14 +415,14 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("resolves project pin over space-approved version, and space-approved over system baseline", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     // A system baseline also exists, to prove space-approved is preferred over it.
     await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
     const spaceVersion = await createApprovedVersion(asset.id as string, "space", { system_prompt: "space approved" });
     const projectVersion = await createApprovedVersion(asset.id as string, "project", { system_prompt: "project pinned" });
 
-    const systemOnlyResult = await resolveEvolvableAssetVersion(pool!, {
+    const systemOnlyResult = await resolveEvolvableAssetVersion(db.pool, {
       spaceId: SPACE,
       assetKey: asset.asset_key as string,
     });
@@ -448,7 +430,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
     expect(systemOnlyResult.resolutionTrace[0]).toContain("space_approved");
 
     await repo().setPin(identity, asset.id as string, "project", PROJECT, { version_id: projectVersion });
-    const projectResult = await resolveEvolvableAssetVersion(pool!, {
+    const projectResult = await resolveEvolvableAssetVersion(db.pool, {
       spaceId: SPACE,
       assetKey: asset.asset_key as string,
       projectId: PROJECT,
@@ -458,18 +440,18 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("falls back to the system baseline when there is no pin or space-approved version, and records a fallback reason", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
 
-    const result = await resolveEvolvableAssetVersion(pool!, { spaceId: SPACE, assetKey: asset.asset_key as string });
+    const result = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string });
     expect(result.versionId).toBe(systemVersion);
     expect(result.fallbackReason).toBeTruthy();
   });
 
   it("does not expose another space's versions on a shared system asset", async () => {
-    if (!available) return;
-    await pool!.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Other','personal',now(),now())`, [
+    if (!db.available) return;
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Other','personal',now(),now())`, [
       OTHER_SPACE,
     ]);
     const assetKey = "shared.system.prompt";
@@ -477,7 +459,7 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
     const systemVersion = await insertApprovedVersion(assetId, 1, null, "system", null, {
       system_prompt: "system baseline",
     });
-    await pool!.query(`UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`, [assetId, systemVersion]);
+    await db.pool.query(`UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`, [assetId, systemVersion]);
     const otherSpaceVersion = await insertApprovedVersion(assetId, 2, OTHER_SPACE, "space", OTHER_SPACE, {
       system_prompt: "other space override",
     });
@@ -486,12 +468,12 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
     expect(listed.map((version) => version.id)).toContain(systemVersion);
     expect(listed.map((version) => version.id)).not.toContain(otherSpaceVersion);
 
-    const resolved = await resolveEvolvableAssetVersion(pool!, { spaceId: SPACE, assetKey });
+    const resolved = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey });
     expect(resolved.versionId).toBe(systemVersion);
     expect(resolved.resolutionTrace[0]).toContain("system_baseline");
 
     await expect(
-      resolveEvolvableAssetVersion(pool!, {
+      resolveEvolvableAssetVersion(db.pool, {
         spaceId: SPACE,
         assetKey,
         explicitVersionId: otherSpaceVersion,
@@ -504,28 +486,28 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("uses a space pin before the latest space-approved version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const pinnedVersion = await createApprovedVersion(asset.id as string, "space", { system_prompt: "pinned space default" });
     const latestSpaceVersion = await createApprovedVersion(asset.id as string, "space", { system_prompt: "latest space default" });
 
-    const unpinned = await resolveEvolvableAssetVersion(pool!, { spaceId: SPACE, assetKey: asset.asset_key as string });
+    const unpinned = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string });
     expect(unpinned.versionId).toBe(latestSpaceVersion);
 
     await repo().setPin(identity, asset.id as string, "space", SPACE, { version_id: pinnedVersion });
-    const pinned = await resolveEvolvableAssetVersion(pool!, { spaceId: SPACE, assetKey: asset.asset_key as string });
+    const pinned = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string });
     expect(pinned.versionId).toBe(pinnedVersion);
     expect(pinned.resolutionTrace[0]).toContain("space_pin");
   });
 
   it("rejects explicit runtime resolution to a non-approved version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
     const draft = await repo().createVersion(identity, asset.id as string, { scope_type: "space", content_json: { system_prompt: "draft" } });
 
     await expect(
-      resolveEvolvableAssetVersion(pool!, {
+      resolveEvolvableAssetVersion(db.pool, {
         spaceId: SPACE,
         assetKey: asset.asset_key as string,
         explicitVersionId: draft.id as string,
@@ -534,20 +516,20 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("ignores a user pin unless allowUserPin is explicitly set", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset("academic.user_pin_resolution", { metadata_json: { allow_user_override: true } });
     const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
     const userVersion = await createApprovedVersion(asset.id as string, "user", { system_prompt: "user personal" });
     await repo().setPin(identity, asset.id as string, "user", OWNER, { version_id: userVersion });
 
-    const defaultResult = await resolveEvolvableAssetVersion(pool!, {
+    const defaultResult = await resolveEvolvableAssetVersion(db.pool, {
       spaceId: SPACE,
       assetKey: asset.asset_key as string,
       userId: OWNER,
     });
     expect(defaultResult.versionId).toBe(systemVersion);
 
-    const allowedResult = await resolveEvolvableAssetVersion(pool!, {
+    const allowedResult = await resolveEvolvableAssetVersion(db.pool, {
       spaceId: SPACE,
       assetKey: asset.asset_key as string,
       userId: OWNER,
@@ -557,12 +539,12 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("resolves an agent pin", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
     const agentVersion = await createApprovedVersion(asset.id as string, "agent", { system_prompt: "agent specific" });
     await repo().setPin(identity, asset.id as string, "agent", AGENT, { version_id: agentVersion });
 
-    const result = await resolveEvolvableAssetVersion(pool!, {
+    const result = await resolveEvolvableAssetVersion(db.pool, {
       spaceId: SPACE,
       assetKey: asset.asset_key as string,
       agentId: AGENT,
@@ -571,9 +553,9 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
   });
 
   it("rejects cross-space asset access", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await createAsset();
-    await pool!.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Other','personal',now(),now())`, [
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Other','personal',now(),now())`, [
       OTHER_SPACE,
     ]);
     const otherIdentity: SpaceUserIdentity = { spaceId: OTHER_SPACE, userId: OWNER };

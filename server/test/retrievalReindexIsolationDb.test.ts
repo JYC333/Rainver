@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import { RetrievalProjectionService } from "../src/modules/retrieval";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
@@ -19,55 +18,34 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const KNOW = "77777777-7777-4777-8777-777777777777";
 const MEM = "33333333-3333-4333-8333-333333333333";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(
-      `[retrieval-reindex-isolation-db] skipped — Docker/Postgres unavailable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["retrieval_objects", "retrieval_aliases", "retrieval_chunks", "retrieval_edges", "knowledge_items", "space_objects", "memory_entries", "users", "spaces"],
     { cascade: true },
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_at, updated_at)
      VALUES ($1, 'Test Space', 'personal', now(), now())`,
     [SPACE],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES ($1, 'User', 'active', now(), now())`,
     [OWNER],
   );
-  await insertKnowledgeItem(pool, {
+  await insertKnowledgeItem(db.pool, {
     id: KNOW,
     spaceId: SPACE,
     title: "Knowledge title",
     content: "Knowledge body text",
     slug: "knowledge-title",
   });
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO memory_entries (
        id, space_id, scope_type, memory_type, status, visibility, sensitivity_level,
        confidence, importance, version, access_count, title, content, owner_user_id,
@@ -82,17 +60,17 @@ beforeEach(async () => {
 });
 
 function knowledgeProjection(): RetrievalProjectionService {
-  return new RetrievalProjectionService(pool!, knowledgeRetrievalRegistry);
+  return new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry);
 }
 
 function memoryProjection(): RetrievalProjectionService {
-  return new RetrievalProjectionService(pool!, memoryRetrievalRegistry);
+  return new RetrievalProjectionService(db.pool, memoryRetrievalRegistry);
 }
 
 async function projectionCounts(objectType: string): Promise<{ objects: number; aliases: number; chunks: number }> {
   const one = async (table: string) =>
     (
-      await pool!.query<{ n: number }>(
+      await db.pool.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM ${table} WHERE object_type = $1`,
         [objectType],
       )
@@ -106,7 +84,7 @@ async function projectionCounts(objectType: string): Promise<{ objects: number; 
 
 describe("Retrieval reindex domain isolation (real Postgres)", () => {
   it("memory full reindex does not wipe the knowledge projection", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await knowledgeProjection().reindexAll(SPACE);
     await memoryProjection().reindexAll(SPACE);
 
@@ -126,7 +104,7 @@ describe("Retrieval reindex domain isolation (real Postgres)", () => {
   });
 
   it("knowledge full reindex does not wipe the memory projection", async () => {
-    if (!available || !pool) return;
+    if (!db.available) return;
     await knowledgeProjection().reindexAll(SPACE);
     await memoryProjection().reindexAll(SPACE);
 

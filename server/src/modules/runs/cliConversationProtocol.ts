@@ -44,6 +44,13 @@ export function createCliConversationController(input: {
    * resumed session, the previous turn's model.
    */
   attributed_model?: string | null;
+  /**
+   * How hard to have the model think, in the runtime's own vocabulary. Chosen
+   * independently of the model — ACP exposes them as two options — and applied
+   * as its own request, so a runtime that refuses it still answers with the
+   * model that was asked for.
+   */
+  reasoning_effort?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
    * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
@@ -77,11 +84,12 @@ type Send = (message: Record<string, unknown>) => void;
  * adapter replaced its stream-json path in P4 of the runtime replatform.
  */
 export class AcpController implements CliStdioController {
-  private phase: "initialize" | "session_new" | "set_model" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
+  private phase: "initialize" | "session_new" | "set_model" | "set_effort" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
   private resumeHandshakeFailed = false;
   private requestedAcpModel: string | null = null;
+  private requestedEffort: string | null = null;
   private sessionId: string | null = null;
   private text = "";
   private usage: CanonicalUsage | null = null;
@@ -124,6 +132,13 @@ export class AcpController implements CliStdioController {
    * resumed session, the previous turn's model.
    */
   attributed_model?: string | null;
+  /**
+   * How hard to have the model think, in the runtime's own vocabulary. Chosen
+   * independently of the model — ACP exposes them as two options — and applied
+   * as its own request, so a runtime that refuses it still answers with the
+   * model that was asked for.
+   */
+  reasoning_effort?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
     on_permission_decision?: (record: PermissionDecisionRecord) => void;
   }) {
@@ -237,7 +252,7 @@ export class AcpController implements CliStdioController {
             },
           });
         }
-      } else {
+      } else if (!this.startEffort(send)) {
         this.phase = "prompt";
         this.prompt(send);
       }
@@ -274,6 +289,29 @@ export class AcpController implements CliStdioController {
       // prefer what the caller knows this run executes against, then what it
       // asked for, and only then the runtime's echo.
       this.selectedModel = this.input.attributed_model ?? this.input.model ?? appliedModel;
+      if (!this.startEffort(send)) {
+        this.phase = "prompt";
+        this.prompt(send);
+      }
+      return;
+    }
+    if (message.id === EFFORT_REQUEST_ID && this.phase === "set_effort") {
+      // A runtime that will not take the effort is not a reason to lose the
+      // turn: the model is already right and the answer still arrives, just
+      // with the runtime's own effort. Report it and carry on.
+      const applied = stringField(
+        (Array.isArray(record(message.result).configOptions)
+          ? (record(message.result).configOptions as unknown[]).map(record)
+          : []).find((option) => option.id === effortConfigId(this.input.adapter_type)) ?? {},
+        "currentValue",
+      );
+      if (applied !== this.requestedEffort) {
+        this.input.on_protocol_event?.({
+          jsonrpc: "2.0",
+          method: "agent-space/effort_not_applied",
+          params: { requested: this.requestedEffort, applied: applied ?? null },
+        });
+      }
       this.phase = "prompt";
       this.prompt(send);
       return;
@@ -357,7 +395,7 @@ export class AcpController implements CliStdioController {
           }
         }
       }
-      if (this.phase !== "set_model" && this.phase !== "prompt") {
+      if (this.phase !== "set_model" && this.phase !== "set_effort" && this.phase !== "prompt") {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
       }
@@ -391,6 +429,32 @@ export class AcpController implements CliStdioController {
 
   reject(message: string): void {
     if (!this.error) this.error = message;
+  }
+
+  /**
+   * Asks the runtime for a reasoning effort, if one was requested.
+   *
+   * Sent as its own `set_config_option` rather than folded into the model:
+   * ACP exposes them as two options, and the two are chosen independently —
+   * the model is which brain, the effort is how long it gets to use it. The
+   * option id differs per runtime (`reasoning_effort` for Codex, `effort` for
+   * Claude), because each names its own.
+   *
+   * Returns whether a request went out; the caller prompts directly when not.
+   */
+  private startEffort(send: Send): boolean {
+    const effort = this.input.reasoning_effort;
+    const configId = effortConfigId(this.input.adapter_type);
+    if (!effort || !configId || !this.sessionId) return false;
+    this.requestedEffort = effort;
+    this.phase = "set_effort";
+    send({
+      jsonrpc: "2.0",
+      id: EFFORT_REQUEST_ID,
+      method: "session/set_config_option",
+      params: { sessionId: this.sessionId, configId, value: effort },
+    });
+    return true;
   }
 
   private prompt(send: Send): void {
@@ -525,6 +589,16 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 
 function stringField(value: Record<string, unknown>, key: string): string | null {
   return typeof value[key] === "string" && value[key] ? value[key] : null;
+}
+
+/** Codex and Claude each name their own effort option; OpenCode exposes none. */
+/** Between the model request (3) and the first prompt (4 + promptIndex). */
+const EFFORT_REQUEST_ID = 3.5;
+
+function effortConfigId(adapterType: ConversationProtocolAdapter): string | null {
+  if (adapterType === "codex_cli") return "reasoning_effort";
+  if (adapterType === "claude_code") return "effort";
+  return null;
 }
 
 function modelConfigOption(result: Record<string, unknown>): Record<string, unknown> | null {

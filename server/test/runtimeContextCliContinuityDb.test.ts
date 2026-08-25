@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import type { ExecutionControlSnapshot } from "@agent-space/protocol" with { "resolution-mode": "import" };
 import {
   InvocationSnapshotService,
@@ -9,11 +8,7 @@ import {
   RuntimeContextPlanner,
   normalizeContextItem,
 } from "../src/modules/runtimeContext";
-import {
-  getTestPostgres,
-  isTestPostgresUnavailableError,
-  type TestPostgresDatabase,
-} from "./support/sharedPostgres";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 
 const SPACE = "71000000-0000-4000-8000-000000000001";
@@ -29,63 +24,46 @@ const DECISION = "71000000-0000-4000-8000-000000000010";
 const PROVIDER_SPACE = "71000000-0000-4000-8000-000000000013";
 const PROVIDER = "71000000-0000-4000-8000-000000000014";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 2 });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[runtime-context-cli-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
-});
+const db = useTestDatabase(__filename, { max: 2 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
-  await resetTables(pool, ["policy_decision_records", "users", "spaces"], { cascade: true });
-  await pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'CLI','personal',now(),now())`, [SPACE]);
-  await pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
-  await pool.query(
+  if (!db.available) return;
+  await resetTables(db.pool, ["policy_decision_records", "users", "spaces"], { cascade: true });
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'CLI','personal',now(),now())`, [SPACE]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
+  await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,agent_kind,visibility,access_level,created_at,updated_at)
      VALUES ($1,$2,$3,'CLI Agent','active','standard','private','full',now(),now())`,
     [AGENT, SPACE, USER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
      VALUES ($1,$2,$3,'v1','Act','{}','{}','{}','{}','[]','{}','{}',now())`,
     [VERSION, AGENT, SPACE],
   );
-  await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
-  await pool.query(
+  await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (id,space_id,agent_id,name,adapter_type,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
      VALUES ($1,$2,$3,'Codex','codex_cli','{}','{}',TRUE,TRUE,now(),now())`,
     [RUNTIME, SPACE, AGENT],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO sessions (id,space_id,user_id,agent_id,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'active',now(),now())`,
     [SESSION, SPACE, USER, AGENT],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO runs (id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,adapter_type,required_sandbox_level,instructed_by_user_id,owner_user_id,requested_runtime_profile_id,session_id,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'agent','manual','running','live','codex_cli','ephemeral',$5,$5,$6,$7,now(),now())`,
     [RUN, SPACE, AGENT, VERSION, USER, RUNTIME, SESSION],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO policy_decision_records (id,space_id,actor_type,actor_id,action,resource_type,resource_id,decision,risk_level,policy_source,metadata_json,created_at)
      VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,'allow','medium','test','{}',now())`,
     [DECISION, SPACE, USER, SETUP],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO work_context_setups (
        id,space_id,work_context_scope_id,scope_kind,version,user_id,agent_id,runtime_ref_json,
        pinned_refs_json,excluded_refs_json,retrieval_preferences_json,continuity_preferences_json,
@@ -96,7 +74,7 @@ beforeEach(async () => {
                '{}','test',$7,$4,now())`,
     [SETUP, SPACE, RUN, USER, AGENT, JSON.stringify({ type: "agent_runtime_profile", id: RUNTIME }), DECISION],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
      VALUES ($1,$2,$3,$4::jsonb,now())`,
     [CONTROL, SPACE, RUN, JSON.stringify(control())],
@@ -105,8 +83,8 @@ beforeEach(async () => {
 
 describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   it("resumes a healthy accepted vendor session even when its acknowledged cursor is zero", async () => {
-    if (!available || !pool) return;
-    const cli = new RuntimeContextCliContinuityService(pool);
+    if (!db.available) return;
+    const cli = new RuntimeContextCliContinuityService(db.pool);
     const binding = await cli.prepareBinding(bindingInput(control()));
     expect(await cli.recordVendorSession({
       bindingId: binding.id,
@@ -131,9 +109,9 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   });
 
   it("rotates an oversized delta and reconstructs from the bounded checkpoint", async () => {
-    if (!available || !pool) return;
-    const cli = new RuntimeContextCliContinuityService(pool);
-    const continuity = new RuntimeContextContinuityService(pool);
+    if (!db.available) return;
+    const cli = new RuntimeContextCliContinuityService(db.pool);
+    const continuity = new RuntimeContextContinuityService(db.pool);
     const binding = await cli.prepareBinding(bindingInput(control()));
     await cli.recordVendorSession({
       bindingId: binding.id,
@@ -151,12 +129,12 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
         token_estimate: 1_200,
       });
     }
-    const scope = await pool.query<{ event_head_cursor: number }>(
+    const scope = await db.pool.query<{ event_head_cursor: number }>(
       `SELECT event_head_cursor FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
     );
     const checkpointId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO context_semantic_checkpoints (
          id,space_id,work_context_scope_id,version,covered_cursor,status,
          checkpoint_json,extractor_ref_json,created_at
@@ -178,16 +156,16 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     expect(delivery.id).not.toBe(binding.id);
     expect(delivery.rotation_reason).toBe("overflow_reconstruction");
     expect(delivery.delta_item?.payload.text).toContain("Bounded checkpoint");
-    await expect(pool.query<{ status: string }>(
+    await expect(db.pool.query<{ status: string }>(
       `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
       [binding.id],
     )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
   });
 
   it("advances only accepted deltas and rotates hard authority or missing vendor state", async () => {
-    if (!available || !pool) return;
-    const cli = new RuntimeContextCliContinuityService(pool);
-    const continuity = new RuntimeContextContinuityService(pool);
+    if (!db.available) return;
+    const cli = new RuntimeContextCliContinuityService(db.pool);
+    const continuity = new RuntimeContextContinuityService(db.pool);
     const firstMessage = await message("first", "Start the task.", "user");
     await continuity.ingest({
       invocation_id: RUN,
@@ -213,7 +191,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       authorizedSourceRefs: [{ type: "message", id: firstMessage }],
     });
     expect(first).toMatchObject({ mode: "full", target_cursor: 1, delta_item: null });
-    const snapshots = new InvocationSnapshotService(pool, undefined, undefined, undefined, cli);
+    const snapshots = new InvocationSnapshotService(db.pool, undefined, undefined, undefined, cli);
     const attempt = await snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
@@ -241,7 +219,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       vendorSessionId: "thread-1",
     });
     expect(await cursor(binding.id)).toBe(1);
-    expect((await pool.query<{ status: string }>(
+    expect((await db.pool.query<{ status: string }>(
       `SELECT status FROM invocation_snapshots WHERE delivery_id=$1`,
       [attempt.delivery.id],
     )).rows[0]?.status).toBe("draft");
@@ -252,7 +230,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     });
     expect(accepted.cli_known_cursor).toBe(1);
     expect(await cursor(binding.id)).toBe(1);
-    expect((await pool.query<{ vendor_session_id: string | null }>(
+    expect((await db.pool.query<{ vendor_session_id: string | null }>(
       `SELECT vendor_session_id FROM runtime_context_cli_bindings WHERE id=$1`,
       [binding.id],
     )).rows[0]?.vendor_session_id).toBe("thread-1");
@@ -274,7 +252,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       token_estimate: 2,
     });
     const finalRunEventId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET output_json=$2::jsonb WHERE id=$1`,
       [RUN, JSON.stringify({
         schema_version: "run_output.v1",
@@ -284,7 +262,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
         output_manifest: [],
       })],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO run_events (
          id,space_id,run_id,event_index,event_type,status,summary,created_at
        ) VALUES ($1,$2,$3,1,'assistant_message_completed','succeeded',
@@ -318,7 +296,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     expect(await cursor(binding.id)).toBe(1);
     await acknowledge(cli, binding.id, 1, 4, [delta.delta_item!.id, "current-item"]);
     expect(await cursor(binding.id)).toBe(4);
-    const scopeCursor = await pool.query<{ cli_known_cursor: number | null }>(
+    const scopeCursor = await db.pool.query<{ cli_known_cursor: number | null }>(
       `SELECT cli_known_cursor FROM context_event_scopes
         WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
@@ -340,7 +318,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       vendorSessionId: "thread-2",
     });
     const checkpointId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO context_semantic_checkpoints (
          id,space_id,work_context_scope_id,version,covered_cursor,status,
          checkpoint_json,extractor_ref_json,created_at
@@ -379,8 +357,8 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   });
 
   it("serializes a shared binding lease and rotates immutable runtime generations", async () => {
-    if (!available || !pool) return;
-    const cli = new RuntimeContextCliContinuityService(pool);
+    if (!db.available) return;
+    const cli = new RuntimeContextCliContinuityService(db.pool);
     const first = await cli.prepareBinding(bindingInput(control()));
     const firstLease = await cli.acquireExecutionLease(first.id);
     let secondAcquired = false;
@@ -395,7 +373,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     expect(secondAcquired).toBe(true);
     await cli.releaseExecutionLease(first.id, acquired);
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE agent_runtime_profiles
           SET runtime_policy_json='{"network":"restricted"}'::jsonb,updated_at=now() + interval '1 second'
         WHERE id=$1`,
@@ -417,7 +395,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       rotation_reason: "delegated_instruction_changed",
     });
 
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO settings (
          id,scope_type,scope_id,settings_key,settings_json,created_at,updated_at
        ) VALUES ($1,'space',$2,'runtime_context.cli_egress_generation','{"generation":1}',now(),now())`,
@@ -434,13 +412,13 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   });
 
   it("binds provider generations through the target Space grant", async () => {
-    if (!available || !pool) return;
-    await pool.query(
+    if (!db.available) return;
+    await db.pool.query(
       `INSERT INTO spaces (id,name,type,created_at,updated_at)
        VALUES ($1,'Provider Home','personal',now(),now())`,
       [PROVIDER_SPACE],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,default_model,
          enabled,capabilities_json,config_json,created_at,updated_at
@@ -448,19 +426,19 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
                  'shared-model',TRUE,'{}','{}',now(),now())`,
       [PROVIDER, PROVIDER_SPACE, USER],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,
          created_at,updated_at
        ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
       [randomUUID(), PROVIDER, SPACE, USER],
     );
-    const cli = new RuntimeContextCliContinuityService(pool);
+    const cli = new RuntimeContextCliContinuityService(db.pool);
     const input = { ...bindingInput(control()), providerId: PROVIDER, model: "shared-model" };
     const first = await cli.prepareBinding(input);
     expect(first).toMatchObject({ generation: 1, rotation_reason: "new_scope" });
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE model_provider_space_grants
           SET is_default=TRUE,updated_at=now() + interval '1 second'
         WHERE provider_id=$1 AND space_id=$2`,
@@ -470,7 +448,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
       generation: 2,
       rotation_reason: "runtime_changed",
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=FALSE WHERE provider_id=$1 AND space_id=$2`,
       [PROVIDER, SPACE],
     );
@@ -480,7 +458,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   async function message(suffix: string, content: string, role: "user" | "assistant"): Promise<string> {
     void suffix;
     const id = randomUUID();
-    await pool!.query(
+    await db.pool.query(
       `INSERT INTO messages (id,space_id,session_id,user_id,sender_agent_id,role,content,created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,now())`,
       [id, SPACE, SESSION, role === "user" ? USER : null,
@@ -496,7 +474,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
     throughCursor: number,
     itemIds: string[],
   ): Promise<void> {
-    const client = await pool!.connect();
+    const client = await db.pool.connect();
     try {
       await client.query("BEGIN");
       await cli.acknowledgeDeliveryInTransaction(client, {
@@ -517,7 +495,7 @@ describe("Runtime Context CLI continuity (real PostgreSQL)", () => {
   }
 
   async function cursor(bindingId: string): Promise<number> {
-    const result = await pool!.query<{ cli_known_cursor: number }>(
+    const result = await db.pool.query<{ cli_known_cursor: number }>(
       `SELECT cli_known_cursor FROM runtime_context_cli_bindings WHERE id=$1`,
       [bindingId],
     );

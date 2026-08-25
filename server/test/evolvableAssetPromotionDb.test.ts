@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase";
 import { resetTables } from "./support/resetTables";
 import type { ServerConfig } from "../src/config";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
@@ -22,43 +21,26 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
-let container: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
-let available = false;
 
-beforeAll(async () => {
-  try {
-    container = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: container.getConnectionUri(), max: 3 });
-    available = true;
-  } catch (err) {
-    if (!isTestPostgresUnavailableError(err)) throw err;
-    console.warn(`[evolvable-asset-promotion-db] skipped — Docker/Postgres unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}, 180_000);
-
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
+const db = useTestDatabase(__filename);
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   await resetTables(
-    pool,
+    db.pool,
     ["evolution_experiences", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "proposals", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
-  await pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
-  await pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OUTSIDER, now]);
-  await pool.query(
+  await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1,'Main','personal',$2,$2)`, [SPACE, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OWNER, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [OUTSIDER, now]);
+  await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,'owner','active',$4,$4), ($5,$2,$6,'member','active',$4,$4)`,
     [randomUUID(), SPACE, OWNER, now, randomUUID(), OUTSIDER],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
@@ -66,11 +48,11 @@ beforeEach(async () => {
 });
 
 function repo(): EvolvableAssetRepository {
-  return new EvolvableAssetRepository(pool!);
+  return new EvolvableAssetRepository(db.pool);
 }
 
 function evalRepo(): EvolvableAssetEvaluationRepository {
-  return new EvolvableAssetEvaluationRepository(pool!);
+  return new EvolvableAssetEvaluationRepository(db.pool);
 }
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
@@ -107,7 +89,7 @@ function registry(): ProposalApplierRegistry {
 }
 
 async function applyProposal(proposalId: string, userId: string): Promise<ReturnType<ProposalApplierRegistry["apply"]>> {
-  const row = await pool!.query<{
+  const row = await db.pool.query<{
     id: string;
     space_id: string;
     proposal_type: string;
@@ -125,7 +107,7 @@ async function applyProposal(proposalId: string, userId: string): Promise<Return
   if (!proposal) throw new Error("proposal not found");
   const context: ProposalApplyContext = {
     config: {} as ServerConfig,
-    db: pool! as unknown as ProposalApplyContext["db"],
+    db: db.pool as unknown as ProposalApplyContext["db"],
     proposal: proposal as ApplyProposal,
     userId,
   };
@@ -134,7 +116,7 @@ async function applyProposal(proposalId: string, userId: string): Promise<Return
 
 describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", () => {
   it("rejects recording an evaluation run against a draft version", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const asset = await repo().createAsset(identity, {
       asset_type: "prompt_template",
       asset_key: "academic.claim_integrity_checker",
@@ -150,7 +132,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("advances a candidate version to testing once an evaluation run is recorded", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await passEvaluation(assetId, versionId);
     const versions = await repo().listVersions(identity, assetId);
@@ -158,7 +140,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("creates a promotion proposal and rejects promoting without target_scope_id for project scope", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await expect(
       evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "project" }),
@@ -173,7 +155,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("rejects space promotion proposals whose target_scope_id is not the active space", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await expect(
       evalRepo().createPromotionProposal(identity, assetId, versionId, {
@@ -184,7 +166,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("rejects system promotion proposals that include target_scope_id", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await expect(
       evalRepo().createPromotionProposal(identity, assetId, versionId, {
@@ -195,7 +177,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("allows warn-only promotion without a passed evaluation and reports the warning", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, {
       target_scope_type: "project",
@@ -209,7 +191,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("blocks promotion when the proposal explicitly enables the evaluation hard gate", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, {
       target_scope_type: "project",
@@ -220,7 +202,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("applies promotion: approves the version, pins it, deprecates the previous approved version, and records an EvolutionExperience", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId } = await createCandidateVersion();
     // Establish an existing approved version for the same (project) scope.
     const firstVersion = await repo().createVersion(identity, assetId, { scope_type: "project", scope_id: PROJECT, content_json: { v: 1 } });
@@ -254,7 +236,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
     expect(pins).toHaveLength(1);
     expect(pins[0]).toMatchObject({ version_id: secondVersion.id, scope_id: PROJECT });
 
-    const experiences = await pool!.query<{ experience_key: string }>(
+    const experiences = await db.pool.query<{ experience_key: string }>(
       `SELECT experience_key FROM evolution_experiences WHERE space_id = $1`,
       [SPACE],
     );
@@ -262,7 +244,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("rejects promotion for a user without asset management authority", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await passEvaluation(assetId, versionId);
     const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, {
@@ -273,7 +255,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("sets the asset's current_system_version_id when promoting to system scope", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await passEvaluation(assetId, versionId);
     const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "system" });
@@ -284,7 +266,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
   });
 
   it("writes a prompt deployment ref when an accepted promotion carries deployment_label", async () => {
-    if (!available) return;
+    if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
     await passEvaluation(assetId, versionId);
     const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, {
@@ -295,7 +277,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
     const applied = await applyProposal(proposal.proposal_id as string, OWNER);
     expect(applied.result).toMatchObject({ version_id: versionId, deployment_label: "production" });
 
-    const refs = await pool!.query<{ version_id: string; scope_type: string; scope_id: string; status: string; promoted_from_proposal_id: string }>(
+    const refs = await db.pool.query<{ version_id: string; scope_type: string; scope_id: string; status: string; promoted_from_proposal_id: string }>(
       `SELECT version_id, scope_type, scope_id, status, promoted_from_proposal_id
          FROM prompt_deployment_refs
         WHERE asset_id = $1 AND label = 'production'`,
