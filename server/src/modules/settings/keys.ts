@@ -1,4 +1,6 @@
 export const SETTINGS_KEYS = {
+  acpAgents: "acp_agents.enabled",
+  acpRegistryCache: "acp_agents.registry_cache",
   assistantDefault: "agent.default_assistant.settings",
   customSourceInstanceRunner: "source.custom_source.runner",
   customSourceSpacePolicy: "source.custom_source.space_policy",

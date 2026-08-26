@@ -26,7 +26,10 @@ import { getDbPool } from "../../db/pool.js";
 import { PgHostThreadEventRepository } from "./threadEventRepository.js";
 import { commandServices } from "../runs/routes.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
-import { listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
+import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
+import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
+import { normalizeHostCapabilities } from "./capabilities.js";
+import { dispatchOptions } from "./dispatchOptions.js";
 import { settleTaskAfterQueuedMessageWithdrawal } from "../tasks/taskRunStatusProjection.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
@@ -45,6 +48,12 @@ function bindingToOut(binding: HostRuntimeProviderBinding) {
     model: binding.model,
     updated_at: binding.updated_at,
   };
+}
+
+/** The open login terminal per host × adapter × copy — one at a time, the newest wins. */
+const activeLoginSessions = new Map<string, string>();
+function loginSessionKey(hostId: string, adapterType: string, installation: string): string {
+  return `${hostId}/${adapterType}/${installation}`;
 }
 
 function remoteEligibleAdapterTypes(): string[] {
@@ -183,9 +192,11 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
     arch: typeof payload.arch === "string" ? payload.arch : null,
     daemon_version: typeof payload.daemon_version === "string" ? payload.daemon_version : null,
     server_url: typeof payload.server_url === "string" ? payload.server_url : null,
+    // Stored in the one shape every reader uses; the daemon's wire format
+    // and its history are `capabilities.ts`'s concern alone.
     capabilities_json:
       payload.capabilities_json && typeof payload.capabilities_json === "object" && !Array.isArray(payload.capabilities_json)
-        ? (payload.capabilities_json as Record<string, unknown>)
+        ? (normalizeHostCapabilities(payload.capabilities_json) as unknown as Record<string, unknown>)
         : null,
     environment_kind: typeof payload.environment_kind === "string" ? payload.environment_kind : null,
     workspace_reports: workspaceReports,
@@ -341,8 +352,141 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         capability_probe: spec.invocation?.remote_capability_probe ?? spec.executable!.command!,
         remote_eligible: spec.implementation_status === "implemented"
           && spec.invocation?.protocol === "acp",
+        // A builtin adapter's managed copy comes from this ACP registry entry;
+        // the registry picker hides it so the same agent is not offered twice.
+        registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
+        // Whether a ModelProvider can be bound to it at all; a registry agent
+        // runs on the copy's own login only.
+        provider_binding: !spec.invocation?.remote_host_only,
+        provider_api: spec.model.provider_api ?? null,
       }));
     return reply.send({ items });
+  });
+
+  // What a dispatch to this host can choose from, decided where dispatch is
+  // validated: the runtime copies the host has and, for the chosen copy,
+  // every backend with whether it is usable and why not. The composer
+  // renders this rather than reconstructing it from bindings, providers and
+  // capabilities — three sources that drifted apart in the browser.
+  app.get("/api/v1/hosts/:hostId/dispatch-options", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const query = request.query as Record<string, string | undefined>;
+    const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
+    return reply.send(await dispatchOptions({
+      db: resolved.pool,
+      providers: resolveProvidersDbPort(context.config),
+      spaceId: resolved.spaceId,
+      userId: resolved.userId,
+      hostId: resolved.hostId,
+      capabilities: host.rows[0]?.capabilities_json ?? null,
+      adapterType: query.adapter_type?.trim() || null,
+      installation: query.installation?.trim() || null,
+      threadId: query.thread_id?.trim() || null,
+    }));
+  });
+
+  // A managed copy of a runtime on a host, installed and removed by its
+  // daemon on the owner's request. Any ACP adapter with a distribution
+  // qualifies — a builtin CLI as much as a registry agent — and each managed
+  // copy keeps its own login state apart from the machine's own install.
+  app.post("/api/v1/hosts/:hostId/installations/:adapterType", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const adapterType = params(request).adapterType ?? "";
+    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    }
+    const probe = acpRuntimeProbe(adapterType);
+    if (!probe?.distribution) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' has no distribution to install from` });
+    }
+    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "install_tool", {
+      adapter_type: adapterType,
+      version: probe.version ?? "latest",
+      distribution: probe.distribution,
+      login: probe.login,
+    });
+    return reply.code(result.ok ? 200 : 502).send({ host_id: resolved.hostId, adapter_type: adapterType, ...result });
+  });
+
+  app.delete("/api/v1/hosts/:hostId/installations/:adapterType/:installation", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const { adapterType, installation } = params(request);
+    if (!adapterType || !installation?.startsWith("managed:")) {
+      return reply.code(422).send({ detail: "Only a managed installation can be removed" });
+    }
+    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "uninstall_tool", {
+      adapter_type: adapterType,
+      version: installation.slice("managed:".length),
+    });
+    return reply.code(result.ok ? 200 : 502).send({ host_id: resolved.hostId, adapter_type: adapterType, ...result });
+  });
+
+  // An interactive login for one copy of a runtime on a host, as a terminal
+  // stream: the daemon runs the copy's login command on a PTY and relays it;
+  // the person reads it here and types through the input route. Host owner
+  // only — it is their machine and their account.
+  app.get("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const { adapterType, installation } = params(request);
+    if (!adapterType || !installation) return reply.code(400).send({ detail: "adapterType and installation are required" });
+    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    }
+    const probe = acpRuntimeProbe(adapterType);
+    if (!probe) return reply.code(422).send({ detail: `Unknown runtime adapter '${adapterType}'` });
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      "x-accel-buffering": "no",
+    });
+    const emit = (event: unknown) => {
+      if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    const key = loginSessionKey(resolved.hostId, adapterType, installation);
+    const previous = activeLoginSessions.get(key);
+    if (previous) sharedHostConnectionRegistry.closeLoginSession(resolved.hostId, previous);
+    const sessionId = sharedHostConnectionRegistry.openLoginSession(
+      resolved.hostId,
+      { adapter_type: adapterType, installation, login: probe.login },
+      (event) => {
+        emit(event);
+        if (event.type === "exit") {
+          if (activeLoginSessions.get(key) === sessionId) activeLoginSessions.delete(key);
+          reply.raw.end();
+        }
+      },
+    );
+    if (!sessionId) {
+      emit({ type: "error", message: "host_offline" });
+      reply.raw.end();
+      return reply;
+    }
+    activeLoginSessions.set(key, sessionId);
+    if (probe.login?.hint) emit({ type: "hint", text: probe.login.hint });
+    reply.raw.once("close", () => {
+      if (activeLoginSessions.get(key) === sessionId) {
+        activeLoginSessions.delete(key);
+        sharedHostConnectionRegistry.closeLoginSession(resolved.hostId, sessionId);
+      }
+    });
+    return reply;
+  });
+
+  app.post("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/input", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const { adapterType, installation } = params(request);
+    const data = body<{ data?: unknown }>(request).data;
+    if (!adapterType || !installation || typeof data !== "string") return reply.code(400).send({ detail: "data is required" });
+    const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, adapterType, installation));
+    if (!sessionId || !sharedHostConnectionRegistry.sendLoginInput(resolved.hostId, sessionId, data)) {
+      return reply.code(409).send({ detail: "No login session is open for this installation" });
+    }
+    return reply.code(204).send();
   });
 
   // Which model backend a host's runtime adapter runs against.
@@ -369,6 +513,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
     if (!remoteEligibleAdapterTypes().includes(adapterType)) {
       return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    }
+    // An ACP-registry agent runs on the machine's own login only: nothing
+    // knows how to write a provider into its config.
+    if (getRuntimeAdapterSpec(adapterType)?.invocation?.remote_host_only) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' does not accept a ModelProvider` });
     }
     try {
       // Usable *from this Space*. Dispatch re-validates against whichever
@@ -828,7 +977,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               authenticatedHostId = host.id;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
-              socket.send(JSON.stringify({ type: "hello_ack", host_id: host.id }));
+              socket.send(JSON.stringify({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() }));
             } finally {
               helloInProgress = false;
             }
@@ -870,6 +1019,26 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 exit_code: typeof frame.exit_code === "number" ? frame.exit_code : -1,
                 timed_out: frame.timed_out === true,
                 error: typeof frame.error === "string" ? frame.error : null,
+              });
+            }
+            return;
+          }
+          if (frame.type === "login_output" || frame.type === "login_exit") {
+            const sessionId = typeof frame.session_id === "string" ? frame.session_id : null;
+            if (sessionId) {
+              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, sessionId, frame.type === "login_output"
+                ? { type: "output", data: typeof frame.data === "string" ? frame.data : "" }
+                : { type: "exit", exit_code: typeof frame.exit_code === "number" ? frame.exit_code : -1, logged_in: typeof frame.logged_in === "boolean" ? frame.logged_in : null });
+            }
+            return;
+          }
+          if (frame.type === "tool_result") {
+            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+            if (requestId) {
+              sharedHostConnectionRegistry.receiveToolResult(authenticatedHostId, requestId, {
+                ok: frame.ok === true,
+                error: typeof frame.error === "string" ? frame.error : null,
+                installation: typeof frame.installation === "string" ? frame.installation : null,
               });
             }
             return;

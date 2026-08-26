@@ -38,6 +38,7 @@ export * from "./credentials.js";
 
 // Network profile contracts
 export * from "./networkProfiles.js";
+export * from "./hosts.js";
 
 // Identity introspection contract
 export * from "./auth.js";

@@ -1,5 +1,5 @@
 {
-  "id": "c197828f-d3ef-4b6f-a3aa-d1f1e106585b",
+  "id": "499c7f5b-059d-48ea-b0e5-80802d52c748",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -67160,6 +67160,13 @@
           "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
+        },
+        "runtime_installation": {
+          "name": "runtime_installation",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'own'"
         },
         "vendor_session_id": {
           "name": "vendor_session_id",

@@ -71,7 +71,8 @@ export {
   type CliProcessRegistry,
 } from "./localCliExecution.js";
 
-export type VendorCliAdapterType = "claude_code" | "codex_cli" | "opencode";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
+export type { VendorCliAdapterType };
 export type ExecutorMode = "worktree" | "docker";
 
 export interface CliCredentialBrokerPort {

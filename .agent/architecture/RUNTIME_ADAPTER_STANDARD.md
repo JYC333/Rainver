@@ -98,6 +98,29 @@ It may resume only the vendor session named by the scoped CLI binding. It does
 not fetch context, concatenate a route-authored replay prompt, advance cursors,
 or treat vendor archives as canonical state.
 
-To add a new local CLI adapter, add a validated `RuntimeAdapterSpec` and the
-corresponding server adapter behavior if command rendering, parsing, or credential
-handling differs from the generic local CLI path.
+To add a new local CLI adapter: add its `RuntimeAdapterType` member, add it to
+`VendorCliAdapterType`, and add a validated `RuntimeAdapterSpec`. Membership
+checks read the spec (`isVendorCliAdapter`, `isAcpRuntimeAdapter`), so a
+vendor CLI that speaks ACP natively then dispatches to remote hosts — launch
+argv, capability discovery, and the option probe all derive from the spec —
+without daemon changes. The compiler then names the per-vendor tables keyed on
+`VendorCliAdapterType` that need an entry (subscription egress hosts), and
+ModelProvider binding needs vendor-specific config generation
+(`runtimeProviderBinding.ts` / `remoteProviderBinding.ts`) if the CLI accepts a
+provider at all. Do not add `adapter_type === "<vendor>"` literal checks for
+"is this a CLI" — use the predicates.
+
+A builtin ACP adapter also declares how a *managed* copy is obtained on an
+execution host (`distribution: { registry_id }`, resolved against the ACP
+registry) and how it is logged into (`credentials.login`: PATH command,
+`managed_command` inside a tree, `home_subdir`, `credential_file`) — the
+server-host login adapters and the daemon both read those fields, so the
+knowledge is written once. See `modules/hosts.md` "Installations".
+
+An agent from the ACP registry needs no spec at all: enabling it
+(`modules/acpAgents`) publishes a dynamic adapter built from the registry
+entry plus low-trust, remote-host-only defaults
+(`acpAgentRuntimeAdapterSpec`). Write a builtin spec for such an agent only
+when it should get more than that — a ModelProvider binding, subagent
+lockdown, usage accounting, server-host execution — each of which is
+vendor-specific code, not configuration.

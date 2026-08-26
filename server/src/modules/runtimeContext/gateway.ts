@@ -56,6 +56,7 @@ import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.j
 import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider.js";
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -448,7 +449,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     control: ExecutionControlSnapshot,
     run: { adapter_type: string | null; model_provider_id: string | null },
   ): Promise<{ destination: RetrievalEgressDestination; externalEgressEnabled: boolean }> {
-    let external = run.adapter_type === "claude_code" || run.adapter_type === "codex_cli" || run.adapter_type === "opencode";
+    let external = isVendorCliAdapter(run.adapter_type);
     let destination: RetrievalEgressDestination = external ? "external_provider" : "internal_process";
     if (external && !run.model_provider_id
       && (control.egress.destination_type !== "local_cli"

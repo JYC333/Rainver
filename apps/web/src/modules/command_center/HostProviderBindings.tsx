@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { hostsApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { HostRuntimeAdapterOption, HostRuntimeProviderBinding } from '../../types/api'
+import { installationsOn } from './HostAgents'
+import type { Host, HostRuntimeAdapterOption, HostRuntimeProviderBinding } from '../../types/api'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 
@@ -17,24 +18,26 @@ import { AMBIENT_BACKEND as AMBIENT, eligibleProviders } from './backendChoice'
  * host cards, and the provider list is identical for all of them.
  */
 export default function HostProviderBindings({
-  hostId,
+  host,
   runtimeAdapters,
-  installedProbes,
   providers,
 }: {
-  hostId: string
+  host: Host
   runtimeAdapters: HostRuntimeAdapterOption[]
-  installedProbes: string[]
   providers: ModelProviderOut[]
 }) {
+  const hostId = host.id
+  const presentAdapters = runtimeAdapters.filter(a => installationsOn(host, a).length > 0)
   const [bindings, setBindings] = useState<HostRuntimeProviderBinding[]>([])
   const [busy, setBusy] = useState<string | null>(null)
 
-  // Only adapters this host actually reports as installed: a backend choice
-  // for a runtime the machine does not have is noise.
+  // Only adapters this host has a copy of — own or managed — and that can
+  // take a provider at all: a backend choice for a runtime the machine does
+  // not have, or that only ever runs on its own login, is noise. A binding
+  // is per host × adapter and applies to whichever copy a thread runs on.
   const adapters = useMemo(
-    () => runtimeAdapters.filter(a => a.remote_eligible && installedProbes.includes(a.capability_probe)),
-    [runtimeAdapters, installedProbes],
+    () => runtimeAdapters.filter(a => a.remote_eligible && a.provider_binding !== false && installationsOn(host, a).length > 0),
+    [runtimeAdapters, host],
   )
 
   useEffect(() => {
@@ -76,9 +79,12 @@ export default function HostProviderBindings({
       <div className="w-full space-y-1 border-t pt-2">
         <Label className="text-xs text-muted-foreground">Model backend</Label>
         <p className="text-xs text-muted-foreground">
-          {installedProbes.length === 0
-            ? 'This host has not reported an installed runtime yet. Start the daemon (rainver-host run) and wait for its next heartbeat.'
-            : `None of this host's runtimes (${installedProbes.join(', ')}) can be dispatched to remotely, so there is no backend to choose.`}
+          {presentAdapters.length === 0
+            ? (host.capabilities_json?.runtimes?.length
+                // Something is on PATH, just nothing that can be dispatched to.
+                ? `None of this host's runtimes (${host.capabilities_json.runtimes.join(', ')}) can be dispatched to remotely, so there is no backend to choose.`
+                : 'This host has not reported an installed runtime yet. Start the daemon (rainver-host run) and wait for its next heartbeat.')
+            : `None of this host's runtimes (${presentAdapters.map(a => a.display_name).join(', ')}) takes a ModelProvider, so there is no backend to choose.`}
         </p>
       </div>
     )
@@ -90,7 +96,7 @@ export default function HostProviderBindings({
       <div className="grid gap-2 sm:grid-cols-2">
         {adapters.map(adapter => {
           const bound = bindings.find(b => b.adapter_type === adapter.adapter_type)
-          const options = eligibleProviders(providers, adapter.adapter_type)
+          const options = eligibleProviders(providers, adapter)
           // A provider removed after being bound is soft-deleted, so the
           // binding outlives it and every dispatch on this host now fails.
           // Say that, rather than rendering a bare id.

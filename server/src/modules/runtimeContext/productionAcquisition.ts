@@ -63,6 +63,7 @@ import {
 } from "../capabilities/runtimeSkillProvider.js";
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 type SetupRow = {
   id: string;
@@ -1110,7 +1111,7 @@ export async function revalidateExecutionDestination(
   adapterType: string | null,
 ): Promise<RetrievalEgressDestination> {
   if (control.egress.destination_type !== "model_provider") {
-    const cli = adapterType === "claude_code" || adapterType === "codex_cli" || adapterType === "opencode";
+    const cli = isVendorCliAdapter(adapterType);
     if (cli) {
       if (control.egress.destination_type !== "local_cli"
         || control.egress.destination_id !== adapterType

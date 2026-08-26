@@ -5679,6 +5679,7 @@ CREATE TABLE "host_task_threads" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"workspace_location_id" varchar(36) NOT NULL,
 	"adapter_type" varchar(64) NOT NULL,
+	"runtime_installation" varchar(64) DEFAULT 'own' NOT NULL,
 	"vendor_session_id" varchar(256),
 	"last_run_id" varchar(36),
 	"status" varchar(24) DEFAULT 'active' NOT NULL,

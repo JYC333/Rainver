@@ -72,8 +72,8 @@ export async function renderCliCommand(
     sandbox_cwd: input.sandbox_cwd ?? "",
     resume_session_id: input.resume_session_id ?? "",
   };
-  const argv = renderTemplate(template, values);
-  const redacted = renderTemplate(template, { ...values, prompt: "[REDACTED_PROMPT]" });
+  const argv = renderCommandTemplate(template, values);
+  const redacted = renderCommandTemplate(template, { ...values, prompt: "[REDACTED_PROMPT]" });
 
   const extraArgs: string[] = [];
   // Model selection for an ACP adapter happens over the protocol
@@ -86,7 +86,7 @@ export async function renderCliCommand(
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
       throw new CliRenderError("model_override_not_supported", `adapter_type '${spec.adapter_type}' does not support model override`);
     }
-    extraArgs.push(...renderTemplate(spec.model.model_arg_template, { model: input.model }));
+    extraArgs.push(...renderCommandTemplate(spec.model.model_arg_template, { model: input.model }));
   }
 
   if (input.permission_bypass) {
@@ -116,7 +116,8 @@ export async function renderCliCommand(
   };
 }
 
-function renderTemplate(template: string[], values: Record<string, string>): string[] {
+/** Exported for the hosts module, which renders ACP probe argv from the same templates. */
+export function renderCommandTemplate(template: string[], values: Record<string, string>): string[] {
   return template.map((part) =>
     part.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (_match, name: string) => {
       const value = values[name];

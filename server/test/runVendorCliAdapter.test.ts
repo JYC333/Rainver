@@ -563,7 +563,7 @@ describe("executeVendorCliAdapter", () => {
     await expect(readFile(join(sandbox, "AGENTS.md"), "utf8")).rejects.toThrow();
   });
 
-  it("does not leak Claude ACP bootstrap tool events into the current turn", async () => {
+  it("does not leak Claude Code ACP bootstrap tool events into the current turn", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-delivery-"));
     tmpPaths.push(sandbox);
     const sessionId = "session-1";
@@ -2030,7 +2030,7 @@ describe("vendor structured event normalization", () => {
       },
     }, send, close);
 
-    expect(controller.result().error).toBe("Codex ACP returned invalid token usage");
+    expect(controller.result().error).toBe("Codex CLI ACP returned invalid token usage");
   });
 
   it("rejects invalid optional OpenCode ACP usage buckets", () => {

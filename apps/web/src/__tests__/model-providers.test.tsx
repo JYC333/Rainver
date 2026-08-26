@@ -16,6 +16,8 @@ const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, ac
 
 vi.mock('../api/client', () => ({
   authApi: { mySpaces: vi.fn().mockResolvedValue([]) },
+  acpAgentsApi: { registry: vi.fn().mockResolvedValue({ items: [] }), list: vi.fn().mockResolvedValue({ items: [] }) },
+  hostsApi: { list: vi.fn().mockResolvedValue({ items: [] }), listRuntimeAdapters: vi.fn().mockResolvedValue({ items: [] }) },
   providersApi: { list: listMock, presets: presetsMock, vendors: vendorsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn() },
 }))
 

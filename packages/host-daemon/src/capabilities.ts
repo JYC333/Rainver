@@ -1,14 +1,21 @@
 import { spawn } from "node:child_process";
+import { installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec } from "./tools.js";
+import { homedir } from "node:os";
 
 /**
  * The daemon discovers whatever the machine already has installed — it
  * never installs or manages a CLI's version tree itself (that would make it
  * a second `runtimeTools` service; ADR 0016 keeps execution-host capability
  * discovery to "what is on PATH right now").
+ *
+ * *Which* runtimes to look for is the control plane's knowledge, not this
+ * daemon's: the adapter specs name them and `hello_ack` passes them down
+ * (`runtime_probes`). The daemon itself only ever looks for `git`.
  */
-const PROBED_BINARIES = ["claude", "codex", "opencode", "git"] as const;
+const ALWAYS_PROBED = ["git"] as const;
 
-export type ProbedBinary = (typeof PROBED_BINARIES)[number];
+/** A binary name the capability probe reports, as the adapter spec names it. */
+export type ProbedBinary = string;
 
 export interface RuntimeOption {
   value: string;
@@ -23,31 +30,40 @@ export interface RuntimeOptions {
   current_effort: string | null;
 }
 
+/** One copy of a runtime on this machine. */
+export interface RuntimeInstallation {
+  /** `own` or `managed:<version>`. */
+  id: string;
+  version: string | null;
+  /** Whether its login state exists; null when the runtime declares no login. */
+  logged_in: boolean | null;
+  /**
+   * What this copy says it can be set to, asked over ACP — or, when it could
+   * not be asked, just what its config pins (empty lists, current values).
+   * Null when neither was available.
+   */
+  options: RuntimeOptions | null;
+}
+
+/** What the server says to look for, per adapter (`hello_ack.runtime_probes`). */
+export interface RuntimeLookup {
+  adapter_type: string;
+  /** The PATH binary of the machine's own install; null for a managed-only runtime. */
+  runtime: string | null;
+  login: ToolLoginSpec | null;
+}
+
+/**
+ * What this machine can run. One identity for a runtime on a host — the
+ * adapter type and the copy — and everything about a copy lives on the
+ * copy. `runtimes`/`versions` remain as the plain PATH inventory (vendor
+ * binaries and git) for display and for readers that predate installations.
+ */
 export interface DaemonCapabilities {
   runtimes: ProbedBinary[];
   versions: Partial<Record<ProbedBinary, string>>;
-  /** What each CLI is configured to run on when nothing is bound to it. */
-  models: Partial<Record<ProbedBinary, string>>;
-  /**
-   * How hard each CLI is configured to have its model think. Separate from the
-   * model because the two are chosen independently — the model is which brain,
-   * the effort is how long it gets to use it.
-   */
-  reasoning: Partial<Record<ProbedBinary, string>>;
-  /**
-   * What each runtime says it can be set to, asked over ACP.
-   *
-   * Guessing this was wrong in both directions: Claude offers
-   * `default/low/medium/high/xhigh/max` where a hardcoded list had three, and
-   * its model ids carry their own brackets (`claude-fable-5[1m]`), so a model
-   * and an effort cannot be recovered from one string. Only the runtime knows,
-   * and asking is the difference between offering a real choice and offering a
-   * plausible one.
-   *
-   * Absent for a runtime that could not be asked — not installed, not logged
-   * in, or too slow to answer.
-   */
-  options: Partial<Record<ProbedBinary, RuntimeOptions>>;
+  /** Every copy of every adapter, keyed by adapter type. */
+  installations: Record<string, RuntimeInstallation[]>;
 }
 
 function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
@@ -86,7 +102,7 @@ function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
  * ask starts an agent process.
  */
 const OPTIONS_TTL_MS = 15 * 60 * 1000;
-const optionsCache = new Map<ProbedBinary, { at: number; value: RuntimeOptions | null }>();
+const optionsCache = new Map<string, { at: number; value: RuntimeOptions | null }>();
 
 /** Exported for tests: the next `detectCapabilities` re-asks every runtime. */
 export function __clearRuntimeOptionsCache(): void {
@@ -94,44 +110,71 @@ export function __clearRuntimeOptionsCache(): void {
 }
 
 async function runtimeOptions(
-  bin: ProbedBinary,
-  ask: (bin: ProbedBinary) => Promise<RuntimeOptions | null>,
+  key: string,
+  ask: () => Promise<RuntimeOptions | null>,
 ): Promise<RuntimeOptions | null> {
-  const cached = optionsCache.get(bin);
+  const cached = optionsCache.get(key);
   if (cached && Date.now() - cached.at < OPTIONS_TTL_MS) return cached.value;
-  const value = await ask(bin);
-  optionsCache.set(bin, { at: Date.now(), value });
+  const value = await ask();
+  optionsCache.set(key, { at: Date.now(), value });
   return value;
 }
 
+/** Asks one copy for its options; the caller decides how (`api.ts`). */
+export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
+
 export async function detectCapabilities(
-  askOptions?: (bin: ProbedBinary) => Promise<RuntimeOptions | null>,
+  askOptions?: AskRuntimeOptions,
+  /** What the server can dispatch to; nothing until `hello_ack` says. */
+  lookups: readonly RuntimeLookup[] = [],
 ): Promise<DaemonCapabilities> {
   const runtimes: ProbedBinary[] = [];
+  const installations: Record<string, RuntimeInstallation[]> = {};
   const versions: Partial<Record<ProbedBinary, string>> = {};
-  const models: Partial<Record<ProbedBinary, string>> = {};
-  const reasoning: Partial<Record<ProbedBinary, string>> = {};
-  const options: Partial<Record<ProbedBinary, RuntimeOptions>> = {};
-  for (const bin of PROBED_BINARIES) {
+  const managed = await installedTools();
+
+  for (const lookup of lookups) {
+    const found: RuntimeInstallation[] = [];
+    if (lookup.runtime) {
+      const version = await probeVersion(lookup.runtime);
+      if (version !== null) {
+        runtimes.push(lookup.runtime);
+        versions[lookup.runtime] = version;
+        const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
+        found.push({
+          id: OWN_INSTALLATION,
+          version,
+          logged_in: loggedIn(homedir(), lookup.login),
+          // The runtime's own answer needs no parsing; failing that, what its
+          // config pins is still better than nothing.
+          options: asked ?? await configuredOptions(lookup.runtime),
+        });
+      }
+    }
+    for (const manifest of managed.get(lookup.adapter_type) ?? []) {
+      const id = managedInstallationId(manifest.version);
+      found.push({
+        id,
+        version: manifest.version,
+        logged_in: loggedIn(manifest.home, manifest.login),
+        options: askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null,
+      });
+    }
+    if (found.length > 0) installations[lookup.adapter_type] = found;
+  }
+  for (const bin of ALWAYS_PROBED) {
     const version = await probeVersion(bin);
     if (version === null) continue;
     runtimes.push(bin);
     versions[bin] = version;
-
-    const asked = askOptions ? await runtimeOptions(bin, askOptions) : null;
-    if (asked) {
-      options[bin] = asked;
-      // The runtime's own answer, which needs no parsing and cannot be wrong.
-      if (asked.current_model) models[bin] = asked.current_model;
-      if (asked.current_effort) reasoning[bin] = asked.current_effort;
-      continue;
-    }
-    // Fall back to reading the config when the runtime could not be asked.
-    const configured = await probeConfiguredModel(bin);
-    if (configured?.model) models[bin] = configured.model;
-    if (configured?.effort) reasoning[bin] = configured.effort;
   }
-  return { runtimes, versions, models, reasoning, options };
+  return { runtimes, versions, installations };
+}
+
+async function configuredOptions(bin: string): Promise<RuntimeOptions | null> {
+  const configured = await probeConfiguredModel(bin);
+  if (!configured?.model && !configured?.effort) return null;
+  return { models: [], current_model: configured.model, efforts: [], current_effort: configured.effort };
 }
 
 /**
@@ -168,7 +211,7 @@ function splitModelEffort(value: string | null): ConfiguredModel {
   return { model: match.groups.model!.trim() || null, effort: match.groups.effort!.trim() || null };
 }
 
-async function probeConfiguredModel(bin: ProbedBinary): Promise<ConfiguredModel | null> {
+async function probeConfiguredModel(bin: string): Promise<ConfiguredModel | null> {
   const { readFile } = await import("node:fs/promises");
   const { homedir } = await import("node:os");
   const { join } = await import("node:path");

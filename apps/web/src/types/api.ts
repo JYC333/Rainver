@@ -2284,6 +2284,8 @@ export interface TaskRunCreateBody {
   project_id?: string | null
   project_folder_id?: string | null
   adapter_type?: string
+  /** Remote dispatch only: which copy of the runtime on the host (`own` or `managed:<version>`); a thread keeps its first. */
+  installation?: string
   thread_id?: string | null
   /**
    * Remote dispatch only. Absent means the thread's own backend (or the Host ×
@@ -3464,35 +3466,9 @@ export interface ProjectFolderScanCandidate {
 // --- ADR 0016: multi-host control center -----------------------------------
 
 /** One choice as the runtime describes it: its own name, and what it means. */
-export interface RuntimeOptionChoice {
-  value: string
-  name?: string | null
-  description?: string | null
-}
-
-export interface HostCapabilities {
-  runtimes?: string[]
-  versions?: Record<string, string>
-  /**
-   * What each installed CLI is configured to run on, keyed by capability
-   * probe. Only meaningful for a run with no binding: with one, the server
-   * chose the model and this is what the machine would otherwise have used.
-   */
-  models?: Record<string, string>
-  /** How hard each CLI is configured to have its model think. */
-  reasoning?: Record<string, string>
-  /**
-   * What each runtime said it can be set to, asked over ACP. Never a guessed
-   * list: effort levels differ per runtime, and model ids can carry brackets
-   * that are part of the name.
-   */
-  options?: Record<string, {
-    models?: RuntimeOptionChoice[]
-    current_model?: string | null
-    efforts?: RuntimeOptionChoice[]
-    current_effort?: string | null
-  }>
-}
+// The host/dispatch contract is the protocol's; one shape for server and web.
+import type { HostCapabilities } from '@rainver/protocol'
+export type { DispatchBackend, DispatchOptions, HostCapabilities, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions } from '@rainver/protocol'
 
 export interface Host {
   id: string
@@ -3530,6 +3506,7 @@ export interface HostTaskThread {
   project_folder_id: string
   host_id: string
   adapter_type: string
+  runtime_installation?: string
   vendor_session_id: string | null
   last_run_id: string | null
   status: 'active' | 'session_reset'
@@ -3599,6 +3576,12 @@ export interface HostRuntimeAdapterOption {
   /** ACP runtime replatform P3: the vendor binary a host's capability probe actually reports (may differ from `command`). */
   capability_probe: string
   remote_eligible: boolean
+  /** The ACP registry entry this adapter's managed copy is installed from, when it has one. */
+  registry_id?: string | null
+  /** Whether a ModelProvider can be bound to it; false for a registry agent, which runs on the copy's own login only. */
+  provider_binding?: boolean
+  /** Which ModelProvider endpoint it speaks — the `<provider_api>_base_url` a binding needs. */
+  provider_api?: 'claude_compatible' | 'openai_compatible' | null
 }
 
 /**

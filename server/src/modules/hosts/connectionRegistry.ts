@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * ADR 0016 P3: tracks which hosts currently hold a live WebSocket connection
  * and lets server code (the dispatch path, `RemoteWsCliCommandExecutor`)
@@ -64,9 +65,32 @@ interface HostConnection {
   sink: HostFrameSink | null;
 }
 
+/** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
+export interface ToolInstallResult {
+  ok: boolean;
+  error: string | null;
+  /** The installation id (`managed:<version>`) the action produced or removed. */
+  installation: string | null;
+}
+
+/** What a daemon's login terminal sends back, frame by frame. */
+export type LoginSessionEvent =
+  | { type: "output"; data: string }
+  | { type: "exit"; exit_code: number; logged_in: boolean | null };
+
+interface PendingLogin {
+  hostId: string;
+  onEvent: (event: LoginSessionEvent) => void;
+}
+
+/** An install is a download plus an `npm install`; minutes, not seconds. */
+const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
+  private readonly pendingInstalls = new Map<string, { hostId: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly logins = new Map<string, PendingLogin>();
 
   registerConnection(hostId: string, sink: HostFrameSink): void {
     // A second connection from the same host (e.g. daemon restart racing its
@@ -174,6 +198,73 @@ export class HostConnectionRegistry {
     const pending = this.pending.get(runId);
     if (pending?.hostId === hostId) pending.pendingStdin.push({ type: "stdin_close" });
     return false;
+  }
+
+  /**
+   * Asks a daemon to install a tool into its managed tools directory and
+   * resolves with its report. Unlike a run, an install has no reconnect
+   * grace: a daemon that drops mid-install starts over on the next request,
+   * and the operator sees the failure now rather than after a grace period.
+   */
+  requestToolAction(hostId: string, type: "install_tool" | "uninstall_tool", frame: Record<string, unknown>): Promise<ToolInstallResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingInstalls.delete(requestId);
+        resolve({ ok: false, error: "install_timed_out", installation: null });
+      }, TOOL_INSTALL_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingInstalls.set(requestId, { hostId, resolve, timer });
+      connection.sink!.send({ ...frame, type, request_id: requestId });
+    });
+  }
+
+  /**
+   * Opens an interactive login on the daemon and relays its terminal. The
+   * person types through `sendLoginInput`; the session ends when the login
+   * command exits or the caller closes it. Returns the session id, or null
+   * when the host is offline.
+   */
+  openLoginSession(hostId: string, frame: Record<string, unknown>, onEvent: (event: LoginSessionEvent) => void): string | null {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return null;
+    const sessionId = randomUUID();
+    this.logins.set(sessionId, { hostId, onEvent });
+    connection.sink.send({ ...frame, type: "login_open", session_id: sessionId });
+    return sessionId;
+  }
+
+  sendLoginInput(hostId: string, sessionId: string, data: string): boolean {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink || this.logins.get(sessionId)?.hostId !== hostId) return false;
+    connection.sink.send({ type: "login_input", session_id: sessionId, data });
+    return true;
+  }
+
+  closeLoginSession(hostId: string, sessionId: string): void {
+    const pending = this.logins.get(sessionId);
+    if (!pending || pending.hostId !== hostId) return;
+    this.logins.delete(sessionId);
+    this.connections.get(hostId)?.sink?.send({ type: "login_close", session_id: sessionId });
+  }
+
+  /** Routes a daemon's `login_output` / `login_exit` frame to the stream that opened the session. */
+  receiveLoginEvent(hostId: string, sessionId: string, event: LoginSessionEvent): void {
+    const pending = this.logins.get(sessionId);
+    if (!pending || pending.hostId !== hostId) return;
+    if (event.type === "exit") this.logins.delete(sessionId);
+    pending.onEvent(event);
+  }
+
+  /** Routes a daemon's `tool_result` frame to the request that asked. */
+  receiveToolResult(hostId: string, requestId: string, result: ToolInstallResult): void {
+    const pending = this.pendingInstalls.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingInstalls.delete(requestId);
+    pending.resolve(result);
   }
 
   /** Routes a daemon's `launched` frame to whatever dispatched that run, so it knows the child process is registered before sending any `stdin` frame. */

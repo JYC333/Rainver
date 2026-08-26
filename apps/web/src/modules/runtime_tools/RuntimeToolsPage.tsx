@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import type { RuntimeToolStatus } from '../../types/api'
 import { errMsg } from '../../lib/utils'
 import { Card, CardTitle } from '../../components/ui/card'
+import AcpRegistryPanel from './AcpRegistryPanel'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
@@ -136,7 +137,10 @@ export default function RuntimeToolsPage() {
           </p>
         </Card>
       ) : (
-        <InstanceRuntimeToolsPanel />
+        <>
+          <InstanceRuntimeToolsPanel />
+          <AcpRegistryPanel />
+        </>
       )}
     </div>
   )

@@ -26,6 +26,7 @@ import { recordDetailRead } from "../contentAccess/audit.js";
 import { isContentVisibility } from "../access/contentAccessTypes.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { hostInstallationIds } from "../hosts/capabilities.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository.js";
 import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository.js";
@@ -719,13 +720,6 @@ export class PgTaskRepository {
     if (spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
       throw new HttpError(422, `Runtime adapter '${adapterType}' is not supported for remote dispatch`);
     }
-    const reportedRuntimes = Array.isArray((target.capabilities_json as { runtimes?: unknown })?.runtimes)
-      ? ((target.capabilities_json as { runtimes: unknown[] }).runtimes as unknown[])
-      : [];
-    const capabilityProbeCommand = spec.invocation.remote_capability_probe ?? spec.executable.command;
-    if (!reportedRuntimes.includes(capabilityProbeCommand)) {
-      throw new HttpError(422, `Host does not report '${capabilityProbeCommand}' as an installed runtime`);
-    }
     const prompt = optionalString(body.prompt);
     if (!prompt) throw new HttpError(422, "prompt is required");
 
@@ -736,10 +730,22 @@ export class PgTaskRepository {
     if (thread && thread.adapter_type !== adapterType) {
       throw new HttpError(409, "Task thread is pinned to a different runtime adapter");
     }
+    // Which copy of the runtime on the host. A thread keeps the one it was
+    // opened on — the vendor session lives in that copy's login state.
+    const requestedInstallation = optionalString(body.installation);
+    if (thread && requestedInstallation && thread.runtime_installation !== requestedInstallation) {
+      throw new HttpError(409, "Task thread is pinned to a different installation of this runtime");
+    }
+    const installation = thread?.runtime_installation ?? requestedInstallation ?? "own";
+    const available = hostInstallationIds(target.capabilities_json, spec.adapter_type);
+    if (!available.includes(installation)) {
+      throw new HttpError(422, `Host does not report installation '${installation}' of '${adapterType}'`);
+    }
     if (!thread) {
       thread = await threads.create({
         workspaceLocationId: target.location_id,
         adapterType,
+        runtimeInstallation: installation,
         createdByUserId: identity.userId,
       });
     }

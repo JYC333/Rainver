@@ -26,7 +26,7 @@ vi.mock('../../../api/client', () => ({
 const HOST = {
   id: 'host-1', owner_user_id: 'user-1', name: 'Laptop', kind: 'remote' as const,
   status: 'online' as const, last_heartbeat_at: null, platform: 'linux', arch: 'x64',
-  daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude'] }, created_at: '', updated_at: '',
+  daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude'], versions: {}, installations: { claude_code: [{ id: 'own', version: null, logged_in: null, options: null }] } }, created_at: '', updated_at: '',
 }
 const FOLDER = {
   id: 'folder-1', space_id: 'space-1', project_id: 'project-1', created_by_user_id: 'user-1',

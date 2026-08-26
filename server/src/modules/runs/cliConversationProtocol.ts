@@ -11,8 +11,9 @@ import type {
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
+import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
-type ConversationProtocolAdapter = "claude_code" | "codex_cli" | "opencode";
+type ConversationProtocolAdapter = VendorCliAdapterType;
 
 export function createCliConversationController(input: {
   adapter_type: ConversationProtocolAdapter;
@@ -66,13 +67,7 @@ export function createCliConversationController(input: {
     ?? (input.prompt?.trim() ? [input.prompt] : []);
   if (prompts.length === 0) return undefined;
   const normalized = { ...input, prompts };
-  if (
-    input.adapter_type === "claude_code"
-    || input.adapter_type === "codex_cli"
-    || input.adapter_type === "opencode"
-  ) {
-    return new AcpController(normalized);
-  }
+  if (isAcpRuntimeAdapter(input.adapter_type)) return new AcpController(normalized);
   return undefined;
 }
 
@@ -523,11 +518,7 @@ export class AcpController implements CliStdioController {
   }
 
   private label(): string {
-    return this.input.adapter_type === "claude_code"
-      ? "Claude"
-      : this.input.adapter_type === "codex_cli"
-        ? "Codex"
-        : "OpenCode";
+    return getRuntimeAdapterSpec(this.input.adapter_type)?.display_name ?? this.input.adapter_type;
   }
 
   private captureSelectedModel(result: Record<string, unknown>): void {

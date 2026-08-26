@@ -393,6 +393,124 @@ each ask starts an agent process while the capability probe itself runs every
 heartbeat. A runtime that cannot be asked (absent, not logged in, slow) falls
 back to reading its config, and offers no lists rather than guessed ones.
 
+*How* each runtime's ACP process is launched for the ask is not the daemon's
+knowledge: `hello_ack` carries `runtime_probes` — one `{ runtime, argv }` per
+implemented ACP adapter, rendered by the server from the adapter spec's
+`headless_command_template` (`server/src/modules/hosts/runtimeProbes.ts`),
+keyed by the same binary name the capability probe reports. The daemon
+resolves that argv exactly as it resolves a `launch` frame's
+(`resolveAcpLaunch` — vendor CLI as named, bundled adapter through `node`),
+so adding a runtime is a spec entry and the daemon needs no change. Because
+the first `hello` precedes `hello_ack`, it carries no option lists; the daemon
+sends a heartbeat immediately after the ack rather than an interval later.
+
+### Installations: own and managed copies (`hosts/runtimeProbes.ts`, daemon `src/tools.ts`)
+
+A host can carry more than one copy of a runtime, and every ACP adapter is
+handled the same way — the builtin CLIs and enabled registry agents alike:
+
+- **`own`** — the machine's PATH install, driven as before (bundled
+  `claude-agent-acp`/`codex-acp` for Claude/Codex, the vendor binary for
+  OpenCode). Detected by `--version`; never installed, upgraded, or
+  reconfigured by the daemon. Its login state is the machine's.
+- **`managed:<version>`** — a copy the daemon installed on the owner's
+  request into `<config dir>/tools/<adapter_type>/<version>/`, with its own
+  `home/` so its login state is separate from the machine's and from every
+  other copy. Removal deletes the directory.
+
+`hello_ack.runtime_probes` is the daemon's whole catalog, one entry per
+adapter: the PATH binary to look for (`runtime`, null for a registry agent),
+the launch `argv`, the `distribution` to install a managed copy from (a
+builtin spec names its ACP registry entry — `distribution: { registry_id }` —
+resolved by the acpAgents refresh loop, persisted in instance settings and
+read from memory, never fetched on the hello path; a registry agent carries
+a snapshot), and the `login` knowledge (`credentials.login` in the spec:
+command, `managed_command` inside a tree, `home_subdir`, `credential_file`).
+The server-host login adapters read the same spec fields.
+
+A runtime on a host has **one identity: adapter type × copy**, and
+everything about a copy lives on the copy. The capability report is
+`{ runtimes, versions, installations }`: `installations[adapter_type]` holds
+one `{ id, version, logged_in, options }` per copy (`logged_in` from the
+credential file in that copy's HOME, null when the runtime declares no
+login; `options` is what that copy said it can be set to over ACP, or just
+its configured model/effort when it could not be asked). `runtimes`/`versions`
+are the plain PATH inventory (vendor binaries and git), for display only.
+The shape is the protocol's (`packages/protocol/src/hosts.ts`:
+`HostCapabilitiesSchema`, and `DispatchOptionsSchema` for the dispatch
+contract below), so server and web share one definition and the server
+validates what it stores and serves. The server normalizes every
+hello/heartbeat into this shape before storing it (`hosts/capabilities.ts`) — a daemon that predates installations reported
+PATH binaries plus per-binary option maps, and that is translated there into
+the `own` copies it meant — so every reader (dispatch, queue advance, the
+web) sees one shape and no fallback logic exists anywhere else.
+
+Install (`POST /api/v1/hosts/:hostId/installations/:adapterType`, host owner)
+sends `install_tool { request_id, adapter_type, version, distribution, login }`;
+the daemon materializes the distribution — `npx` as a pinned `npm install
+--prefix`, `uvx` as `uv tool install` with a private `UV_TOOL_DIR`, `binary`
+as an https download verified against its sha256 and extracted — behind a
+staging rename, writes `manifest.json` (absolute command, args, env, `home`,
+the rendered `login_command`), answers `tool_result { installation }` and
+heartbeats. `DELETE .../installations/:adapterType/:installation` sends
+`uninstall_tool`; only a managed copy can be removed.
+
+What a dispatch can choose from is decided where dispatch is validated:
+`GET /api/v1/hosts/:hostId/dispatch-options?adapter_type&installation&thread_id`
+(`hosts/dispatchOptions.ts`) returns the host's copies per adapter, the
+effective selection (a thread's pin wins), and for that copy every backend —
+`inherit` (the thread's own, else the host default, with what it resolves
+to), `ambient` (the copy's own login), each eligible ModelProvider — with
+`usable`/`reason` and the models/efforts it offers. The composer renders
+that and sends back the choice; it no longer reconstructs eligibility,
+inheritance or login gating from bindings, providers and capabilities.
+
+A thread pins its copy (`host_task_threads.runtime_installation`, default
+`own`) the way it pins its adapter: the vendor session lives in that copy's
+login state. Dispatch takes `installation` on a new thread, validates it
+against the host's `installations`, and stamps it into the Run's
+`model_override_json` so the launch frame names it; the daemon launches a
+managed copy from its manifest with `HOME` set to that copy's home.
+
+**Login** is a terminal, not a parser: `GET
+/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`
+(host owner, SSE) opens `login_open { session_id, adapter_type, installation,
+login }` on the daemon, which runs the copy's login command — `login.command`
+for `own`, the manifest's rendered `login_command` for a managed copy, or the
+user's shell when the runtime declares none — on a PTY from `script(1)` (no
+native addon to build on the host; Windows unsupported for now), with `HOME`
+set to that copy's home and any ambient `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
+removed so the vendor flow actually runs. Output comes back as
+`login_output` frames (`{ type: "output" }` on the stream, escape codes
+stripped in the UI); typed text goes through `POST .../login/input` →
+`login_input`; the command's exit is `login_exit { exit_code, logged_in }`,
+after which the daemon heartbeats so `installations[].logged_in` is current.
+One session per host × adapter × copy; a new stream supersedes the old, and a
+closed stream sends `login_close`. The server-host login engine
+(`providers/cli/loginEngine.ts`) is unchanged and still owns the server host's
+own profiles; the daemon terminal never copies credentials anywhere.
+
+Enabling a registry agent (`modules/acpAgents`, instance admin) publishes a
+dynamic adapter `acp_<id>` (`runtimeAdapters/dynamicSpecs.ts`) whose command
+is its adapter type and whose only copies are managed ones
+(`remote_host_only`, low trust, `model_provider_mode: "none"`). Every process
+reloads the enabled set at startup and every 60s. Disabling is refused (409)
+while any host still reports a copy (`GET /api/v1/acp-agents` lists
+`installed_on`), so nothing is orphaned on a machine and no pinned thread
+stalls silently. ADR 0016 is amended in place for managed copies; the
+machine's own installs are still never touched.
+
+In the UI (command center → Hosts) this is host-major: each remote host card
+has an **Agents** section listing only the agents that host has a copy of,
+with log-in / remove, and an "Add agent…" picker for the rest of the catalog.
+No agent is labelled "built-in": the builtin CLIs and registry agents differ
+only in server-side capability (provider binding, subagent lockdown, usage),
+which is not a host concern. The catalog itself is the instance admin's
+**ACP registry** panel on Instance Settings (`modules/runtime_tools/AcpRegistryPanel`),
+next to the server-host runtime tools it is the sibling of: enabled agents
+(Disable, refused while installed anywhere) and a search of the registry to
+Enable more — an instance-level decision that needs no host.
+
 Asking rather than guessing is not a refinement. A hardcoded
 `low/medium/high` was wrong for both runtimes — Claude offers
 `default/low/medium/high/xhigh/max`, Codex adds `ultra` — and, worse, model ids
@@ -503,7 +621,8 @@ center work stream):
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
 `hello` (authenticates the bearer token, marks `online`, records
-capabilities, and applies the daemon's complete workspace Location reports)
+capabilities, applies the daemon's complete workspace Location reports, and
+answers `hello_ack { host_id, runtime_probes }`)
 and `heartbeat` (refreshes `last_heartbeat_at`, reported capabilities, and
 Location branch/head/dirty/readiness). A remote Location omitted from a
 heartbeat is marked `execution_ready = false`. On socket close, the host is
@@ -760,7 +879,8 @@ real local path is ever written down.
   no cross-space "my projects" picker exists yet.
 - `rainver-host workspace list` / `workspace remove <id>`.
 - `rainver-host run` — service mode: opens the WS connection, sends
-  `hello`, including workspace status reports, then `heartbeat` every 15s;
+  `hello`, including workspace status reports, then `heartbeat` once on
+  `hello_ack` (now knowing the server's `runtime_probes`) and every 15s after;
   reconnects with exponential backoff
   (1s → 30s cap) on any disconnect. Handles `launch`/`terminate` frames
   (`src/execution.ts`): spawns the rendered argv in the local workspace path
@@ -786,11 +906,14 @@ real local path is ever written down.
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it.
 
-Capability discovery (`src/capabilities.ts`) probes PATH for `claude`,
-`codex`, `opencode`, `git` via `--version`; absent binaries are silently
-omitted, never installed or version-managed by the daemon (that stays a
-`runtimeTools`-style server concern for the server host only — trusted hosts
-use whatever the machine already has).
+Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
+`git` plus every runtime binary the server named in `hello_ack.runtime_probes`
+(one per implemented ACP adapter spec — the daemon holds no list of its own,
+so the first hello of a fresh daemon reports only `git` until the heartbeat
+sent right after the ack). Absent binaries are silently omitted, never
+installed or version-managed by the daemon (that stays a `runtimeTools`-style
+server concern for the server host only — trusted hosts use whatever the
+machine already has).
 
 ## Known P1 gaps (not defects — explicitly deferred)
 

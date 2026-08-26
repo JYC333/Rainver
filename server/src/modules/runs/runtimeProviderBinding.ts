@@ -9,7 +9,8 @@ import {
   type ProviderProxyRoute,
 } from "../providers/proxy/lease.js";
 import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import { subscriptionEgressLeases, type SubscriptionRuntime } from "../providers/proxy/subscriptionEgress.js";
+import { subscriptionEgressLeases } from "../providers/proxy/subscriptionEgress.js";
+import { getRuntimeAdapterSpec, isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import type { RunRecord } from "./repository.js";
 import type { InvocationAuditRefs } from "@rainver/protocol";
 import {
@@ -74,16 +75,20 @@ export interface AdapterProviderRequirement {
  * time with an error nobody is waiting on.
  */
 export function adapterProviderRequirement(adapterType: string): AdapterProviderRequirement | null {
-  switch (adapterType) {
-    case "claude_code":
+  // Read from the spec, where the runtime's provider API family is declared
+  // once (`model.provider_api`); a runtime that takes no provider — a
+  // registry agent, or one that declares none — has no requirement.
+  const spec = getRuntimeAdapterSpec(adapterType);
+  if (!spec || spec.invocation?.remote_host_only) return null;
+  switch (spec.model.provider_api) {
+    case "claude_compatible":
       return {
         base_url_field: "claude_compatible_base_url",
         missing_base_url_code: "claude_compatible_base_url_required",
         base_url_label: "a Claude-compatible",
         route: "anthropic",
       };
-    case "codex_cli":
-    case "opencode":
+    case "openai_compatible":
       return {
         base_url_field: "openai_compatible_base_url",
         missing_base_url_code: "openai_compatible_base_url_required",
@@ -129,9 +134,7 @@ export async function buildRuntimeProviderBinding(
     ttlSeconds: number;
   },
 ): Promise<RuntimeProviderBinding> {
-  if (spec.adapter_type !== "claude_code" && spec.adapter_type !== "codex_cli" && spec.adapter_type !== "opencode") {
-    return emptyRuntimeProviderBinding();
-  }
+  if (!isVendorCliAdapter(spec.adapter_type)) return emptyRuntimeProviderBinding();
   const providerId = input.run.model_provider_id;
   if (!providerId) {
     const base = spec.adapter_type === "codex_cli"
@@ -139,7 +142,7 @@ export async function buildRuntimeProviderBinding(
       : emptyRuntimeProviderBinding();
     if (!deps.credential.profile_id) return base;
     const lease = subscriptionEgressLeases.create(
-      spec.adapter_type as SubscriptionRuntime,
+      spec.adapter_type,
       Math.max(deps.ttlSeconds, 1) * 1000,
     );
     return {

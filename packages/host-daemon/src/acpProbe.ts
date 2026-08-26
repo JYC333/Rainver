@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
@@ -70,6 +67,8 @@ export function probeAcpOptions(
   command: string,
   args: string[],
   env: Record<string, string>,
+  /** Must not be a real workspace: some runtimes snapshot or index whatever they are opened in. */
+  cwd: string,
   timeoutMs = 20_000,
 ): Promise<AcpRuntimeOptions | null> {
   return new Promise((resolve) => {
@@ -87,6 +86,7 @@ export function probeAcpOptions(
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
+        cwd,
         stdio: ["pipe", "pipe", "ignore"],
         env: { ...process.env, ...env },
       });
@@ -112,12 +112,7 @@ export function probeAcpOptions(
         let message: Record<string, unknown>;
         try { message = JSON.parse(line); } catch { continue; }
         if (message.id === 1) {
-          void cwdPromise.then((cwd) => send({
-            jsonrpc: "2.0",
-            id: 2,
-            method: "session/new",
-            params: { cwd, mcpServers: [] },
-          }));
+          send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd, mcpServers: [] } });
           continue;
         }
         if (message.id === 2) {
@@ -139,9 +134,6 @@ export function probeAcpOptions(
     child.on("error", () => finish(null));
     child.on("close", () => finish(null));
 
-    // A session needs a working directory, and the probe must not touch a real
-    // workspace: some runtimes snapshot or index whatever they are opened in.
-    const cwdPromise = mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
     send({
       jsonrpc: "2.0",
       id: 1,

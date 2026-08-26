@@ -12,6 +12,7 @@ import {
 } from "./evidenceRedaction.js";
 import { RunPreparationError } from "./orchestrationErrors.js";
 import type { RunRecord } from "./repository.js";
+import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 interface PreparedRuntimeInput {
   prompt: string | null;
@@ -242,9 +243,7 @@ export function adapterTimeoutEnvelope(
   const now = new Date().toISOString();
   return {
     adapter_type: run.adapter_type ?? "unknown",
-    adapter_kind: run.adapter_type === "claude_code" || run.adapter_type === "codex_cli" || run.adapter_type === "opencode"
-      ? "local_cli"
-      : "managed_api",
+    adapter_kind: isVendorCliAdapter(run.adapter_type) ? "local_cli" : "managed_api",
     success: false,
     output_text: "",
     output_json: { adapter_type: run.adapter_type ?? "unknown" },

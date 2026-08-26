@@ -7,6 +7,7 @@ import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedProfiles } from "./providerBinding.js";
+import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 
 export interface LaunchFrame {
   run_id: string;
@@ -24,6 +25,10 @@ export interface LaunchFrame {
    * `argv_template` run.
    */
   keep_stdin_open?: boolean;
+  /** Which copy of the runtime: `own` (PATH / bundled adapter) or `managed:<version>`. */
+  installation?: string;
+  /** The adapter the copy belongs to; a managed copy is keyed by it, not by the command. */
+  adapter_type?: string;
   /**
    * Backend selection for this run, when the control plane chose one. Absent
    * means the run uses whatever this machine is logged into, which is the
@@ -116,7 +121,7 @@ interface ActiveRun {
  */
 export const REMOTE_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
 
-function substituteCwd(value: string, cwd: string): string {
+export function substituteCwd(value: string, cwd: string): string {
   return value.split(REMOTE_CWD_PLACEHOLDER).join(cwd);
 }
 
@@ -151,9 +156,48 @@ export function resolveAcpEntrypoint(command: string): string | null {
   }
 }
 
-/** Backward-compatible test helper for the original P3 adapter. */
-export function resolveCodexAcpEntrypoint(): string | null {
-  return resolveAcpEntrypoint("codex-acp");
+/** What actually gets spawned for an ACP argv: the vendor CLI as-is, or a bundled adapter through `node`. */
+export interface AcpLaunch {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+/**
+ * One place for the bundled-vs-vendor distinction, used both to run a job and
+ * to ask a runtime for its options. Throws when the argv names a bundled
+ * adapter this daemon does not have; a vendor CLI is spawned as named and
+ * resolves via the child's own PATH, same as the capability probe's lookup.
+ */
+export function resolveAcpLaunch(
+  rawCommand: string,
+  args: string[],
+  installation: string = OWN_INSTALLATION,
+  /** Required for a managed copy: the tools directory is keyed by adapter, and the command name (`claude-agent-acp`) is not it. */
+  adapterType: string = rawCommand,
+): AcpLaunch {
+  if (installation !== OWN_INSTALLATION) {
+    // A managed copy: launched from its manifest with its own HOME, never
+    // looked up on PATH (`tools.ts`).
+    const tool = readToolManifestSync(adapterType, installation);
+    if (!tool) throw new Error(`This daemon does not have ${adapterType} ${installation} installed.`);
+    return { command: tool.command, args: [...tool.args, ...args], env: { ...tool.env, HOME: tool.home } };
+  }
+  if (!ACP_ADAPTER_ENTRYPOINTS[rawCommand]) return { command: rawCommand, args, env: {} };
+  const entrypoint = resolveAcpEntrypoint(rawCommand);
+  if (!entrypoint) throw new Error(`This daemon does not have the ${rawCommand} adapter installed.`);
+  const env: Record<string, string> = {};
+  if (rawCommand === "codex-acp") {
+    // NO_BROWSER: this daemon has no browser to open for ChatGPT login.
+    // CODEX_PATH: drive the trusted host's own installed `codex` (found by
+    // this same daemon's capability probe) rather than codex-acp's bundled
+    // copy — hosts.md's rule is that a trusted host runs whatever it already
+    // has, and running two divergent codex installs on one machine invites
+    // confusing drift.
+    env.CODEX_PATH = "codex";
+    env.NO_BROWSER = "1";
+  }
+  return { command: process.execPath, args: [entrypoint, ...args], env };
 }
 
 /**
@@ -245,35 +289,20 @@ async function launchRun(
     return;
   }
 
-  let command = rawCommand;
-  let spawnArgs = args;
-  const acpAdapterEnv: Record<string, string> = {};
-  if (ACP_ADAPTER_ENTRYPOINTS[rawCommand]) {
-    const entrypoint = resolveAcpEntrypoint(rawCommand);
-    if (!entrypoint) {
-      send({
-        type: "complete",
-        run_id: frame.run_id,
-        exit_code: 1,
-        timed_out: false,
-        error: `This daemon does not have the ${rawCommand} adapter installed.`,
-      });
-      return;
-    }
-    command = process.execPath;
-    spawnArgs = [entrypoint, ...args];
-    if (rawCommand === "codex-acp") {
-      // NO_BROWSER: this daemon has no browser to open for ChatGPT login.
-      // CODEX_PATH: drive the trusted host's own installed `codex` (found by
-      // this same daemon's capability probe) rather than codex-acp's bundled
-      // copy — hosts.md's rule is that a trusted host runs whatever it already
-      // has, and running two divergent codex installs on one machine invites
-      // confusing drift. A bare command name resolves via the child's own
-      // inherited PATH below, same as the capability probe's own lookup.
-      acpAdapterEnv.CODEX_PATH = "codex";
-      acpAdapterEnv.NO_BROWSER = "1";
-    }
+  let launch: AcpLaunch;
+  try {
+    launch = resolveAcpLaunch(rawCommand, args, frame.installation ?? OWN_INSTALLATION, frame.adapter_type ?? rawCommand);
+  } catch (error) {
+    send({
+      type: "complete",
+      run_id: frame.run_id,
+      exit_code: 1,
+      timed_out: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
   }
+  const { command, args: spawnArgs, env: acpAdapterEnv } = launch;
 
   const outputsDir = runOutputsDir(frame.run_id);
   await mkdir(outputsDir, { recursive: true });

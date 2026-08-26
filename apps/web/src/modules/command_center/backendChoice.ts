@@ -1,5 +1,5 @@
 import type { ModelProviderOut } from '../../api/client'
-import type { RuntimeOptionChoice } from '../../types/api'
+import type { HostRuntimeAdapterOption, RuntimeOptionChoice } from '../../types/api'
 
 /** The composer's value for "run this on the machine's own login". */
 export const AMBIENT_BACKEND = ''
@@ -7,20 +7,18 @@ export const AMBIENT_BACKEND = ''
 export const INHERIT_BACKEND = 'inherit'
 
 /**
- * Which providers can back a given runtime adapter. Mirrors the server's
- * `adapterProviderRequirement` — the server re-checks at dispatch, so this
- * filter is about not offering a choice that would be rejected, not about
- * enforcement.
- *
- * Shared by the host-default selector and the per-dispatch one. Two copies of
- * this rule would let the two surfaces offer different providers for the same
- * adapter, and the disagreement would only show up as a dispatch failing.
+ * Which providers can back a runtime adapter, for the host-default
+ * selector. The rule's inputs come from the server: the adapter's
+ * `provider_api` (declared once in its spec) and whether it takes a
+ * provider at all. The server re-checks at dispatch, so this is about not
+ * offering a choice that would be rejected, not about enforcement.
  */
 export function eligibleProviders(
   providers: ModelProviderOut[],
-  adapterType: string,
+  adapter: Pick<HostRuntimeAdapterOption, 'provider_api' | 'provider_binding'>,
 ): ModelProviderOut[] {
-  const field = adapterType === 'claude_code' ? 'claude_compatible_base_url' : 'openai_compatible_base_url'
+  if (adapter.provider_binding === false || !adapter.provider_api) return []
+  const field = `${adapter.provider_api}_base_url` as const
   return providers.filter(p => (
     p.enabled
     && p.grant_enabled !== false
@@ -32,18 +30,6 @@ export function eligibleProviders(
     && !p.has_subscription
     && Boolean(p[field])
   ))
-}
-
-/**
- * The models a provider offers, with its default first. `available_models` can
- * be empty — a provider that never reported a catalog still works, the runtime
- * just uses whatever the endpoint defaults to.
- */
-export function providerModels(provider: ModelProviderOut | undefined): string[] {
-  if (!provider) return []
-  const listed = provider.available_models ?? []
-  if (!provider.default_model) return listed
-  return [provider.default_model, ...listed.filter(m => m !== provider.default_model)]
 }
 
 /**
@@ -72,21 +58,6 @@ export function backendLabel(
 }
 
 /**
- * What a runtime reported it can be set to, as the host's capability probe
- * asked it over ACP.
- *
- * Never a hardcoded list: Claude offers `default/low/medium/high/xhigh/max`
- * where a guess had three, and its model ids carry brackets of their own
- * (`claude-fable-5[1m]`), so neither the values nor their shape can be assumed.
- */
-export interface RuntimeOptions {
-  models?: string[]
-  current_model?: string | null
-  efforts?: string[]
-  current_effort?: string | null
-}
-
-/**
  * How a choice should read: the runtime's own display name, which is better
  * than anything derived from the id — it calls `claude-fable-5[1m]` "Fable",
  * where trimming the id would only reach `claude-fable-5`.
@@ -104,12 +75,4 @@ export function choiceLabel(choice: RuntimeOptionChoice): string {
   // "Default (recommended)" already carries a parenthetical; keep one pair.
   const base = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name
   return `${base} (${choice.description.trim()})`
-}
-
-/** The choice a value refers to, for naming what is currently selected. */
-export function findChoice(
-  choices: RuntimeOptionChoice[],
-  value: string | null | undefined,
-): RuntimeOptionChoice | undefined {
-  return value ? choices.find(choice => choice.value === value) : undefined
 }

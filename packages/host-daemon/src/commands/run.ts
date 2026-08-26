@@ -1,4 +1,4 @@
-import { helloInfo } from "../api.js";
+import { helloInfo, parseRuntimeProbes, type RuntimeProbe } from "../api.js";
 import { loadConfig, requireConfig } from "../config.js";
 import {
   handleLaunch,
@@ -11,10 +11,14 @@ import {
   type TerminateFrame,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
+import { installTool, managedInstallationId, parseInstallToolFrame, parseUninstallToolFrame, uninstallTool } from "../tools.js";
+import { loginSession, openLoginSession, parseLoginOpenFrame } from "../login.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+/** What the last `hello_ack` said about runtimes; see `helloInfo`. */
+let lastRuntimeProbes: RuntimeProbe[] | undefined;
 
 function wsUrl(serverUrl: string): string {
   return `${serverUrl.replace(/^http/, "ws")}/internal/hosts/ws`;
@@ -107,9 +111,15 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       socket.send(JSON.stringify(payload));
     };
     const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
+    // Carried across reconnects so a reconnecting daemon's first hello
+    // already names its runtimes rather than only git for one heartbeat.
+    let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
+    const sendHeartbeat = () => {
+      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
+    };
 
     socket.addEventListener("open", () => {
-      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl)).then((info) => {
+      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => {
         // Reclaims per-run profiles written by an older daemon, which no run
         // will ever come back for. Profiles are shared per adapter and
         // provider now, and are not swept.
@@ -131,9 +141,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         helloAcked = true;
         sink.bind(sendOnThisConnection);
         log(`connected as host ${String(frame.host_id)}`);
-        heartbeatTimer = setInterval(() => {
-          void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl)).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
-        }, HEARTBEAT_INTERVAL_MS);
+        // The hello went out before the server could say how to ask each
+        // runtime for its options, so report them now rather than a
+        // heartbeat interval later.
+        runtimeProbes = parseRuntimeProbes(frame.runtime_probes);
+        lastRuntimeProbes = runtimeProbes;
+        sendHeartbeat();
+        heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
         return;
       }
       if (frame.type === "error") {
@@ -163,6 +177,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
           project_folder_id: typeof frame.project_folder_id === "string" ? frame.project_folder_id : undefined,
           argv: frame.argv.map(String),
+          installation: typeof frame.installation === "string" ? frame.installation : undefined,
+          adapter_type: typeof frame.adapter_type === "string" ? frame.adapter_type : undefined,
           stdin: typeof frame.stdin === "string" ? frame.stdin : null,
           timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,
           keep_stdin_open: frame.keep_stdin_open === true,
@@ -186,6 +202,60 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             error: error instanceof Error ? error.message : String(error),
           });
         });
+        return;
+      }
+      if (frame.type === "install_tool" || frame.type === "uninstall_tool") {
+        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+        const fail = (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`${String(frame.type)} failed: ${message}`);
+          if (requestId) sink.send({ type: "tool_result", request_id: requestId, ok: false, error: message, installation: null });
+        };
+        const action = frame.type === "install_tool"
+          ? (async () => {
+              const install = parseInstallToolFrame(frame);
+              log(`install ${install.adapter_type} ${managedInstallationId(install.version)}`);
+              const manifest = await installTool(install, log);
+              log(`installed ${install.adapter_type} ${managedInstallationId(install.version)} → ${manifest.command}`);
+              return managedInstallationId(install.version);
+            })()
+          : (async () => {
+              const uninstall = parseUninstallToolFrame(frame);
+              if (!(await uninstallTool(uninstall))) throw new Error(`${uninstall.adapter_type} ${managedInstallationId(uninstall.version)} is not installed`);
+              log(`removed ${uninstall.adapter_type} ${managedInstallationId(uninstall.version)}`);
+              return managedInstallationId(uninstall.version);
+            })();
+        void action.then((installation) => {
+          // Report the new capability now rather than on the next interval.
+          sendHeartbeat();
+          sink.send({ type: "tool_result", request_id: requestId, ok: true, error: null, installation });
+        }, fail);
+        return;
+      }
+      if (frame.type === "login_open") {
+        const sessionId = typeof frame.session_id === "string" ? frame.session_id : null;
+        try {
+          openLoginSession(parseLoginOpenFrame(frame), (payload) => {
+            sink.send(payload);
+            // A finished login changes what this host reports.
+            if (payload.type === "login_exit") sendHeartbeat();
+          }, log);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`login_open rejected: ${message}`);
+          if (sessionId) {
+            sink.send({ type: "login_output", session_id: sessionId, data: `${message}\n` });
+            sink.send({ type: "login_exit", session_id: sessionId, exit_code: -1, logged_in: null });
+          }
+        }
+        return;
+      }
+      if (frame.type === "login_input" && typeof frame.session_id === "string" && typeof frame.data === "string") {
+        loginSession(frame.session_id)?.write(frame.data);
+        return;
+      }
+      if (frame.type === "login_close" && typeof frame.session_id === "string") {
+        loginSession(frame.session_id)?.close();
         return;
       }
       if (frame.type === "terminate" && typeof frame.run_id === "string") {

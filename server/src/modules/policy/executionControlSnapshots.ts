@@ -9,6 +9,7 @@ import type { RunRecord } from "../runs/repository.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 export interface ExecutionControlSnapshotInputs {
   cliCredentialProfileId?: string | null;
@@ -50,7 +51,7 @@ export class ExecutionControlSnapshotRepository {
     const providerId = inputs.executesRemotely ? null : run.model_provider_id;
     const providerDestination = providerId !== null;
     const localCliDestination = !providerDestination
-      && (run.adapter_type === "claude_code" || run.adapter_type === "codex_cli" || run.adapter_type === "opencode");
+      && isVendorCliAdapter(run.adapter_type);
     if (providerRequired && !providerId) {
       throw new Error("Execution preflight requires a resolved model provider");
     }

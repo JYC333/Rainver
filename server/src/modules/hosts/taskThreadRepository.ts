@@ -15,6 +15,7 @@ export interface HostTaskThread {
   project_folder_id: string;
   host_id: string;
   adapter_type: string;
+  runtime_installation: string;
   vendor_session_id: string | null;
   last_run_id: string | null;
   status: "active" | "session_reset";
@@ -25,7 +26,7 @@ export interface HostTaskThread {
   queue_paused_at: string | null;
 }
 
-const COLUMNS = `id, workspace_location_id, adapter_type, vendor_session_id,
+const COLUMNS = `id, workspace_location_id, adapter_type, runtime_installation, vendor_session_id,
   last_run_id, status, created_by_user_id, created_at, updated_at, queue_paused_at`;
 
 export class PgHostTaskThreadRepository {
@@ -34,16 +35,17 @@ export class PgHostTaskThreadRepository {
   async create(input: {
     workspaceLocationId: string;
     adapterType: string;
+    runtimeInstallation?: string;
     createdByUserId: string;
   }): Promise<HostTaskThread> {
     const id = randomUUID();
     const now = new Date().toISOString();
     const result = await this.db.query<HostTaskThread>(
       `INSERT INTO host_task_threads (
-         id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, 'active', $4, $5, $5)
+         id, workspace_location_id, adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)
        RETURNING ${COLUMNS}`,
-      [id, input.workspaceLocationId, input.adapterType, input.createdByUserId, now],
+      [id, input.workspaceLocationId, input.adapterType, input.runtimeInstallation ?? "own", input.createdByUserId, now],
     );
     return result.rows[0]!;
   }
@@ -75,7 +77,7 @@ export class PgHostTaskThreadRepository {
   async listForProject(spaceId: string, projectId: string): Promise<HostTaskThread[]> {
     const result = await this.db.query<HostTaskThread>(
       `SELECT t.id, t.workspace_location_id, wl.project_folder_id, wl.execution_host_id AS host_id,
-              t.adapter_type, t.vendor_session_id,
+              t.adapter_type, t.runtime_installation, t.vendor_session_id,
               t.last_run_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at
          FROM host_task_threads t
          JOIN workspace_locations wl ON wl.id = t.workspace_location_id
@@ -111,7 +113,7 @@ export class PgHostTaskThreadRepository {
   ): Promise<Array<HostTaskThread & { project_id: string; project_name: string; folder_name: string }>> {
     const result = await this.db.query<HostTaskThread & { project_id: string; project_name: string; folder_name: string }>(
       `SELECT t.id, t.workspace_location_id, wl.project_folder_id, wl.execution_host_id AS host_id,
-              t.adapter_type, t.vendor_session_id,
+              t.adapter_type, t.runtime_installation, t.vendor_session_id,
               t.last_run_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at,
               p.id AS project_id, p.name AS project_name, pf.name AS folder_name
          FROM host_task_threads t

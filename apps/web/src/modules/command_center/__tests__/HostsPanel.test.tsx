@@ -5,7 +5,9 @@ import HostsPanel from '../HostsPanel'
 import { hostsApi, providersApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => ({ currentUser: null }) }))
 vi.mock('../../../api/client', () => ({
+  acpAgentsApi: { list: vi.fn().mockResolvedValue({ items: [] }), registry: vi.fn().mockResolvedValue({ items: [] }) },
   hostsApi: {
     list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeAdapters: vi.fn(),
     // The per-host model-backend selector mounts inside each remote host card.
@@ -22,14 +24,14 @@ const SERVER_HOST = {
 const REMOTE_HOST = {
   id: 'host-1', owner_user_id: 'user-1', name: 'Laptop', kind: 'remote' as const,
   status: 'offline' as const, last_heartbeat_at: null, platform: 'linux', arch: 'x64',
-  daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude', 'git'] }, created_at: '', updated_at: '',
+  daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude', 'git'], versions: {}, installations: { claude_code: [{ id: 'own', version: null, logged_in: null, options: null }] } }, created_at: '', updated_at: '',
 }
 
-const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true }
+const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, provider_api: 'claude_compatible' as const }
 // ACP runtime replatform P3: codex_cli's own executable is the pinned
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
-const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true }
+const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, provider_api: 'openai_compatible' as const }
 
 beforeEach(() => {
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [SERVER_HOST, REMOTE_HOST] })
@@ -55,7 +57,7 @@ describe('HostsPanel', () => {
     const GEMINI_ADAPTER = { adapter_type: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false }
     vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
-      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' } } }],
+      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' }, installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: null, options: null }] } } }],
     })
     render(<HostsPanel />)
     expect(await screen.findByText('claude 1.2.3')).toBeInTheDocument()
@@ -89,7 +91,8 @@ describe('HostsPanel', () => {
     try {
       render(<HostsPanel />)
       await act(async () => { await Promise.resolve() })
-      expect(screen.getByText('Laptop')).toBeInTheDocument()
+      // The host card and the agents panel below it both name the host.
+      expect(screen.getAllByText('Laptop').length).toBeGreaterThan(0)
       const callsBeforePolling = vi.mocked(hostsApi.list).mock.calls.length
 
       await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
@@ -115,7 +118,7 @@ describe('HostsPanel', () => {
 
   it('names the runtimes a host has when none of them can be dispatched to', async () => {
     vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER] })
-    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['git'] } }] })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['git'], versions: {}, installations: {} } }] })
     render(<HostsPanel />)
     expect(await screen.findByText(/runtimes \(git\) can be dispatched to remotely/)).toBeInTheDocument()
   })

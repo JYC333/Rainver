@@ -6,7 +6,7 @@ import type { Pool, PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter, isVendorCliAdapter, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { RuntimeToolRegistry } from "../runtimeTools/service.js";
 import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies.js";
 import { resolveAgentSystemPrompt } from "./promptRegistry.js";
@@ -20,7 +20,22 @@ import { PgAgentRepository, type AgentCreateInput } from "./repository.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
 const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
-const MANAGED_ASSISTANT_CLI_ADAPTERS = ["claude_code", "codex_cli", "opencode"] as const;
+// The server-host CLIs only: a remote-only adapter (ACP registry agent) has
+// no runtime tool or credential profile on the server for this to provision.
+//
+// In preference order for the no-provider fallback (`model_api` still wins
+// whenever a ModelProvider exists): OpenCode first, because it takes any
+// OpenAI-compatible endpoint and so works where the vendor-locked CLIs'
+// accounts are hard to obtain; Codex last for the same reason.
+const CLI_FALLBACK_PREFERENCE = ["opencode", "claude_code", "codex_cli"];
+const MANAGED_ASSISTANT_CLI_ADAPTERS = listRuntimeAdapterSpecs()
+  .filter((spec) => isVendorCliAdapter(spec.adapter_type) && !spec.invocation?.remote_host_only)
+  .map((spec) => spec.adapter_type)
+  .sort((a, b) => rank(a) - rank(b));
+function rank(adapterType: string): number {
+  const index = CLI_FALLBACK_PREFERENCE.indexOf(adapterType);
+  return index === -1 ? CLI_FALLBACK_PREFERENCE.length : index;
+}
 const ROOM_MANAGER_POLICY = `
 
 When you are acting as a Room manager, follow the Room coordination policy:

@@ -376,6 +376,8 @@ async function runRemoteHostCliAdapter(
     input.run.project_folder_id,
     registry,
     providerBinding?.frame ?? null,
+    runOverrideField(input.run.model_override_json, "installation") ?? "own",
+    spec.adapter_type,
   );
   let stdoutText = "";
   // A caller sends the pair the way both CLIs write it, in the one field a
@@ -619,6 +621,10 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly registry: HostConnectionRegistry,
     /** Null when this run uses the machine's own login state. */
     private readonly providerBinding: RemoteProviderBindingFrame | null = null,
+    /** Which copy of the runtime on the host: `own` or `managed:<version>`. */
+    private readonly installation: string = "own",
+    /** The adapter the copy belongs to — managed copies are keyed by it, not by the command name. */
+    private readonly adapterType: string | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -693,6 +699,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         timeout_seconds: input.timeout_seconds,
         keep_stdin_open: Boolean(controller),
         provider_binding: this.providerBinding ?? undefined,
+        installation: this.installation,
+        adapter_type: this.adapterType ?? undefined,
       },
       onOutput,
       input.on_stderr_chunk,

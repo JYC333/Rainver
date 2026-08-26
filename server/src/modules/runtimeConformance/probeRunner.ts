@@ -25,6 +25,7 @@ import type {
   ConformanceProbeContext,
   ConformanceProbeRunner,
 } from "./service.js";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
 interface ProbeRunResult {
   result: CliExecutionResult;
@@ -127,7 +128,7 @@ export class LocalCliConformanceProbeRunner implements ConformanceProbeRunner {
       });
       const executor = this.deps.executor ?? new SandboxRunnerCliCommandExecutor(
         this.config,
-        spec.adapter_type as "claude_code" | "codex_cli" | "opencode",
+        spec.adapter_type as VendorCliAdapterType,
       );
       const timer = cancel
         ? setTimeout(() => {

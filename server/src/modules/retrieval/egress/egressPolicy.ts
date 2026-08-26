@@ -15,6 +15,8 @@
  * Query rewriting does NOT consult this seam: it sends only the query string,
  * never candidate content.
  */
+import { getRuntimeAdapterSpec } from "../../runtimeAdapters/specs.js";
+
 export interface RetrievalEgressRef {
   object_type: string;
   object_id: string;
@@ -91,11 +93,8 @@ export function runtimeProviderEgressDestination(
   adapterType: string | null | undefined,
   provider: { provider_type: string; base_url?: string | null; config_json?: unknown },
 ): RetrievalEgressDestination {
-  const compatibleUrlKey = adapterType === "claude_code"
-    ? "claude_compatible_base_url"
-    : adapterType === "codex_cli" || adapterType === "opencode"
-      ? "openai_compatible_base_url"
-      : null;
+  const providerApi = getRuntimeAdapterSpec(adapterType)?.model.provider_api;
+  const compatibleUrlKey = providerApi ? `${providerApi}_base_url` : null;
   if (!compatibleUrlKey) return retrievalProviderEgressDestination(provider);
   const config = provider.config_json !== null
     && typeof provider.config_json === "object"

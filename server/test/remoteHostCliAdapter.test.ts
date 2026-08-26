@@ -241,7 +241,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result.success).toBe(false);
   });
 
-  it("drives Claude ACP resume over duplex stdin and reports success on a clean exit", async () => {
+  it("drives Claude Code ACP resume over duplex stdin and reports success on a clean exit", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);

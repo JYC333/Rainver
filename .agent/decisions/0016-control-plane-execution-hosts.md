@@ -338,3 +338,39 @@ changed.
   daemon inside a container on the remote machine) is compatible with this
   decision — it would strengthen trusted-host mode without changing the
   control-plane/execution-host split itself.
+
+## Amended - 2026-08-26 (managed copies installed by the daemon)
+
+The rule that a trusted host "runs its own already-installed CLIs" and the
+daemon "never installs or version-manages a CLI" was written with one copy
+of each CLI in mind: the one the person installed and logged into. That copy
+— the **own** installation — is still exactly that: detected on PATH, never
+installed, upgraded, reconfigured, or logged into by the daemon on its own
+initiative.
+
+What the rule did not anticipate is wanting a *second* copy: one the control
+plane chose, at a pinned version, with its own login state, on a machine
+where the person's own copy may be absent, outdated, or logged into a
+different account — or an agent from the ACP registry that has no "own" copy
+at all. Those are **managed** installations. For any ACP adapter with a
+distribution (the builtin CLIs name their ACP registry entry; registry agents
+carry a snapshot), the daemon installs on the host owner's request
+(`install_tool` over the host WebSocket) into its own directory
+`<config dir>/tools/<adapter_type>/<version>/`, never onto PATH or into the
+machine's global npm/uv trees, gives it a private `home/`, launches it by the
+absolute path its manifest records, and removes it on request. It reports
+every copy (`capabilities_json.installations`) with whether it is logged in.
+A thread pins the copy it runs on, since the vendor session lives in that
+copy's login state. Logging a copy in — the machine's own included — is the
+host owner's action too, as a terminal the daemon runs on a PTY and relays
+(`login_open`/`login_input`/`login_output`/`login_exit`): the daemon still
+initiates nothing and stores nothing beyond what the vendor CLI writes into
+that copy's HOME.
+
+What stays true: the daemon installs nothing on its own initiative; the
+machine's own copies are never touched; a registry agent is not offered for
+server-host execution (`invocation.remote_host_only`), has no server-side
+runtime tool, credential profile, or conformance evidence; and enabling one
+for the deployment is instance-admin gated, separately from installing it on
+a host.
+

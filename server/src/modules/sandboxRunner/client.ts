@@ -16,6 +16,7 @@ import {
   type SandboxRunnerFrame,
   type SandboxRuntimeEnvironment,
 } from "./protocol.js";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
 interface RemoteProcessRegistry {
   registerRemote?(runId: string, terminate: () => void, forceTerminate: () => void): void;
@@ -28,7 +29,7 @@ export class SandboxRunnerCliCommandExecutor implements CliCommandExecutor {
     private readonly config: Pick<ServerConfig,
       "sandboxRunnerHost" | "sandboxRunnerPort" | "sandboxRoot" | "workspaceRoot"
       | "cliToolsRoot" | "rainverHome" | "internalToken">,
-    private readonly runtime: "claude_code" | "codex_cli" | "opencode",
+    private readonly runtime: VendorCliAdapterType,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {

@@ -1,3 +1,5 @@
+import { getDynamicRuntimeAdapterSpec, listDynamicRuntimeAdapterSpecs } from "./dynamicSpecs.js";
+
 export type RuntimeAdapterType =
   | "capability"
   | "model_api"
@@ -8,6 +10,50 @@ export type RuntimeAdapterType =
   | "gemini_cli"
   | "custom";
 
+/**
+ * The implemented vendor CLIs. The one closed list: every per-vendor table
+ * (`Record<VendorCliAdapterType, …>`) keys on it so the compiler names each
+ * place a new CLI needs a decision, instead of a literal check silently
+ * treating it as "not a CLI". Membership *checks* go through
+ * `isVendorCliAdapter` / `isAcpRuntimeAdapter`, which read the spec.
+ */
+export type VendorCliAdapterType = Extract<RuntimeAdapterType, "claude_code" | "codex_cli" | "opencode">;
+
+/**
+ * How a managed copy of a runtime is obtained on an execution host — the
+ * ACP registry's vocabulary (`modules/acpAgents/registry.ts`). A builtin
+ * adapter names its registry entry and the server resolves the current
+ * distribution at install time; a registry agent carries a snapshot.
+ */
+export interface RuntimeBinaryTarget {
+  archive: string;
+  cmd: string;
+  args: string[];
+  sha256: string | null;
+  env: Record<string, string>;
+}
+export type RuntimeDistribution =
+  | { kind: "npx"; package: string; args: string[]; env: Record<string, string> }
+  | { kind: "uvx"; package: string; args: string[]; env: Record<string, string> }
+  | { kind: "binary"; platforms: Record<string, RuntimeBinaryTarget> };
+
+/**
+ * How a runtime is logged into, and how a login is recognised. Shared by the
+ * server-host login engine and the daemon's login terminal, so the knowledge
+ * lives once. `command` is the vendor CLI as it is named on PATH (an `own`
+ * installation); `managed_command` addresses the same CLI inside a managed
+ * tree, with `{tree}` the install directory, `{node}` this daemon's node,
+ * `{platform}` the registry platform key (`linux-x86_64`), and
+ * `{node_platform}` node's own `<platform>-<arch>` (`linux-x64`).
+ */
+export interface RuntimeLoginSpec {
+  command: string[];
+  managed_command?: string[];
+  home_subdir: string;
+  credential_file: string;
+  hint?: string;
+}
+
 export type RuntimeKind = "native" | "local_cli" | "managed_api" | "custom";
 export type RuntimeExecutorFamily = "native" | "local_cli" | "managed_api" | "custom";
 export type ImplementationStatus = "implemented" | "planned" | "disabled";
@@ -16,7 +62,8 @@ export type CredentialReleaseChannel = "server_runtime_host";
 type RuntimeConfigValue = string | number | boolean | Record<string, string>;
 
 export interface RuntimeAdapterSpec {
-  adapter_type: RuntimeAdapterType;
+  /** A builtin type, or a dynamic adapter's own id (`acp_<registry id>`). */
+  adapter_type: RuntimeAdapterType | (string & {});
   display_name: string;
   runtime_kind: RuntimeKind;
   executor_family: RuntimeExecutorFamily;
@@ -63,9 +110,19 @@ export interface RuntimeAdapterSpec {
      * `executable.command`).
      */
     remote_capability_probe?: string;
+    /**
+     * Runs only on a paired execution host, never on the server host: the
+     * daemon installs and launches it from its own managed tools directory.
+     * Set for ACP-registry adapters, which have no server-side runtime tool,
+     * credential profile, or ModelProvider binding.
+     */
+    remote_host_only?: boolean;
   };
+  /** How an execution host obtains a managed copy; absent = only the machine's own install. */
+  distribution?: RuntimeDistribution | { registry_id: string };
   credentials: {
     credential_mode: CredentialMode;
+    login?: RuntimeLoginSpec;
     credential_release_channel?: CredentialReleaseChannel;
     credential_runtime_name?: string;
     default_target_path?: string;
@@ -83,6 +140,12 @@ export interface RuntimeAdapterSpec {
     supports_model_override: boolean;
     model_arg_template?: string[];
     model_config_behavior: "uses_model" | "not_applicable" | "unsupported";
+    /**
+     * Which ModelProvider endpoint a CLI can be pointed at — the
+     * `<provider_api>_base_url` a binding needs. Only meaningful for vendor
+     * CLIs that accept a provider.
+     */
+    provider_api?: "claude_compatible" | "openai_compatible";
   };
   permissions: {
     supports_permission_bypass: boolean;
@@ -116,6 +179,7 @@ export interface LocalCliRuntimeAdapterSpec extends RuntimeAdapterSpec {
     interactive_command_template?: string[];
     protocol?: "acp";
     remote_capability_probe?: string;
+    remote_host_only?: boolean;
   };
   credentials: RuntimeAdapterSpec["credentials"] & {
     credential_mode: "cli_profile" | "cli_profile_or_model_provider";
@@ -273,6 +337,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     data_exposure: "provider",
     baseline_trust_level: "low",
     executable: { command: "claude-agent-acp", allow_path_override: true },
+    distribution: { registry_id: "claude-acp" },
     invocation: {
       headless_command_template: ["{executable}"],
       resume_command_template: ["{executable}"],
@@ -280,6 +345,16 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       remote_capability_probe: "claude",
     },
     credentials: {
+      login: {
+        command: ["claude", "/login"],
+        // The bundled SDK ships the vendor binary per platform.
+        managed_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/login"],
+        home_subdir: ".claude",
+        // `claude /login` exits non-zero from its REPL; the credential file is
+        // the reliable success signal.
+        credential_file: ".credentials.json",
+        hint: "A browser URL will appear - open it to authorize your Claude.ai account.",
+      },
       credential_mode: "cli_profile",
       credential_runtime_name: "claude_code",
       default_target_path: "/home/agent/.claude",
@@ -291,6 +366,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       model_config_behavior: "uses_model",
+      provider_api: "claude_compatible",
     },
     permissions: {
       // ACP's permission requests are answered by the controller. Keep the
@@ -340,12 +416,20 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     // below still points capability checks at the vendor CLI name a trusted
     // host actually reports.
     executable: { command: "codex-acp", allow_path_override: true },
+    distribution: { registry_id: "codex-acp" },
     invocation: {
       headless_command_template: ["{executable}"],
       protocol: "acp",
       remote_capability_probe: "codex",
     },
     credentials: {
+      login: {
+        command: ["codex", "login", "--device-auth"],
+        managed_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "login", "--device-auth"],
+        home_subdir: ".codex",
+        credential_file: "auth.json",
+        hint: "Open the device-auth URL and enter the code shown.",
+      },
       credential_mode: "cli_profile",
       credential_runtime_name: "codex_cli",
       default_target_path: "/home/agent/.codex",
@@ -356,6 +440,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       model_provider_mode: "none",
       supports_model_override: false,
       model_config_behavior: "not_applicable",
+      provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
     usage: {
@@ -399,6 +484,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       ],
     },
     executable: { command: "opencode", allow_path_override: true },
+    distribution: { registry_id: "opencode" },
     invocation: {
       headless_command_template: [
         "{executable}",
@@ -409,6 +495,13 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       protocol: "acp",
     },
     credentials: {
+      login: {
+        command: ["opencode", "auth", "login"],
+        managed_command: ["{tree}/opencode", "auth", "login"],
+        home_subdir: ".local/share/opencode",
+        credential_file: "auth.json",
+        hint: "Follow the prompts to complete login.",
+      },
       credential_mode: "cli_profile_or_model_provider",
       credential_runtime_name: "opencode",
       default_target_path: "/home/agent/.local/share/opencode",
@@ -420,6 +513,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       model_config_behavior: "uses_model",
+      provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
     usage: {
@@ -518,12 +612,12 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
 };
 
 export function listRuntimeAdapterSpecs(): RuntimeAdapterSpec[] {
-  return Object.values(BUILTIN_RUNTIME_ADAPTER_SPECS);
+  return [...Object.values(BUILTIN_RUNTIME_ADAPTER_SPECS), ...listDynamicRuntimeAdapterSpecs()];
 }
 
 export function getRuntimeAdapterSpec(adapterType: string | null | undefined): RuntimeAdapterSpec | null {
   if (!adapterType) return null;
-  return BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType] ?? null;
+  return BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType] ?? getDynamicRuntimeAdapterSpec(adapterType);
 }
 
 export function isImplementedRuntimeAdapter(adapterType: string | null | undefined): boolean {
@@ -542,7 +636,12 @@ export function getLocalCliRuntimeAdapterSpec(
   return spec as LocalCliRuntimeAdapterSpec;
 }
 
-export function isVendorCliAdapter(adapterType: string | null | undefined): boolean {
+export function isVendorCliAdapter(adapterType: string | null | undefined): adapterType is VendorCliAdapterType {
   const spec = getRuntimeAdapterSpec(adapterType);
   return spec?.runtime_kind === "local_cli" && spec.implementation_status === "implemented";
+}
+
+/** A vendor CLI driven over the Agent Client Protocol — what a remote host can run. */
+export function isAcpRuntimeAdapter(adapterType: string | null | undefined): adapterType is VendorCliAdapterType {
+  return isVendorCliAdapter(adapterType) && getLocalCliRuntimeAdapterSpec(adapterType)?.invocation.protocol === "acp";
 }

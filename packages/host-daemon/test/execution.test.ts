@@ -11,7 +11,7 @@ import {
   handleTerminate,
   REMOTE_CWD_PLACEHOLDER,
   resolveAcpEntrypoint,
-  resolveCodexAcpEntrypoint,
+  resolveAcpLaunch,
 } from "../src/execution.js";
 
 let configDir: string;
@@ -237,7 +237,7 @@ describe("handleLaunch", () => {
   }, 10000);
 
   it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint (ACP runtime replatform P3)", () => {
-    const entrypoint = resolveCodexAcpEntrypoint();
+    const entrypoint = resolveAcpEntrypoint("codex-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);
   });
@@ -246,6 +246,23 @@ describe("handleLaunch", () => {
     const entrypoint = resolveAcpEntrypoint("claude-agent-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);
+  });
+
+  it("resolves an ACP launch the same way for a job and for the options probe: vendor CLI as named, bundled adapter through node", () => {
+    // A vendor CLI that speaks ACP itself (opencode) is spawned as the spec
+    // renders it — nothing in this daemon needs to know it exists.
+    expect(resolveAcpLaunch("opencode", ["acp", "--cwd", "/w"])).toEqual({
+      command: "opencode",
+      args: ["acp", "--cwd", "/w"],
+      env: {},
+    });
+    const codex = resolveAcpLaunch("codex-acp", []);
+    expect(codex.command).toBe(process.execPath);
+    expect(codex.args).toEqual([resolveAcpEntrypoint("codex-acp")]);
+    expect(codex.env).toEqual({ CODEX_PATH: "codex", NO_BROWSER: "1" });
+    const claude = resolveAcpLaunch("claude-agent-acp", []);
+    expect(claude.args).toEqual([resolveAcpEntrypoint("claude-agent-acp")]);
+    expect(claude.env).toEqual({});
   });
 
   it("spawns codex_cli's pinned codex-acp dependency through node rather than a PATH lookup, without setting CODEX_PATH for other adapters", async () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AutomationTargetType } from "@rainver/protocol";
 import {
   automationTargetHandlerRegistry,
@@ -11,6 +11,14 @@ const handler: AutomationTargetHandler = {
   preflight: async () => ({ executable: true }),
   execute: async () => ({ ok: true }),
 };
+
+// The registry is a process singleton, and the automations module registers
+// its own handlers into it at load. Files in the shared project run in one
+// worker, so whatever an earlier file loaded is still there when this one
+// starts — reset before each test, not only after.
+beforeEach(() => {
+  automationTargetHandlerRegistry.__resetForTests();
+});
 
 afterEach(() => {
   automationTargetHandlerRegistry.__resetForTests();

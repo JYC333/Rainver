@@ -522,11 +522,45 @@ describe("hosts routes", () => {
       setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
     });
     expect(helloAck).toMatchObject({ type: "hello_ack", host_id: hostId });
+    // The daemon asks each runtime for its options exactly as the adapter
+    // spec launches it, so the spec is the only place a runtime is added.
+    const probes = helloAck.runtime_probes as Array<{ adapter_type: string; runtime: string | null; argv: string[]; login: unknown }>;
+    expect(probes.map((probe) => probe.runtime).sort()).toEqual(["claude", "codex", "opencode"]);
+    expect(probes.find((probe) => probe.runtime === "opencode")).toMatchObject({
+      adapter_type: "opencode",
+      argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
+      login: { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json" },
+    });
+    expect(probes.find((probe) => probe.runtime === "codex")?.argv).toEqual(["codex-acp"]);
+
+    // A heartbeat in the pre-installations wire format is stored in the one
+    // shape every reader uses: the PATH binary becomes the `own` copy, with
+    // whatever that daemon knew about it.
+    socket.send(JSON.stringify({
+      type: "heartbeat",
+      capabilities_json: {
+        runtimes: ["claude", "git"],
+        versions: { claude: "2.1.0", git: "git version 2.44" },
+        options: { claude: { models: [{ value: "sonnet", name: "Sonnet" }], current_model: "sonnet", efforts: [], current_effort: "high" } },
+      },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     const afterHello = await app.inject({
       method: "GET",
       url: "/api/v1/hosts",
       headers: { cookie: authCookie(OWNER_TOKEN) },
+    });
+    const stored = (afterHello.json().items as Array<{ id: string; capabilities_json: Record<string, unknown> }>).find((h) => h.id === hostId)!.capabilities_json;
+    expect(stored).toEqual({
+      runtimes: ["claude", "git"],
+      versions: { claude: "2.1.0", git: "git version 2.44" },
+      installations: {
+        claude_code: [{
+          id: "own", version: "2.1.0", logged_in: null,
+          options: { models: [{ value: "sonnet", name: "Sonnet", description: null }], current_model: "sonnet", efforts: [], current_effort: "high" },
+        }],
+      },
     });
     const onlineHost = (afterHello.json().items as Array<{ id: string; status: string }>).find((h) => h.id === hostId);
     expect(onlineHost?.status).toBe("online");

@@ -12,6 +12,8 @@ import { Label } from '../../components/ui/label'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import HostProviderBindings from './HostProviderBindings'
+import HostAgents from './HostAgents'
+import { useAuth } from '../../contexts/AuthContext'
 import HostProxyAddress from './HostProxyAddress'
 
 const HOST_REFRESH_INTERVAL_MS = 3_000
@@ -28,6 +30,7 @@ const HOST_STATUS_VARIANT: Record<Host['status'], 'success' | 'muted' | 'destruc
 }
 
 export default function HostsPanel() {
+  const { currentUser } = useAuth()
   const [hosts, setHosts] = useState<Host[]>([])
   const [loading, setLoading] = useState(true)
   const [pairing, setPairing] = useState<HostPairingCode | null>(null)
@@ -45,10 +48,14 @@ export default function HostsPanel() {
     return [...groups.entries()]
   }, [hosts])
 
-  useEffect(() => {
+  const loadAdapters = useCallback(() => {
     hostsApi.listRuntimeAdapters().then(result => setRuntimeAdapters(result.items)).catch(error => toast.error(errMsg(error)))
-    providersApi.list().then(setProviders).catch(error => toast.error(errMsg(error)))
   }, [])
+  useEffect(() => {
+    loadAdapters()
+    providersApi.list().then(setProviders).catch(error => toast.error(errMsg(error)))
+  }, [loadAdapters])
+  const eligibleAdapters = useMemo(() => runtimeAdapters.filter(a => a.remote_eligible), [runtimeAdapters])
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
@@ -186,14 +193,14 @@ export default function HostsPanel() {
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <>
                   <HostProviderBindings
-                    hostId={host.id}
+                    host={host}
                     runtimeAdapters={runtimeAdapters}
-                    installedProbes={host.capabilities_json?.runtimes ?? []}
                     providers={providers}
                   />
                   <div className="w-full">
                     <HostProxyAddress host={host} onChanged={() => { void load() }} />
                   </div>
+                  <HostAgents host={host} adapters={eligibleAdapters} isInstanceAdmin={Boolean(currentUser?.is_instance_admin)} onChanged={() => { void load() }} />
                 </>
               )}
                 </Card>

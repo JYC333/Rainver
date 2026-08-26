@@ -5,6 +5,7 @@ import { withDbTransaction } from "../routeUtils/common.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
+import { hostInstallationIds } from "./capabilities.js";
 import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
@@ -120,12 +121,8 @@ export async function advanceThreadQueue(
     // the point where the queued message becomes a Run, because the runtime
     // may have disappeared after the request enqueued the message.
     const adapter = getLocalCliRuntimeAdapterSpec(freshThread.adapter_type);
-    const reportedRuntimes = Array.isArray((target.capabilities_json as { runtimes?: unknown })?.runtimes)
-      ? ((target.capabilities_json as { runtimes: unknown[] }).runtimes as unknown[])
-      : [];
-    const capabilityProbeCommand = adapter?.invocation.remote_capability_probe ?? adapter?.executable.command;
     if (!adapter || adapter.implementation_status !== "implemented" || adapter.invocation.protocol !== "acp"
-      || (capabilityProbeCommand && !reportedRuntimes.includes(capabilityProbeCommand))) {
+      || !hostInstallationIds(target.capabilities_json, adapter.adapter_type).includes(freshThread.runtime_installation)) {
       return { advanced: false, reason: "host_offline" };
     }
 
@@ -247,6 +244,7 @@ export async function advanceThreadQueue(
       modelProviderId: next.model_provider_id,
       model: next.model,
       reasoningEffort: next.reasoning_effort,
+      installation: freshThread.runtime_installation,
       agent,
       contractSnapshot: {
         source: { kind: "task", id: next.task_id },
@@ -291,6 +289,7 @@ async function createAndQueueRun(db: Queryable, params: {
   modelProviderId: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  installation: string;
   agent: { id: string; current_version_id: string };
   contractSnapshot: Parameters<typeof createRunContractSnapshot>[0];
   timeoutMs: number | null;
@@ -328,12 +327,17 @@ async function createAndQueueRun(db: Queryable, params: {
       // host default it resolved to, not from a routing decision. Without it
       // the Run read model normalizes to "none" and shows a chosen model with
       // no provenance.
-      params.model || params.reasoningEffort
+      // Null when there is nothing to say: an unbound run on the machine's
+      // own install carries no override, and the Run read model relies on that.
+      params.model || params.reasoningEffort || params.installation !== "own"
         ? JSON.stringify({
             ...(params.model ? { model: params.model } : {}),
             // Beside the model, never inside it: a model id can carry brackets
             // of its own, so the pair cannot be recovered from one string.
             ...(params.reasoningEffort ? { reasoning_effort: params.reasoningEffort } : {}),
+            // Which copy of the runtime on the host, from the thread's pin —
+            // only when it is not the machine's own.
+            ...(params.installation !== "own" ? { installation: params.installation } : {}),
             source: "request",
           })
         : null,

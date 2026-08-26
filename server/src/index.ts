@@ -16,6 +16,7 @@ import {
   loadConfig,
 } from "./config.js";
 import { startBackgroundServices } from "./modules/scheduler/backgroundServices.js";
+import { startAcpAgentSpecRefresh } from "./modules/acpAgents/index.js";
 import { enforceBackupPolicy, BackupPolicyError } from "./modules/backups/guard.js";
 import { startProviderProxyServer } from "./modules/providers/proxy/server.js";
 import { PluginHost } from "./modules/plugins/host/index.js";
@@ -94,6 +95,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  startAcpAgentSpecRefresh(config, { error: (message) => app.log.error(message) });
   if (config.databaseUrl) {
     const db = getDbPool(config.databaseUrl);
     await new PgWorkspaceLocationRepository(db).refreshServerLocations(config.workspaceRoot).catch((err) => {

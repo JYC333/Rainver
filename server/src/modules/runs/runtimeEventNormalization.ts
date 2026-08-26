@@ -3,6 +3,7 @@ import type {
   RuntimeSemanticEvent,
 } from "@rainver/protocol";
 import { redactEvidenceText } from "./evidenceRedaction.js";
+import { isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 
 export function normalizeManagedModelEvents(
   events: CanonicalModelEvent[],
@@ -55,7 +56,7 @@ function normalizeNativeProtocolEvent(
   // session/update vocabulary. This branch is protocol-shaped, not
   // vendor-specific.
   if (
-    (adapterType === "claude_code" || adapterType === "opencode" || adapterType === "codex_cli")
+    isAcpRuntimeAdapter(adapterType)
     && event.method === "session/update"
   ) {
     const update = recordValue(recordValue(event.params).update);

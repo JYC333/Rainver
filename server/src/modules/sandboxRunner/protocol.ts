@@ -1,3 +1,5 @@
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
+
 export const SANDBOX_RUNNER_PROTOCOL_VERSION = 1 as const;
 
 export type SandboxAccess = "read_only" | "read_write";
@@ -38,7 +40,7 @@ export interface SandboxLaunchRequest {
   protocol_version: typeof SANDBOX_RUNNER_PROTOCOL_VERSION;
   run_id: string;
   scope_id: string;
-  runtime: "claude_code" | "codex_cli" | "opencode" | "verification";
+  runtime: VendorCliAdapterType | "verification";
   runtime_tool_id: string;
   arguments: string[];
   sandbox_mode: "read_only" | "read_write";

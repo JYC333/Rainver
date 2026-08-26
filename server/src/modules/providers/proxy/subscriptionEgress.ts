@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { VendorCliAdapterType } from "../../runtimeAdapters/specs.js";
 
-export type SubscriptionRuntime = "claude_code" | "codex_cli" | "opencode";
+export type SubscriptionRuntime = VendorCliAdapterType;
 
 interface Lease {
   token: Buffer;

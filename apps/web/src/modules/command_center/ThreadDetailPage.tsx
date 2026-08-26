@@ -80,6 +80,11 @@ export default function ThreadDetailPage() {
   const runtimeName = thread
     ? runtimeAdapters.find(a => a.adapter_type === thread.adapter_type)?.display_name ?? thread.adapter_type
     : ''
+  // A thread is pinned to one copy of its runtime (the vendor session lives
+  // in that copy's login state), so the copy is named, not chosen, here.
+  const installationName = thread?.runtime_installation
+    ? (thread.runtime_installation === 'own' ? "machine's own copy" : thread.runtime_installation)
+    : null
 
   if (loading) {
     return (
@@ -112,6 +117,7 @@ export default function ThreadDetailPage() {
             <Badge variant={host?.status === 'online' ? 'success' : 'muted'}>{host?.name ?? 'Unknown host'}</Badge>
             <span className="text-sm text-muted-foreground">{folder?.name ?? thread.project_folder_id}</span>
             <Badge variant="outline">{runtimeName}</Badge>
+            {installationName && <Badge variant="outline">{installationName}</Badge>}
             {thread.status === 'session_reset' && <Badge variant="warning">session reset</Badge>}
           </div>
           {thread.vendor_session_id && (
@@ -131,7 +137,6 @@ export default function ThreadDetailPage() {
             fixedThreadId={thread.id}
             fixedFolderId={thread.project_folder_id}
             fixedAdapterType={thread.adapter_type}
-            providers={providers ?? undefined}
             onDispatched={() => { void load() }}
           />
         </div>

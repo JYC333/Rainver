@@ -2,11 +2,12 @@ import type { ServerConfig } from "../../config.js";
 import type { PtyFactory, PtyHandle } from "../providers/cli/loginEngine.js";
 import { LocalCliProcessRegistry } from "../runs/localCliExecution.js";
 import { SandboxRunnerCliCommandExecutor } from "./client.js";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
 export class SandboxRunnerPtyFactory implements PtyFactory {
   constructor(
     private readonly config: ServerConfig,
-    private readonly runtime: "claude_code" | "codex_cli" | "opencode",
+    private readonly runtime: VendorCliAdapterType,
     private readonly runId: string,
     private readonly workspaceCwd: string,
     private readonly proxyUrl: string,

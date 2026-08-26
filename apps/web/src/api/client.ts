@@ -396,6 +396,7 @@ import type {
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
+  DispatchOptions,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -1848,6 +1849,49 @@ export const hostsApi = {
   listRecentThreads: (limit = 20) =>
     get<{ items: HostRecentThread[] }>(`/hosts/threads/recent?limit=${limit}`),
   listRuntimeAdapters: () => get<{ items: HostRuntimeAdapterOption[] }>('/hosts/runtime-adapters'),
+  /** What a dispatch to this host can choose from — copies and usable backends — decided server-side. */
+  dispatchOptions: (hostId: string, params: { adapter_type?: string | null; installation?: string | null; thread_id?: string | null } = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) if (value) query.set(key, value)
+    const suffix = query.toString() ? `?${query}` : ''
+    return get<DispatchOptions>(`/hosts/${encodeURIComponent(hostId)}/dispatch-options${suffix}`)
+  },
+  /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
+  installRuntime: (hostId: string, adapterType: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}`),
+  uninstallRuntime: (hostId: string, adapterType: string, installation: string) =>
+    del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}`),
+  /**
+   * The login terminal for one copy of a runtime on a host: the daemon runs
+   * the copy's login command on a PTY and this relays it, frame by frame,
+   * until the command exits. Type through `loginInput`.
+   */
+  async *loginStream(hostId: string, adapterType: string, installation: string): AsyncGenerator<RuntimeLoginEvent> {
+    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/stream`
+    const headers: Record<string, string> = {}
+    if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
+    headers['X-Rainver-Space-Id'] = _spaceId
+    const response = await fetch(url, { headers })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+    if (!response.body) throw new Error('No response body')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const line = block.trim()
+        if (!line.startsWith('data: ')) continue
+        try { yield JSON.parse(line.slice(6)) as RuntimeLoginEvent } catch { /* ignore malformed SSE */ }
+      }
+    }
+  },
+  loginInput: (hostId: string, adapterType: string, installation: string, data: string) =>
+    post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/input`, { data }),
   listProviderBindings: (hostId: string) =>
     get<{ items: HostRuntimeProviderBinding[] }>(`/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings`),
   setProviderBinding: (hostId: string, adapterType: string, modelProviderId: string, model: string | null = null) =>
@@ -2001,6 +2045,54 @@ export const usageApi = {
     post<UsageCliHistoryImportResponse>('/usage/imports/cli-history/preview', body),
   commitCliHistory: (body: UsageCliHistoryCommitRequest) =>
     post<UsageCliHistoryImportResponse>('/usage/imports/cli-history/commit', body),
+}
+
+// ── ACP registry agents ───────────────────────────────────────────────────
+export type AcpDistribution =
+  | { kind: 'npx' | 'uvx'; package: string; args: string[]; env: Record<string, string> }
+  | { kind: 'binary'; platforms: Record<string, { archive: string; cmd: string; args: string[]; sha256: string | null; env: Record<string, string> }> }
+
+export interface AcpRegistryEntry {
+  id: string
+  name: string
+  version: string
+  description: string | null
+  repository: string | null
+  license: string | null
+  icon: string | null
+  distribution: AcpDistribution
+}
+
+/** An enabled registry agent, with the adapter type the server derived for it. */
+export interface AcpAgentOut extends AcpRegistryEntry {
+  enabled_at: string
+  enabled_by_user_id: string | null
+  adapter_type: string
+  /** Hosts that still carry a managed copy; disabling is refused while any do. */
+  installed_on: Array<{ host_id: string; name: string }>
+}
+
+export const acpAgentsApi = {
+  registry: () => get<{ items: AcpRegistryEntry[] }>('/acp-agents/registry'),
+  list: () => get<{ items: AcpAgentOut[] }>('/acp-agents'),
+  enable: (registryId: string) => put<AcpAgentOut>(`/acp-agents/${encodeURIComponent(registryId)}`, {}),
+  disable: (registryId: string) => del<null>(`/acp-agents/${encodeURIComponent(registryId)}`),
+}
+
+/** One frame of a runtime copy's login terminal. */
+export type RuntimeLoginEvent =
+  | { type: 'output'; data: string }
+  | { type: 'hint'; text: string }
+  | { type: 'exit'; exit_code: number; logged_in: boolean | null }
+  | { type: 'error'; message: string }
+
+/** The daemon's report for one install/uninstall of a managed runtime copy. */
+export interface RuntimeInstallResult {
+  host_id: string
+  adapter_type: string
+  ok: boolean
+  error: string | null
+  installation: string | null
 }
 
 export const runtimeToolsApi = {

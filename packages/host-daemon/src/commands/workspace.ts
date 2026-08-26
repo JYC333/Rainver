@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createWorkspace, listWorkspaces, removeWorkspace, type WorkspaceOut } from "../api.js";
 import { requireConfig, saveConfig } from "../config.js";
@@ -9,6 +10,11 @@ export interface LocalWorkspace extends WorkspaceOut {
 export async function workspaceAdd(options: { path: string; projectId: string; name: string }): Promise<WorkspaceOut> {
   const config = await requireConfig();
   const absolutePath = resolve(options.path);
+  // Registered on the server but absent here would only surface later as a
+  // workspace that never becomes ready. Refuse now, where the path was typed.
+  const info = await stat(absolutePath).catch(() => null);
+  if (!info) throw new Error(`Path does not exist on this machine: ${absolutePath}`);
+  if (!info.isDirectory()) throw new Error(`Not a directory: ${absolutePath}`);
   const created = await createWorkspace(config.server_url, config.token, {
     projectId: options.projectId,
     name: options.name,
