@@ -1,4 +1,4 @@
-import type { UsageAttribution, UsageObservation } from "../../src/modules/usage";
+import type { UsageAttribution, UsageObservation } from "../../src/modules/usage/index.js";
 
 export async function resolveTestUsageAttribution(
   input: UsageObservation,

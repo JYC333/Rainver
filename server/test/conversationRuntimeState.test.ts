@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   prepareConversationRuntimeState,
   sweepConversationRuntimeState,
-} from "../src/modules/runs/conversationRuntimeState";
+} from "../src/modules/runs/conversationRuntimeState.js";
 
 const roots: string[] = [];
 const STATE_KEY = "11111111-1111-4111-8111-111111111111";

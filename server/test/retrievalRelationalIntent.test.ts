@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRelationalIntent } from "../src/modules/retrieval";
+import { parseRelationalIntent } from "../src/modules/retrieval/relationalIntent.js";
 
 describe("parseRelationalIntent", () => {
   it("recognizes a small deterministic relation vocabulary", () => {

@@ -2,9 +2,9 @@ import type {
   RetrievalBriefResponse,
   RetrievalObjectType,
   RetrievalSearchMode,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter";
+} from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 
 export const RETRIEVAL_BRIEF_ARTIFACT_TYPE = "retrieval_brief";
 

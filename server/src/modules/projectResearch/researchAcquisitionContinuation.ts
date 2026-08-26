@@ -1,4 +1,4 @@
-import type { ConversationContinuationRegistry, ProposalContinuation } from "../proposals/continuationRegistry";
+import type { ConversationContinuationRegistry, ProposalContinuation } from "../proposals/continuationRegistry.js";
 
 /**
  * Room continuations for the `research.start_acquisition` pipeline

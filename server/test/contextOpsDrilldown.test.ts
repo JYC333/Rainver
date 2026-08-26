@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ContextOpsService } from "../src/modules/contextOps";
-import { RetrievalRegistry } from "../src/modules/retrieval/registry";
-import type { RetrievalDomainAdapter } from "../src/modules/retrieval/registry";
+import { ContextOpsService } from "../src/modules/contextOps/service.js";
+import { RetrievalRegistry } from "../src/modules/retrieval/registry.js";
+import type { RetrievalDomainAdapter } from "../src/modules/retrieval/registry.js";
 
 // Objects the fake adapter will revalidate as readable. "ro-hidden" is omitted,
 // so the canonical read gate drops it; "ro-restricted" is readable but carries a

@@ -1,4 +1,4 @@
-import { HttpError, objectValue, optionalString } from "../routeUtils/common";
+import { HttpError, objectValue, optionalString } from "../routeUtils/common.js";
 
 const WINDOW_UNITS = ["date_window", "page_cursor", "id_cursor"] as const;
 const QUOTA_WINDOWS = ["minute", "hour", "day"] as const;

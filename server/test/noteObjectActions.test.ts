@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { entityDefinition } from "../src/modules/ontology/entities";
+import { entityDefinition } from "../src/modules/ontology/entities.js";
 
 /**
  * NE: the first object-bound actions, and the mechanism `applies_to` exists

@@ -3,12 +3,12 @@ import type {
   ResearchCompiledQuery,
   ResearchProviderKey,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { compileArxivSemanticQuery } from "./providers/arxiv";
-import { compileOpenAlexSemanticQuery } from "./providers/openAlex";
-import { compileSemanticScholarSemanticQuery } from "./providers/semanticScholar";
-import { compileWebSearchSemanticQuery } from "./providers/webSearch";
-import { HttpError } from "../../routeUtils/common";
+} from "@agent-space/protocol";
+import { compileArxivSemanticQuery } from "./providers/arxiv.js";
+import { compileOpenAlexSemanticQuery } from "./providers/openAlex.js";
+import { compileSemanticScholarSemanticQuery } from "./providers/semanticScholar.js";
+import { compileWebSearchSemanticQuery } from "./providers/webSearch.js";
+import { HttpError } from "../../routeUtils/common.js";
 
 export interface ResearchProviderCompileOptions {
   pageSize?: number;

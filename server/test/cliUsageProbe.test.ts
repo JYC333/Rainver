@@ -2,22 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  __setClaudeOAuthUsageHttpClientForTests,
-  __setCodexRpcFactoryForTests,
-  __setProbeFactoryForTests,
-  parseQuota,
-  parseClaudeOAuthUsageResponse,
-  parseCodexManagedUsageResponse,
-  probeClaudeOAuthQuota,
-  probeClaudeOAuthQuotaWithAccessToken,
-  type ClaudeOAuthHttpClient,
-  probeCodexQuota,
-  type CodexRpcFactory,
-  type CodexRpcHandle,
-  probeClaudeQuota,
-  type ProbePtyFactory,
-} from "../src/modules/providers";
+import { __setClaudeOAuthUsageHttpClientForTests, parseClaudeOAuthUsageResponse, probeClaudeOAuthQuota, probeClaudeOAuthQuotaWithAccessToken, type ClaudeOAuthHttpClient } from "../src/modules/providers/cli/claudeOAuthUsageProbe.js";
+import { __setCodexRpcFactoryForTests, parseCodexManagedUsageResponse, probeCodexQuota, type CodexRpcFactory, type CodexRpcHandle } from "../src/modules/providers/cli/codexUsageProbe.js";
+import { __setProbeFactoryForTests, parseQuota, probeClaudeQuota, type ProbePtyFactory } from "../src/modules/providers/cli/usageProbe.js";
 
 let tempDir: string | undefined;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SubscriptionEgressLeaseRegistry } from "../src/modules/providers/proxy/subscriptionEgress";
+import { SubscriptionEgressLeaseRegistry } from "../src/modules/providers/proxy/subscriptionEgress.js";
 
 describe("SubscriptionEgressLeaseRegistry", () => {
   it("authorizes only the registered runtime's HTTPS host allowlist", () => {

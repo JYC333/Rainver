@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AutomationTargetType } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { AutomationTargetType } from "@agent-space/protocol";
 import {
   automationTargetHandlerRegistry,
   requireAutomationTargetHandler,
   type AutomationTargetHandler,
-} from "../src/modules/automations/targetRegistry";
-import { loadAutomationTargetDefinitions } from "../src/modules/automations/targetDefinitions";
+} from "../src/modules/automations/targetRegistry.js";
+import { loadAutomationTargetDefinitions } from "../src/modules/automations/targetDefinitions.js";
 
 const handler: AutomationTargetHandler = {
   preflight: async () => ({ executable: true }),

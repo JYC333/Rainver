@@ -1,9 +1,9 @@
 import {
   BUILTIN_RUNTIME_ADAPTER_SPECS,
   type RuntimeAdapterType,
-} from "../runtimeAdapters/specs";
-import { recommendedMaxOutputTokens } from "../providers/modelOutputLimits";
-import type { AgentOut, AgentRecord } from "./repository";
+} from "../runtimeAdapters/specs.js";
+import { recommendedMaxOutputTokens } from "../providers/modelOutputLimits.js";
+import type { AgentOut, AgentRecord } from "./repository.js";
 
 export const DEFAULT_MODEL_CONFIG = { model: "claude-sonnet-4-6", max_tokens: 8192 };
 

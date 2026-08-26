@@ -1,35 +1,35 @@
-import { checkLinkTypeAllowed } from "../ontology/validation";
-import { hasDeclaration } from "../ontology/linkTypes";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
+import { checkLinkTypeAllowed } from "../ontology/validation.js";
+import { hasDeclaration } from "../ontology/linkTypes.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ProposalApplyContext,
   ProposalApplyResult,
-} from "../proposals/applierRegistry";
+} from "../proposals/applierRegistry.js";
 import {
   writeProvenanceLinks,
   type Queryable,
-} from "../memory/memoryApplyProvenance";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { RetrievalProjectionService } from "../retrieval";
-import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job";
-import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
+} from "../memory/memoryApplyProvenance.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
+import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import {
   RELATION_CREATE_STATUSES,
   claimCreateStatusError,
   claimResolutionStateError,
   claimStatusTransitionError,
-} from "./claimStatusRules";
+} from "./claimStatusRules.js";
 import {
   isKnowledgeRetrievalObjectType,
   isKnowledgeRetrievalProjectedRelation,
-} from "./retrievalObjectTypes";
-import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes";
-import { allowedObjectProfileKeys } from "../ontology/objectProfileSubtypeKeys";
-import { isContentOwner } from "../access/contentAccessPolicy";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
-import { isProvenanceSourceType } from "../ontology/entities";
+} from "./retrievalObjectTypes.js";
+import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes.js";
+import { allowedObjectProfileKeys } from "../ontology/objectProfileSubtypeKeys.js";
+import { isContentOwner } from "../access/contentAccessPolicy.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { isProvenanceSourceType } from "../ontology/entities.js";
 
 // The retrieval projection is a derived index. A projection failure must not
 // roll back an accepted canonical Knowledge mutation, but the reindex runs

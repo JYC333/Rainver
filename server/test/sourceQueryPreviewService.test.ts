@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { Queryable, SpaceUserIdentity } from '../src/modules/routeUtils/common'
-import type { SourceFetchResult } from '../src/modules/sources/sourceFetch'
-import { SourceQueryPreviewService } from '../src/modules/sources/sourceQueryPreviewService'
-import { __setArxivThrottleForTests } from '../src/modules/sources/connectors/arxivThrottle'
+import type { Queryable, SpaceUserIdentity } from '../src/modules/routeUtils/common.js'
+import type { SourceFetchResult } from '../src/modules/sources/sourceFetch.js'
+import { SourceQueryPreviewService } from '../src/modules/sources/sourceQueryPreviewService.js'
+import { __setArxivThrottleForTests } from '../src/modules/sources/connectors/arxivThrottle.js'
 
 const identity = { spaceId: 'space-1', userId: 'user-1' } as SpaceUserIdentity
 

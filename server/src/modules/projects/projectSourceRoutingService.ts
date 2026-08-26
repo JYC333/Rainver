@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import {
   syncProjectCorpusEvidenceForSourceItem,
   syncProjectCorpusForSourceItem,
-} from "./corpusRepository";
-import { lockActiveProjectForMutation } from "./access";
-import { ProjectResearchStandingComparisonService } from "../projectResearch/standingComparisonService";
+} from "./corpusRepository.js";
+import { lockActiveProjectForMutation } from "./access.js";
+import { ProjectResearchStandingComparisonService } from "../projectResearch/standingComparisonService.js";
 
 type ProjectSourceBindingFilterRow = {
   id: string;

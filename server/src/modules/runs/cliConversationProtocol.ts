@@ -1,16 +1,16 @@
-import type { CliStdioController } from "./localCliExecution";
+import type { CliStdioController } from "./localCliExecution.js";
 import type {
   CanonicalModelUsage,
   CanonicalUsage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 // D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
 // §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
 // its tested start()-independent, phase-named anomaly handling — but its
 // wire shapes are checked against the SDK's own authoritative schema types
 // here, rather than trusted by convention alone.
-import type { PermissionOption } from "@agentclientprotocol/sdk" with { "resolution-mode": "import" };
-import { usageFromAcp } from "./cliRuntimeMeasurement";
-import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy";
+import type { PermissionOption } from "@agentclientprotocol/sdk";
+import { usageFromAcp } from "./cliRuntimeMeasurement.js";
+import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
 
 type ConversationProtocolAdapter = "claude_code" | "codex_cli" | "opencode";
 

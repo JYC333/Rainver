@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { LearningService } from "../src/modules/learning/service";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { LearningService } from "../src/modules/learning/service.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for the Learning slice:
 // Objective/Item foundations anchored to a stable, versioned Knowledge item,
@@ -18,7 +18,7 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 const otherIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OTHER_USER };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

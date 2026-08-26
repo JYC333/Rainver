@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runContextObservationScan } from "../src/modules/contextOps/contextObservations";
-import { ContextOpsService } from "../src/modules/contextOps/service";
+import { runContextObservationScan } from "../src/modules/contextOps/contextObservations.js";
+import { ContextOpsService } from "../src/modules/contextOps/service.js";
 
 afterEach(() => {
   vi.restoreAllMocks();

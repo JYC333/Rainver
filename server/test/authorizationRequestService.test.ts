@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRequestableDecision } from "../src/modules/policy/authorizationRequestService";
+import { classifyRequestableDecision } from "../src/modules/policy/authorizationRequestService.js";
 
 function denied(action: string, metadata: Record<string, unknown> = {}) {
   return {

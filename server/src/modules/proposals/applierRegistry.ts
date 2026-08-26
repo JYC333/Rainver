@@ -3,44 +3,42 @@ import {
   MEMORY_COLUMNS,
   serializeMemoryRow,
   type MemoryRow,
-} from "../memory/repository";
-import type { ServerConfig } from "../../config";
-import { registerCapabilityProposalAppliers } from "../capabilities/proposalApplier";
-import { registerKnowledgeProposalAppliers } from "../knowledge/proposalApplier";
-import { registerTaskProposalAppliers } from "../tasks/proposalApplier";
-import { registerProjectFolderProposalAppliers } from "../projectFolders";
-import { registerRetrievalDiagnosticsProposalAppliers } from "../retrieval/artifacts/diagnostics";
-import { registerRetrievalMaintenanceProposalAppliers } from "../retrieval/maintenance/artifacts";
-import { registerMemoryMaintenanceProposalAppliers } from "../memory/maintenanceArtifacts";
-import { registerClaimCandidatePacketProposalAppliers } from "../knowledge/claimCandidatePackets";
-import { registerRelationDiscoveryProposalAppliers } from "../knowledge/relationDiscoveryArtifacts";
-import { registerCustomSourceProposalAppliers } from "../sources/customSources/customSourceProposalApplier";
-import { registerSourceRecipeProposalAppliers } from "../sources/sourceRecipes/recipeProposalApplier";
-import { registerSourceChannelProposalAppliers } from "../sources/sourceChannelProposalApplier";
-import { registerSourceBackfillProposalAppliers } from "../sources/sourceBackfillProposalApplier";
-import { registerProjectSourceProposalAppliers } from "../projects/projectSourceProposalApplier";
-import { registerEvolvableAssetPromotionProposalApplier } from "../evolution/assetPromotionProposalApplier";
-import { registerWorkflowSaveProposalApplier } from "../evolution/workflowSaveProposalApplier";
-import { registerPlanProposalAppliers } from "../plans/proposalApplier";
-import { registerWorkflowExecutionProposalAppliers } from "../automations/workflowExecutionProposalApplier";
-import { registerEvolutionBundleProposalApplier } from "../evolution/bundleProposalApplier";
-import { registerResearchProposalAppliers } from "../research/proposalApplier";
-import { registerEgressReviewProposalApplier } from "./egressReviewApplier";
-import { registerInquiryConclusionProposalAppliers } from "../inquiry/inquiryConclusionProposalApplier";
-import { registerInquiryThreadProposalAppliers } from "../inquiry/inquiryThreadProposalApplier";
-import { registerProjectDefinitionProposalAppliers } from "../projects/projectDefinitionProposalApplier";
+} from "../memory/repository.js";
+import type { ServerConfig } from "../../config.js";
+import { registerCapabilityProposalAppliers } from "../capabilities/proposalApplier.js";
+import { registerKnowledgeProposalAppliers } from "../knowledge/proposalApplier.js";
+import { registerTaskProposalAppliers } from "../tasks/proposalApplier.js";
+import { registerProjectFolderProposalAppliers } from "../projectFolders/index.js";
+import { registerRetrievalDiagnosticsProposalAppliers } from "../retrieval/artifacts/diagnostics.js";
+import { registerRetrievalMaintenanceProposalAppliers } from "../retrieval/maintenance/artifacts.js";
+import { registerMemoryMaintenanceProposalAppliers } from "../memory/maintenanceArtifacts.js";
+import { registerClaimCandidatePacketProposalAppliers } from "../knowledge/claimCandidatePackets.js";
+import { registerRelationDiscoveryProposalAppliers } from "../knowledge/relationDiscoveryArtifacts.js";
+import { registerCustomSourceProposalAppliers } from "../sources/customSources/customSourceProposalApplier.js";
+import { registerSourceRecipeProposalAppliers } from "../sources/sourceRecipes/recipeProposalApplier.js";
+import { registerSourceChannelProposalAppliers } from "../sources/sourceChannelProposalApplier.js";
+import { registerSourceBackfillProposalAppliers } from "../sources/sourceBackfillProposalApplier.js";
+import { registerProjectSourceProposalAppliers } from "../projects/projectSourceProposalApplier.js";
+import { registerEvolvableAssetPromotionProposalApplier } from "../evolution/assetPromotionProposalApplier.js";
+import { registerWorkflowSaveProposalApplier } from "../evolution/workflowSaveProposalApplier.js";
+import { registerPlanProposalAppliers } from "../plans/proposalApplier.js";
+import { registerWorkflowExecutionProposalAppliers } from "../automations/workflowExecutionProposalApplier.js";
+import { registerEvolutionBundleProposalApplier } from "../evolution/bundleProposalApplier.js";
+import { registerResearchProposalAppliers } from "../research/proposalApplier.js";
+import { registerEgressReviewProposalApplier } from "./egressReviewApplier.js";
+import { registerInquiryConclusionProposalAppliers } from "../inquiry/inquiryConclusionProposalApplier.js";
+import { registerInquiryThreadProposalAppliers } from "../inquiry/inquiryThreadProposalApplier.js";
+import { registerProjectDefinitionProposalAppliers } from "../projects/projectDefinitionProposalApplier.js";
 import {
   PgMemoryApplyRepository,
   type ApplyProposal,
-} from "../memory/memoryApplyRepository";
-import type { Queryable } from "./repository";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job";
-import type { ProposalAcceptResultType } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { validateProposalPayload } from "./payloadSchemas";
-export { ProposalPayloadValidationError } from "./payloadSchemas";
+} from "../memory/memoryApplyRepository.js";
+import type { Queryable } from "./repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
+import type { ProposalAcceptResultType } from "@agent-space/protocol";
+import { validateProposalPayload } from "./payloadSchemas.js";
+export { ProposalPayloadValidationError } from "./payloadSchemas.js";
 
 export interface ProposalApplyContext {
   config: ServerConfig;

@@ -4,26 +4,24 @@ import { isAbsolute, dirname, resolve } from "node:path";
 import {
   PgSnapshotStore,
   type SnapshotFile,
-} from "./snapshotStore";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce } from "../policy/service";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import type { RunRecord } from "../runs/repository";
+} from "./snapshotStore.js";
+import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce } from "../policy/service.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import type { RunRecord } from "../runs/repository.js";
 import type {
   ProposalApplyContext,
   ProposalApplyResult,
   ProposalApplierRegistry,
-} from "../proposals/applierRegistry";
-import { runGit, gitOutput } from "./git";
-import { validatePath } from "./pathPolicy";
-import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations";
-import { PgProjectFolderRepository } from "./repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
+} from "../proposals/applierRegistry.js";
+import { runGit, gitOutput } from "./git.js";
+import { validatePath } from "./pathPolicy.js";
+import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
+import { PgProjectFolderRepository } from "./repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 

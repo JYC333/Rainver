@@ -3,52 +3,45 @@ import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import { loadConfig } from "../src/config";
-import { RoomService } from "../src/modules/rooms/service";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { RunOrchestrationService } from "../src/modules/runs/orchestrationService";
-import { PgRouteDecisionRepository } from "../src/modules/routing/repository";
-import { AgentGroupRunService } from "../src/modules/agentGroups/service";
-import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector";
+import { loadConfig } from "../src/config.js";
+import { RoomService } from "../src/modules/rooms/service.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
+import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
+import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
 import {
   ROOM_DELEGATION_COMPLETION_RETRY_JOB,
   registerRoomDelegationCompletionRetryHandler,
-} from "../src/modules/agentGroups/delegationCompletionRetryJob";
-import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository";
-import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry";
-import { PgSessionRepository } from "../src/modules/sessions/repository";
-import {
-  RuntimeToolRegistry,
-  type RuntimeToolInstallRunner,
-} from "../src/modules/runtimeTools";
-import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer";
-import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
+} from "../src/modules/agentGroups/delegationCompletionRetryJob.js";
+import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { PgSessionRepository } from "../src/modules/sessions/repository.js";
+import { RuntimeToolRegistry, type RuntimeToolInstallRunner } from "../src/modules/runtimeTools/service.js";
+import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
+import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import {
   RoomConversationSummaryService,
   requestRoomConversationSummary,
   type RoomConversationSummaryDependencies,
-} from "../src/modules/rooms/conversationSummaryService";
+} from "../src/modules/rooms/conversationSummaryService.js";
 import {
   requestRoomConversationTitle,
   RoomConversationTitleService,
-} from "../src/modules/rooms/conversationTitleService";
-import { InquiryThreadProposalService } from "../src/modules/inquiry/inquiryThreadProposalService";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+} from "../src/modules/rooms/conversationTitleService.js";
+import { InquiryThreadProposalService } from "../src/modules/inquiry/inquiryThreadProposalService.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import {
   loadRoomContinuityForRunRequest,
   loadRoomConversationReplayThroughMessage,
-} from "../src/modules/runtimeContext/conversationContinuity";
-import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeContext/productionAcquisition";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import { getTestPostgres, isTestPostgresUnavailableError, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { resetTables } from "./support/resetTables";
+} from "../src/modules/runtimeContext/conversationContinuity.js";
+import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeContext/productionAcquisition.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
-let available = false;
 let testRoot: string | undefined;
 let credentialOne: string;
 let credentialTwo: string;
@@ -109,8 +102,7 @@ class FakeClaudeCodeInstaller implements RuntimeToolInstallRunner {
 }
 
 async function addRoomMember(roomId: string, userId: string): Promise<void> {
-  if (!pool) throw new Error("test pool unavailable");
-  await pool.query(
+    await db.pool.query(
     `INSERT INTO room_user_members (
        id, space_id, room_id, user_id, role, status, created_at, updated_at
      ) VALUES ($1, 'space-1', $2, $3, 'member', 'active', now(), now())`,
@@ -119,71 +111,58 @@ async function addRoomMember(roomId: string, userId: string): Promise<void> {
 }
 
 async function removeManagedAssistant(): Promise<void> {
-  if (!pool) throw new Error("test pool unavailable");
-  await pool.query("UPDATE agents SET current_version_id = NULL WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'");
-  await pool.query("DELETE FROM actors WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
-  await pool.query("DELETE FROM agent_runtime_profiles WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
-  await pool.query("DELETE FROM agent_versions WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
-  await pool.query("DELETE FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'");
+    await db.pool.query("UPDATE agents SET current_version_id = NULL WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'");
+  await db.pool.query("DELETE FROM actors WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
+  await db.pool.query("DELETE FROM agent_runtime_profiles WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
+  await db.pool.query("DELETE FROM agent_versions WHERE space_id = 'space-1' AND agent_id IN (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant')");
+  await db.pool.query("DELETE FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'");
 }
 
+const db = useTestDatabase(import.meta.filename, { max: 10 });
+
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    const databaseUrl = database.getConnectionUri();
-    pool = new Pool({ connectionString: databaseUrl });
-    testRoot = await mkdtemp(join(tmpdir(), "agent-space-room-db-"));
-    credentialOne = join(testRoot, "credential-one");
-    credentialTwo = join(testRoot, "credential-two");
-    await Promise.all([
-      mkdir(credentialOne, { recursive: true }),
-      mkdir(credentialTwo, { recursive: true }),
-    ]);
-    await Promise.all([
-      writeFile(join(credentialOne, ".credentials.json"), "{}"),
-      writeFile(join(credentialTwo, ".credentials.json"), "{}"),
-    ]);
-    service = new RoomService(loadConfig({
-      SERVER_DATABASE_URL: databaseUrl,
-      AGENT_SPACE_HOME: testRoot,
-    }), pool);
-    groupService = new AgentGroupRunService(loadConfig({
-      SERVER_DATABASE_URL: databaseUrl,
-      AGENT_SPACE_HOME: testRoot,
-    }), pool);
-    // Installs the fake claude_code tool once for the whole file: on-disk
-    // state under testRoot, independent of the per-test DB fixtures below.
-    await new RuntimeToolRegistry(
-      loadConfig({ AGENT_SPACE_HOME: testRoot }),
-      new FakeClaudeCodeInstaller(),
-    ).install("claude_code", { version: INSTALLED_CLAUDE_CODE_VERSION });
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(
-      `[rooms-db] skipped — Docker/Postgres unavailable: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+  if (!db.available) return;
+  testRoot = await mkdtemp(join(tmpdir(), "agent-space-room-db-"));
+  credentialOne = join(testRoot, "credential-one");
+  credentialTwo = join(testRoot, "credential-two");
+  await Promise.all([
+    mkdir(credentialOne, { recursive: true }),
+    mkdir(credentialTwo, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(credentialOne, ".credentials.json"), "{}"),
+    writeFile(join(credentialTwo, ".credentials.json"), "{}"),
+  ]);
+  service = new RoomService(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    AGENT_SPACE_HOME: testRoot,
+  }), db.pool);
+  groupService = new AgentGroupRunService(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    AGENT_SPACE_HOME: testRoot,
+  }), db.pool);
+  // Installs the fake claude_code tool once for the whole file: on-disk
+  // state under testRoot, independent of the per-test DB fixtures below.
+  await new RuntimeToolRegistry(
+    loadConfig({ AGENT_SPACE_HOME: testRoot }),
+    new FakeClaudeCodeInstaller(),
+  ).install("claude_code", { version: INSTALLED_CLAUDE_CODE_VERSION });
 }, 120_000);
 
 afterAll(async () => {
-  await pool?.end();
-  await database?.stop();
   if (testRoot) await rm(testRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  if (!available || !pool) return;
+  if (!db.available) return;
   const now = new Date().toISOString();
   await resetTables(
-    pool,
+    db.pool,
     ["workspace_locations", "spaces", "users", "hosts", "machines"],
     { cascade: true },
   );
-  await syncBuiltinPrompts(pool, CATALOG_ROOT);
-  await pool.query(
+  await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
+  await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
      VALUES
        ('user-1', 'Room Owner', 'active', $1, $1),
@@ -191,7 +170,7 @@ beforeEach(async () => {
        ('user-3', 'Outside Member', 'active', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ('space-1', 'Room Space', 'team', 'user-1', $1, $1)`,
     [now],
@@ -200,14 +179,14 @@ beforeEach(async () => {
   // (on-disk state) for this fresh space (DB state, truncated per test) —
   // without this, SpaceAssistantService's provisioning disables the
   // fixture's runtime-cli profile regardless of the on-disk install.
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_runtime_tool_policies (
        id, space_id, runtime, enabled, default_version, allowed_versions_json,
        updated_by_user_id, created_at, updated_at
      ) VALUES ($2, 'space-1', 'claude_code', true, $3, '[]'::jsonb, 'user-1', $1, $1)`,
     [now, randomUUID(), INSTALLED_CLAUDE_CODE_VERSION],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO space_memberships (
        id, space_id, user_id, role, status, created_at, updated_at
      ) VALUES
@@ -216,7 +195,7 @@ beforeEach(async () => {
        ('membership-3', 'space-1', 'user-3', 'member', 'active', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO credentials (
        id, space_id, owner_user_id, name, credential_type, secret_ref,
        scopes_json, metadata_json, created_at, updated_at
@@ -224,7 +203,7 @@ beforeEach(async () => {
        'api_key', 'test-secret-ref', '{}'::jsonb, '{}'::jsonb, $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, default_model,
        enabled, credential_id, capabilities_json, config_json, created_at, updated_at
@@ -232,7 +211,7 @@ beforeEach(async () => {
        'test-model', true, 'provider-credential-1', '{}'::jsonb, '{}'::jsonb, $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO model_provider_space_grants (
        id, provider_id, space_id, owner_user_id, granted_by_user_id,
        enabled, is_default, created_at, updated_at
@@ -240,13 +219,13 @@ beforeEach(async () => {
        true, true, $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO projects (
        id, space_id, owner_user_id, name, status, created_at, updated_at
      ) VALUES ('project-1', 'space-1', 'user-1', 'Room Project', 'active', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_members (
        id, space_id, project_id, user_id, role, status, created_at, updated_at
      ) VALUES (
@@ -255,17 +234,17 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ('machine-1', NULL, 'Test server', 'server', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
      VALUES ('host-1', NULL, 'machine-1', 'server', 'server', 'server', 'online', $1, $1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO project_folders (
        id, space_id, project_id, name, status, created_by_user_id, kind,
        is_primary, protected, system_managed, created_at, updated_at
@@ -275,14 +254,14 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind,
        execution_ready, status, preferred, created_at, updated_at
      ) VALUES ('location-1','space-1','folder-1','host-1','server',true,'active',true,$1,$1)`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, agent_kind,
        current_version_id, visibility, created_at, updated_at
@@ -292,7 +271,7 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
@@ -305,10 +284,10 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     "UPDATE agents SET current_version_id = 'version-1' WHERE id = 'agent-1'",
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO actors (
        id, space_id, actor_type, user_id, agent_id, service_name,
        display_name, status, metadata_json, created_at, updated_at
@@ -318,7 +297,7 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
        id, space_id, agent_id, name, adapter_type, runtime_config_json,
        runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -328,7 +307,7 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO cli_credential_profiles (
        id, owner_user_id, runtime, name, source_path, target_path,
        readonly, notes, created_at, updated_at
@@ -339,7 +318,7 @@ beforeEach(async () => {
         $3, '.claude', true, '', $1, $1)`,
     [now, credentialOne, credentialTwo],
   );
-  await pool.query(
+  await db.pool.query(
     `INSERT INTO cli_credential_space_grants (
        id, profile_id, space_id, owner_user_id, granted_by_user_id,
        enabled, is_default, created_at, updated_at
@@ -354,14 +333,14 @@ beforeEach(async () => {
 
 describe("Room workflow (real Postgres)", () => {
   it("keeps system continuations out of the visible transcript while retaining execution context", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
       title: "Continuation Room",
     });
     const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
-    const sessions = new PgSessionRepository(pool);
+    const sessions = new PgSessionRepository(db.pool);
     const visible = await sessions.addRoomUserMessage(
       owner.spaceId,
       owner.userId,
@@ -388,7 +367,7 @@ describe("Room workflow (real Postgres)", () => {
     })).resolves.toMatchObject({
       items: [{ id: visible!.id, content: "Define the Project." }],
     });
-    const replay = await loadRoomConversationReplayThroughMessage(pool, {
+    const replay = await loadRoomConversationReplayThroughMessage(db.pool, {
       spaceId: owner.spaceId,
       sessionId: conversation.id,
       currentMessageId: internal!.id,
@@ -400,14 +379,14 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("validates and deduplicates server-owned Proposal continuations", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
       title: "Proposal continuation",
     });
     const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -424,12 +403,12 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: null,
       }],
     });
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [source.run_ids[0]],
     );
     const proposalId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO proposals (
          id,space_id,created_by_run_id,proposal_type,status,risk_level,urgency,
          preview,title,payload_json,created_at,updated_at,reviewed_at,reviewed_by,
@@ -469,14 +448,14 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(first.message.content).toContain("不要只在回复里列清单");
 
-    await expect(loadAuthorizedCurrentContextMessage(pool, {
+    await expect(loadAuthorizedCurrentContextMessage(db.pool, {
       messageId: first.message.id,
       spaceId: owner.spaceId,
       sessionId: conversation.id,
       userId: owner.userId,
       runId: first.run_ids[0]!,
     })).resolves.toMatchObject({ role: "system", content: first.message.content });
-    await expect(loadAuthorizedCurrentContextMessage(pool, {
+    await expect(loadAuthorizedCurrentContextMessage(db.pool, {
       messageId: first.message.id,
       spaceId: owner.spaceId,
       sessionId: conversation.id,
@@ -489,7 +468,7 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(repeated.message.id).toBe(first.message.id);
     expect(repeated.run_ids).toEqual(first.run_ids);
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM messages
         WHERE session_id=$1 AND metadata_json->>'continuation_proposal_id'=$2`,
       [conversation.id, proposalId],
@@ -500,7 +479,7 @@ describe("Room workflow (real Postgres)", () => {
     })).resolves.toMatchObject({
       items: [{ content: "Define the Project.", role: "user" }],
     });
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='failed', ended_at=now(), updated_at=now() WHERE id = ANY($1::varchar[])",
       [first.run_ids],
     );
@@ -514,12 +493,12 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(retried.message.id).toBe(first.message.id);
     expect(retried.run_ids).not.toEqual(first.run_ids);
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM messages
         WHERE session_id=$1 AND metadata_json->>'continuation_proposal_id'=$2`,
       [conversation.id, proposalId],
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id = ANY($1::varchar[])",
       [retried.run_ids],
     );
@@ -534,7 +513,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const acceptedQuestionId = randomUUID();
     const pendingSiblingId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO proposals (
          id,space_id,created_by_run_id,proposal_type,status,risk_level,urgency,
          preview,title,payload_json,created_at,updated_at,reviewed_at,reviewed_by,
@@ -572,7 +551,7 @@ describe("Room workflow (real Postgres)", () => {
       continuation_context: { pending_sibling_count: 1 },
     });
     const continuationPolicyId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runtime_context_policy_versions (
          id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,
          reason,created_by_user_id,created_at
@@ -580,15 +559,15 @@ describe("Room workflow (real Postgres)", () => {
                  'Room continuation test policy','user-1',now())`,
       [continuationPolicyId],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runtime_context_policy_bindings (
          space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at
        ) VALUES ('space-1','space','space-1',$1,'user-1',now())`,
       [continuationPolicyId],
     );
     const continuationExecution = await new RunOrchestrationService(
-      loadConfig({ SERVER_DATABASE_URL: database!.getConnectionUri(), AGENT_SPACE_HOME: testRoot! }),
-      new PgRunRepository(pool),
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! }),
+      new PgRunRepository(db.pool),
       {
         usageRecorder: async () => {},
         managedApi: {
@@ -618,7 +597,7 @@ describe("Room workflow (real Postgres)", () => {
       command_source: "job",
     });
     expect(continuationExecution, JSON.stringify(continuationExecution)).toMatchObject({ status: "succeeded" });
-    await expect(new InquiryThreadProposalService(pool).proposeThread(
+    await expect(new InquiryThreadProposalService(db.pool).proposeThread(
       owner,
       "project-1",
       { statement: "不应由自动 continuation 重复创建的问题" },
@@ -631,7 +610,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("lazily provisions exactly one managed Assistant and the initial conversation", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     await removeManagedAssistant();
     const created = await service.createRoom(
       { spaceId: "space-1", userId: "user-1" },
@@ -643,17 +622,17 @@ describe("Room workflow (real Postgres)", () => {
       role: "manager",
       agent_kind: "system_assistant",
     });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'",
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM sessions WHERE space_id = 'space-1' AND room_id = $1",
       [created.room.id],
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
   });
 
   it("renames a placeholder conversation on its first message and queues cheap refinement", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -662,7 +641,7 @@ describe("Room workflow (real Postgres)", () => {
     const conversation = await service.createConversation(owner, created.room.id, {});
     expect(conversation.title).toBe("New conversation");
 
-    const message = await new PgSessionRepository(pool).addRoomUserMessage(
+    const message = await new PgSessionRepository(db.pool).addRoomUserMessage(
       "space-1",
       "user-1",
       created.room.id,
@@ -670,7 +649,7 @@ describe("Room workflow (real Postgres)", () => {
       { content: "我想要做一个研究 agent memory 的项目。" },
     );
     expect(message).not.toBeNull();
-    const renamed = await requestRoomConversationTitle(pool, {
+    const renamed = await requestRoomConversationTitle(db.pool, {
       spaceId: "space-1",
       roomId: created.room.id,
       sessionId: conversation.id,
@@ -686,7 +665,7 @@ describe("Room workflow (real Postgres)", () => {
     })).resolves.toMatchObject({
       conversation: { title: "研究 agent memory 的项目" },
     });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM jobs
         WHERE space_id='space-1' AND job_type='room_conversation_title'
           AND payload_json->>'session_id'=$1`,
@@ -697,8 +676,8 @@ describe("Room workflow (real Postgres)", () => {
       getTaskChain: async () => [{ provider_id: "provider-1", model: "cheap-model" }],
     } as unknown as ProviderCommandStore;
     const result = await new RoomConversationTitleService(
-      loadConfig({ SERVER_DATABASE_URL: database!.getConnectionUri(), AGENT_SPACE_HOME: testRoot! }),
-      pool,
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! }),
+      db.pool,
       {
         resolveProviderStore: () => providerStore,
         completeProviderMessages: async () => ({
@@ -721,7 +700,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("lists Room conversations by creation time descending, independent of activity", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -731,7 +710,7 @@ describe("Room workflow (real Postgres)", () => {
     const newer = await service.createConversation(owner, created.room.id, {
       title: "Newer",
     });
-    await pool.query(
+    await db.pool.query(
       `UPDATE sessions
           SET created_at = CASE id
             WHEN $1 THEN '2026-01-01T00:00:00.000Z'::timestamptz
@@ -754,10 +733,10 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("rolls back the managed Assistant and Room when no backend is eligible", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     await removeManagedAssistant();
-    await pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    await pool.query("UPDATE cli_credential_space_grants SET enabled = false WHERE space_id = 'space-1'");
+    await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
+    await db.pool.query("UPDATE cli_credential_space_grants SET enabled = false WHERE space_id = 'space-1'");
     await expect(service.createRoom(
       { spaceId: "space-1", userId: "user-1" },
       { project_id: "project-1", title: "Should roll back" },
@@ -765,16 +744,16 @@ describe("Room workflow (real Postgres)", () => {
       statusCode: 409,
       responseBody: { code: "conversation_backend_required" },
     });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM rooms WHERE space_id = 'space-1'",
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'",
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 
   it("serializes concurrent first-use provisioning and supports idempotent retries", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     await removeManagedAssistant();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const [first, second] = await Promise.all([
@@ -782,10 +761,10 @@ describe("Room workflow (real Postgres)", () => {
       service.createRoom(owner, { project_id: "project-1", title: "Concurrent B" }),
     ]);
     expect(new Set([first.agent_members[0]?.agent_id, second.agent_members[0]?.agent_id]).size).toBe(1);
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'",
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agent_versions WHERE space_id = 'space-1' AND agent_id = (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active')",
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
 
@@ -809,7 +788,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("enforces Project ACL when creating and continuing a Room", async () => {
-    if (!available || !pool || !service || !groupService) return;
+    if (!db.available || !service || !groupService) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, {
@@ -824,7 +803,7 @@ describe("Room workflow (real Postgres)", () => {
       { title: "Before revocation" },
     );
     expect(conversation.project_folder_id).toBe("folder-1");
-    const sessions = new PgSessionRepository(pool);
+    const sessions = new PgSessionRepository(db.pool);
     await expect(
       sessions.getConversationForBackendSelection(
         "space-1",
@@ -864,18 +843,18 @@ describe("Room workflow (real Postgres)", () => {
     );
     const groupId = dispatched.task_group_ids[0]!;
     const runId = dispatched.run_ids[0]!;
-    await expect(pool.query<{ project_folder_id: string | null }>(
+    await expect(db.pool.query<{ project_folder_id: string | null }>(
       "SELECT project_folder_id FROM runs WHERE id = $1",
       [runId],
     )).resolves.toMatchObject({
       rows: [{ project_folder_id: "folder-1" }],
     });
-    const runRepository = new PgRunRepository(pool);
+    const runRepository = new PgRunRepository(db.pool);
     const queuedRun = await runRepository.getRun("space-1", runId);
     expect(queuedRun).not.toBeNull();
     await expect(runRepository.checkRunExecutionAuthorization(queuedRun!))
       .resolves.toEqual({ allowed: true });
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_folders
           SET status = 'archived', updated_at = now()
         WHERE space_id = 'space-1' AND id = 'folder-1'`,
@@ -885,12 +864,12 @@ describe("Room workflow (real Postgres)", () => {
         allowed: false,
         error_code: "run_execution_authorization_revoked",
       });
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_folders
           SET status = 'active', updated_at = now()
         WHERE space_id = 'space-1' AND id = 'folder-1'`,
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_members
           SET status = 'revoked', updated_at = now()
         WHERE space_id = 'space-1'
@@ -928,7 +907,7 @@ describe("Room workflow (real Postgres)", () => {
     })).rejects.toMatchObject({ statusCode: 404 });
     await expect(groupService.listGroups(member, { limit: 20, offset: 0 }))
       .resolves.toMatchObject({ items: [], total: 0 });
-    await expect(new PgRunRepository(pool).getVisibleRun("space-1", "user-2", runId))
+    await expect(new PgRunRepository(db.pool).getVisibleRun("space-1", "user-2", runId))
       .resolves.toBeNull();
     await expect(runRepository.checkRunExecutionAuthorization(queuedRun!))
       .resolves.toMatchObject({
@@ -937,7 +916,7 @@ describe("Room workflow (real Postgres)", () => {
       });
 
     const finalizerConfig = loadConfig({
-      SERVER_DATABASE_URL: database!.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       AGENT_SPACE_HOME: testRoot,
     });
     const continuity = {
@@ -946,7 +925,7 @@ describe("Room workflow (real Postgres)", () => {
       },
       async runSemanticExtraction() { return null; },
     };
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET status = 'waiting_for_review',
               error_json = $2::jsonb,
@@ -982,7 +961,7 @@ describe("Room workflow (real Postgres)", () => {
       metadata_json: { attention_kind: "authorization" },
     });
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs
           SET status = 'succeeded',
               output_json = $2::jsonb,
@@ -1046,8 +1025,8 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("lets Room members read another speaker's task but not manage or extend it", async () => {
-    if (!available || !pool || !service || !groupService) return;
-    const testPool = pool;
+    if (!db.available || !service || !groupService) return;
+    const testPool = db.pool;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, {
@@ -1093,7 +1072,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("opens one auditable task per message under the speaking user's CLI identity", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, {
@@ -1149,7 +1128,7 @@ describe("Room workflow (real Postgres)", () => {
       service.getRoom({ spaceId: "space-1", userId: "user-3" }, created.room.id),
     ).rejects.toMatchObject({ statusCode: 404 });
 
-    const tasks = await pool.query<{
+    const tasks = await db.pool.query<{
       id: string;
       manager_user_id: string;
       room_id: string;
@@ -1176,7 +1155,7 @@ describe("Room workflow (real Postgres)", () => {
       Boolean(row.trigger_message_id)
     )).toBe(true);
 
-    const runs = await pool.query<{
+    const runs = await db.pool.query<{
       instructed_by_user_id: string;
       session_id: string;
       project_id: string;
@@ -1209,7 +1188,7 @@ describe("Room workflow (real Postgres)", () => {
     // installed — it no longer necessarily stays the fixture's original
     // 'version-1', so compare against whatever the current pointer actually
     // is rather than that hardcoded literal.
-    const currentAgentVersion = await pool.query<{ current_version_id: string }>(
+    const currentAgentVersion = await db.pool.query<{ current_version_id: string }>(
       `SELECT current_version_id FROM agents WHERE space_id='space-1' AND id='agent-1'`,
     );
     expect(runs.rows.every((row) =>
@@ -1225,7 +1204,7 @@ describe("Room workflow (real Postgres)", () => {
         (output as { name?: unknown }).name === "conversation_capture"
       )
     )).toBe(true);
-    const runAccess = new PgRunRepository(pool);
+    const runAccess = new PgRunRepository(db.pool);
     await expect(
       runAccess.getVisibleRun("space-1", "user-2", first.run_ids[0]!),
     ).resolves.toMatchObject({ id: first.run_ids[0] });
@@ -1233,7 +1212,7 @@ describe("Room workflow (real Postgres)", () => {
       runAccess.getVisibleRun("space-1", "user-3", first.run_ids[0]!),
     ).resolves.toBeNull();
 
-    const bindings = await pool.query<{
+    const bindings = await db.pool.query<{
       user_id: string;
       credential_profile_id: string;
       agent_id: string;
@@ -1259,9 +1238,9 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("prefixes a Room-dispatched run's prompt with Project state context (plan Phase A, decision 3)", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -1285,7 +1264,7 @@ describe("Room workflow (real Postgres)", () => {
       }],
     });
 
-    const run = await pool.query<{ prompt: string | null }>(
+    const run = await db.pool.query<{ prompt: string | null }>(
       `SELECT prompt FROM runs WHERE id = $1`,
       [sent.run_ids[0]],
     );
@@ -1307,13 +1286,13 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("guides research execution through prompt policy, not a server-side text match on the turn", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    await new InquiryThreadService(pool).createThread(owner, "project-1", {
+    await new InquiryThreadService(db.pool).createThread(owner, "project-1", {
       kind: "question",
       statement: "Agent memory 应该如何分层？",
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -1335,7 +1314,7 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: null,
       }],
     });
-    const runPrompt = await pool.query<{ prompt: string }>("SELECT prompt FROM runs WHERE id=$1", [sent.run_ids[0]]);
+    const runPrompt = await db.pool.query<{ prompt: string }>("SELECT prompt FROM runs WHERE id=$1", [sent.run_ids[0]]);
     // The research-execution rule is standing prompt guidance present on
     // every Room turn, not a server-side match on this turn's wording — a
     // prior fixed-phrasing regex classifier that injected a per-turn
@@ -1347,7 +1326,7 @@ describe("Room workflow (real Postgres)", () => {
     // judgment; the server no longer blocks it by pattern-matching the
     // triggering message text (a genuine duplicate is still coalesced —
     // covered separately by the propose_thread dedupe test).
-    await expect(new InquiryThreadProposalService(pool).proposeThread(
+    await expect(new InquiryThreadProposalService(db.pool).proposeThread(
       owner,
       "project-1",
       { statement: "把分层继续拆成四个问题" },
@@ -1360,7 +1339,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("grants a Room-dispatched run the conversation scenario tools despite the Agent declaring none", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -1371,7 +1350,7 @@ describe("Room workflow (real Postgres)", () => {
     // The Agent's own version declares no tools at all, which is the default
     // for every Agent created through the product: the permission comes from
     // the Room, not from the Agent.
-    const agentTools = await pool.query<{ tool_permissions_json: unknown }>(
+    const agentTools = await db.pool.query<{ tool_permissions_json: unknown }>(
       `SELECT av.tool_permissions_json FROM agent_versions av
          JOIN agents a ON a.current_version_id = av.id
         WHERE a.id = 'agent-1' AND a.space_id = 'space-1'`,
@@ -1387,7 +1366,7 @@ describe("Room workflow (real Postgres)", () => {
       }],
     });
 
-    const run = await pool.query<{ tool_grants: Array<{ action_id: string }> }>(
+    const run = await db.pool.query<{ tool_grants: Array<{ action_id: string }> }>(
       `SELECT permission_snapshot_json->'tool_grants' AS tool_grants FROM runs WHERE id = $1`,
       [sent.run_ids[0]],
     );
@@ -1404,10 +1383,10 @@ describe("Room workflow (real Postgres)", () => {
     // System Action ids authorize server-owned tools; they are not runtime
     // capabilities. A Room allowance must not eliminate the only otherwise
     // valid runtime before even a simple conversation can start.
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const queued = await runs.getRun("space-1", sent.run_ids[0]!);
     expect(queued).not.toBeNull();
-    const routed = await new PgRouteDecisionRepository(pool, undefined, {
+    const routed = await new PgRouteDecisionRepository(db.pool, undefined, {
       availableProfiles: async () => [
         { id: "credential-user-1", logged_in: true },
       ],
@@ -1424,7 +1403,7 @@ describe("Room workflow (real Postgres)", () => {
       agent_id: "agent-1",
       runtime_profile_id: "runtime-cli",
     });
-    const rebound = await pool.query<{ tool_grants: Array<{ action_id: string }> }>(
+    const rebound = await db.pool.query<{ tool_grants: Array<{ action_id: string }> }>(
       `SELECT permission_snapshot_json->'tool_grants' AS tool_grants FROM runs WHERE id = $1`,
       [sent.run_ids[0]],
     );
@@ -1439,7 +1418,7 @@ describe("Room workflow (real Postgres)", () => {
     // The boundary itself: being dispatched into a Room is the *only* reason
     // these grants exist. The same Agent, same Project, outside a Room, is
     // still bound by its own (empty) AgentVersion allowance.
-    await expect(new PgRunRepository(pool).createQueuedRun({
+    await expect(new PgRunRepository(db.pool).createQueuedRun({
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -1455,7 +1434,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("keeps healthy CLI state stable as bounded raw history advances", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, {
@@ -1476,7 +1455,7 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: "credential-user-1",
       }],
     });
-    const firstRun = await pool.query<{
+    const firstRun = await db.pool.query<{
       id: string;
       context_fingerprint: string;
       binding_id: string;
@@ -1493,18 +1472,18 @@ describe("Room workflow (real Postgres)", () => {
       [first.run_ids[0]],
     );
     const firstRuntime = firstRun.rows[0]!;
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now()
         WHERE id = $1`,
       [firstRuntime.id],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE messages
           SET created_at = '2026-01-01T00:00:00.000Z'
         WHERE id = $1`,
       [first.message.id],
     );
-    await pool.query(
+    await db.pool.query(
       `UPDATE session_conversation_backends
           SET runtime_session_id = 'vendor-session-1',
               runtime_context_fingerprint = $2,
@@ -1519,7 +1498,7 @@ describe("Room workflow (real Postgres)", () => {
         firstRuntime.runtime_state_key,
       ],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (
          id, space_id, session_id, user_id, sender_agent_id, role,
          content, metadata_json, created_at
@@ -1530,7 +1509,7 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [conversation.id, firstRuntime.id],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (
          id, space_id, session_id, user_id, sender_agent_id, role,
          content, metadata_json, created_at
@@ -1552,7 +1531,7 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: "credential-user-2",
       }],
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (
          id, space_id, session_id, user_id, sender_agent_id, role,
          content, metadata_json, created_at
@@ -1575,7 +1554,7 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: "credential-user-1",
       }],
     });
-    const resumedRun = await pool.query<{
+    const resumedRun = await db.pool.query<{
       prompt: string;
       runtime_session_id: string | null;
       replay_prompt: string;
@@ -1609,7 +1588,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("rejects duplicate recipient runs before persisting a Room turn", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -1634,13 +1613,13 @@ describe("Room workflow (real Postgres)", () => {
       }],
     })).rejects.toMatchObject({ statusCode: 422 });
 
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM messages
         WHERE session_id = $1`,
       [conversation.id],
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
-    await expect(pool.query<{ count: string }>(
+    await expect(db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM agent_run_groups
         WHERE session_id = $1`,
@@ -1649,7 +1628,7 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("rejects task links that cross Room conversation aggregates", async () => {
-    if (!available || !pool || !service) return;
+    if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const firstRoom = await service.createRoom(owner, {
       project_id: "project-1",
@@ -1682,22 +1661,22 @@ describe("Room workflow (real Postgres)", () => {
       { content: "Second task." },
     );
 
-    await expect(pool.query(
+    await expect(db.pool.query(
       `UPDATE agent_run_groups SET room_id = $2 WHERE id = $1`,
       [firstTask.task_group_ids[0], secondRoom.room.id],
     )).rejects.toMatchObject({ code: "23503" });
-    await expect(pool.query(
+    await expect(db.pool.query(
       `UPDATE agent_run_groups SET trigger_message_id = $2 WHERE id = $1`,
       [firstTask.task_group_ids[0], secondTask.message.id],
     )).rejects.toMatchObject({ code: "23503" });
-    await expect(pool.query(
+    await expect(db.pool.query(
       `UPDATE runs SET session_id = $2 WHERE id = $1`,
       [firstTask.run_ids[0], secondConversation.id],
     )).rejects.toMatchObject({ code: "23503" });
   });
 
   it("keeps private specialists Room-scoped while allowing Room dispatch visibility", async () => {
-    if (!available || !pool || !service || !groupService) return;
+    if (!db.available || !service || !groupService) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Private roster" });
@@ -1716,14 +1695,14 @@ describe("Room workflow (real Postgres)", () => {
     expect(preset.agent_members).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "member" }),
     ]));
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (
          id, space_id, owner_user_id, name, status, agent_kind,
          visibility, created_at, updated_at
        ) VALUES ('agent-private', 'space-1', 'user-1', 'Private Specialist', 'active',
          'standard', 'private', now(), now())`,
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (
          id, space_id, owner_user_id, name, status, agent_kind,
          visibility, created_at, updated_at
@@ -1741,7 +1720,7 @@ describe("Room workflow (real Postgres)", () => {
       expect.objectContaining({ agent_id: "agent-private", role: "member" }),
     ]));
 
-    const groups = new PgAgentGroupRepository(pool);
+    const groups = new PgAgentGroupRepository(db.pool);
     await expect(groups.listAgentStatuses("space-1", "user-2", ["agent-private"]))
       .resolves.toEqual([]);
     await expect(groups.listAgentStatuses("space-1", "user-2", ["agent-private"], created.room.id))
@@ -1758,7 +1737,7 @@ describe("Room workflow (real Postgres)", () => {
     // is only valid against a CLI conversation backend — the preset
     // specialist's model_api profile (copied from the managed assistant's
     // own default) is not eligible here, so select its CLI profile.
-    const runtimeProfile = await pool.query<{ id: string }>(
+    const runtimeProfile = await db.pool.query<{ id: string }>(
       `SELECT id FROM agent_runtime_profiles
         WHERE space_id='space-1' AND agent_id=$1 AND enabled=true
           AND adapter_type != 'model_api'
@@ -1791,7 +1770,7 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(group.members.map((row) => row.agent_id)).toEqual(["agent-public", "agent-private"]);
 
-    await pool.query(
+    await db.pool.query(
       `UPDATE room_agent_access_grants
           SET revoked_at = now(), revoked_by_user_id = 'user-1'
         WHERE space_id = 'space-1' AND room_id = $1 AND agent_id = 'agent-private' AND grantee_user_id = 'user-2'`,
@@ -1802,8 +1781,8 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async () => {
-    if (!available || !pool || !service) return;
-    await pool.query(
+    if (!db.available || !service) return;
+    await db.pool.query(
       `UPDATE project_members
           SET role = 'member', updated_at = now()
         WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'`,
@@ -1812,7 +1791,7 @@ describe("Room workflow (real Postgres)", () => {
     const specialistOwner = { spaceId: "space-1", userId: "user-2" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Invitation roster" });
     await addRoomMember(created.room.id, "user-2");
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (
          id, space_id, owner_user_id, name, status, agent_kind,
          visibility, created_at, updated_at
@@ -1828,7 +1807,7 @@ describe("Room workflow (real Postgres)", () => {
     // inviteUser requires the invitee (not the inviter) to already have
     // Project read access, so the Room invitation cannot become a side
     // door into Project-bound content the invitee couldn't otherwise see.
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO project_members (
          id, space_id, project_id, user_id, role, status, created_at, updated_at
        ) VALUES ('project-member-3', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now())`,
@@ -1848,7 +1827,7 @@ describe("Room workflow (real Postgres)", () => {
           agent_id: "agent-owned-by-member",
         })],
       });
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_members
           SET status = 'revoked', updated_at = now()
         WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'`,
@@ -1859,7 +1838,7 @@ describe("Room workflow (real Postgres)", () => {
     // the whole call — user-2 is still an active Space member here.
     await expect(service.listPendingApprovals(specialistOwner, { limit: 50, offset: 0 }))
       .resolves.toMatchObject({ items: [], total: 0 });
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_members
           SET status = 'active', updated_at = now()
         WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'`,
@@ -1869,12 +1848,12 @@ describe("Room workflow (real Postgres)", () => {
       decision: "approved",
     });
     expect(decided.status).toBe("active");
-    await expect(pool.query<{ status: string }>(
+    await expect(db.pool.query<{ status: string }>(
       `SELECT status FROM room_user_members
         WHERE space_id = 'space-1' AND room_id = $1 AND user_id = 'user-3'`,
       [created.room.id],
     )).resolves.toMatchObject({ rows: [{ status: "active" }] });
-    await expect(pool.query<{ grantee_user_id: string }>(
+    await expect(db.pool.query<{ grantee_user_id: string }>(
       `SELECT grantee_user_id FROM room_agent_access_grants
         WHERE space_id = 'space-1' AND room_id = $1 AND agent_id = 'agent-owned-by-member'
           AND grantee_user_id = 'user-3' AND revoked_at IS NULL`,
@@ -1882,7 +1861,7 @@ describe("Room workflow (real Postgres)", () => {
     )).resolves.toMatchObject({ rows: [{ grantee_user_id: "user-3" }] });
 
     await service.transferOwner(owner, created.room.id, "user-2");
-    await pool.query(
+    await db.pool.query(
       `UPDATE project_members
           SET status = 'revoked', updated_at = now()
         WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'`,
@@ -1893,15 +1872,15 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("notifies the Room when a delegated child run completes with nobody waiting on it (room-advancement-reliability-plan Phase 3)", async () => {
-    if (!available || !pool || !service || !groupService || !testRoot || !database) return;
+    if (!db.available || !service || !groupService || !testRoot) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, current_version_id, visibility, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'user-1', 'Research Specialist', 'active', 'standard', NULL, 'space_shared', $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions (
          id, agent_id, space_id, version_label, system_prompt, model_config_json,
          runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
@@ -1912,13 +1891,13 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [now],
     );
-    await pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
-    await pool.query(
+    await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
+    await db.pool.query(
       `INSERT INTO actors (id, space_id, actor_type, user_id, agent_id, service_name, display_name, status, metadata_json, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'agent', NULL, 'agent-2', NULL, 'Research Specialist', 'active', '{}'::jsonb, $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id, space_id, agent_id, name, adapter_type, runtime_config_json,
          runtime_policy_json, enabled, is_default, created_at, updated_at
@@ -1928,7 +1907,7 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -1940,7 +1919,7 @@ describe("Room workflow (real Postgres)", () => {
     );
 
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Delegation Room" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
@@ -1955,11 +1934,11 @@ describe("Room workflow (real Postgres)", () => {
     // dispatch (this test's later delegation-completion continuation) can
     // claim the conversation's turn again — mirrors the pattern the
     // continueAfterProposal tests above already use.
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [managerRunId],
     );
-    const group = await new PgAgentGroupRepository(pool).getGroup("space-1", sent.task_group_ids[0]!);
+    const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
     const spawned = await groupService.spawnChildRun(owner, {
@@ -1974,21 +1953,21 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(spawned.child_run_id).toBeTruthy();
 
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
       [spawned.child_run_id, JSON.stringify({ summary: "Layered memory improves recall by 12%." })],
     );
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
 
-    const projector = new AgentGroupRunLifecycleProjector(pool, loadConfig({
-      SERVER_DATABASE_URL: database.getConnectionUri(),
+    const projector = new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
       AGENT_SPACE_HOME: testRoot,
     }));
     await projector.markDelegatedRunTerminal(childRun);
 
-    const posted = await pool.query<{ content: string; metadata_json: Record<string, unknown> }>(
+    const posted = await db.pool.query<{ content: string; metadata_json: Record<string, unknown> }>(
       `SELECT content, metadata_json FROM messages
         WHERE space_id='space-1' AND session_id=$1 AND role='system'
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'
@@ -2005,7 +1984,7 @@ describe("Room workflow (real Postgres)", () => {
     // Idempotent retry: reconciling the same terminal transition again (as
     // a reconciliation job retry would) must not post a second continuation.
     await projector.markDelegatedRunTerminal(childRun);
-    const recount = await pool.query<{ total: string }>(
+    const recount = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM messages
         WHERE space_id='space-1' AND session_id=$1
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'`,
@@ -2015,15 +1994,15 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("does not duplicate the resume path when a Manager is already waiting on the completed delegation (room-advancement-reliability-plan Phase 3)", async () => {
-    if (!available || !pool || !service || !groupService || !testRoot || !database) return;
+    if (!db.available || !service || !groupService || !testRoot) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, current_version_id, visibility, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'user-1', 'Research Specialist', 'active', 'standard', NULL, 'space_shared', $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions (
          id, agent_id, space_id, version_label, system_prompt, model_config_json,
          runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
@@ -2034,13 +2013,13 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [now],
     );
-    await pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
-    await pool.query(
+    await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
+    await db.pool.query(
       `INSERT INTO actors (id, space_id, actor_type, user_id, agent_id, service_name, display_name, status, metadata_json, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'agent', NULL, 'agent-2', NULL, 'Research Specialist', 'active', '{}'::jsonb, $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -2052,7 +2031,7 @@ describe("Room workflow (real Postgres)", () => {
     );
 
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Delegation Room" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
@@ -2063,7 +2042,7 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-api", credential_profile_id: null }],
     });
     const managerRunId = sent.run_ids[0]!;
-    const group = await new PgAgentGroupRepository(pool).getGroup("space-1", sent.task_group_ids[0]!);
+    const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
     const spawned = await groupService.spawnChildRun(owner, {
@@ -2080,7 +2059,7 @@ describe("Room workflow (real Postgres)", () => {
 
     // The Manager explicitly waited on this delegation (agent.wait_for_results),
     // unlike the sibling test above where it already replied and ended its turn.
-    await pool.query(
+    await db.pool.query(
       `UPDATE runs SET status='waiting_for_dependency', output_json=$2, updated_at=now() WHERE id=$1`,
       [managerRunId, JSON.stringify({
         waiting_for_results: {
@@ -2093,16 +2072,16 @@ describe("Room workflow (real Postgres)", () => {
       })],
     );
 
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
       [spawned.child_run_id, JSON.stringify({ summary: "Layered memory improves recall by 12%." })],
     );
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
 
-    const projector = new AgentGroupRunLifecycleProjector(pool, loadConfig({
-      SERVER_DATABASE_URL: database.getConnectionUri(),
+    const projector = new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
       AGENT_SPACE_HOME: testRoot,
     }));
     await projector.markDelegatedRunTerminal(childRun);
@@ -2113,7 +2092,7 @@ describe("Room workflow (real Postgres)", () => {
 
     // The new domain-event continuation must not also have fired for this
     // completion — that would duplicate the resume path above.
-    const posted = await pool.query<{ total: string }>(
+    const posted = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM messages
         WHERE space_id='space-1' AND session_id=$1
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'`,
@@ -2123,19 +2102,19 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("retries the delegation-completion notification when the conversation turn is busy, and the retry succeeds once it frees up (integration-gate fix)", async () => {
-    if (!available || !pool || !service || !groupService || !testRoot || !database) return;
+    if (!db.available || !service || !groupService || !testRoot) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
     const config = loadConfig({
-      SERVER_DATABASE_URL: database.getConnectionUri(),
+      SERVER_DATABASE_URL: db.connectionUri,
       AGENT_SPACE_HOME: testRoot,
     });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, current_version_id, visibility, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'user-1', 'Research Specialist', 'active', 'standard', NULL, 'space_shared', $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_versions (
          id, agent_id, space_id, version_label, system_prompt, model_config_json,
          runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
@@ -2146,13 +2125,13 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [now],
     );
-    await pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
-    await pool.query(
+    await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
+    await db.pool.query(
       `INSERT INTO actors (id, space_id, actor_type, user_id, agent_id, service_name, display_name, status, metadata_json, created_at, updated_at)
        VALUES ('agent-2', 'space-1', 'agent', NULL, 'agent-2', NULL, 'Research Specialist', 'active', '{}'::jsonb, $1, $1)`,
       [now],
     );
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
          runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
@@ -2164,7 +2143,7 @@ describe("Room workflow (real Postgres)", () => {
     );
 
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Delegation Room" });
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
@@ -2175,11 +2154,11 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-api", credential_profile_id: null }],
     });
     const managerRunId = sent.run_ids[0]!;
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [managerRunId],
     );
-    const group = await new PgAgentGroupRepository(pool).getGroup("space-1", sent.task_group_ids[0]!);
+    const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
     const spawned = await groupService.spawnChildRun(owner, {
@@ -2199,7 +2178,7 @@ describe("Room workflow (real Postgres)", () => {
     // conversation carrying the same Manager identity's chat_turn — exactly
     // what claimTurn treats as an in-progress turn for that identity.
     const busyRunId = randomUUID();
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO runs (
          id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
          session_id, created_at, updated_at, owner_user_id, visibility, access_level, model_override_json
@@ -2210,19 +2189,19 @@ describe("Room workflow (real Postgres)", () => {
       [busyRunId, conversation.id, now, JSON.stringify({ chat_turn: { schema_version: "chat_turn.v1", user_id: "user-1" } })],
     );
 
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
       [spawned.child_run_id, JSON.stringify({ summary: "Layered memory improves recall by 12%." })],
     );
-    const runs = new PgRunRepository(pool);
+    const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
 
-    const projector = new AgentGroupRunLifecycleProjector(pool, config);
+    const projector = new AgentGroupRunLifecycleProjector(db.pool, config);
     await projector.markDelegatedRunTerminal(childRun);
 
     // The turn was busy, so nothing posted yet.
-    const beforeRetry = await pool.query<{ total: string }>(
+    const beforeRetry = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM messages
         WHERE space_id='space-1' AND session_id=$1
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'`,
@@ -2231,7 +2210,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(beforeRetry.rows[0]?.total).toBe("0");
 
     // A retry job was scheduled instead of the result being dropped.
-    const jobs = await pool.query<{ payload_json: { delegation_id: string; child_run_id: string } }>(
+    const jobs = await db.pool.query<{ payload_json: { delegation_id: string; child_run_id: string } }>(
       `SELECT payload_json FROM jobs WHERE space_id='space-1' AND job_type=$1`,
       [ROOM_DELEGATION_COMPLETION_RETRY_JOB],
     );
@@ -2256,7 +2235,7 @@ describe("Room workflow (real Postgres)", () => {
       worker_id: "test-worker",
       payload: jobs.rows[0]!.payload_json,
     })).rejects.toMatchObject({ name: "JobDeferredError" });
-    const stillNotPosted = await pool.query<{ total: string }>(
+    const stillNotPosted = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM messages
         WHERE space_id='space-1' AND session_id=$1
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'`,
@@ -2265,7 +2244,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(stillNotPosted.rows[0]?.total).toBe("0");
 
     // The turn frees up.
-    await pool.query(
+    await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [busyRunId],
     );
@@ -2282,7 +2261,7 @@ describe("Room workflow (real Postgres)", () => {
       payload: jobs.rows[0]!.payload_json,
     });
 
-    const afterRetry = await pool.query<{ total: string }>(
+    const afterRetry = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM messages
         WHERE space_id='space-1' AND session_id=$1
           AND metadata_json->>'continuation_event_kind'='agent_delegation_result'`,
@@ -2292,13 +2271,13 @@ describe("Room workflow (real Postgres)", () => {
   });
 
   it("processes owner-funded summaries with strict output and preserves the active version on failure", async () => {
-    if (!available || !pool || !service) return;
-    const testPool = pool;
+    if (!db.available || !service) return;
+    const testPool = db.pool;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Summary Room" });
     const conversation = await service.createConversation(owner, created.room.id, { title: "Summary thread" });
     const firstMessageAt = "2026-01-01T00:00:00.000Z";
-    await pool.query(
+    await db.pool.query(
       `INSERT INTO messages (
          id, space_id, session_id, user_id, role, content, metadata_json, created_at
        ) VALUES
@@ -2332,7 +2311,7 @@ describe("Room workflow (real Postgres)", () => {
         usage: { input_tokens: 10, output_tokens: 8 },
       }),
     };
-    const config = loadConfig({ SERVER_DATABASE_URL: database!.getConnectionUri(), AGENT_SPACE_HOME: testRoot! });
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! });
     const summaries = new RoomConversationSummaryService(config, testPool, dependencies);
     await requestRoomConversationSummary(testPool, {
       spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,

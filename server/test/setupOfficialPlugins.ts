@@ -6,15 +6,15 @@ import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { getContainerRuntimeClient } from "testcontainers";
 import { Pool } from "pg";
-import { loadMigrations, migrate } from "../src/db/migrator";
-import type { SharedPostgresContext } from "./support/sharedPostgres";
+import { loadMigrations, migrate } from "../src/db/migrator.js";
+import type { SharedPostgresContext } from "./support/sharedPostgres.js";
 
 interface GlobalSetupProject {
   provide(key: "sharedPostgres", value: SharedPostgresContext): void;
   getProvidedContext(): { sharedPostgres?: SharedPostgresContext };
 }
 
-const serverRoot = join(__dirname, "..");
+const serverRoot = join(import.meta.dirname, "..");
 
 function buildOfficialPlugins(): void {
   const repoRoot = join(serverRoot, "..");

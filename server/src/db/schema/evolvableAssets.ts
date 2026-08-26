@@ -1,11 +1,11 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { proposals } from "./proposals";
-import { artifacts } from "./artifacts";
-import { runs } from "./runs";
-import { evolutionTargets } from "./evolution";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
+import { artifacts } from "./artifacts.js";
+import { runs } from "./runs.js";
+import { evolutionTargets } from "./evolution.js";
 
 // Generic prompt/workflow template evolution foundation. Not Academic
 // Research-specific — Academic Research is one consumer. Extends the

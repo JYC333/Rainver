@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { ProjectOperationService } from "../src/modules/projects/projectOperationService.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("ProjectOperationService boundaries", () => {
   it("rejects unsupported link targets before target SQL", async () => {

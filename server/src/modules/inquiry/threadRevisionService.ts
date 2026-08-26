@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { emitDomainChangeEvent } from "../knowledgePromotion/outbox";
+import type { Queryable } from "../routeUtils/common.js";
+import { emitDomainChangeEvent } from "../knowledgePromotion/outbox.js";
 
 export type ThreadChangeSignificance = "trivial" | "material";
 

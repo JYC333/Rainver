@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig } from "../src/config";
-import { RunMaterializationService } from "../src/modules/runs/materializationService";
-import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository";
-import type { RunFinalizationRecord } from "../src/modules/runs/repository";
+import { loadConfig } from "../src/config.js";
+import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository.js";
+import type { RunFinalizationRecord } from "../src/modules/runs/repository.js";
 
 let tempRoots: string[] = [];
 

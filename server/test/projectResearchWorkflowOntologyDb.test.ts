@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
+import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import {
   createResearchWorkflow,
   setResearchWorkflowThread,
-} from "../src/modules/projectResearch/workflowOntology";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { withQueryableTransaction } from "../src/modules/routeUtils/common";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+} from "../src/modules/projectResearch/workflowOntology.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -22,7 +22,7 @@ let projectId = "";
 let workflowId = "";
 let threadId = "";
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

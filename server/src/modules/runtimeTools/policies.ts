@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters";
-import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { RuntimeToolRegistry } from "./service";
+import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/index.js";
+import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { RuntimeToolRegistry } from "./service.js";
 
 export interface SpaceRuntimeToolPolicy {
   id: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 class DueScanDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

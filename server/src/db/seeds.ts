@@ -1,5 +1,5 @@
-import type { Pool } from "./pool";
-import { syncBuiltinPrompts } from "../modules/prompts/builtins";
+import type { Pool } from "./pool.js";
+import { syncBuiltinPrompts } from "../modules/prompts/builtins.js";
 
 interface Logger {
   info: (msg: string) => void;

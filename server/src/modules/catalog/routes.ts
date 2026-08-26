@@ -12,8 +12,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { catalogSummary, listAgentTemplates, listCapabilities } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { catalogSummary, listAgentTemplates, listCapabilities } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const catalogRoot = context.config.catalogRoot;

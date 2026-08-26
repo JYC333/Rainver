@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable } from "../routeUtils/common";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 
 /**
  * A Project's notes folder, and the rule that a folder inside one belongs to it.

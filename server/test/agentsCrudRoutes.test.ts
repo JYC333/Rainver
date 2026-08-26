@@ -1,14 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { agentTemplatesModule } from "../src/modules/agentTemplates";
-import { __setAgentChatIdentityForTests, agentsModule } from "../src/modules/agents";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { loadConfig } from "../src/config.js";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { agentTemplatesModule } from "../src/modules/agentTemplates/index.js";
+import { __setAgentChatIdentityForTests } from "../src/modules/agents/routes.js";
+import { agentsModule } from "../src/modules/agents/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

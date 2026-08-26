@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { runsModule } from "../src/modules/runs";
-import { agentsModule } from "../src/modules/agents";
-import { loadConfig } from "../src/config";
-import {
-  __setAgentChatIdentityForTests,
-  __setAgentChatServicesFactoryForTests,
-} from "../src/modules/agents";
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { agentsModule } from "../src/modules/agents/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAgentChatIdentityForTests, __setAgentChatServicesFactoryForTests } from "../src/modules/agents/routes.js";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
 let app: FastifyInstance;
 

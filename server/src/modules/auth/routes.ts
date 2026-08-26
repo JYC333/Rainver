@@ -1,14 +1,14 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import {
   API_KEYS_NOT_IMPLEMENTED,
   authRepositoryFromConfig,
   introspectIdentity,
   sessionTokenFromRequest,
   type AuthFailure,
-} from "./identity";
+} from "./identity.js";
 import {
   OAUTH_STATE_COOKIE,
   POST_LOGIN_NEXT_COOKIE,
@@ -19,7 +19,7 @@ import {
   randomOAuthState,
   safeNextUrl,
   sameState,
-} from "./oauth";
+} from "./oauth.js";
 
 function isFailure(value: unknown): value is AuthFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);

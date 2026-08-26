@@ -15,7 +15,7 @@
  */
 
 import type { FastifyBaseLogger } from "fastify";
-import type { CliUsageEntry } from "./credentialBroker";
+import type { CliUsageEntry } from "./credentialBroker.js";
 
 export const CLI_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
 const DEFAULT_RUNTIMES = ["claude_code", "codex_cli"] as const;

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import type { SpaceUserIdentity } from "../routeUtils/common";
-import { TRUST_BY_SOURCE_TYPE } from "./repository";
-import { assessActivityMemoryDuplicate } from "./memoryDedup";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql";
+import type { Queryable } from "../routeUtils/common.js";
+import type { SpaceUserIdentity } from "../routeUtils/common.js";
+import { TRUST_BY_SOURCE_TYPE } from "./repository.js";
+import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 
 interface ActivityRow {
   id: string;

@@ -3,10 +3,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SandboxRunnerCliCommandExecutor, SandboxRunnerVerificationExecutor } from "../src/modules/sandboxRunner/client";
-import { LocalCliProcessRegistry } from "../src/modules/runs/localCliExecution";
-import { SandboxRunnerPtyFactory } from "../src/modules/sandboxRunner/ptyFactory";
-import type { ServerConfig } from "../src/config";
+import { SandboxRunnerCliCommandExecutor, SandboxRunnerVerificationExecutor } from "../src/modules/sandboxRunner/client.js";
+import { LocalCliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
+import { SandboxRunnerPtyFactory } from "../src/modules/sandboxRunner/ptyFactory.js";
+import type { ServerConfig } from "../src/config.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];

@@ -1,61 +1,61 @@
 import { randomUUID } from "node:crypto";
-import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import type { Pool, Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { contentReadSql } from "../access/contentAccessSql";
-import { roomScopedAgentReadSql } from "./workContextService";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { projectFolderReadAccessSql } from "../projectFolders/access";
-import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy";
-import { excerptAroundQuery } from "../retrieval/normalize";
-import { RetrievalRegistry } from "../retrieval/registry";
+import * as protocol from "@agent-space/protocol";
+import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { Pool, Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { roomScopedAgentReadSql } from "./workContextService.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { projectFolderReadAccessSql } from "../projectFolders/access.js";
+import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
+import { excerptAroundQuery } from "../retrieval/normalize.js";
+import { RetrievalRegistry } from "../retrieval/registry.js";
 import {
   loadSourcePolicySnapshots,
   sourceEgressPoliciesForSnapshots,
   sourcePolicyAllowsRead,
-} from "../retrieval/sourcePolicy";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter";
-import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter";
-import { memoryRetrievalAdapter } from "../memory/retrievalAdapter";
-import { projectRetrievalAdapter } from "../projects/retrievalAdapter";
-import { sourceRetrievalAdapter } from "../sources/retrievalAdapter";
+} from "../retrieval/sourcePolicy.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
+import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter.js";
+import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
+import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
+import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
 import type {
   RuntimeContextDeliveryAcknowledgement,
   RuntimeContextFinalizeInput,
   RuntimeContextInvocationGatewayPort,
   RuntimeContextInvocationInput,
   RuntimeContextPreviewInput,
-} from "./contracts";
+} from "./contracts.js";
 import {
   InvocationSnapshotService,
   type InvocationAttemptInput,
   type InvocationDeliveryAuthorizer,
-} from "./invocationSnapshotService";
-import type { RuntimeContextPlanningService } from "./planningService";
-import { estimateModelTokens, trimTextToModelTokens } from "../usage/modelCatalog";
-import { loadConversationContinuityThroughMessage } from "./conversationContinuity";
-import { contextItemText } from "./itemNormalizer";
+} from "./invocationSnapshotService.js";
+import type { RuntimeContextPlanningService } from "./planningService.js";
+import { estimateModelTokens, trimTextToModelTokens } from "../usage/modelCatalog.js";
+import { loadConversationContinuityThroughMessage } from "./conversationContinuity.js";
+import { contextItemText } from "./itemNormalizer.js";
 import {
   createProductionRuntimeContextPlanningService,
   isRoomConversation,
   loadAuthorizedCurrentContextMessage,
   renderCheckpointContinuity,
   roomRoutingInstruction,
-} from "./productionAcquisition";
-import { RuntimeContextContinuityService } from "./continuity/service";
-import { ManagedSemanticCheckpointProvider } from "./continuity/semanticExtractor";
+} from "./productionAcquisition.js";
+import { RuntimeContextContinuityService } from "./continuity/service.js";
+import { ManagedSemanticCheckpointProvider } from "./continuity/semanticExtractor.js";
 import {
   RuntimeContextCliContinuityService,
   authorizeCliDeltaItem,
-} from "./continuity/cliContinuity";
-import { ContextWindowPlanner } from "./windowPlanner";
-import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository";
-import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider";
-import { enforce } from "../policy/service";
-import { loadActionRegistry } from "../policy/actionRegistry";
+} from "./continuity/cliContinuity.js";
+import { ContextWindowPlanner } from "./windowPlanner.js";
+import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
+import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider.js";
+import { enforce } from "../policy/service.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -256,7 +256,7 @@ export class PgExecutionControlLoader implements ExecutionControlLoaderPort {
       [spaceId, snapshotId],
     );
     if (!result.rows[0]) throw new HttpError(404, "Execution Control Snapshot not found");
-    return (await loadProtocol()).ExecutionControlSnapshotSchema.parse(result.rows[0].snapshot_json);
+    return protocol.ExecutionControlSnapshotSchema.parse(result.rows[0].snapshot_json);
   }
 }
 

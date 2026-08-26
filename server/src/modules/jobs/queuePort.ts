@@ -1,4 +1,4 @@
-import type { JobRecord, JobReclaimResult, JobStatus } from "./repository";
+import type { JobRecord, JobReclaimResult, JobStatus } from "./repository.js";
 
 export interface JobQueuePort {
   claimNext(

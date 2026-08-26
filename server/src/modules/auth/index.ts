@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const authModule: ServerModule = { name: "auth", registerRoutes };
 
@@ -9,5 +9,5 @@ export {
   introspectIdentity,
   type AuthFailure,
   type AuthRepository,
-} from "./identity";
-export { __setGoogleOAuthClientForTests, type GoogleOAuthClient } from "./oauth";
+} from "./identity.js";
+export { __setGoogleOAuthClientForTests, type GoogleOAuthClient } from "./oauth.js";

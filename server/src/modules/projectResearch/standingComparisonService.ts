@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { contentReadSql } from "../access/contentAccessSql";
-import { InquiryThreadService } from "../inquiry/threadService";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, dateIso, withQueryableTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { ProjectResearchExecutionProfileService } from "./executionProfileService";
+import type { ServerConfig } from "../../config.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { InquiryThreadService } from "../inquiry/threadService.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, withQueryableTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
 import {
   COMPARISON_BATCH_SIZE,
   ProjectResearchMonitorComparisonService,
   parseMonitorComparisons,
   type MonitorComparison,
-} from "./monitorComparisonService";
-import { resolveNotebookNote } from "./notebookNotes";
+} from "./monitorComparisonService.js";
+import { resolveNotebookNote } from "./notebookNotes.js";
 
 export const STANDING_COMPARISON_DAILY_RUN_LIMIT = 20;
 export const STANDING_COMPARISON_WINDOW_MINUTES = 15;

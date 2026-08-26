@@ -10,13 +10,13 @@ import type {
   CustomSourcePipelineStep,
   CustomSourcePolicyEnvelope,
   CustomSourcePolicyLimits,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { redactSecretPatterns } from "../../runs/evidenceRedaction";
+} from "@agent-space/protocol";
+import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 import {
   fetchAllowedOriginResponse,
   truncateToByteLimit,
   type CustomSourceFetchCredential,
-} from "./customSourceEndpointFetch";
+} from "./customSourceEndpointFetch.js";
 import {
   buildListItems,
   buildSinglePageItem,
@@ -25,12 +25,12 @@ import {
   resolveUrl,
   stripTags,
   type CustomSourcePipelineItem,
-} from "./customSourceHtmlExtract";
+} from "./customSourceHtmlExtract.js";
 import {
   effectiveCustomSourceLimits,
   type CustomSourceRunnerResult,
   type CustomSourceRunnerSettings,
-} from "./customSourceRunner";
+} from "./customSourceRunner.js";
 
 /**
  * Interpreter for `language: "declarative_pipeline_v1"` handler versions.

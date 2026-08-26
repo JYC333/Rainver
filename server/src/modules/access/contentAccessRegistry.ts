@@ -1,5 +1,5 @@
-import { registeredEntities } from "../ontology/entities";
-import type { ContentProjectShareDeclaration } from "../ontology/entities";
+import { registeredEntities } from "../ontology/entities.js";
+import type { ContentProjectShareDeclaration } from "../ontology/entities.js";
 
 export interface ContentResourceDefinition {
   resourceType: string;

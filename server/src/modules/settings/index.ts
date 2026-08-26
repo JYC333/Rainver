@@ -1,7 +1,7 @@
 export {
   SETTINGS_KEYS,
   type SettingsKey,
-} from "./keys";
+} from "./keys.js";
 export {
   ScopedSettingsStore,
   defineScopedSetting,
@@ -13,4 +13,4 @@ export {
   type ScopedSettingsRow,
   type ScopedSettingsScopeType,
   type ScopedSettingsWriteOptions,
-} from "./scopedSettings";
+} from "./scopedSettings.js";

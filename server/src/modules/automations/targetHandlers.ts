@@ -1,4 +1,4 @@
-import { automationTargetHandlerRegistry } from "./targetRegistry";
+import { automationTargetHandlerRegistry } from "./targetRegistry.js";
 
 export function registerAutomationOwnedTargetHandlers(): void {
   automationTargetHandlerRegistry.register("agent_run", {

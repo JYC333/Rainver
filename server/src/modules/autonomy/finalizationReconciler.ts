@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { redactEvidenceText } from "../runs/evidenceRedaction";
-import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry";
-import type { Queryable, RunRecord } from "../runs/runRepositoryTypes";
-import { autonomyDiscovererRegistry, type AutonomyCandidateKind } from "./registry";
+import { redactEvidenceText } from "../runs/evidenceRedaction.js";
+import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry.js";
+import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
+import { autonomyDiscovererRegistry, type AutonomyCandidateKind } from "./registry.js";
 
 export function registerAutonomyRunFinalizationReconciler(): void {
   runFinalizationReconcilerRegistry.register("autonomy", {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ContentAccessService } from "../src/modules/contentAccess/service";
+import { ContentAccessService } from "../src/modules/contentAccess/service.js";
 
 class AccessDb {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

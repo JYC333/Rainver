@@ -11,8 +11,8 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
 
 export const contentPublications = pgTable("content_publications", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

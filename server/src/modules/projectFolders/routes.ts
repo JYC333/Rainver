@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   jsonBody,
@@ -9,8 +9,8 @@ import {
   resolveIdentity,
   sendRouteError,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { PgProjectFolderRepository } from "./repository";
+} from "../routeUtils/common.js";
+import { PgProjectFolderRepository } from "./repository.js";
 
 interface ProjectFolderServices {
   repository: Pick<

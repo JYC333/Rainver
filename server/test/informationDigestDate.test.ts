@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertDate } from "../src/modules/informationDigest/service";
+import { assertDate } from "../src/modules/informationDigest/service.js";
 
 describe("information digest calendar dates", () => {
   it.each(["2024-02-29", "2026-08-08", "9999-12-31"])("accepts %s", (value) => {

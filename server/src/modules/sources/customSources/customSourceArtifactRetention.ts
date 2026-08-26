@@ -1,7 +1,7 @@
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ServerConfig } from "../../../config";
-import { withDbTransaction, type Pool } from "../../routeUtils/common";
+import type { ServerConfig } from "../../../config.js";
+import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
 
 /**
  * Phase 12 hardening: bounds unbounded growth of stored `typescript_node`

@@ -1,17 +1,17 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { retrievalObjectType } from "./_types";
-import { agents } from "./agents";
-import { activityRecords } from "./activity";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { focusAreas } from "./focusAreas";
-import { projectFolders } from "./projectFolders";
-import { artifacts } from "./artifacts";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
-import { extractionJobs, sourceConnections, sourceItems, sourceSnapshots } from "./sources";
+import { retrievalObjectType } from "./_types.js";
+import { agents } from "./agents.js";
+import { activityRecords } from "./activity.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { focusAreas } from "./focusAreas.js";
+import { projectFolders } from "./projectFolders.js";
+import { artifacts } from "./artifacts.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
+import { extractionJobs, sourceConnections, sourceItems, sourceSnapshots } from "./sources.js";
 
 export const evidenceLinks = pgTable("evidence_links", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

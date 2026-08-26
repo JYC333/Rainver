@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   PostRunFinalizationService,
-} from "../src/modules/runs/finalizationService";
+} from "../src/modules/runs/finalizationService.js";
 import type {
   PgRunRepository,
   RunEvaluationRecord,
   RunFinalizationRecord,
   RunRecord,
-} from "../src/modules/runs/repository";
-import type { VerificationResultRecord } from "../src/modules/runs/verification";
+} from "../src/modules/runs/repository.js";
+import type { VerificationResultRecord } from "../src/modules/runs/verification/index.js";
 
 function run(contract_snapshot_json: unknown): RunRecord {
   return {

@@ -1,4 +1,4 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
@@ -6,13 +6,13 @@ import {
   type ProjectEntitySummary,
   type ProjectEntitySummaryAdapter,
   type ProjectModeProjectionAdapter,
-} from "../projects/overviewRegistry";
+} from "../projects/overviewRegistry.js";
 import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
-} from "../projects/attentionRegistry";
-import { LearningService } from "./service";
+} from "../projects/attentionRegistry.js";
+import { LearningService } from "./service.js";
 
 // Registers Learning into the Project Kernel's registries (ADR 0011 decision
 // 5), mirroring modules/inquiry and modules/decisions project integration.

@@ -3,7 +3,7 @@ import {
   assertIncompleteCodePatchConfirmation,
   canRejectProposalWithRole,
   ProposalApplyHttpError,
-} from "../src/modules/proposals/applyService";
+} from "../src/modules/proposals/applyService.js";
 
 describe("proposal apply service guards", () => {
   it("requires explicit confirmation before applying incomplete code patches", () => {

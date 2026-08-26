@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { notificationsModule } from "../src/modules/notifications";
-import { loadConfig } from "../src/config";
-import { startMockUpstream, type MockUpstream } from "./support/mockUpstream";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { notificationsModule } from "../src/modules/notifications/index.js";
+import { loadConfig } from "../src/config.js";
+import { startMockUpstream, type MockUpstream } from "./support/mockUpstream.js";
 
 let app: FastifyInstance;
 let target: MockUpstream | undefined;

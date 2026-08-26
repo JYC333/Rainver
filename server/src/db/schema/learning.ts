@@ -1,9 +1,9 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { knowledgeItems } from "./knowledge";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { knowledgeItems } from "./knowledge.js";
 
 // Learning is an independent global Domain with Project-contextual scope.
 // `projectId` is nullable — NULL

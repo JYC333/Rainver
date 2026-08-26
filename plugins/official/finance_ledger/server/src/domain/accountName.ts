@@ -1,4 +1,4 @@
-import type { RootType } from "./directives";
+import type { RootType } from "./directives.js";
 
 const ROOT_TYPES: Record<string, RootType> = {
   Assets: "assets",

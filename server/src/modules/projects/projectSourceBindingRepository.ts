@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, dateIso, numberValue, objectValue, optionalString, requiredString } from "../routeUtils/common";
-import { canAccessProject } from "../memory/projectAccess";
-import { assertProjectWriter, lockActiveProjectForMutation } from "./access";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
-import { projectSourceBindingOut } from "../sources/sourceRepositoryMappers";
-import { PROJECT_SOURCE_BINDING_COLUMNS, type ProjectSourceBindingRow } from "../sources/sourceRepositoryRows";
-import { recomputeProjectSourceBindingLinks } from "./projectSourceRoutingService";
-import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, numberValue, objectValue, optionalString, requiredString } from "../routeUtils/common.js";
+import { canAccessProject } from "../memory/projectAccess.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { projectSourceBindingOut } from "../sources/sourceRepositoryMappers.js";
+import { PROJECT_SOURCE_BINDING_COLUMNS, type ProjectSourceBindingRow } from "../sources/sourceRepositoryRows.js";
+import { recomputeProjectSourceBindingLinks } from "./projectSourceRoutingService.js";
+import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
 
 const PROJECT_SOURCE_DELIVERY_SCOPES = new Set(["project_members", "source_subscribers"]);
 

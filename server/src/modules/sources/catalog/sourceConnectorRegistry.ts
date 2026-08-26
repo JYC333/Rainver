@@ -1,14 +1,14 @@
-import { HttpError } from "../../routeUtils/common";
-import { parseFeed } from "../feedParser";
+import { HttpError } from "../../routeUtils/common.js";
+import { parseFeed } from "../feedParser.js";
 import {
   buildArxivQueryUrl,
   parseArxivFeed,
   type ArxivPaper,
   type ArxivQueryConfig,
-} from "../connectors/arxiv";
-import { acquireArxivRequestSlot } from "../connectors/arxivThrottle";
-import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../connectors/academicJson";
-import { scanPublicationWindowStart } from "../connectors/monitoringWindow";
+} from "../connectors/arxiv.js";
+import { acquireArxivRequestSlot } from "../connectors/arxivThrottle.js";
+import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../connectors/academicJson.js";
+import { scanPublicationWindowStart } from "../connectors/monitoringWindow.js";
 
 export interface SourceConnectorCapabilities {
   protocol: string;

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -8,10 +8,10 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql";
-import { DailyCaptureReportService } from "./service";
-import { PgDailyReportSettingsRepository } from "./repository";
+} from "../routeUtils/common.js";
+import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
+import { DailyCaptureReportService } from "./service.js";
+import { PgDailyReportSettingsRepository } from "./repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const settingsRepo = () => new PgDailyReportSettingsRepository(dbPool(context.config));

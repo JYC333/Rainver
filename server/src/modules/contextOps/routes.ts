@@ -1,16 +1,16 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { ServerConfig } from "../../config";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, intQuery, jsonBody, query, resolveIdentity, sendRouteError, HttpError, withDbTransaction } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { authRepositoryFromConfig } from "../auth/identity";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
-import { roleCanInitiateContextOpsScan, roleCanReviewSpaceOps, type SpaceRole } from "./reviewPolicy";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { ContextOpsService } from "./service";
-import { runContextReviewCycle } from "./reviewCycle";
-import { runContextObservationScan } from "./contextObservations";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, intQuery, jsonBody, query, resolveIdentity, sendRouteError, HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { authRepositoryFromConfig } from "../auth/identity.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
+import { roleCanInitiateContextOpsScan, roleCanReviewSpaceOps, type SpaceRole } from "./reviewPolicy.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { ContextOpsService } from "./service.js";
+import { runContextReviewCycle } from "./reviewCycle.js";
+import { runContextObservationScan } from "./contextObservations.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/context-ops/summary", async (request, reply) => {
@@ -36,7 +36,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         limit,
         includeSpaceOpsReports: access.includeSpaceOpsReports,
       });
-      const protocol = await loadProtocol();
       return reply.send(protocol.ContextOpsSummarySchema.parse(summary));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -47,7 +46,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const q = query(request);
       const section = protocol.ContextOpsDrilldownSectionSchema.safeParse(q.section);
       if (!section.success) {
@@ -82,7 +80,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.ContextReviewCycleRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
       const access = await requireSpaceContextOpsRole(context.config, identity, reply);
@@ -109,7 +106,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.ContextOpsContextObservationScanRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
       const access = await requireSpaceContextOpsRole(context.config, identity, reply);

@@ -18,25 +18,25 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { getDbPool, type Pool } from "../db";
-import type { ServerConfig } from "../../../config";
+import { getDbPool, type Pool } from "../db.js";
+import type { ServerConfig } from "../../../config.js";
 import {
   decryptModelProviderApiKeySecretRefV1,
   encryptModelProviderApiKeySecretRefV1,
   loadOrCreateModelProviderApiKeyMasterKey,
-} from "../secretRefCrypto";
-import { mapProviderRowToDto } from "../dbReader";
-import { providerVendor, type VendorDescriptor } from "../vendors";
-import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth";
-import { resolveNetworkProfileRepository } from "../../networkProfiles";
-import { isSpaceOwnerOrAdmin } from "../../access/roles";
-import { SpaceAssistantService } from "../../agents/spaceAssistantService";
+} from "../secretRefCrypto.js";
+import { mapProviderRowToDto } from "../dbReader.js";
+import { providerVendor, type VendorDescriptor } from "../vendors.js";
+import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
+import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
+import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { SpaceAssistantService } from "../../agents/spaceAssistantService.js";
 import {
   recordAttributedUsageObservation,
   resolveUsageObservationAttribution,
   type UsageAttribution,
   type UsageObservation,
-} from "../../usage";
+} from "../../usage/index.js";
 import {
   ROTATION_STRATEGIES,
   configRecord,
@@ -56,7 +56,7 @@ import {
   validateProviderType,
   type PoolMemberRow,
   type ProviderRow,
-} from "./helpers";
+} from "./helpers.js";
 import {
   ProviderCommandForbiddenError,
   ProviderCommandNotFoundError,
@@ -74,7 +74,7 @@ import {
   type ProviderTaskChainEntry,
   type ProviderTaskAttemptRefs,
   type ProviderTaskAttemptStart,
-} from "./types";
+} from "./types.js";
 
 export {
   ProviderCommandForbiddenError,
@@ -95,8 +95,8 @@ export {
   type ProviderTaskAttemptRefs,
   type ProviderTaskAttemptStart,
   type RotationStrategy,
-} from "./types";
-export { orderPoolMembers } from "./helpers";
+} from "./types.js";
+export { orderPoolMembers } from "./helpers.js";
 
 function grantOut(row: {
   id: string;

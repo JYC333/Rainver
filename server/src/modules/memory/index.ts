@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const memoryModule: ServerModule = {
   name: "memory",
@@ -9,13 +9,13 @@ export const memoryModule: ServerModule = {
 export {
   __setMemoryIdentityForTests,
   __setMemoryServicesFactoryForTests,
-} from "./routes";
+} from "./routes.js";
 
-export { MemoryMaintenanceService } from "./maintenance";
+export { MemoryMaintenanceService } from "./maintenance.js";
 export {
   MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE,
   MEMORY_MAINTENANCE_REPORT_ARTIFACT_TYPE,
   createMemoryMaintenanceProposalPacket,
   persistMemoryMaintenanceReportArtifact,
   registerMemoryMaintenanceProposalAppliers,
-} from "./maintenanceArtifacts";
+} from "./maintenanceArtifacts.js";

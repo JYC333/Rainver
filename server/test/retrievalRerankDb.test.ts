@@ -1,19 +1,15 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import {
-  RetrievalProjectionService,
-  RetrievalSearchService,
-  type RerankCandidate,
-  type RerankScore,
-  type Reranker,
-} from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { runRecallCases, type RecallCase } from "./support/retrievalEval";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { type RerankCandidate, type RerankScore, type Reranker } from "../src/modules/retrieval/reranker.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import { runRecallCases, type RecallCase } from "./support/retrievalEval.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // The reranker is a post-fusion, post-revalidate LLM stage. These tests use a
 // deterministic in-process fake reranker (no provider) to prove three things on
@@ -87,7 +83,7 @@ function tokenize(text: string): string[] {
 }
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService";
-import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService";
+import { loadConfig } from "../src/config.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
+import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService.js";
 
 const identity = { spaceId: "space-1", userId: "user-1" };
 

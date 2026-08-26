@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   ResearchCompiledQuery,
   ResearchPreviewObservation,
@@ -6,16 +7,15 @@ import type {
   ResearchQueryAttemptDirection,
   ResearchQueryDecision,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol, type ProtocolModule } from "../../providers/protocolRuntime";
+} from "@agent-space/protocol";
 import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
   dateIso,
   withQueryableTransaction,
-} from "../../routeUtils/common";
-import { MAX_RESEARCH_QUERY_ATTEMPTS } from "./queryPolicy";
+} from "../../routeUtils/common.js";
+import { MAX_RESEARCH_QUERY_ATTEMPTS } from "./queryPolicy.js";
 
 export interface CreateResearchQueryStrategyInput {
   projectId: string;
@@ -147,7 +147,6 @@ export class ResearchQueryRepository {
     identity: SpaceUserIdentity,
     input: CreateResearchQueryStrategyInput,
   ): Promise<StoredResearchQueryStrategy> {
-    const protocol = await loadProtocol();
     const providers = [...new Set(input.providers.map((provider) => protocol.ResearchProviderKeySchema.parse(provider)))];
     if (providers.length === 0 || providers.length > 4) throw new HttpError(422, "Between one and four research providers are required");
     if (!input.policyVersion.trim()) throw new HttpError(422, "policyVersion is required");
@@ -198,7 +197,6 @@ export class ResearchQueryRepository {
   }
 
   async createAttempt(spaceId: string, input: CreateResearchQueryAttemptInput): Promise<StoredResearchQueryAttempt> {
-    const protocol = await loadProtocol();
     const direction = protocol.ResearchQueryAttemptDirectionSchema.parse(input.direction);
     const semanticQuery = protocol.ResearchSemanticQuerySchema.parse(input.semanticQuery);
     const compiledQuery = protocol.ResearchCompiledQuerySchema.parse(input.compiledQuery);
@@ -264,7 +262,6 @@ export class ResearchQueryRepository {
   }
 
   async completeAttempt(spaceId: string, attemptId: string, input: CompleteResearchQueryAttemptInput): Promise<void> {
-    const protocol = await loadProtocol();
     const observation = input.observation ? protocol.ResearchPreviewObservationSchema.parse(input.observation) : null;
     const decision = input.decision ? protocol.ResearchQueryDecisionSchema.parse(input.decision) : null;
     if (!observation && !input.errorClass) throw new HttpError(422, "An observation or error class is required");
@@ -302,7 +299,6 @@ export class ResearchQueryRepository {
     attemptId: string,
     input: { terminalDecision: ResearchQueryDecision; decisionReason?: string; coverageWarning?: string } = { terminalDecision: "accept" },
   ): Promise<void> {
-    const protocol = await loadProtocol();
     const terminalDecision = protocol.ResearchQueryDecisionSchema.parse(input.terminalDecision);
     await withQueryableTransaction(this.db, async (db) => {
       const attempt = await db.query<{ completed_at: string | null }>(
@@ -424,7 +420,6 @@ export class ResearchQueryRepository {
   }
 
   async getStrategy(spaceId: string, projectId: string, strategyId: string): Promise<StoredResearchQueryStrategy | null> {
-    const protocol = await loadProtocol();
     const strategyResult = await this.db.query<StrategyRow>(
       `SELECT id,project_id,research_context_version_id,question_snapshot,status,policy_version,
               policy_json,execution_budget_json,version,parent_strategy_id,adaptation_direction,created_at,selected_at,materialized_at
@@ -510,7 +505,7 @@ export class ResearchQueryRepository {
   }
 }
 
-function mapAttempt(row: AttemptRow, protocol: ProtocolModule): StoredResearchQueryAttempt {
+function mapAttempt(row: AttemptRow, protocol: typeof import("@agent-space/protocol")): StoredResearchQueryAttempt {
   const sampleSummary = recordValue(row.sample_summary_json);
   const metrics = recordValue(row.relevance_metrics_json);
   const observation = row.provider_hit_count === null || row.accessible_hit_count === null

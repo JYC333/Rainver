@@ -1,26 +1,26 @@
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
 import {
   HANDLER_VERSION_COLUMNS,
   PgCustomSourceHandlerRepository,
   type HandlerVersionRow,
-} from "./customSourceHandlerRepository";
-import { cleanupSandbox, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner";
-import { executeCustomSourceHandler } from "./customSourceHandlerExecution";
-import { CustomSourceMaterializationService } from "./customSourceMaterializer";
-import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter";
-import { enqueueItemsForAnnotation } from "../../sourceAnnotation";
-import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch";
-import { CustomSourceCredentialService } from "./customSourceCredentialService";
-import { computeNextCheckAt } from "../sourceScanCadence";
+} from "./customSourceHandlerRepository.js";
+import { cleanupSandbox, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner.js";
+import { executeCustomSourceHandler } from "./customSourceHandlerExecution.js";
+import { CustomSourceMaterializationService } from "./customSourceMaterializer.js";
+import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js";
+import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
+import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch.js";
+import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
+import { computeNextCheckAt } from "../sourceScanCadence.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
-} from "../sourceConnectionScheduler";
+} from "../sourceConnectionScheduler.js";
 
 interface QueuedRunRow {
   id: string;

@@ -1,7 +1,7 @@
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../../routeUtils/common";
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { RESEARCH_PIPELINE_START_JOB } from "./researchAcquisitionPipelineJob";
+import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { RESEARCH_PIPELINE_START_JOB } from "./researchAcquisitionPipelineJob.js";
 
 export interface StartResearchAcquisitionInput {
   threadId: string;

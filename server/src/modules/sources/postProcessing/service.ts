@@ -1,19 +1,19 @@
-import type { ServerConfig } from "../../../config";
-import { getDbPool, type Pool } from "../../../db/pool";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool, type Pool } from "../../../db/pool.js";
 import type {
   RetrievalObjectType,
   RetrievalSearchResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { PgAgentRepository } from "../../agents/repository";
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { PgRunRepository, type RunRecord } from "../../runs/repository";
-import { RunMaterializationService } from "../../runs/materializationService";
-import { RunOrchestrationService } from "../../runs/orchestrationService";
-import { runOutputResult } from "../../runs/orchestrationResults";
-import { sharedCliProcessRegistry } from "../../runs/processRegistry";
-import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy";
-import { PgCodePatchCollector, PgRunSandboxManager } from "../../projectFolders";
-import { PgVerificationEngine } from "../../runs/verification";
+} from "@agent-space/protocol";
+import { PgAgentRepository } from "../../agents/repository.js";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { PgRunRepository, type RunRecord } from "../../runs/repository.js";
+import { RunMaterializationService } from "../../runs/materializationService.js";
+import { RunOrchestrationService } from "../../runs/orchestrationService.js";
+import { runOutputResult } from "../../runs/orchestrationResults.js";
+import { sharedCliProcessRegistry } from "../../runs/processRegistry.js";
+import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy.js";
+import { PgCodePatchCollector, PgRunSandboxManager } from "../../projectFolders/index.js";
+import { PgVerificationEngine } from "../../runs/verification/index.js";
 import {
   HttpError,
   objectValue,
@@ -21,24 +21,24 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
-import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope";
+} from "../../routeUtils/common.js";
+import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope.js";
 import {
   enforceSourceDerivedImportTarget,
   normalizeSourceConnectionReadGovernance,
-} from "../sourceConsent";
-import { knowledgeRetrievalRegistry } from "../../knowledge/retrievalAdapter";
-import { memoryRetrievalRegistry } from "../../memory/retrievalAdapter";
-import { projectRetrievalRegistry } from "../../projects/retrievalAdapter";
-import { RetrievalSearchService, type RetrievalRegistry } from "../../retrieval";
-import { ProviderQueryEmbedder } from "../../retrieval/embedding/queryEmbedder";
-import { ProviderReranker } from "../../retrieval/rerankProvider/providerReranker";
-import { readSpaceRetrievalSettings } from "../../retrieval/settings";
-import { resolveProviderCommandStore } from "../../providers/commands/store";
-import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress";
-import { ITEM_COLUMNS, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows";
-import { sourceRetrievalRegistry } from "../retrievalAdapter";
-import { contentReadSql } from "../../access/contentAccessSql";
+} from "../sourceConsent.js";
+import { knowledgeRetrievalRegistry } from "../../knowledge/retrievalAdapter.js";
+import { memoryRetrievalRegistry } from "../../memory/retrievalAdapter.js";
+import { projectRetrievalRegistry } from "../../projects/retrievalAdapter.js";
+import { RetrievalSearchService, type RetrievalRegistry } from "../../retrieval/index.js";
+import { ProviderQueryEmbedder } from "../../retrieval/embedding/queryEmbedder.js";
+import { ProviderReranker } from "../../retrieval/rerankProvider/providerReranker.js";
+import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
+import { resolveProviderCommandStore } from "../../providers/commands/store.js";
+import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress.js";
+import { ITEM_COLUMNS, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
+import { sourceRetrievalRegistry } from "../retrievalAdapter.js";
+import { contentReadSql } from "../../access/contentAccessSql.js";
 import {
   PgSourcePostProcessingRepository,
   SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
@@ -67,24 +67,24 @@ import {
   type SourcePostProcessingRunOut,
   type SourcePostProcessingTriggerConfig,
   type SourcePostProcessingTriggerType,
-} from "./repository";
-import { ProjectResearchAreaService } from "../../projectResearch/areaService";
-import { resolveProjectResearchEvidenceCardPrompt } from "../../projectResearch/promptRegistry";
+} from "./repository.js";
+import { ProjectResearchAreaService } from "../../projectResearch/areaService.js";
+import { resolveProjectResearchEvidenceCardPrompt } from "../../projectResearch/promptRegistry.js";
 import {
   buildRetrievalContextQuery,
   renderInstruction,
   type SourcePostProcessingRetrievalContextRef,
   type SourcePostProcessingRetrievalContextSnapshot,
-} from "./instruction";
+} from "./instruction.js";
 import {
   parsePostProcessingResult,
   resultSummary,
   type ParsedPostProcessingResult,
-} from "./resultParser";
-import { joinText, stringList } from "./textUtils";
-import { SOURCE_POST_PROCESSING_LIMITS } from "./config";
-import { resolveModelWindow } from "../../usage/modelCatalog";
-import { SOURCE_POST_PROCESSING_OUTPUT_CONTRACT } from "../../projectResearch/outputSchemas";
+} from "./resultParser.js";
+import { joinText, stringList } from "./textUtils.js";
+import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
+import { resolveModelWindow } from "../../usage/modelCatalog.js";
+import { SOURCE_POST_PROCESSING_OUTPUT_CONTRACT } from "../../projectResearch/outputSchemas.js";
 
 interface RetrievalContextDomainConfig {
   registry: RetrievalRegistry;

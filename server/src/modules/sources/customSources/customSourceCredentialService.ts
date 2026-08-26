@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../../config";
-import { HttpError, optionalString, requiredString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
-import { isSpaceOwnerOrAdmin } from "../../access/roles";
-import { loadOrCreateModelProviderApiKeyMasterKey } from "../../providers/secretRefCrypto";
+import type { ServerConfig } from "../../../config.js";
+import { HttpError, optionalString, requiredString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { loadOrCreateModelProviderApiKeyMasterKey } from "../../providers/secretRefCrypto.js";
 import {
   decryptCustomSourceFetchCredential,
   encryptCustomSourceFetchCredential,
-} from "./customSourceCredentialCrypto";
+} from "./customSourceCredentialCrypto.js";
 
 /**
  * Custom Source's credential channel (Phase 10): a third credential class

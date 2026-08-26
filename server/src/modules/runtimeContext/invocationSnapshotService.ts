@@ -1,21 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   DeliveryAcknowledgement,
   ExecutionControlSnapshot,
   InvocationDelivery,
   InvocationSnapshotSafe,
   RuntimeContextEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { managedProviderMessages, renderManagedDelivery } from "./managedRenderer";
-import { ContextWindowReconciliationRepository } from "./reconciliationRepository";
-import { SealedPayloadCipher } from "./sealedPayloadCrypto";
-import type { RuntimeContextContinuityService } from "./continuity/service";
-import type { RuntimeContextCliContinuityService } from "./continuity/cliContinuity";
-import { persistRunContextTaint } from "../runs/contextTaint";
-import type { ContentVisibility } from "../access/contentAccessTypes";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { managedProviderMessages, renderManagedDelivery } from "./managedRenderer.js";
+import { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
+import { SealedPayloadCipher } from "./sealedPayloadCrypto.js";
+import type { RuntimeContextContinuityService } from "./continuity/service.js";
+import type { RuntimeContextCliContinuityService } from "./continuity/cliContinuity.js";
+import { persistRunContextTaint } from "../runs/contextTaint.js";
+import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
 export interface InvocationAttemptInput {
   spaceId: string;
@@ -57,7 +57,6 @@ export class InvocationSnapshotService {
 
   async createAttempt(input: InvocationAttemptInput): Promise<InvocationAttemptDraft> {
     return withQueryableTransaction(this.db, async (db) => {
-      const protocol = await loadProtocol();
       const controlResult = await db.query<{ snapshot_json: unknown }>(
         `SELECT snapshot_json FROM execution_control_snapshots
           WHERE id=$1 AND space_id=$2 FOR SHARE`,
@@ -211,7 +210,6 @@ export class InvocationSnapshotService {
       );
       const row = result.rows[0];
       if (!row) throw new HttpError(404, "Invocation Snapshot not found");
-      const protocol = await loadProtocol();
       const current = protocol.InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json);
       const acknowledgementFingerprint = hashValue({
         status: input.status,
@@ -293,7 +291,7 @@ export class InvocationSnapshotService {
       if (!row || row.status !== "draft") {
         throw new HttpError(409, "CLI context phase is unavailable for acknowledgement");
       }
-      const snapshot = (await loadProtocol()).InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json);
+      const snapshot = protocol.InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json);
       const metadata = record(row.delivery_metadata_json);
       const cliSession = record(metadata.cli_session);
       const bindingRef = record(cliSession.binding_ref);
@@ -331,7 +329,7 @@ export class InvocationSnapshotService {
       [spaceId, snapshotId],
     );
     if (!result.rows[0]) return null;
-    return (await loadProtocol()).InvocationSnapshotSafeSchema.parse(result.rows[0].safe_snapshot_json);
+    return protocol.InvocationSnapshotSafeSchema.parse(result.rows[0].safe_snapshot_json);
   }
 
   async listSafeForInvocation(
@@ -345,7 +343,6 @@ export class InvocationSnapshotService {
         ORDER BY attempt ASC, created_at ASC, id ASC`,
       [spaceId, invocationId],
     );
-    const protocol = await loadProtocol();
     return result.rows.map((row) =>
       protocol.InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json));
   }
@@ -368,7 +365,6 @@ export class InvocationSnapshotService {
       );
       const row = result.rows[0];
       if (!row) throw new HttpError(404, "Invocation Snapshot not found");
-      const protocol = await loadProtocol();
       const current = protocol.InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json);
       const requestedError = input.errorCode ?? current.error_code;
       const finalizationFingerprint = hashValue({ errorCode: requestedError });

@@ -1,8 +1,8 @@
-import { accessibleProjectIds } from "./access";
+import { accessibleProjectIds } from "./access.js";
 import {
   autonomyDiscovererRegistry,
   type DiscoveredAutonomyCandidate,
-} from "../autonomy/registry";
+} from "../autonomy/registry.js";
 
 export function registerPeriodicDigestAutonomyDiscoverer(): void {
   autonomyDiscovererRegistry.register("periodic_digest", {

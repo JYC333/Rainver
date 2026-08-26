@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CaptureService } from "../src/modules/capture/service";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { blockIds } from "../src/modules/knowledge/noteBlockIds";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { CaptureService } from "../src/modules/capture/service.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { blockIds } from "../src/modules/knowledge/noteBlockIds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * The four capture destinations behind one entry (D1/D2).
@@ -27,7 +27,7 @@ const PROJECT = "44444444-4444-4444-8444-444444444444";
 
 let targetId = "";
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

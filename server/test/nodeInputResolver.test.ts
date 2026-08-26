@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InputBindingResolutionError, resolveNodeInputs } from "../src/modules/execution/nodeInputResolver";
+import { InputBindingResolutionError, resolveNodeInputs } from "../src/modules/execution/nodeInputResolver.js";
 
 describe("node input resolver", () => {
   it("resolves passed text, JSON pointer, and artifact inputs", async () => {

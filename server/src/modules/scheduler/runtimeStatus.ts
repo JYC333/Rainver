@@ -13,7 +13,7 @@
  * route reports "not running" as its own condition rather than as healthy.
  */
 
-import type { ScheduledTaskStatus } from "./registry";
+import type { ScheduledTaskStatus } from "./registry.js";
 
 export interface BackgroundServicesStatusSource {
   schedulerStatuses(now?: Date): ScheduledTaskStatus[];

@@ -1,10 +1,10 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaceMemberships, spaces } from "./spaces";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
-import { agents } from "./agents";
+import { users } from "./auth.js";
+import { spaceMemberships, spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
+import { agents } from "./agents.js";
 
 export const capabilityVersions = pgTable("capability_versions", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

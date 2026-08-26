@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { buildModuleServer } from "./support/moduleServer";
-import { hostsModule } from "../src/modules/hosts";
-import { loadConfig } from "../src/config";
-import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth";
-import type { CurrentUser } from "../src/modules/auth/identity";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { hostsModule } from "../src/modules/hosts/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
+import type { CurrentUser } from "../src/modules/auth/identity.js";
 
 // Real-Postgres coverage for the hosts HTTP surface (pairing-code issue ->
 // daemon register -> owner-scoped list -> revoke). Auth identity resolution
@@ -71,7 +71,7 @@ function httpBaseUrl(): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

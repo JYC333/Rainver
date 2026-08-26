@@ -1,5 +1,5 @@
-import type { DatedEntry, LedgerEntry } from "./entries";
-import { isDatedEntry } from "./entries";
+import type { DatedEntry, LedgerEntry } from "./entries.js";
+import { isDatedEntry } from "./entries.js";
 
 const SORT_ORDER: Partial<Record<DatedEntry["type"], number>> = {
   open: -2,

@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { ContextOpsService } from "../src/modules/contextOps";
-import { RetrievalMaintenanceService, RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { ContextOpsService } from "../src/modules/contextOps/service.js";
+import { RetrievalMaintenanceService } from "../src/modules/retrieval/maintenance/service.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Closes Slice-1 audit gaps end-to-end over real Postgres:
 //   G4 — a connector-ingested object lands a provenance_link → source_item →
@@ -24,7 +26,7 @@ const CONNECTOR = "connector-1";
 const LONG = "This page has more than enough searchable content to clear the thin threshold comfortably here.";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

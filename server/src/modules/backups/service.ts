@@ -16,9 +16,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { type BackupManifest, serializeManifest } from "./manifest";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { type BackupManifest, serializeManifest } from "./manifest.js";
 
 const execFileAsync = promisify(execFile);
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Shared idempotency helpers for multi-step Project operations (source setup,

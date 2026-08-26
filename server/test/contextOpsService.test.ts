@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ContextOpsService } from "../src/modules/contextOps";
+import { ContextOpsService } from "../src/modules/contextOps/service.js";
 
 class FakeDb {
   queries: Array<{ sql: string; params: readonly unknown[] }> = [];

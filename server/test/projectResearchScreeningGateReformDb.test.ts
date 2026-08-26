@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
 import {
   ProjectResearchScreeningCoordinator,
   type ProjectResearchScreeningPorts,
   type ScreeningOperationRow,
-} from "../src/modules/projectResearch/pipeline/screeningCoordinator";
-import { researchState } from "../src/modules/projectResearch/operationProjection";
-import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy";
-import { upsertPendingResearchCheckpoint } from "../src/modules/projectResearch/checkpointWriter";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+} from "../src/modules/projectResearch/pipeline/screeningCoordinator.js";
+import { researchState } from "../src/modules/projectResearch/operationProjection.js";
+import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
+import { upsertPendingResearchCheckpoint } from "../src/modules/projectResearch/checkpointWriter.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for the checkpoint reform at the screening
 // step: the checkpoint row still records what the machine concluded, but it
@@ -25,7 +25,7 @@ const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

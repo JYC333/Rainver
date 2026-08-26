@@ -1,4 +1,4 @@
-import type { OfficialPluginDescriptor } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { OfficialPluginDescriptor } from "@agent-space/protocol";
 
 export const DIARY_PLUGIN_ID = "diary";
 export const DIARY_PLUGIN_VERSION = "0.1.0";

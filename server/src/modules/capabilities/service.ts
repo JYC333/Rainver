@@ -1,9 +1,9 @@
-import { HttpError, optionalObject, optionalString, requiredString, type SpaceUserIdentity } from "../routeUtils/common";
-import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegistry";
-import { getBuiltInCapabilityDefinition, listBuiltInCapabilityDefinitions } from "./registry";
-import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter";
-import type { PgCapabilitiesRepository } from "./repository";
-import type { CapabilityDefinition } from "./types";
+import { HttpError, optionalObject, optionalString, requiredString, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegistry.js";
+import { getBuiltInCapabilityDefinition, listBuiltInCapabilityDefinitions } from "./registry.js";
+import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter.js";
+import type { PgCapabilitiesRepository } from "./repository.js";
+import type { CapabilityDefinition } from "./types.js";
 
 export class CapabilitiesService {
   constructor(

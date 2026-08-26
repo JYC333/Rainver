@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import type { DigestCandidate } from "./repository";
+import type { Queryable } from "../routeUtils/common.js";
+import type { DigestCandidate } from "./repository.js";
 
 export interface StandbyCandidate extends DigestCandidate {
   pool_id: string;

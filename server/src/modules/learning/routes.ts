@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, optionalString, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { LearningService } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, optionalString, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { LearningService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const learning = () => new LearningService(dbPool(context.config));

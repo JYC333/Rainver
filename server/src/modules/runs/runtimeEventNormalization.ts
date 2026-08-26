@@ -1,8 +1,8 @@
 import type {
   CanonicalModelEvent,
   RuntimeSemanticEvent,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { redactEvidenceText } from "./evidenceRedaction";
+} from "@agent-space/protocol";
+import { redactEvidenceText } from "./evidenceRedaction.js";
 
 export function normalizeManagedModelEvents(
   events: CanonicalModelEvent[],

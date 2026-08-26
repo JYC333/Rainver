@@ -1,18 +1,19 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
 import {
   MemoryProposalNotFoundError,
   PgMemoryProposalRepository,
-} from "../src/modules/memory/proposalRepository";
+} from "../src/modules/memory/proposalRepository.js";
 
 let repo: PgMemoryProposalRepository | undefined;
 
 const SPACE = "space-1";
 const USER = "user-1";
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
@@ -38,42 +39,6 @@ beforeEach(async () => {
     ["membership-1", SPACE, USER],
   );
 });
-
-async function insertMemory(over: Record<string, unknown>): Promise<void> {
-  const cols: Record<string, unknown> = {
-    id: over.id,
-    space_id: SPACE,
-    scope_type: "user",
-    memory_type: "fact",
-    content: "memory content",
-    status: "active",
-    access_count: 0,
-    visibility: "space_shared",
-    access_level: "full",
-    sensitivity_level: "normal",
-    confidence: 1,
-    importance: 0.5,
-    version: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    ...over,
-  };
-  const names = Object.keys(cols);
-  const placeholders = names.map((n, i) =>
-    n === "tags" ? `$${i + 1}::jsonb` : `$${i + 1}`,
-  );
-  const values = names.map((n) =>
-    n === "tags"
-      ? cols[n] === undefined
-        ? null
-        : JSON.stringify(cols[n])
-      : cols[n],
-  );
-  await db.pool.query(
-    `INSERT INTO memory_entries (${names.join(", ")}) VALUES (${placeholders.join(", ")})`,
-    values,
-  );
-}
 
 describe("PgMemoryProposalRepository against real Postgres", () => {
   it("creates a pending memory_create proposal without inserting active memory", async () => {
@@ -135,12 +100,12 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
 
   it("creates update/archive proposals without mutating the target memory", async () => {
     if (!db.available || !repo || !db.pool) return;
-    await insertMemory({
+    await insertMemoryEntry(db.pool, SPACE, {
       id: "memory-1",
       owner_user_id: USER,
       content: "unchanged",
       title: "Original",
-    });
+    }, { visibility: "space_shared" });
 
     const update = await repo.updateMemoryProposal(SPACE, USER, "memory-1", {
       operation: "update",
@@ -184,12 +149,12 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
 
   it("hides non-readable target memories on update", async () => {
     if (!db.available || !repo) return;
-    await insertMemory({
+    await insertMemoryEntry(db.pool, SPACE, {
       id: "private-other",
       owner_user_id: "other",
       visibility: "private",
       content: "secret",
-    });
+    }, { visibility: "space_shared" });
 
     await expect(
       repo.updateMemoryProposal(SPACE, USER, "private-other", {

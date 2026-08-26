@@ -1,21 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common";
+import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
 import {
   DEFAULT_EMBED_BATCH,
   EMBED_DIMENSIONS,
   RETRIEVAL_EMBEDDING_JOB,
-} from "../src/modules/retrieval/embedding/config";
-import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../src/modules/retrieval/embedding/job";
+} from "../src/modules/retrieval/embedding/config.js";
+import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../src/modules/retrieval/embedding/job.js";
 import {
   RetrievalEmbeddingBackfillService,
   type RetrievalEmbedder,
   type RetrievalEmbeddingAuditEvent,
-} from "../src/modules/retrieval/embedding/service";
-import { QueryEmbeddingCache } from "../src/modules/retrieval/embedding/queryEmbeddingCache";
-import { ProviderQueryEmbedder } from "../src/modules/retrieval/embedding/queryEmbedder";
-import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
+} from "../src/modules/retrieval/embedding/service.js";
+import { QueryEmbeddingCache } from "../src/modules/retrieval/embedding/queryEmbeddingCache.js";
+import { ProviderQueryEmbedder } from "../src/modules/retrieval/embedding/queryEmbedder.js";
+import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 
 class FakeEmbeddingDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

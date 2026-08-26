@@ -1,20 +1,20 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { actors, agentRuntimeProfiles, agentVersions, agents } from "./agents";
-import { users } from "./auth";
-import { sessions } from "./sessions";
-import { spaces } from "./spaces";
-import { projectFolders } from "./projectFolders";
-import { workspaceLocations } from "./workspaceLocations";
-import { hostTaskThreads } from "./hostTaskThreads";
-import { modelProviders } from "./providers";
-import { agentRunGroups, runDelegations } from "./agentGroups";
-import { artifacts } from "./artifacts";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
-import { tasks } from "./tasks";
-import { jobs } from "./jobs";
-import { evolvableAssetVersions } from "./evolvableAssets";
+import { actors, agentRuntimeProfiles, agentVersions, agents } from "./agents.js";
+import { users } from "./auth.js";
+import { sessions } from "./sessions.js";
+import { spaces } from "./spaces.js";
+import { projectFolders } from "./projectFolders.js";
+import { workspaceLocations } from "./workspaceLocations.js";
+import { hostTaskThreads } from "./hostTaskThreads.js";
+import { modelProviders } from "./providers.js";
+import { agentRunGroups, runDelegations } from "./agentGroups.js";
+import { artifacts } from "./artifacts.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
+import { tasks } from "./tasks.js";
+import { jobs } from "./jobs.js";
+import { evolvableAssetVersions } from "./evolvableAssets.js";
 
 export const runs = pgTable("runs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

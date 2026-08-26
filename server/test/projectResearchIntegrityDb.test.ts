@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
+import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for domain-neutral Project Research integrity checks:
 // project-level claim intent records (project_research_claim_links) linking
@@ -20,7 +20,7 @@ const SAME_SPACE_MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -44,19 +44,6 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 async function makeSharedSpace(): Promise<void> {
   await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
-}
-
-async function addSpaceMember(userId: string): Promise<void> {
-  const now = new Date().toISOString();
-  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [
-    userId,
-    now,
-  ]);
-  await db.pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'member','active',$4,$4)`,
-    [randomUUID(), SPACE, userId, now],
-  );
 }
 
 async function seedWorkflow(): Promise<string> {
@@ -167,7 +154,7 @@ describe("Project Research claim links + integrity gate (real Postgres)", () => 
   it("rejects linking a claim that is not readable by the project writer", async () => {
     if (!db.available) return;
     await makeSharedSpace();
-    await addSpaceMember(SAME_SPACE_MEMBER);
+    await seedSpaceMember(db.pool, { space: SPACE, user: SAME_SPACE_MEMBER });
     const hiddenClaimId = await seedClaim("Private claim", {
       visibility: "private",
       ownerUserId: SAME_SPACE_MEMBER,

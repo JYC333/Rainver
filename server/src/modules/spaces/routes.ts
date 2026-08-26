@@ -1,20 +1,20 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import {
   authRepositoryFromConfig,
   sessionTokenFromRequest,
   type AuthFailure,
-} from "../auth/identity";
+} from "../auth/identity.js";
 import {
   spaceRepositoryFromConfig,
   type SpaceCreateInput,
   type InvitationCreateInput,
   type SpaceFailure,
-} from "./repository";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
+} from "./repository.js";
+import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
 
 function isFailure(value: unknown): value is AuthFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -251,7 +251,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (rejectsOversightModeMutation(rawPayload)) {
         return reply.code(422).send({ detail: "oversight_mode is immutable after Space creation" });
       }
-      const protocol = await loadProtocol();
       const payload = protocol.SpaceRetrievalSettingsUpdateSchema.parse(rawPayload);
       const before = await spaces.getRetrievalSettings(user.id, params(request).spaceId ?? "");
       const result = await spaces.updateRetrievalSettings(

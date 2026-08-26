@@ -1,7 +1,7 @@
-import type { ContextItem, RuntimeContextEnvelope, TurnContextRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { RuntimeContextPlanner } from "./planner";
-import { RuntimeContextPlanningError } from "./windowPlanner";
-import type { ModelWindowOverride } from "../usage/modelCatalog";
+import type { ContextItem, RuntimeContextEnvelope, TurnContextRequest } from "@agent-space/protocol";
+import { RuntimeContextPlanner } from "./planner.js";
+import { RuntimeContextPlanningError } from "./windowPlanner.js";
+import type { ModelWindowOverride } from "../usage/modelCatalog.js";
 
 export interface RuntimeContextPlanningRequest {
   identity: { userId: string; spaceId: string };

@@ -1,9 +1,9 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { validationRecipes } from "./tasks";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { validationRecipes } from "./tasks.js";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D2: the logical

@@ -1,4 +1,4 @@
-import { QUERY_REWRITE_MAX_VARIANTS, QUERY_REWRITE_MAX_VARIANT_CHARS } from "./config";
+import { QUERY_REWRITE_MAX_VARIANTS, QUERY_REWRITE_MAX_VARIANT_CHARS } from "./config.js";
 
 /**
  * Prompt construction + response parsing for the LLM query rewriter. The model

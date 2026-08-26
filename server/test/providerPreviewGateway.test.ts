@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ServerConfig } from "../src/config";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { ProviderPreviewGateway } from "../src/modules/research/discovery/providerPreviewGateway";
-import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler";
-import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle";
-import type { SourceFetchResult } from "../src/modules/sources/sourceFetch";
+import type { ServerConfig } from "../src/config.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { ProviderPreviewGateway } from "../src/modules/research/discovery/providerPreviewGateway.js";
+import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler.js";
+import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
+import type { SourceFetchResult } from "../src/modules/sources/sourceFetch.js";
 
 const identity = { spaceId: "space-1", userId: "user-1" } as SpaceUserIdentity;
 

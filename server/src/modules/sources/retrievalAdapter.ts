@@ -6,11 +6,11 @@ import {
   type RetrievalObjectRef,
   type RetrievalObjectType,
   type RevalidatedObject,
-} from "../retrieval";
-import type { Queryable } from "../routeUtils/common";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "./sourceItemAccess";
+} from "../retrieval/index.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "./sourceItemAccess.js";
 
 const SOURCE_RETRIEVAL_OBJECT_TYPES = ["source_item", "extracted_evidence"] as const;
 const INDEXABLE_EVIDENCE_STATUSES = ["candidate", "active"] as const;

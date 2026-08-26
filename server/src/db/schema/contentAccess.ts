@@ -10,10 +10,10 @@ import {
 	type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { agents } from "./agents";
-import { runs } from "./runs";
-import { spaceMemberships, spaces } from "./spaces";
+import { users } from "./auth.js";
+import { agents } from "./agents.js";
+import { runs } from "./runs.js";
+import { spaceMemberships, spaces } from "./spaces.js";
 
 /**
  * Explicit per-resource grants for content whose visibility is

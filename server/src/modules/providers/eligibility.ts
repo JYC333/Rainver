@@ -1,7 +1,7 @@
 import {
   providerCanRunWithoutCredential,
   providerSupportsChat,
-} from "./vendors";
+} from "./vendors.js";
 
 /**
  * Provider facts shared by Room admission, conversation backend resolution,

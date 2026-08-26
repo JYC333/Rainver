@@ -1,10 +1,10 @@
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../../../db/pool";
-import type { PgJobQueueRepository } from "../../jobs/repository";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { PgJobQueueRepository } from "../../jobs/repository.js";
 import {
   PgSourcePostProcessingRepository,
   SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
-} from "./repository";
+} from "./repository.js";
 
 export async function enqueueDueSourcePostProcessingRules(
   config: ServerConfig,

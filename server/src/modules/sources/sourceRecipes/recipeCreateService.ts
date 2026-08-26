@@ -2,8 +2,9 @@ import type {
   CustomSourcePolicyEnvelope,
   SourcePolicyEnvelope,
   SourceRecipeDefinition,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
 import {
   HttpError,
   objectValue,
@@ -12,24 +13,23 @@ import {
   withDbTransaction,
   type Pool,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { insertProposalRow } from "../../proposals/reviewPackets";
-import { SourceChannelService } from "../channels/sourceChannelService";
-import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository";
-import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
+} from "../../routeUtils/common.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
+import { SourceChannelService } from "../channels/sourceChannelService.js";
+import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository.js";
+import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
 import {
   parseSourceCapturePolicy,
   parseSourceRetentionPolicy,
   type SourceCapturePolicy,
   type SourceRetentionPolicy,
-} from "../capturePolicy";
-import { evaluateCustomSourceActivation } from "../customSources/customSourceCreateFlowService";
-import { fetchAllowedOriginResponse, truncateToByteLimit } from "../customSources/customSourceEndpointFetch";
-import { cleanupSandbox } from "../customSources/customSourceRunner";
-import { analyzeSourceRecipe } from "./primitiveRegistry";
-import { buildRecipeForSourceType, detectPlannedSourceType, type PlannedSourceType } from "./recipePlanner";
-import { runSourceRecipe } from "./recipeInterpreter";
+} from "../capturePolicy.js";
+import { evaluateCustomSourceActivation } from "../customSources/customSourceCreateFlowService.js";
+import { fetchAllowedOriginResponse, truncateToByteLimit } from "../customSources/customSourceEndpointFetch.js";
+import { cleanupSandbox } from "../customSources/customSourceRunner.js";
+import { analyzeSourceRecipe } from "./primitiveRegistry.js";
+import { buildRecipeForSourceType, detectPlannedSourceType, type PlannedSourceType } from "./recipePlanner.js";
+import { runSourceRecipe } from "./recipeInterpreter.js";
 import {
   getSourceRecipeVersion,
   insertSourceRecipeVersion,
@@ -37,7 +37,7 @@ import {
   activateSourceRecipeVersionTx,
   RECIPE_VERSION_COLUMNS,
   type RecipeVersionRow,
-} from "./recipeVersionStore";
+} from "./recipeVersionStore.js";
 
 /**
  * Conversation-first Source creation (Level 2 main path): plan -> create ->
@@ -136,7 +136,6 @@ export class SourceRecipeCreateService {
       listSelector,
     });
 
-    const protocol = await loadProtocol();
     let recipe: SourceRecipeDefinition;
     if (body.recipe !== undefined) {
       const parsed = protocol.SourceRecipeDefinitionSchema.safeParse(body.recipe);
@@ -223,7 +222,6 @@ export class SourceRecipeCreateService {
       throw new HttpError(409, "Recipe version must pass a dry-run before activation");
     }
 
-    const protocol = await loadProtocol();
     const envelope: SourcePolicyEnvelope = protocol.SourcePolicyEnvelopeSchema.parse(
       versionRow.policy_envelope_json,
     );

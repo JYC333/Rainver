@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 export const PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS = 48;
 

@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { isOversightMode, type OversightMode } from "./contentAccessTypes";
+import type { Queryable } from "../routeUtils/common.js";
+import { isOversightMode, type OversightMode } from "./contentAccessTypes.js";
 
 /**
  * Resolves the viewer's effective Space oversight mode: the Space's

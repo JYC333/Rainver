@@ -1,6 +1,6 @@
-import type { ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry";
-import type { Queryable } from "../../routeUtils/common";
-import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter";
+import type { ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 import {
   acceptReviewPacket,
   insertProposalRow,
@@ -8,8 +8,8 @@ import {
   reviewScopeValue,
   visibilityForReviewScope,
   type ChildProposalDraft,
-} from "../../proposals/reviewPackets";
-import type { MaintenanceReport } from "./service";
+} from "../../proposals/reviewPackets.js";
+import type { MaintenanceReport } from "./service.js";
 
 export const RETRIEVAL_MAINTENANCE_REPORT_ARTIFACT_TYPE = "retrieval_maintenance_report";
 export const RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE = "retrieval_maintenance_packet";

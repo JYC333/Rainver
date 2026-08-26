@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { retrievableEntityTypes, spaceObjectSubtypes } from "../src/modules/ontology/entities";
+import { retrievableEntityTypes, spaceObjectSubtypes } from "../src/modules/ontology/entities.js";
 
 /**
  * The guardrail the plan asks for: the editor's target-kind list must be
@@ -30,7 +30,7 @@ import { retrievableEntityTypes, spaceObjectSubtypes } from "../src/modules/onto
  * so it tracks the backend instead of being remembered.
  */
 
-const webSrc = join(__dirname, "..", "..", "apps", "web", "src");
+const webSrc = join(import.meta.dirname, "..", "..", "apps", "web", "src");
 
 function tsxFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];

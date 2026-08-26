@@ -1,12 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { systemModule } from "../src/modules/system";
-import { loadConfig } from "../src/config";
-import {
-  computeFeatures,
-  isProtocolPackageDetected,
-} from "../src/modules/system";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { systemModule } from "../src/modules/system/index.js";
+import { loadConfig } from "../src/config.js";
+import { computeFeatures, isProtocolPackageDetected } from "../src/modules/system/service.js";
 
 let app: FastifyInstance;
 

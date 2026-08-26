@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { seedArxivSourceChain, seedResearchOperation } from "./support/researchSeeds";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService";
+import { seedArxivSourceChain, seedResearchOperation } from "./support/researchSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
 
 // Real-Postgres coverage for the shared item budget across sibling
 // Project Research backfill plans (one plan per selected Source Monitor,
@@ -25,7 +25,7 @@ const PLAN_A = "aaaaaaaa-1111-4111-8111-111111111111";
 const PLAN_B = "bbbbbbbb-1111-4111-8111-111111111111";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

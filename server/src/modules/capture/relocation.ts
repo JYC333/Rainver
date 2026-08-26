@@ -1,5 +1,5 @@
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 
 export type RelocationMode = "move" | "copy";
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../runs/repository";
-import type { RunRecord } from "../runs/runRepositoryTypes";
+import type { Queryable } from "../runs/repository.js";
+import type { RunRecord } from "../runs/runRepositoryTypes.js";
 
 export const SIGNAL_DEDUP_WINDOWS_SECONDS = {
   run: 60 * 60,

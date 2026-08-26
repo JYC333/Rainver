@@ -2,30 +2,30 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { once } from "node:events";
 import { connect, type AddressInfo } from "node:net";
 import { Duplex, Readable } from "node:stream";
-import type { ServerConfig } from "../../../config";
+import type { ServerConfig } from "../../../config.js";
 import {
   ProviderCommandValidationError,
   resolveProviderCommandStore,
   type ProviderCommandStore,
-} from "../commands/store";
+} from "../commands/store.js";
 import {
   providerProxyLeases,
   setProviderProxyBaseUrlForProcess,
   type ResolvedProviderProxyLease,
   type ProviderProxyLeaseRegistry,
   type ProviderProxyRoute,
-} from "./lease";
-import { subscriptionEgressLeases } from "./subscriptionEgress";
+} from "./lease.js";
+import { subscriptionEgressLeases } from "./subscriptionEgress.js";
 import {
   fetchWithNetworkProfile,
   resolveNetworkProfileRepository,
-} from "../../networkProfiles";
+} from "../../networkProfiles/index.js";
 import {
   recordAttributedUsageObservation as recordUsage,
   resolveUsageObservationAttribution as resolveUsageAttribution,
   type UsageAttribution,
   type UsageObservation,
-} from "../../usage";
+} from "../../usage/index.js";
 
 const MAX_PROXY_REQUEST_BYTES = 32 * 1024 * 1024;
 const MAX_PROXY_USAGE_PARSE_BYTES = 2 * 1024 * 1024;

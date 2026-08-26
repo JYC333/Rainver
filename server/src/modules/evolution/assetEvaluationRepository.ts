@@ -7,8 +7,8 @@ import {
   optionalString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { insertProposalRow } from "../proposals/reviewPackets";
+} from "../routeUtils/common.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanReadAssetOwnerScope,
@@ -16,7 +16,7 @@ import {
   canViewScopedRef,
   normalizeVersionScopeForWrite,
   type EvolvableAssetAccessRow,
-} from "./assetAccess";
+} from "./assetAccess.js";
 
 const EVALUATION_STATUSES = new Set(["queued", "running", "passed", "failed", "blocked", "cancelled"]);
 const EVALUATION_HARD_GATE_CASE_THRESHOLD = 5;

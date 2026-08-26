@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
+import { ProjectResearchHistoryModeSchema, ProjectResearchInitialIntakeRequestSchema, ProjectResearchRunKindSchema, ResearchReportV1Schema } from "@agent-space/protocol";
 
 const citation = { arxiv_id: "2601.12345" };
 
 describe("Project Research output protocol", () => {
   it("exposes the baseline, historical backfill, incremental, and history mode vocabularies", async () => {
-    const { ProjectResearchHistoryModeSchema, ProjectResearchRunKindSchema } = await loadProtocol();
     expect(ProjectResearchRunKindSchema.parse("baseline")).toBe("baseline");
     expect(ProjectResearchRunKindSchema.parse("historical_backfill")).toBe("historical_backfill");
     expect(ProjectResearchRunKindSchema.parse("incremental")).toBe("incremental");
@@ -14,7 +13,6 @@ describe("Project Research output protocol", () => {
   });
 
   it("uses a project-owned materialized query strategy for initial intake", async () => {
-    const { ProjectResearchInitialIntakeRequestSchema } = await loadProtocol();
     const parsed = ProjectResearchInitialIntakeRequestSchema.parse({
       query_strategy_id: "11111111-1111-4111-8111-111111111111",
       history_mode: "all_available",
@@ -33,7 +31,6 @@ describe("Project Research output protocol", () => {
   });
 
   it("does not expose CLI runtime configuration in the Research contract", async () => {
-    const { ProjectResearchInitialIntakeRequestSchema } = await loadProtocol();
     const parsed = ProjectResearchInitialIntakeRequestSchema.parse({
       query_strategy_id: "11111111-1111-4111-8111-111111111111",
       report_depth: "full",
@@ -54,7 +51,6 @@ describe("Project Research output protocol", () => {
   });
 
   it("requires a source or evidence reference on every structured output entry", async () => {
-    const { ResearchReportV1Schema } = await loadProtocol();
     const base = {
       schema_version: "research_report.v1",
       research_question: "Does X improve Y?",
@@ -72,7 +68,6 @@ describe("Project Research output protocol", () => {
   });
 
   it("requires the combined report sections", async () => {
-    const { ResearchReportV1Schema } = await loadProtocol();
     expect(ResearchReportV1Schema.safeParse({ schema_version: "research_report.v1", research_question: "Q", summary: "S" }).success).toBe(false);
   });
 });

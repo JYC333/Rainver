@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { InquiryGraphService } from "../src/modules/inquiry/graphService";
-import { buildSpaceObjectInsert } from "../src/db/spaceObjectWriter";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { completeBackgroundStep } from "../src/modules/inquiry/stepService";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { InquiryGraphService } from "../src/modules/inquiry/graphService.js";
+import { buildSpaceObjectInsert } from "../src/db/spaceObjectWriter.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { completeBackgroundStep } from "../src/modules/inquiry/stepService.js";
 
 // Real-Postgres coverage for the Inquiry Core vertical slice: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
@@ -19,7 +19,7 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const VIEWER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 let PROJECT: string;
 

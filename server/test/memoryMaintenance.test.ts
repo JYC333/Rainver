@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MemoryMaintenanceService } from "../src/modules/memory/maintenance";
-import type { MemoryRow, Queryable } from "../src/modules/memory/repository";
+import { MemoryMaintenanceService } from "../src/modules/memory/maintenance.js";
+import type { MemoryRow, Queryable } from "../src/modules/memory/repository.js";
 
 interface CapturedQuery {
   sql: string;

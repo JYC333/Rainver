@@ -1,18 +1,18 @@
-import type { Queryable } from "../routeUtils/common";
-import { domainDefinitions, isKnownDomain } from "../sourceAnnotation";
+import type { Queryable } from "../routeUtils/common.js";
+import { domainDefinitions, isKnownDomain } from "../sourceAnnotation/index.js";
 import {
   PgInterestProfileRepository,
   type CoverageEntry,
   type InterestTopicRow,
   type TopicCandidateRow,
-} from "./repository";
-import { profileMaturity, explorationShare, gapsAreMeaningful, skeletonSize, type ProfileMaturity } from "./maturity";
-import { topicKeyFor } from "./topicKey";
+} from "./repository.js";
+import { profileMaturity, explorationShare, gapsAreMeaningful, skeletonSize, type ProfileMaturity } from "./maturity.js";
+import { topicKeyFor } from "./topicKey.js";
 import {
   mergeInterestProfileSettings,
   resolveInterestProfileSettings,
   type InterestProfileSettings,
-} from "./settings";
+} from "./settings.js";
 
 /** Items the fact layer accounts for in one pass. */
 export const FACT_LAYER_BATCH_SIZE = 200;

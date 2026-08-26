@@ -2,19 +2,19 @@ import { randomUUID } from "node:crypto";
 import type {
   ObjectSchemaSuggestionReport,
   ObjectSchemaSuggestionScanRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import type { Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { reviewScopeValue, visibilityForReviewScope } from "../proposals/reviewPackets";
-import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes";
+} from "@agent-space/protocol";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { reviewScopeValue, visibilityForReviewScope } from "../proposals/reviewPackets.js";
+import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes.js";
 import {
   loadSourceConnectionIdsForTargets,
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromMetadata,
   sourcePolicyAllowsRead,
-} from "../retrieval/sourcePolicy";
+} from "../retrieval/sourcePolicy.js";
 
 export const OBJECT_SCHEMA_SUGGESTION_REPORT_ARTIFACT_TYPE = "object_schema_suggestion_report";
 

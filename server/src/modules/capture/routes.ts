@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { jsonBody, params, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { CaptureService } from "./service";
-import { RelocationService } from "./relocationService";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { jsonBody, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { CaptureService } from "./service.js";
+import { RelocationService } from "./relocationService.js";
 
 type RouteService = Pick<CaptureService, "capture">;
 type ServiceFactory = (context: ModuleContext) => RouteService;
@@ -34,7 +34,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.CaptureRequestSchema.parse(jsonBody(request));
       const result = await service(context).capture({
         userId: identity.userId,
@@ -62,7 +61,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const result = await relocation(context).preview({
         userId: identity.userId,
         activityId: params(request).activityId ?? "",
@@ -77,7 +75,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RelocationRequestSchema.parse(jsonBody(request));
       const result = await relocation(context).relocate({
         userId: identity.userId,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 export type SchedulerTaskScopeType = "instance" | "space" | "user" | "space_user";
 export type SchedulerTaskStatus = "active" | "paused" | "archived";

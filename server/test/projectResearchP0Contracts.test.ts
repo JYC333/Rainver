@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { structuredOutputFromText } from "../src/modules/providers/invocation/invocation";
+import { structuredOutputFromText } from "../src/modules/providers/invocation/invocation.js";
 import {
   RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT,
   RESEARCH_SYNTHESIS_CRITIQUE_OUTPUT_CONTRACT,
-} from "../src/modules/projectResearch/outputSchemas";
+} from "../src/modules/projectResearch/outputSchemas.js";
 
 describe("Project Research P0 structured contracts", () => {
   it("accepts the bounded FINER question refinement shape", () => {

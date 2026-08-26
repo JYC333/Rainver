@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   countFromRow,
@@ -12,18 +12,18 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { RetrievalProjectionService } from "../retrieval";
-import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access";
-import { assertProjectReadable } from "./access";
-import { projectRetrievalRegistry } from "./retrievalAdapter";
-import { contentReadSql } from "../access/contentAccessSql";
-import { projectFolderReadAccessSql } from "../projectFolders/access";
-import { memorySensitivityReadSql } from "../memory/memorySensitivitySql";
-import { PgRunRepository } from "../runs/repository";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { requiredPrimaryMode } from "./primaryMode";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
+import { assertProjectReadable } from "./access.js";
+import { projectRetrievalRegistry } from "./retrievalAdapter.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { projectFolderReadAccessSql } from "../projectFolders/access.js";
+import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { requiredPrimaryMode } from "./primaryMode.js";
 
 export interface ProjectRow {
   id: string;

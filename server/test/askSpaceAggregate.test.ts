@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import type {
   AskSpaceDomainSection,
   RetrievalBrief,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import {
   aggregateGaps,
   buildFollowUps,
   collectProvenance,
   dedupeDomains,
   PROVENANCE_CAP,
-} from "../src/modules/askSpace/aggregate";
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
+} from "../src/modules/askSpace/aggregate.js";
+import { AskSpaceResponseSchema } from "@agent-space/protocol";
 
 function brief(partial: Partial<RetrievalBrief> & { gap?: Partial<RetrievalBrief["gap_analysis"]> }): RetrievalBrief {
   return {
@@ -127,7 +127,6 @@ describe("askSpace aggregate", () => {
 
 describe("AskSpaceResponseSchema", () => {
   it("accepts a well-formed read-only response and rejects a canonical-write claim", async () => {
-    const { AskSpaceResponseSchema } = await loadProtocol();
     const base = {
       generated_at: "2026-06-26T00:00:00.000Z",
       space_id: "11111111-1111-4111-8111-111111111111",

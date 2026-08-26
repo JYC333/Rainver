@@ -1,8 +1,8 @@
 import type {
   PluginHostContext,
   PluginProposalContext,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { financeLedgerService } from "./domain/service";
+} from "@agent-space/protocol";
+import { financeLedgerService } from "./domain/service.js";
 
 export const PROPOSAL_TYPE_POST_DIRECTIVE = "finance_ledger.post_directive";
 export const PROPOSAL_TYPE_POST_IMPORT_BATCH = "finance_ledger.post_import_batch";

@@ -1,6 +1,6 @@
-import { RetrievalSearchService } from "../retrieval";
-import { memoryRetrievalRegistry } from "../memory/retrievalAdapter";
-import type { Queryable } from "../routeUtils/common";
+import { RetrievalSearchService } from "../retrieval/index.js";
+import { memoryRetrievalRegistry } from "../memory/retrievalAdapter.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 export interface ActivityMemoryDedupResult {
   duplicate: boolean;

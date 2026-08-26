@@ -1,5 +1,5 @@
-import { RESEARCH_CAPABILITIES } from "./researchPack";
-import type { CapabilityDefinition } from "./types";
+import { RESEARCH_CAPABILITIES } from "./researchPack.js";
+import type { CapabilityDefinition } from "./types.js";
 
 export function listBuiltInCapabilityDefinitions(): CapabilityDefinition[] {
   return [...RESEARCH_CAPABILITIES].sort((a, b) => a.id.localeCompare(b.id));

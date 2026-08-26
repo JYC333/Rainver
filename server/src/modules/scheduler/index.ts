@@ -4,17 +4,17 @@ export {
   type ScheduledTask,
   type SchedulerHandle,
   type SchedulerLogger,
-} from "./registry";
+} from "./registry.js";
 export {
   PgSchedulerTaskStore,
   type SchedulerTaskRow,
   type SchedulerTaskScopeType,
   type SchedulerTaskStatus,
   type SchedulerTaskUpsertInput,
-} from "./taskStore";
+} from "./taskStore.js";
 export {
   startBackgroundServices,
   pruneContentAccessLogs,
   type BackgroundServicesHandle,
-} from "./backgroundServices";
-export { buildSourceSchedulerTasks } from "./sourceTasks";
+} from "./backgroundServices.js";
+export { buildSourceSchedulerTasks } from "./sourceTasks.js";

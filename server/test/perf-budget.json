@@ -4,8 +4,8 @@
   "maxTestMs": 20000,
   "tolerance": 2.0,
   "baseline": {
-    "files": 462,
-    "importMs": 430000,
-    "testMs": 470000
+    "files": 391,
+    "importMs": 110000,
+    "testMs": 300000
   }
 }

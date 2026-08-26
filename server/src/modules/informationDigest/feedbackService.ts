@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common";
-import { InterestProfileService } from "../interestProfile/service";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings";
+import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
+import { InterestProfileService } from "../interestProfile/service.js";
+import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings.js";
 
 export type SerendipityFeedback = "interesting" | "neutral" | "never";
 

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { jsonBody, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { CaptureFilingService } from "./service";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { jsonBody, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { CaptureFilingService } from "./service.js";
 
 type RouteService = Pick<CaptureFilingService, "file">;
 type ServiceFactory = (context: ModuleContext) => RouteService;
@@ -25,7 +25,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.CaptureFilingRequestSchema.parse(jsonBody(request));
       const result = await service(context).file({
         userId: identity.userId,

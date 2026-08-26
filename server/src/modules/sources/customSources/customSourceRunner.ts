@@ -7,8 +7,8 @@ import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
   CustomSourcePolicyLimits,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { redactSecretPatterns } from "../../runs/evidenceRedaction";
+} from "@agent-space/protocol";
+import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 
 /**
  * Runner MVP for Source Custom Source handlers. See

@@ -1,16 +1,16 @@
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   requiredString,
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectWriter } from "../projects/access";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { THREAD_COLUMNS, THREAD_FROM, type ThreadRow } from "./threadService";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { THREAD_COLUMNS, THREAD_FROM, type ThreadRow } from "./threadService.js";
 
 export interface InquiryConclusionProposalActor {
   agentId?: string | null;

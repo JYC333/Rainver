@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
 
 // Real-PostgreSQL tests for the project membership management API — the ACL that
 // gates project-scoped memory. Validates the new project_members table, the
@@ -16,7 +16,7 @@ const OUTSIDER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; // not a space member
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

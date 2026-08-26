@@ -1,12 +1,12 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, confidence, countFromRow, numberValue, optionalObject, optionalString, page, requiredString } from "../routeUtils/common";
-import { retrievableEntityTypes } from "./entities";
-import { allowedObjectProfileKeys } from "./objectProfileSubtypeKeys";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, confidence, countFromRow, numberValue, optionalObject, optionalString, page, requiredString } from "../routeUtils/common.js";
+import { retrievableEntityTypes } from "./entities.js";
+import { allowedObjectProfileKeys } from "./objectProfileSubtypeKeys.js";
 
 const OBJECT_PROFILE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const RELATION_CREATE_STATUSES = new Set(["candidate", "active"]);
-import { assertLinkTypeAllowed } from "./validation";
-import { hasDeclaration } from "./linkTypes";
+import { assertLinkTypeAllowed } from "./validation.js";
+import { hasDeclaration } from "./linkTypes.js";
 
 /**
  * Ontology-owned reads and proposal writes: object profiles, their relation

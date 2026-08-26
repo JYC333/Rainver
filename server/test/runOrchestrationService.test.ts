@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { loadConfig } from "../src/config";
+import { loadConfig } from "../src/config.js";
 import {
   RunOrchestrationService,
   retrievalIntentFor,
   type RunDelegationLifecycleProjectorPort,
   type RunExecutionRepositoryPort,
   type RunPolicyEnforcer,
-} from "../src/modules/runs/orchestrationService";
-import type { RunMaterializationService } from "../src/modules/runs/materializationService";
+} from "../src/modules/runs/orchestrationService.js";
+import type { RunMaterializationService } from "../src/modules/runs/materializationService.js";
 import type {
   RunEventInput,
   RunRecord,
@@ -17,12 +17,12 @@ import type {
   RunStepRecord,
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
-} from "../src/modules/runs/repository";
-import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
-import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders";
-import { LocalCliProcessRegistry, type CliStdioController } from "../src/modules/runs/localCliExecution";
-import type { UsageObservation } from "../src/modules/usage/types";
+} from "../src/modules/runs/repository.js";
+import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol";
+import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.js";
+import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
+import { LocalCliProcessRegistry, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
+import type { UsageObservation } from "../src/modules/usage/types.js";
 
 function config(withDatabase = false) {
   return loadConfig({

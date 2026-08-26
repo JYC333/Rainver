@@ -1,4 +1,4 @@
-import { objectValue, optionalString } from "../routeUtils/common";
+import { objectValue, optionalString } from "../routeUtils/common.js";
 
 type PmNode = Record<string, unknown>;
 

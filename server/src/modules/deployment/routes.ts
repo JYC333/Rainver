@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/deployments/jobs", async (request, reply) => {

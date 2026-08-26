@@ -1,15 +1,16 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { TWO_ARTICLE_HTML } from "./support/customSourceFixtures.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig, type ServerConfig } from "../src/config";
-import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
-import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService";
-import { HttpError } from "../src/modules/routeUtils/common";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
+import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
+import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
+import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 
 // Real-Postgres integration tests for Phase 9 (repair/rollback), matching
 // the project-wide preference for real DB tests over fakes.
@@ -23,7 +24,7 @@ let createFlow: CustomSourceCreateFlowService | undefined;
 let repairService: CustomSourceRepairService | undefined;
 let artifactStorageRoot: string | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -48,10 +49,7 @@ afterEach(async () => {
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
-const FIXTURE_HTML = `<html><body>
-  <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-  <div class="article"><a href="/a2">Second Title</a><p>Second excerpt text.</p></div>
-</body></html>`;
+const FIXTURE_HTML = TWO_ARTICLE_HTML;
 
 async function createActiveConnection(): Promise<{ connectionId: string; activeVersionId: string }> {
   const connection = await createFlow!.createDraft(IDENTITY, {

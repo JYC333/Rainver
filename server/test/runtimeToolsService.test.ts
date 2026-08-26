@@ -2,13 +2,8 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import {
-  npmInstallEnv,
-  RuntimeToolError,
-  RuntimeToolRegistry,
-  type RuntimeToolInstallRunner,
-} from "../src/modules/runtimeTools";
+import { loadConfig } from "../src/config.js";
+import { npmInstallEnv, RuntimeToolError, RuntimeToolRegistry, type RuntimeToolInstallRunner } from "../src/modules/runtimeTools/service.js";
 
 const tmpPaths: string[] = [];
 

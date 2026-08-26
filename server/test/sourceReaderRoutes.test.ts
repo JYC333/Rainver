@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { readerModule } from "../src/modules/reader";
-import { loadConfig } from "../src/config";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
-import { type Queryable } from "../src/modules/routeUtils/common";
-import { PgReaderActionRepository, PgAnnotationRepository, PgCommentRepository } from "../src/modules/reader/repository";
-import type { SourceItemRow } from "../src/modules/sources/sourceRepositoryRows";
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { readerModule } from "../src/modules/reader/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { type Queryable } from "../src/modules/routeUtils/common.js";
+import { PgReaderActionRepository, PgAnnotationRepository, PgCommentRepository } from "../src/modules/reader/repository.js";
+import type { SourceItemRow } from "../src/modules/sources/sourceRepositoryRows.js";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 

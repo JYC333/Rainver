@@ -1,4 +1,4 @@
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   dateIso,
   dbPool,
@@ -10,7 +10,7 @@ import {
   toDbDate,
   withDbTransaction,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   RelationsRepository,
   type RelationAffiliationRow,
@@ -19,8 +19,8 @@ import {
   type RelationOrganizationRow,
   type RelationPersonRow,
   type RelationSourceLinkRow,
-} from "./repository";
-import { PgKnowledgeRepository } from "../knowledge/repository";
+} from "./repository.js";
+import { PgKnowledgeRepository } from "../knowledge/repository.js";
 
 const IDENTITY_TYPES = new Set(["email", "url", "phone", "orcid", "github", "twitter", "linkedin", "other"]);
 // Shared vocabulary for identity and affiliation proposal provenance.
@@ -160,7 +160,7 @@ export class RelationsService {
   }
 
   constructor(
-    private readonly pool: import("../../db/pool").Pool,
+    private readonly pool: import("../../db/pool.js").Pool,
     private readonly repository: RelationsRepository,
   ) {}
 

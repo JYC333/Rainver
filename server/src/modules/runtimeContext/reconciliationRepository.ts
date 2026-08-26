@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ContextWindowPlan } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
+import type { ContextWindowPlan } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
 
 export class ContextWindowReconciliationRepository {
   constructor(private readonly db: Queryable) {}

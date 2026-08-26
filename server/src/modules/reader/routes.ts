@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { PgAnnotationRepository, PgCommentRepository, PgReaderActionRepository, PgReaderRepository } from "./repository";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { PgAnnotationRepository, PgCommentRepository, PgReaderActionRepository, PgReaderRepository } from "./repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const readerRepo = () => new PgReaderRepository(dbPool(context.config), context.config);

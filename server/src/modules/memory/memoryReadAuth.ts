@@ -1,10 +1,10 @@
-import { decideContentAccess, isContentOwner } from "../access/contentAccessPolicy";
+import { decideContentAccess, isContentOwner } from "../access/contentAccessPolicy.js";
 import type {
   ContentAccessDecision,
   ContentAccessGrant,
   OversightMode,
-} from "../access/contentAccessTypes";
-import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes";
+} from "../access/contentAccessTypes.js";
+import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
 
 /** Memory-specific adapter around the canonical content-access decision. */
 export interface MemoryAuthFields {

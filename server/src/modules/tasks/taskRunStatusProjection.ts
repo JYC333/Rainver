@@ -1,4 +1,4 @@
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 const HOST_THREAD_QUEUE_LOCK_PREFIX = "host_thread_queue:";
 

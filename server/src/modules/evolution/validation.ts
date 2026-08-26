@@ -2,8 +2,8 @@ import {
   HttpError,
   optionalString,
   stringArray,
-} from "../routeUtils/common";
-import type { EvolutionTargetRow } from "./types";
+} from "../routeUtils/common.js";
+import type { EvolutionTargetRow } from "./types.js";
 
 export function requiredBodyString(value: unknown, field: string): string {
   const text = optionalString(value);

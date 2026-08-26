@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext, ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes as registerDecisionRoutes } from "./routes";
-import { registerDecisionsProjectIntegration } from "./projectIntegration";
+import type { ModuleContext, ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes as registerDecisionRoutes } from "./routes.js";
+import { registerDecisionsProjectIntegration } from "./projectIntegration.js";
 
 function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerDecisionsProjectIntegration();
@@ -10,4 +10,4 @@ function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
 
 export const decisionsModule: ServerModule = { name: "decisions", registerRoutes };
 
-export { DecisionCaseService } from "./caseService";
+export { DecisionCaseService } from "./caseService.js";

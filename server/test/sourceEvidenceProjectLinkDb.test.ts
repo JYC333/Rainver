@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 import {
   linkEvidenceToBoundProjects,
   recomputeProjectSourceBindingLinks,
-} from "../src/modules/projects/projectSourceRoutingService";
-import { upsertCanonicalEvidence } from "../src/modules/sources/evidenceIdentity";
-import { PgSourcesRepository } from "../src/modules/sources/repository";
-import { sourceRetrievalAdapter } from "../src/modules/sources/retrievalAdapter";
-import type { ServerConfig } from "../src/config";
-import { ProjectCorpusRepository } from "../src/modules/projects/corpusRepository";
-import { ProjectResearchArtifactService } from "../src/modules/projectResearch/artifactService";
-import { PgArtifactRepository } from "../src/modules/artifacts/repository";
-import { PgActivityRepository } from "../src/modules/activity/repository";
+} from "../src/modules/projects/projectSourceRoutingService.js";
+import { upsertCanonicalEvidence } from "../src/modules/sources/evidenceIdentity.js";
+import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { sourceRetrievalAdapter } from "../src/modules/sources/retrievalAdapter.js";
+import type { ServerConfig } from "../src/config.js";
+import { ProjectCorpusRepository } from "../src/modules/projects/corpusRepository.js";
+import { ProjectResearchArtifactService } from "../src/modules/projectResearch/artifactService.js";
+import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
+import { PgActivityRepository } from "../src/modules/activity/repository.js";
 
 // Real-PostgreSQL tests for evidence→project auto-linking on materialization:
 // bound sources produce active `context_candidate` project links, re-runs are
@@ -30,7 +30,7 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

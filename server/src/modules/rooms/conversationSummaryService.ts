@@ -1,28 +1,28 @@
 import { randomUUID } from "node:crypto";
-import type { MessageOut } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
+import type { MessageOut } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   resolveProviderCommandStore,
   type ProviderCommandStore,
-} from "../providers/commands/store";
-import { completeProviderMessages } from "../providers/invocation/invocation";
-import { ProviderCommandNotFoundError } from "../providers/commands/types";
+} from "../providers/commands/store.js";
+import { completeProviderMessages } from "../providers/invocation/invocation.js";
+import { ProviderCommandNotFoundError } from "../providers/commands/types.js";
 import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
   type ProviderEligibilityRow,
-} from "../providers/eligibility";
-import { canWriteProject } from "../projects/access";
+} from "../providers/eligibility.js";
+import { canWriteProject } from "../projects/access.js";
 import {
   fitRoomSummaryToBudget,
   estimateRoomSummaryTokens,
   selectRoomCompactionBatch,
   type RoomCompactionBatch,
   type RoomSummaryCoverage,
-} from "./conversationContext";
+} from "./conversationContext.js";
 
 export const ROOM_CONVERSATION_SUMMARY_JOB = "room_conversation_summary";
 const LEASE_MS = 5 * 60_000;

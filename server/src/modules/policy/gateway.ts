@@ -17,18 +17,18 @@ import {
   type Decision,
   type PolicyDecision,
   type RiskLevel,
-} from "./decisions";
+} from "./decisions.js";
 import {
   getActionDefinition,
   type PolicyActionDefinition,
-} from "./actionRegistry";
-import { checkHardInvariants, engineCheck } from "./decisionCore";
-import { sanitizePolicyMetadata } from "./sanitizer";
+} from "./actionRegistry.js";
+import { checkHardInvariants, engineCheck } from "./decisionCore.js";
+import { sanitizePolicyMetadata } from "./sanitizer.js";
 
 import type {
   PolicyAuditEnvelope,
   PolicyCheckRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export type Registry = ReadonlyMap<string, PolicyActionDefinition>;
 

@@ -7,7 +7,7 @@ import {
   linkTypeDefinition,
   registerLinkType,
   registeredLinkTypes,
-} from "../src/modules/ontology/linkTypes";
+} from "../src/modules/ontology/linkTypes.js";
 import {
   cardSourceTypes,
   domainStatusSources,
@@ -18,17 +18,17 @@ import {
   registeredEntities,
   resolveContentAccessible,
   retrievableEntityTypes,
-} from "../src/modules/ontology/entities";
+} from "../src/modules/ontology/entities.js";
 import {
   CONTENT_RESOURCE_TYPES,
   contentResourceDefinitions,
-} from "../src/modules/access/contentAccessRegistry";
+} from "../src/modules/access/contentAccessRegistry.js";
 import {
   assertCardSourceType,
   assertContextItemType,
   assertEvidenceableObjectType,
   assertLinkTypeAllowed,
-} from "../src/modules/ontology/validation";
+} from "../src/modules/ontology/validation.js";
 
 // B12G: one registry, no parallel per-mechanism type lists. These assertions are
 // the mechanism that catches an omission — the previous arrangement had three
@@ -93,7 +93,7 @@ describe("ontology registry", () => {
   it("keeps the SQL retrieval enum agreeing with the Retrievable interface", () => {
     // The consistency test compared the registry with the protocol enum but not
     // with the database's own list, leaving a third copy free to drift.
-    const schema = readFileSync(join(__dirname, "..", "src", "db", "schema", "_types.ts"), "utf8");
+    const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "_types.ts"), "utf8");
     const declared = new RegExp('pgEnum\\("retrieval_object_type", \\[([^\\]]*)\\]').exec(schema)?.[1] ?? "";
     const sqlValues = [...declared.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]!).sort();
     expect(sqlValues).toEqual([...retrievableEntityTypes()].sort());
@@ -229,7 +229,7 @@ describe("ontology registry", () => {
   // the domain quietly drops out of every cross-type query. That is exactly how
   // Threads disappeared from the graph while the status list was hardcoded.
   it("keeps every domain status declaration pointing at a real table column", () => {
-    const schemaDir = join(__dirname, "..", "src", "db", "schema");
+    const schemaDir = join(import.meta.dirname, "..", "src", "db", "schema");
     const schema = readdirSync(schemaDir)
       .filter((file) => file.endsWith(".ts"))
       .map((file) => readFileSync(join(schemaDir, file), "utf8"))
@@ -276,7 +276,7 @@ describe("ontology registry", () => {
     // *silently dropping* what it does not recognize, which is how a
     // divergence lost provenance without an error. Two modules did exactly
     // that until 2026-08-06.
-    const srcDir = join(__dirname, "..", "src");
+    const srcDir = join(import.meta.dirname, "..", "src");
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -298,7 +298,7 @@ describe("ontology registry", () => {
   // the ontology root about that domain's type list.
   it("keeps the object_type CHECK open and every registered subtype valid", () => {
     const schema = readFileSync(
-      join(__dirname, "..", "src", "db", "schema", "knowledge.ts"),
+      join(import.meta.dirname, "..", "src", "db", "schema", "knowledge.ts"),
       "utf8",
     );
     expect(schema).toContain('check("ck_space_objects_object_type_format"');

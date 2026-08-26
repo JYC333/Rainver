@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import { isStale } from "../hosts/repository";
-import { isGitRepo, runGit } from "./git";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import { isStale } from "../hosts/repository.js";
+import { isGitRepo, runGit } from "./git.js";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D2: one

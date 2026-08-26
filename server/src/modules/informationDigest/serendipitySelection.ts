@@ -1,6 +1,6 @@
-import { adjacentDomainKeys, distantDomainKeys, getDomain } from "../sourceAnnotation";
-import type { ProfileMaturity } from "../interestProfile/maturity";
-import type { ReadingShape, StandbyCandidate } from "./serendipityRepository";
+import { adjacentDomainKeys, distantDomainKeys, getDomain } from "../sourceAnnotation/index.js";
+import type { ProfileMaturity } from "../interestProfile/maturity.js";
+import type { ReadingShape, StandbyCandidate } from "./serendipityRepository.js";
 
 export interface SelectedSerendipity {
   candidate: StandbyCandidate;

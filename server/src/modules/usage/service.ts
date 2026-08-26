@@ -1,19 +1,19 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { resolveUsageAttribution } from "./attribution";
-import { normalizeUsageObservation } from "./normalizer";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { resolveUsageAttribution } from "./attribution.js";
+import { normalizeUsageObservation } from "./normalizer.js";
 import {
   eventToOut,
   PgUsageRepository,
   type UsageQueryFilters,
-} from "./repository";
+} from "./repository.js";
 import {
   CliHistoryImportService,
   type CliHistoryImportCommitInput,
   type CliHistoryImportPreviewInput,
-} from "./cliHistoryImport";
-import type { UsageAttribution, UsageObservation } from "./types";
+} from "./cliHistoryImport.js";
+import type { UsageAttribution, UsageObservation } from "./types.js";
 
 export interface UsageIdentity {
   spaceId: string;

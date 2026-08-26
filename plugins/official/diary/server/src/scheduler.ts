@@ -1,5 +1,5 @@
-import type { Queryable, PluginScheduledTask } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { diaryRepository } from "./domain/repository";
+import type { Queryable, PluginScheduledTask } from "@agent-space/protocol";
+import { diaryRepository } from "./domain/repository.js";
 
 interface SchedulerLogger {
   info(message: string): void;

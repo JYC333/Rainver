@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_RETRIEVAL_FEEDBACK,
-  feedbackBoostMultiplier,
-  retrievalFeedbackQueryHash,
-  type FeedbackEventRow,
-} from "../src/modules/retrieval";
+import { DEFAULT_RETRIEVAL_FEEDBACK, feedbackBoostMultiplier, retrievalFeedbackQueryHash, type FeedbackEventRow } from "../src/modules/retrieval/feedback.js";
 
 const NOW = Date.parse("2026-06-23T00:00:00.000Z");
 

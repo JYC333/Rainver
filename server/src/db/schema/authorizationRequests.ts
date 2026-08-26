@@ -9,13 +9,13 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { actionApprovalGrants } from "./actionApprovalGrants";
-import { policyDecisionRecords } from "./policy";
-import { projects } from "./projects";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { users } from "./auth";
+import { agents } from "./agents.js";
+import { actionApprovalGrants } from "./actionApprovalGrants.js";
+import { policyDecisionRecords } from "./policy.js";
+import { projects } from "./projects.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
 
 export const authorizationRequests = pgTable("authorization_requests", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

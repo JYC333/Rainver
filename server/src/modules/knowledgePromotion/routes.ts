@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, numberValue, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { KnowledgePromotionCandidateService } from "./candidateService";
-import { KnowledgeExtractionService } from "./extractionService";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, numberValue, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { KnowledgePromotionCandidateService } from "./candidateService.js";
+import { KnowledgeExtractionService } from "./extractionService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const candidates = () => new KnowledgePromotionCandidateService(dbPool(context.config));

@@ -1,5 +1,5 @@
-import type { ProposalApplierRegistry } from "../proposals/applierRegistry";
-import { requiredString } from "../routeUtils/common";
+import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
+import { requiredString } from "../routeUtils/common.js";
 
 export function registerSourceChannelProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("source_channel_activation", async (context) => {

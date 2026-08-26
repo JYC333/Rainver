@@ -9,26 +9,26 @@ import type {
   OAuthCredential,
   ProviderStreams,
   Tool,
-} from "@earendil-works/pi-ai" with { "resolution-mode": "import" };
+} from "@earendil-works/pi-ai";
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ProviderInfo } from "../commands/store";
-import { effectiveMaxOutputTokens } from "../modelOutputLimits";
-import { requireProviderVendor } from "../vendors";
+} from "@agent-space/protocol";
+import type { ProviderInfo } from "../commands/store.js";
+import { effectiveMaxOutputTokens } from "../modelOutputLimits.js";
+import { requireProviderVendor } from "../vendors.js";
 import type {
   ChatMessage,
   ProviderChatRequestBody,
   ProviderChatResponseBody,
   ProviderStructuredOutput,
-} from "./invocation";
-import { ProviderInvocationError, structuredOutputFromText } from "./invocation";
-import type { ManagedAuthEvent, ManagedAuthPrompt, ManagedOAuthFlow } from "../managedOAuth";
-import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience";
+} from "./invocation.js";
+import { ProviderInvocationError, structuredOutputFromText } from "./invocation.js";
+import type { ManagedAuthEvent, ManagedAuthPrompt, ManagedOAuthFlow } from "../managedOAuth.js";
+import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience.js";
 
-type PiModule = typeof import("@earendil-works/pi-ai", { with: { "resolution-mode": "import" } });
-type PiCatalogModule = typeof import("@earendil-works/pi-ai/providers/all", { with: { "resolution-mode": "import" } });
+type PiModule = typeof import("@earendil-works/pi-ai");
+type PiCatalogModule = typeof import("@earendil-works/pi-ai/providers/all");
 
 let piModulePromise: Promise<PiModule> | null = null;
 let catalogModulePromise: Promise<PiCatalogModule> | null = null;

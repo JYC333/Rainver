@@ -1,9 +1,9 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common";
-import { ProjectSourceBindingRepository } from "./projectSourceBindingRepository";
-import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry";
-import { assertProjectReadable } from "./access";
-import { ProjectResearchAreaService } from "../projectResearch/areaService";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
+import { ProjectSourceBindingRepository } from "./projectSourceBindingRepository.js";
+import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
+import { assertProjectReadable } from "./access.js";
+import { ProjectResearchAreaService } from "../projectResearch/areaService.js";
 
 /**
  * Project-owned application boundary for source consumption CRUD (binding

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * R4/D12. Two screening columns were academic in a pipeline that is not:
@@ -23,7 +23,7 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 let projectId = "";
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 beforeEach(async () => {
   if (!db.available) return;

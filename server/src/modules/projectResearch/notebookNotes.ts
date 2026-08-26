@@ -1,8 +1,8 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   NOTE_PROJECT_ROLE_DEFAULT_TITLES,
   type NoteProjectRole,
-} from "../knowledge/noteProjectRoles";
+} from "../knowledge/noteProjectRoles.js";
 
 /**
  * A project's "notebook" is a set of ordinary Notes (free-form, not a fixed

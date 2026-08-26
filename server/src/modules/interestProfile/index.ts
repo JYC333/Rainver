@@ -32,14 +32,14 @@ export {
   type TopicCandidateRow,
   type TopicOrigin,
   type TopicStatus,
-} from "./repository";
+} from "./repository.js";
 
 export {
   InterestProfileService,
   FACT_LAYER_BATCH_SIZE,
   type FactLayerResult,
   type ProfileSnapshot,
-} from "./service";
+} from "./service.js";
 
 export {
   MIN_EXPLORATION_SHARE,
@@ -52,13 +52,13 @@ export {
   skeletonSize,
   type MaturityInputs,
   type ProfileMaturity,
-} from "./maturity";
+} from "./maturity.js";
 export {
   DEFAULT_INTEREST_PROFILE_SETTINGS,
   mergeInterestProfileSettings,
   resolveInterestProfileSettings,
   validateInterestProfileSettings,
   type InterestProfileSettings,
-} from "./settings";
+} from "./settings.js";
 
-export { topicKeyFor, MAX_TOPIC_KEY_LENGTH } from "./topicKey";
+export { topicKeyFor, MAX_TOPIC_KEY_LENGTH } from "./topicKey.js";

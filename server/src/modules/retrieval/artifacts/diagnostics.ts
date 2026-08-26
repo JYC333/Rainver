@@ -1,12 +1,12 @@
-import type { RetrievalEvalReportRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry";
-import type { Queryable } from "../../routeUtils/common";
+import type { RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry.js";
+import type { Queryable } from "../../routeUtils/common.js";
 import {
   acceptReviewPacket,
   insertProposalRow,
   reviewScopeValue,
   visibilityForReviewScope,
-} from "../../proposals/reviewPackets";
+} from "../../proposals/reviewPackets.js";
 
 export const RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE = "retrieval_diagnostics_packet";
 

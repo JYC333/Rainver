@@ -1,22 +1,22 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import type { ServerConfig } from "../../config";
-import type { Pool, PoolClient } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
-import { RuntimeToolRegistry } from "../runtimeTools/service";
-import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies";
-import { resolveAgentSystemPrompt } from "./promptRegistry";
-import { promptProvenanceOf } from "../prompts/provenance";
-import { providerSupportsChat } from "../providers/vendors";
+import type { ServerConfig } from "../../config.js";
+import type { Pool, PoolClient } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { RuntimeToolRegistry } from "../runtimeTools/service.js";
+import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies.js";
+import { resolveAgentSystemPrompt } from "./promptRegistry.js";
+import { promptProvenanceOf } from "../prompts/provenance.js";
+import { providerSupportsChat } from "../providers/vendors.js";
 import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
-} from "../providers/eligibility";
-import { PgAgentRepository, type AgentCreateInput } from "./repository";
+} from "../providers/eligibility.js";
+import { PgAgentRepository, type AgentCreateInput } from "./repository.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
 const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";

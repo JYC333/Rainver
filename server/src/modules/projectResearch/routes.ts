@@ -1,14 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { ProjectResearchRepository } from "./repository";
-import { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
-import { enforceSources } from "../sources/enforceSources";
-import { ProjectResearchReportRepository } from "./reportRepository";
-import { ProjectResearchQuestionRefineService } from "./questionRefineService";
-import { registerProjectResearchAreaRoutes } from "./areaRoutes";
-import { ProjectResearchStandingComparisonService } from "./standingComparisonService";
-import { ResearchOperationCancelService } from "./researchOperationCancel";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { ProjectResearchRepository } from "./repository.js";
+import { ProjectResearchPipelineService } from "./pipeline/researchPipelineService.js";
+import { enforceSources } from "../sources/enforceSources.js";
+import { ProjectResearchReportRepository } from "./reportRepository.js";
+import { ProjectResearchQuestionRefineService } from "./questionRefineService.js";
+import { registerProjectResearchAreaRoutes } from "./areaRoutes.js";
+import { ProjectResearchStandingComparisonService } from "./standingComparisonService.js";
+import { ResearchOperationCancelService } from "./researchOperationCancel.js";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
 let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;

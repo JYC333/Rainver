@@ -1,6 +1,6 @@
-import { assertLinkTypeAllowed } from "../ontology/validation";
+import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   optionalString,
@@ -8,20 +8,20 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { THREAD_COLUMNS, THREAD_FROM, TOUCH_THREAD_ROOT_SQL, threadToOut, type ThreadRow } from "./threadService";
-import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { THREAD_COLUMNS, THREAD_FROM, TOUCH_THREAD_ROOT_SQL, threadToOut, type ThreadRow } from "./threadService.js";
+import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService.js";
 import {
   applyNextFocus, assignSettledStepsToRound, closeOpenSteps, listOpenProjectSteps, listOpenSteps, listSteps, stepToOut,
   STEP_NOTE_SET_SQL, STEP_PROJECTION_SET_SQL,
-} from "./stepService";
-import { RetrievalProjectionService } from "../retrieval";
-import { inquiryRetrievalRegistry } from "./retrievalAdapter";
-import { recordThreadRevision } from "./threadRevisionService";
-import { tryQueueAdviceForFocusedThread } from "./adviceJob";
+} from "./stepService.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
+import { recordThreadRevision } from "./threadRevisionService.js";
+import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 
 // Protected cognitive fields. Only `recordIteration` may write these — the
 // generic project PATCH route does not exist for Threads at all, and this

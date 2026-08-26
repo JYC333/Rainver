@@ -5,9 +5,9 @@ import {
   type RetrievalObjectRef,
   type RetrievalObjectType,
   type RevalidatedObject,
-} from "../retrieval";
-import { canReadProject } from "../projects/access";
-import type { Queryable } from "../routeUtils/common";
+} from "../retrieval/index.js";
+import { canReadProject } from "../projects/access.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 const INQUIRY_OBJECT_TYPES = ["inquiry_thread"] as const;
 

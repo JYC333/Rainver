@@ -1,14 +1,14 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { activityRecords } from "./activity";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { projectFolders } from "./projectFolders";
-import { artifacts } from "./artifacts";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
+import { agents } from "./agents.js";
+import { activityRecords } from "./activity.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { projectFolders } from "./projectFolders.js";
+import { artifacts } from "./artifacts.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
 
 export const boards = pgTable("boards", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

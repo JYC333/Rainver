@@ -1,26 +1,26 @@
-import type { ServerConfig } from "../../config";
-import type { CredentialGrant } from "../providers/cli/credentialBroker";
-import { resolveProvidersDbPort } from "../providers/dbReader";
+import type { ServerConfig } from "../../config.js";
+import type { CredentialGrant } from "../providers/cli/credentialBroker.js";
+import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import {
   providerProxyLeaseBaseUrl,
   providerProxyLeaseUrl,
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
   type ProviderProxyRoute,
-} from "../providers/proxy/lease";
-import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
-import { subscriptionEgressLeases, type SubscriptionRuntime } from "../providers/proxy/subscriptionEgress";
-import type { RunRecord } from "./repository";
-import type { InvocationAuditRefs } from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "../providers/proxy/lease.js";
+import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { subscriptionEgressLeases, type SubscriptionRuntime } from "../providers/proxy/subscriptionEgress.js";
+import type { RunRecord } from "./repository.js";
+import type { InvocationAuditRefs } from "@agent-space/protocol";
 import {
   CodexProviderConfigError,
   materializeRunCodexHome,
   writeCodexProviderConfig,
-} from "./codexProviderConfig";
+} from "./codexProviderConfig.js";
 import {
   OpenCodeProviderConfigError,
   writeOpenCodeProviderConfig,
-} from "./opencodeProviderConfig";
+} from "./opencodeProviderConfig.js";
 
 export interface RuntimeProviderResolverPort {
   getProvider(

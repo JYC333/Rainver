@@ -1,6 +1,6 @@
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
-import { contentReadSql } from "../access/contentAccessSql";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 
 export interface GraphObjectRow {
   id: string;

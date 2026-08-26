@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups";
-import type { ServerConfig } from "../src/config";
-import type { Pool, PoolClient } from "../src/db/pool";
-import type { RunRecord } from "../src/modules/runs/repository";
+import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
+import type { ServerConfig } from "../src/config.js";
+import type { Pool, PoolClient } from "../src/db/pool.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 import type {
   AgentRunGroupRecord,
   AgentRunMessageRecord,
   RunDelegationRecord,
-} from "../src/modules/agentGroups/repository";
-import type { JobRecord } from "../src/modules/jobs/repository";
+} from "../src/modules/agentGroups/repository.js";
+import type { JobRecord } from "../src/modules/jobs/repository.js";
 
 function childRun(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

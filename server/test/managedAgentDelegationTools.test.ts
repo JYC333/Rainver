@@ -1,24 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import type { Pool } from "../src/db/pool";
+import { loadConfig } from "../src/config.js";
+import type { Pool } from "../src/db/pool.js";
 import {
   resolveAgentDelegationToolBinding,
   runAgentRoomToolCall,
   type AgentDelegationToolBinding,
-} from "../src/modules/runs/managedAgentDelegationTools";
-import type { RuntimeHostExecutor } from "../src/modules/runs/managedRetrievalTools";
+} from "../src/modules/runs/managedAgentDelegationTools.js";
+import type { RuntimeHostExecutor } from "../src/modules/runs/managedRetrievalTools.js";
 import {
   executeManagedToolLoop,
   mergeManagedToolContributions,
-} from "../src/modules/runs/managedToolLoop";
-import { ManagedAgentToolSurface } from "../src/modules/systemActions/managedAgentToolSurface";
-import type { RunRecord } from "../src/modules/runs/repository";
+} from "../src/modules/runs/managedToolLoop.js";
+import { ManagedAgentToolSurface } from "../src/modules/systemActions/managedAgentToolSurface.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 import type {
   CanonicalToolCall,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ManagedToolDispatchResult } from "../src/modules/runs/managedAgentLoopPort";
+} from "@agent-space/protocol";
+import type { ManagedToolDispatchResult } from "../src/modules/runs/managedAgentLoopPort.js";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

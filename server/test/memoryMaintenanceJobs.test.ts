@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createMemoryMaintenanceJob,
   runMemoryMaintenanceJobOnce,
-} from "../src/modules/memory/maintenanceJobs";
-import type { MemoryRow, Queryable } from "../src/modules/memory/repository";
+} from "../src/modules/memory/maintenanceJobs.js";
+import type { MemoryRow, Queryable } from "../src/modules/memory/repository.js";
 
 interface CapturedQuery {
   sql: string;

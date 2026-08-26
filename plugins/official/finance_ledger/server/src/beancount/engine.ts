@@ -1,9 +1,9 @@
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { Amount } from "../domain/amount";
-import { financeDirectiveRepository } from "../domain/directiveRepository";
-import type { FinancePostingRow } from "../domain/directives";
-import { Cost, CostSpec } from "../domain/position";
-import { financeLedgerRepository } from "../domain/repository";
+import type { Queryable } from "@agent-space/protocol";
+import { Amount } from "../domain/amount.js";
+import { financeDirectiveRepository } from "../domain/directiveRepository.js";
+import type { FinancePostingRow } from "../domain/directives.js";
+import { Cost, CostSpec } from "../domain/position.js";
+import { financeLedgerRepository } from "../domain/repository.js";
 import type {
   EntryMetadata,
   LedgerEntry,
@@ -12,11 +12,11 @@ import type {
   MetadataValue,
   PostingEntry,
   TransactionEntry,
-} from "./entries";
-import { BeancountExporter } from "./exporter";
-import { parseBeancountText } from "./importer";
-import { sortEntries } from "./sort";
-import { transformEntries, validateEntries } from "./validation";
+} from "./entries.js";
+import { BeancountExporter } from "./exporter.js";
+import { parseBeancountText } from "./importer.js";
+import { sortEntries } from "./sort.js";
+import { transformEntries, validateEntries } from "./validation.js";
 
 const DB_SOURCE = "<db>";
 

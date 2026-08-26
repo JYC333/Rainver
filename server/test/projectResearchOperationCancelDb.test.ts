@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
 import {
   ResearchOperationCancelService,
   RESEARCH_OPERATION_CANCEL_JOB,
-} from "../src/modules/projectResearch/researchOperationCancel";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
-import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { buildModuleServer } from "./support/moduleServer";
-import { researchModule } from "../src/modules/research";
-import { projectResearchModule } from "../src/modules/projectResearch";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
+} from "../src/modules/projectResearch/researchOperationCancel.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { researchModule } from "../src/modules/research/index.js";
+import { projectResearchModule } from "../src/modules/projectResearch/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 // Real-Postgres coverage for the research cancel: stopping a running
 // research Operation. The reform removes the blocking checkpoints that were
@@ -32,7 +32,13 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 let app: FastifyInstance | undefined;
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

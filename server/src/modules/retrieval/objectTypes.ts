@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "./types";
+import type { RetrievalObjectType } from "./types.js";
 
 // Server-side copy of the fixed retrieval boundary. Keep this closed; per-space
 // object schema may define object_profile values under these base object types only.

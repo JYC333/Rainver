@@ -1,4 +1,4 @@
-import type { ProviderPresetDTO } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ProviderPresetDTO } from "@agent-space/protocol";
 
 export type ProviderPreset = ProviderPresetDTO;
 

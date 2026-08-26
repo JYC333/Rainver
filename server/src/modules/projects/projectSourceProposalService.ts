@@ -1,13 +1,13 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { PgProposalApplyService } from "../proposals/applyService";
-import { SourceChannelService } from "../sources/channels/sourceChannelService";
-import { SourceBackfillPlanningService } from "../sources/sourceBackfillService";
-import { ProjectOperationService } from "./projectOperationService";
-import { assertProjectWriter, lockActiveProjectForMutation } from "./access";
-import { advisoryLock, findIdempotentOperation, fingerprintOf } from "./projectOperationIdempotency";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { PgProposalApplyService } from "../proposals/applyService.js";
+import { SourceChannelService } from "../sources/channels/sourceChannelService.js";
+import { SourceBackfillPlanningService } from "../sources/sourceBackfillService.js";
+import { ProjectOperationService } from "./projectOperationService.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
+import { advisoryLock, findIdempotentOperation, fingerprintOf } from "./projectOperationIdempotency.js";
 
 interface BindProposalActor {
   agentId?: string | null;

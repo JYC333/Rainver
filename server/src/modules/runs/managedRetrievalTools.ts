@@ -1,4 +1,4 @@
-import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "../knowledge/retrievalObjectTypes";
+import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "../knowledge/retrievalObjectTypes.js";
 import type {
   CanonicalMessage,
   CanonicalToolCall,
@@ -7,28 +7,28 @@ import type {
   RetrievalSearchResponse,
   RetrievalToolMode,
   RuntimeHostExecuteRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
-import { memoryRetrievalRegistry } from "../memory/retrievalAdapter";
-import { projectRetrievalRegistry } from "../projects/retrievalAdapter";
-import { sourceRetrievalRegistry } from "../sources/retrievalAdapter";
-import { resolveProviderCommandStore } from "../providers/commands/store";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
+import { memoryRetrievalRegistry } from "../memory/retrievalAdapter.js";
+import { projectRetrievalRegistry } from "../projects/retrievalAdapter.js";
+import { sourceRetrievalRegistry } from "../sources/retrievalAdapter.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import {
   buildRetrievalBriefArtifactSpec,
   RetrievalSearchService,
-} from "../retrieval";
-import type { RetrievalObjectType, RetrievalSearchMode } from "../retrieval";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { RetrievalToolService } from "../retrieval/tool/service";
-import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy";
-import type { RunRecord } from "./repository";
-import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort";
-import type { ManagedToolContribution } from "./managedToolLoop";
+} from "../retrieval/index.js";
+import type { RetrievalObjectType, RetrievalSearchMode } from "../retrieval/index.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { RetrievalToolService } from "../retrieval/tool/service.js";
+import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
+import type { RunRecord } from "./repository.js";
+import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort.js";
+import type { ManagedToolContribution } from "./managedToolLoop.js";
 
 export type RuntimeHostExecutor = ManagedModelRequest;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { resolveGraphProjectionOptions } from "../src/modules/graph/projectionBuilder";
-import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
+import type { Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { resolveGraphProjectionOptions } from "../src/modules/graph/projectionBuilder.js";
+import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository.js";
 
 class CapturingDb implements Queryable {
   readonly queries: Array<{ sql: string; params: readonly unknown[] }> = [];

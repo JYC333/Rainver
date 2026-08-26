@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeNextRunAt, InvalidScheduleError } from "../src/modules/automations/schedule";
+import { computeNextRunAt, InvalidScheduleError } from "../src/modules/automations/schedule.js";
 
 describe("automation schedule", () => {
   it("computes the next cron slot after a reference instant", () => {

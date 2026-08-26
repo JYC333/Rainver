@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
+import { loadConfig } from "../src/config.js";
 import {
   buildStatusBody,
   databaseUnavailableStatusBody,
   worstStatus,
-} from "../src/modules/system/statusService";
-import type { ScheduledTaskStatus } from "../src/modules/scheduler/registry";
-import type { BackgroundServicesStatusSource } from "../src/modules/scheduler/runtimeStatus";
+} from "../src/modules/system/statusService.js";
+import type { ScheduledTaskStatus } from "../src/modules/scheduler/registry.js";
+import type { BackgroundServicesStatusSource } from "../src/modules/scheduler/runtimeStatus.js";
 
 const config = loadConfig({
   SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",

@@ -4,19 +4,19 @@ import type {
   RelationDiscoveryReport,
   RelationDiscoveryScanRequest,
   RelationDiscoverySourceType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { extractRetrievalLinks } from "../retrieval/linkExtractor";
-import type { Queryable } from "../routeUtils/common";
-import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql";
-import { contentReadSql } from "../access/contentAccessSql";
+} from "@agent-space/protocol";
+import { extractRetrievalLinks } from "../retrieval/linkExtractor.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   loadSourceConnectionIdsForTargets,
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromMetadata,
   sourcePolicyAllowsRead,
-} from "../retrieval/sourcePolicy";
-import { hasDeclaration } from "../ontology/linkTypes";
+} from "../retrieval/sourcePolicy.js";
+import { hasDeclaration } from "../ontology/linkTypes.js";
 
 /**
  * Slice F backend: deterministic candidate-relation discovery.

@@ -1,23 +1,23 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   HttpError,
   objectValue,
   optionalString,
   withQueryableTransaction,
-} from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgRunRepository } from "../runs/repository";
-import { sanitizeEvidenceJson } from "../runs/evidenceRedaction";
-import { verifyEvaluationOutput, VERIFICATION_ENGINE_VERSION } from "../runs/verification";
+} from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { sanitizeEvidenceJson } from "../runs/evidenceRedaction.js";
+import { verifyEvaluationOutput, VERIFICATION_ENGINE_VERSION } from "../runs/verification/index.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanReadAssetOwnerScope,
   assertCanWriteAssetOwnerScope,
   canViewScopedRef,
   type EvolvableAssetAccessRow,
-} from "./assetAccess";
-import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository";
+} from "./assetAccess.js";
+import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
 
 export const EVOLVABLE_ASSET_EVALUATION_JOB = "evolvable_asset_evaluation";
 export const EVALUATION_CASE_EVALUATOR_VERSION = VERIFICATION_ENGINE_VERSION;

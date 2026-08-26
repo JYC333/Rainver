@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { isKnownDomain } from "../sourceAnnotation";
-import { topicKeyFor } from "./topicKey";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings";
+import type { Queryable } from "../routeUtils/common.js";
+import { isKnownDomain } from "../sourceAnnotation/index.js";
+import { topicKeyFor } from "./topicKey.js";
+import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings.js";
 
 export type TopicOrigin = "user" | "agent";
 export type TopicStatus = "active" | "archived";

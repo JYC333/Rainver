@@ -1,26 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type * as Protocol from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
 import {
   NetworkProfileError,
   resolveNetworkProfileRepository,
   type NetworkProfileCreateInput,
   type NetworkProfileUpdateInput,
-} from "./repository";
-
-type ProtocolModule = typeof Protocol;
-
-let protocolModule: Promise<ProtocolModule> | null = null;
-
-function loadProtocol(): Promise<ProtocolModule> {
-  protocolModule ??= import("@agent-space/protocol");
-  return protocolModule;
-}
+} from "./repository.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -36,7 +27,6 @@ function jsonBody(request: FastifyRequest): unknown {
 }
 
 async function parseWith<T>(schemaName: string, value: unknown): Promise<T> {
-  const protocol = await loadProtocol();
   const schema = (protocol as unknown as Record<string, { parse(v: unknown): T }>)[schemaName];
   return schema.parse(value);
 }

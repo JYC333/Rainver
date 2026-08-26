@@ -1,12 +1,12 @@
-import { HttpError, objectValue, optionalString, type SpaceUserIdentity } from "../routeUtils/common";
+import { HttpError, objectValue, optionalString, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   retentionForCapturePolicy,
   SOURCE_CAPTURE_POLICIES,
   SOURCE_RETENTION_POLICIES,
   type SourceCapturePolicy,
   type SourceRetentionPolicy,
-} from "./capturePolicy";
-import type { SourceConnectionRow } from "./sourceRepositoryRows";
+} from "./capturePolicy.js";
+import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
 const TRUST_LEVELS = ["trusted", "normal", "untrusted"] as const;
 const SOURCE_EGRESS_CLASSES = ["internal_only", "local_provider_allowed", "external_provider_allowed"] as const;

@@ -1,7 +1,7 @@
-import type { MessageOut, SemanticCheckpoint } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import type { RoomSummaryCoverage } from "../rooms/conversationContext";
+import type { MessageOut, SemanticCheckpoint } from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import type { RoomSummaryCoverage } from "../rooms/conversationContext.js";
 
 interface MessageRow {
   id: string;
@@ -109,7 +109,6 @@ export async function loadConversationContinuityThroughMessage(
        ORDER BY bounded.created_at ASC,bounded.id ASC`,
       [input.currentMessageId, input.spaceId, input.sessionId, limit],
     );
-  const protocol = await loadProtocol();
   return {
     messages: messagesResult.rows.map(messageOut),
     checkpoint: checkpointResult.rows[0]?.checkpoint_json
@@ -240,7 +239,7 @@ export async function loadActiveSemanticCheckpoint(
     [spaceId, workContextScopeId],
   );
   if (!result.rows[0]) return null;
-  return (await loadProtocol()).SemanticCheckpointSchema.parse(result.rows[0].checkpoint_json) as SemanticCheckpoint;
+  return protocol.SemanticCheckpointSchema.parse(result.rows[0].checkpoint_json) as SemanticCheckpoint;
 }
 
 function messageOut(row: MessageRow): MessageOut {

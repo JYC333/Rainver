@@ -8,27 +8,26 @@
  * every tool call goes back out through the caller's dispatch into
  * `SystemActionGateway`.
  *
- * The dynamic `import()` below is a requirement rather than a lazy-loading
- * optimisation — the server compiles to CJS (`module: "node16"`, no
- * `"type": "module"`) and pi-agent-core is ESM-only, so a static import would
- * not resolve at runtime.
+ * pi-agent-core is loaded through the dynamic `import()` below on purpose:
+ * it is a large package that only managed-agent runs need, so it is not paid
+ * for by every process that imports this module.
  */
 import type {
   CanonicalMessage,
   CanonicalToolCall,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import type {
   ManagedAgentLoopInput,
   ManagedAgentLoopPort,
   ManagedAgentLoopResult,
-} from "./managedAgentLoopPort";
+} from "./managedAgentLoopPort.js";
 
-type PiCoreModule = typeof import("@earendil-works/pi-agent-core", { with: { "resolution-mode": "import" } });
-type PiAgentMessage = import("@earendil-works/pi-agent-core", { with: { "resolution-mode": "import" } }).AgentMessage;
+type PiCoreModule = typeof import("@earendil-works/pi-agent-core");
+type PiAgentMessage = import("@earendil-works/pi-agent-core").AgentMessage;
 type PiAssistantMessage = Extract<PiAgentMessage, { role: "assistant" }>;
-type PiModel = import("@earendil-works/pi-agent-core", { with: { "resolution-mode": "import" } }).AgentState["model"];
+type PiModel = import("@earendil-works/pi-agent-core").AgentState["model"];
 
 let piCorePromise: Promise<PiCoreModule> | null = null;
 

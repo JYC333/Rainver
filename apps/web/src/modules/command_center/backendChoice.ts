@@ -1,4 +1,5 @@
 import type { ModelProviderOut } from '../../api/client'
+import type { RuntimeOptionChoice } from '../../types/api'
 
 /** The composer's value for "run this on the machine's own login". */
 export const AMBIENT_BACKEND = ''
@@ -83,4 +84,32 @@ export interface RuntimeOptions {
   current_model?: string | null
   efforts?: string[]
   current_effort?: string | null
+}
+
+/**
+ * How a choice should read: the runtime's own display name, which is better
+ * than anything derived from the id — it calls `claude-fable-5[1m]` "Fable",
+ * where trimming the id would only reach `claude-fable-5`.
+ *
+ * A `default` entry is the exception worth spelling out: on its own it names
+ * no model at all, and what it resolves to is in its description. So the model
+ * goes in brackets after the name, because "Default" alone does not answer
+ * which model is about to run.
+ */
+export function choiceLabel(choice: RuntimeOptionChoice): string {
+  const name = choice.name?.trim() || choice.value
+  if (!choice.description?.trim()) return name
+  const resolvesToSomethingElse = choice.value === 'default'
+  if (!resolvesToSomethingElse) return name
+  // "Default (recommended)" already carries a parenthetical; keep one pair.
+  const base = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name
+  return `${base} (${choice.description.trim()})`
+}
+
+/** The choice a value refers to, for naming what is currently selected. */
+export function findChoice(
+  choices: RuntimeOptionChoice[],
+  value: string | null | undefined,
+): RuntimeOptionChoice | undefined {
+  return value ? choices.find(choice => choice.value === value) : undefined
 }

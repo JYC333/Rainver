@@ -9,8 +9,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { streamRunEvents } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { streamRunEvents } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/runs/:runId/events/stream", async (request, reply) =>

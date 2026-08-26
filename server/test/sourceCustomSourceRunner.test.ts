@@ -1,37 +1,18 @@
 import { readFile } from "node:fs/promises";
+import { customSourcePolicyEnvelope, runnerSettings } from "./support/customSourceFixtures.js";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
 import {
   CustomSourceRunner,
   cleanupSandbox,
   type CustomSourceRunnerSettings,
   type CustomSourceRunnerCompletedResult,
-} from "../src/modules/sources/customSources/customSourceRunner";
+} from "../src/modules/sources/customSources/customSourceRunner.js";
 
 const FIXTURES_DIR = join(process.cwd(), "test/fixtures/customSourceHandlers");
 
-const POLICY_ENVELOPE: CustomSourcePolicyEnvelope = {
-  allowed_network_origins: [],
-  capture_policy: "extract_text",
-  retention_policy: "full_text",
-  language: "typescript_node" as const,
-  browser_automation_enabled: false,
-  shell_enabled: false,
-  dependency_installation_enabled: false,
-  log_redaction_enabled: true,
-  limits: {
-    timeout_ms: 3000,
-    max_download_bytes: 1_000_000,
-    max_output_bytes: 1_000_000,
-    max_files: 5,
-    max_items: 5,
-    max_evidence_items: 10,
-    log_max_bytes: 65536,
-  },
-};
+const POLICY_ENVELOPE = customSourcePolicyEnvelope({ limits: { timeout_ms: 3000, max_items: 5, max_evidence_items: 10 } });
 
 const HANDLER_INPUT = {
   contract_version: "custom_source.handler_input.v1" as const,
@@ -51,24 +32,7 @@ const HANDLER_INPUT = {
   },
 };
 
-function enabledSettings(
-  overrides: Partial<CustomSourceRunnerSettings> = {},
-): CustomSourceRunnerSettings {
-  return {
-    runner_enabled: true,
-    allowed_languages: ["typescript_node"],
-    network_hard_deny_rules: [],
-    timeout_ms_max: 30_000,
-    output_bytes_max: 1_048_576,
-    download_bytes_max: 5_242_880,
-    log_bytes_max: 65_536,
-    max_files: 50,
-    browser_automation_available: false,
-    shell_available: false,
-    dependency_installation_available: false,
-    ...overrides,
-  };
-}
+const enabledSettings = runnerSettings;
 
 async function runFixture(
   fixtureFile: string,

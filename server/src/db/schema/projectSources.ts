@@ -1,10 +1,10 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { sourceConnections, sourceItems } from "./sources";
-import { sourceChannels } from "./sourceChannels";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { sourceConnections, sourceItems } from "./sources.js";
+import { sourceChannels } from "./sourceChannels.js";
 
 export const projectSourceBindings = pgTable("project_source_bindings", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

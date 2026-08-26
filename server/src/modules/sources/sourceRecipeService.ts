@@ -1,15 +1,15 @@
-import type { ServerConfig } from "../../config";
-import type { Pool, SpaceUserIdentity } from "../routeUtils/common";
-import { page } from "../routeUtils/common";
-import { SourceRecipePipelineBridgeService } from "./sourceRecipes/pipelineBridgeService";
-import { listSourceRecipePrimitives } from "./sourceRecipes/primitiveRegistry";
-import { SourceRecipeCreateService } from "./sourceRecipes/recipeCreateService";
-import { SourceRecipeDryRunService } from "./sourceRecipes/recipeDryRunService";
+import type { ServerConfig } from "../../config.js";
+import type { Pool, SpaceUserIdentity } from "../routeUtils/common.js";
+import { page } from "../routeUtils/common.js";
+import { SourceRecipePipelineBridgeService } from "./sourceRecipes/pipelineBridgeService.js";
+import { listSourceRecipePrimitives } from "./sourceRecipes/primitiveRegistry.js";
+import { SourceRecipeCreateService } from "./sourceRecipes/recipeCreateService.js";
+import { SourceRecipeDryRunService } from "./sourceRecipes/recipeDryRunService.js";
 import {
   getSourceRecipeVersion,
   listSourceRecipeVersions,
   recipeVersionOut,
-} from "./sourceRecipes/recipeVersionStore";
+} from "./sourceRecipes/recipeVersionStore.js";
 
 /** Single application-service entry point for the complete Source Recipe flow. */
 export class SourceRecipeService {

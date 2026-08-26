@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { listDueSourceChannelScanTasks } from "./sourceConnectionScheduler";
+import type { Queryable } from "../routeUtils/common.js";
+import { listDueSourceChannelScanTasks } from "./sourceConnectionScheduler.js";
 
 /**
  * Every scheduled scan is owned by a Channel. A Connection is only the

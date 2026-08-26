@@ -1,10 +1,10 @@
-import { HttpError } from "../../routeUtils/common";
+import { HttpError } from "../../routeUtils/common.js";
 import {
   isRelevanceScreeningEnabled,
   type SourcePostProcessingActions,
   type SourcePostProcessingInputConfig,
   type SourcePostProcessingItemDecision,
-} from "./repository";
+} from "./repository.js";
 
 export interface ParsedItemSummary {
   source_item_id: string;

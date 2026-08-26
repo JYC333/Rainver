@@ -1,5 +1,5 @@
-import type { RetrievalSearchService } from "../../src/modules/retrieval";
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { RetrievalSearchService } from "../../src/modules/retrieval/index.js";
+import type { RetrievalObjectType } from "@agent-space/protocol";
 
 /**
  * Reusable recall@k harness for the retrieval substrate. It runs a set of golden

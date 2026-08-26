@@ -1,18 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { artifactsModule } from "../src/modules/artifacts";
-import { loadConfig } from "../src/config";
-import {
-  __setArtifactIdentityForTests,
-  __setArtifactRepositoryFactoryForTests,
-} from "../src/modules/artifacts";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { artifactsModule } from "../src/modules/artifacts/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setArtifactIdentityForTests, __setArtifactRepositoryFactoryForTests } from "../src/modules/artifacts/routes.js";
 import {
   ArtifactNotExportableError,
   PgArtifactRepository,
   type ArtifactOut,
   type ArtifactPage,
-} from "../src/modules/artifacts/repository";
+} from "../src/modules/artifacts/repository.js";
 
 let app: FastifyInstance;
 

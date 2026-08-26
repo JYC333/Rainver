@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../src/modules/sources/connectors/academicJson";
-import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler";
+import { BraveWebSearchConnectorHandler, OpenAlexConnectorHandler, SemanticScholarConnectorHandler } from "../src/modules/sources/connectors/academicJson.js";
+import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler.js";
 
 describe("academic and web JSON source connectors", () => {
   const compiler = new ResearchProviderCompiler();

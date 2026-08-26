@@ -1,7 +1,7 @@
-import type { Pool } from "../../db/pool";
-import { PgAgentRepository } from "../agents/repository";
-import { HttpError } from "../routeUtils/common";
-import { defaultModelProviderForSpace } from "../sources/postProcessing/service";
+import type { Pool } from "../../db/pool.js";
+import { PgAgentRepository } from "../agents/repository.js";
+import { HttpError } from "../routeUtils/common.js";
+import { defaultModelProviderForSpace } from "../sources/postProcessing/service.js";
 
 export const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
 

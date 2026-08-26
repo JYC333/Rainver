@@ -1,10 +1,10 @@
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import {
   isChineseTitle,
   type ConversationContinuationRegistry,
-} from "../proposals/continuationRegistry";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { InquiryThreadService } from "./threadService";
+} from "../proposals/continuationRegistry.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { InquiryThreadService } from "./threadService.js";
 
 /** Creates the canonical Thread only after a reviewing user accepts the draft. */
 export function registerInquiryThreadProposalAppliers(registry: ProposalApplierRegistry): void {

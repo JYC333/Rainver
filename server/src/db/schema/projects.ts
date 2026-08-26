@@ -1,9 +1,9 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaceMemberships, spaces } from "./spaces";
-import { focusAreas } from "./focusAreas";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaceMemberships, spaces } from "./spaces.js";
+import { focusAreas } from "./focusAreas.js";
 
 export const projects = pgTable("projects", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

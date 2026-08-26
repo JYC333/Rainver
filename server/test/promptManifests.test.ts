@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadPromptManifests } from "../src/modules/prompts/builtins";
+import { loadPromptManifests } from "../src/modules/prompts/builtins.js";
 
 // The real catalog/prompts directory next to server/ — matches config.ts's
 // default catalogRoot resolution (resolve(process.cwd(), "..", "catalog")).

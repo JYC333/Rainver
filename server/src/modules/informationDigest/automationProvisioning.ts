@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
-import { PgAutomationRepository } from "../automations/repository";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import { PgAutomationRepository } from "../automations/repository.js";
 
 interface DigestScope {
   space_id: string;

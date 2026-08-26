@@ -1,4 +1,4 @@
-import type { CliLoginAdapter } from "./types";
+import type { CliLoginAdapter } from "./types.js";
 
 export const geminiLoginAdapter: CliLoginAdapter = {
   runtime: "gemini_cli",

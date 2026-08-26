@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * ADR 0016 D14: a task thread pins a run-file-lifecycle conversation to one

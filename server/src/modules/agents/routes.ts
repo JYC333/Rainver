@@ -1,44 +1,44 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import * as protocol from "@agent-space/protocol";
 import type {
   MessageOut,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import type { Pool, PoolClient } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { PgSessionRepository } from "../sessions/repository";
+} from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import type { Pool, PoolClient } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 import {
   ConversationBackendError,
   PgConversationBackendRepository,
   type ResolvedConversationBackend,
-} from "../sessions/conversationBackendRepository";
+} from "../sessions/conversationBackendRepository.js";
 import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
-} from "../sessions/conversationRuntimeSessionRepository";
-import { removeConversationRuntimeState } from "../runs/conversationRuntimeState";
+} from "../sessions/conversationRuntimeSessionRepository.js";
+import { removeConversationRuntimeState } from "../runs/conversationRuntimeState.js";
 import {
   PgRunRepository,
   RunCreateValidationError,
-} from "../runs/repository";
-import { runToOut } from "../runs/runReadModel";
-import { resolveRunRemoteness } from "../runs/runRemoteness";
-import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement";
-import { PgJobQueueRepository } from "../jobs/repository";
+} from "../runs/repository.js";
+import { runToOut } from "../runs/runReadModel.js";
+import { resolveRunRemoteness } from "../runs/runRemoteness.js";
+import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   dbPool,
   parsePage,
   query as routeQuery,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgProposalRepository } from "../proposals/repository";
-import { PgAgentChatRepository, PgAgentRepository } from "./repository";
-import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
-import { resolveContentCreationContext } from "../access/creationContext";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+} from "../routeUtils/common.js";
+import { PgProposalRepository } from "../proposals/repository.js";
+import { PgAgentChatRepository, PgAgentRepository } from "./repository.js";
+import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { resolveContentCreationContext } from "../access/creationContext.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import {
   applyAgentIdentityPatch,
   configPatch,
@@ -52,7 +52,7 @@ import {
   requiredBodyString,
   sendDomainError,
   stringValue,
-} from "./agentRouteInputs";
+} from "./agentRouteInputs.js";
 
 const MAX_MESSAGE_CHARS = 8000;
 class ChatContextError extends Error {
@@ -591,7 +591,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
 
     try {
-      const protocol = await loadProtocol();
       const req = protocol.ChatTurnRequestSchema.parse({
         ...body,
         message: rawMessage,

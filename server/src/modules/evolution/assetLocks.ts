@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 const LOCK_PREFIX = "evolution_asset:";
 

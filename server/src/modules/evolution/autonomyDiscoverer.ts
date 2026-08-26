@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   autonomyDiscovererRegistry,
   type DiscoveredAutonomyCandidate,
-} from "../autonomy/registry";
+} from "../autonomy/registry.js";
 
 interface EvolutionSignalRow {
   id: string;

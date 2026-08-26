@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService.js";
+import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -14,7 +14,7 @@ const ACTOR = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const IDENTITY = { spaceId: SPACE, userId: USER };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

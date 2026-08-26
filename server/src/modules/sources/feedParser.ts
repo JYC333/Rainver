@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { excerpt } from "./contentParsing";
+import { excerpt } from "./contentParsing.js";
 
 export interface ParsedFeedItem {
   title: string;

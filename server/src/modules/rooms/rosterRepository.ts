@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 
 export interface RoomRosterAgentCandidate {
   agent_id: string;

@@ -1,18 +1,18 @@
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../../../db/pool";
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { writePolicyAudit } from "../../policy/auditWriter";
-import type { JobHandlerRegistry } from "../../jobs/handlerRegistry";
-import { resolveProviderCommandStore } from "../../providers/commands/store";
-import { RetrievalEmbeddingStore } from "..";
-import { readSpaceRetrievalSettings } from "../settings";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../../../db/pool.js";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { writePolicyAudit } from "../../policy/auditWriter.js";
+import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
+import { resolveProviderCommandStore } from "../../providers/commands/store.js";
+import { RetrievalEmbeddingStore } from "../index.js";
+import { readSpaceRetrievalSettings } from "../settings.js";
 import {
   DEFAULT_EMBED_BATCH,
   RETRIEVAL_EMBEDDING_JOB,
   RETRIEVAL_EMBEDDING_TASK,
-} from "./config";
-import { ProviderEmbedder } from "./providerEmbedder";
-import { RetrievalEmbeddingBackfillService } from "./service";
+} from "./config.js";
+import { ProviderEmbedder } from "./providerEmbedder.js";
+import { RetrievalEmbeddingBackfillService } from "./service.js";
 
 type RetrievalEmbeddingBackfillQueue = Pick<PgJobQueueRepository, "enqueue" | "listJobs">;
 

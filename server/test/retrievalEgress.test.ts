@@ -3,17 +3,17 @@ import {
   retrievalEgressAllowed,
   ALLOW_ALL_EGRESS,
   retrievalProviderEgressDestination,
-} from "../src/modules/retrieval/egress/egressPolicy";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
+} from "../src/modules/retrieval/egress/egressPolicy.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import {
   __setProviderHttpClientForTests as setRawProviderHttpClientForTests,
   completeProviderText,
   type ProviderHttpClient,
-} from "../src/modules/providers/invocation/invocation";
-import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker";
-import { ProviderSynthesizer } from "../src/modules/retrieval/synthesisProvider/providerSynthesizer";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
-import { piAiHttpClient } from "./support/piAiHttp";
+} from "../src/modules/providers/invocation/invocation.js";
+import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker.js";
+import { ProviderSynthesizer } from "../src/modules/retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
+import { piAiHttpClient } from "./support/piAiHttp.js";
 
 function __setProviderHttpClientForTests(client: ProviderHttpClient | null): void {
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 export type DomainChangeSourceKind = "note" | "inquiry_thread" | "experiment_interpretation";
 export type DomainChangeSignificance = "trivial" | "material";

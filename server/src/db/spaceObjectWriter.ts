@@ -19,7 +19,7 @@
  * wrong people or untraceable to whoever made it.
  */
 
-import { entityDefinition } from "../modules/ontology/entities";
+import { entityDefinition } from "../modules/ontology/entities.js";
 
 const TITLE_MAX_LENGTH = 512;
 const VISIBILITIES = new Set(["private", "space_shared", "selected_users"]);

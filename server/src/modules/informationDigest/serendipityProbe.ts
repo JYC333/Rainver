@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { domainDefinitions } from "../sourceAnnotation";
-import { SourceQueryPreviewService } from "../sources/sourceQueryPreviewService";
-import { materializeExternalDiscovery, type ExternalDiscoverySample } from "../sources/externalDiscoveryMaterializer";
-import { PgSerendipityRepository } from "./serendipityRepository";
-import { InterestProfileService } from "../interestProfile/service";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { domainDefinitions } from "../sourceAnnotation/index.js";
+import { SourceQueryPreviewService } from "../sources/sourceQueryPreviewService.js";
+import { materializeExternalDiscovery, type ExternalDiscoverySample } from "../sources/externalDiscoveryMaterializer.js";
+import { PgSerendipityRepository } from "./serendipityRepository.js";
+import { InterestProfileService } from "../interestProfile/service.js";
+import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings.js";
 
 export const SERENDIPITY_PROBE_DOMAIN_BUDGET = DEFAULT_INTEREST_PROFILE_SETTINGS.probe_domain_budget;
 

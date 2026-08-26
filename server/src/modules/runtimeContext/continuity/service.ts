@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   ContextEvent,
   MicroCheckpoint,
   RuntimeContextEventIngress,
   SemanticCheckpoint,
   SemanticCheckpointExtraction,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../../routeUtils/common";
-import type { SpaceUserIdentity } from "../../routeUtils/common";
-import { assertActiveWorkContextReadable } from "../workContextService";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy";
+} from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
+import type { SpaceUserIdentity } from "../../routeUtils/common.js";
+import { assertActiveWorkContextReadable } from "../workContextService.js";
+import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy.js";
 
 type Ref = { type: string; id: string; version?: string | null };
 
@@ -121,7 +121,6 @@ export class RuntimeContextContinuityService {
           AND replay_event_json IS NOT NULL ORDER BY created_at,id`,
       [spaceId, workContextScopeId],
     );
-    const protocol = await loadProtocol();
     let recovered = 0;
     for (const row of result.rows) {
       const event = protocol.RuntimeContextEventIngressSchema.parse(row.replay_event_json) as RuntimeContextEventIngress;
@@ -196,7 +195,6 @@ export class RuntimeContextContinuityService {
       events: selected.events,
       egressPolicy: await this.resolveExtractionEgressPolicy(input.spaceId, input.workContextScopeId),
     });
-    const protocol = await loadProtocol();
     const extraction = protocol.SemanticCheckpointExtractionSchema.parse(result.extraction) as SemanticCheckpointExtraction;
     return withQueryableTransaction(this.db, async (db) => {
       const authority: InvocationAuthority = {
@@ -390,7 +388,6 @@ export class RuntimeContextContinuityService {
        WHERE space_id=$1 AND work_context_scope_id=$2 AND event_type=$3 AND canonical_ref_key=$4`,
       [authority.space_id, authority.work_context_scope_id, input.event_type, key],
     );
-    const protocol = await loadProtocol();
     if (existing.rows[0]) return protocol.ContextEventSchema.parse(existing.rows[0].event_json) as ContextEvent;
     const scope = await this.scopeRow(db, authority);
     const sequence = scope.event_head_cursor + 1;
@@ -461,7 +458,6 @@ export class RuntimeContextContinuityService {
     const byType = (types: string[]) => refs.rows
       .filter((row) => types.includes(row.canonical_ref_json.type))
       .map((row) => row.canonical_ref_json);
-    const protocol = await loadProtocol();
     const checkpoint = protocol.MicroCheckpointSchema.parse({
       id: randomUUID(), space_id: authority.space_id,
       work_context_scope_id: authority.work_context_scope_id, version,
@@ -639,7 +635,7 @@ export class RuntimeContextContinuityService {
       [spaceId, scopeId],
     );
     if (!result.rows[0]) return null;
-    return (await loadProtocol()).SemanticCheckpointSchema.parse(result.rows[0].checkpoint_json) as SemanticCheckpoint;
+    return protocol.SemanticCheckpointSchema.parse(result.rows[0].checkpoint_json) as SemanticCheckpoint;
   }
 
   private async selectSemanticInput(spaceId: string, scopeId: string): Promise<{ previous: SemanticCheckpoint | null; events: ContextEvent[]; safeHead: number }> {
@@ -659,7 +655,6 @@ export class RuntimeContextContinuityService {
          FROM context_events WHERE space_id=$1 AND work_context_scope_id=$2 AND scope_sequence>$3 AND scope_sequence<=$4 ORDER BY scope_sequence`,
         [spaceId, scopeId, after, scope.event_head_cursor],
       );
-      const protocol = await loadProtocol();
       return { previous, events: rows.rows.map((row) => protocol.ContextEventSchema.parse(row.event_json) as ContextEvent), safeHead: scope.event_head_cursor };
     });
   }

@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery";
-import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
-import { contentResourceDefinition } from "../src/modules/access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../src/modules/access/contentAccessSql";
-import type { ContentAccessGrant, OversightMode } from "../src/modules/access/contentAccessTypes";
-import { memoryAccessDecision } from "../src/modules/memory/memoryReadAuth";
-import { memorySensitivityReadSql } from "../src/modules/memory/memorySensitivitySql";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery.js";
+import { decideContentAccess } from "../src/modules/access/contentAccessPolicy.js";
+import { contentResourceDefinition } from "../src/modules/access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../src/modules/access/contentAccessSql.js";
+import type { ContentAccessGrant, OversightMode } from "../src/modules/access/contentAccessTypes.js";
+import { memoryAccessDecision } from "../src/modules/memory/memoryReadAuth.js";
+import { memorySensitivityReadSql } from "../src/modules/memory/memorySensitivitySql.js";
 
 // The read predicate exists twice: once as SQL (contentAccessSql, used to filter
 // rows in-database) and once as a pure function (decideContentAccess, used where
@@ -41,7 +41,7 @@ const MEMBERSHIPS: readonly [string, "owner" | "admin" | "member", "active" | "r
 ];
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 async function seedSpace(oversightMode: OversightMode): Promise<void> {
   await resetTables(

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { jsonBody, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { AskSpaceService } from "./service";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { jsonBody, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
+import { AskSpaceService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   // Unified Ask Space / Think entry point. Read-only and proposal-first: it
@@ -12,7 +12,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.AskSpaceRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) {
         throw new HttpError(422, validationMessage(parsed.error.issues));

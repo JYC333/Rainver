@@ -1,24 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ClaimCandidatePacketCreateRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
+import * as protocol from "@agent-space/protocol";
+import type { ClaimCandidatePacketCreateRequest } from "@agent-space/protocol";
+import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import {
   acceptReviewPacket,
   insertProposalRow,
   lookupExistingPendingPacket,
   visibilityForReviewScope,
   type ChildProposalDraft,
-} from "../proposals/reviewPackets";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { loadSourcePolicySnapshots } from "../retrieval/sourcePolicy";
-import { CLAIM_KINDS } from "./knowledgeRepositoryRows";
+} from "../proposals/reviewPackets.js";
+import { loadSourcePolicySnapshots } from "../retrieval/sourcePolicy.js";
+import { CLAIM_KINDS } from "./knowledgeRepositoryRows.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityFilterSql,
-} from "../access/contentAccessSql";
+} from "../access/contentAccessSql.js";
 
 export const CLAIM_CANDIDATE_PACKET_ARTIFACT_TYPE = "claim_candidate_packet";
 export const CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE = "claim_candidate_packet";
@@ -137,7 +137,6 @@ function applyClaimCandidatePacketProposal(
     invalidPayload: () => new ClaimCandidatePacketApplyError("claim candidate packet payload is invalid"),
     build: async (payload, ctx) => {
       const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-      const protocol = await loadProtocol();
       const children: ChildProposalDraft[] = [];
       const skipped: Array<Record<string, unknown>> = [];
       for (const candidate of candidates) {

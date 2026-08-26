@@ -16,16 +16,14 @@ import {
   resolveFailureMode,
   type ProposalApplyInput,
   type Registry,
-} from "./gateway";
-import { checkHardInvariants } from "./decisionCore";
-import { sanitizePolicyMetadata } from "./sanitizer";
-import { writePolicyAudit } from "./auditWriter";
-import type { PolicyDecision } from "./decisions";
-import type { ServerConfig } from "../../config";
+} from "./gateway.js";
+import { checkHardInvariants } from "./decisionCore.js";
+import { sanitizePolicyMetadata } from "./sanitizer.js";
+import { writePolicyAudit } from "./auditWriter.js";
+import type { PolicyDecision } from "./decisions.js";
+import type { ServerConfig } from "../../config.js";
 
-import type { PolicyCheckRequest } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { PolicyCheckRequest } from "@agent-space/protocol";
 
 /**
  * Service-side result shape. Validated against the wire

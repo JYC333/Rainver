@@ -7,10 +7,10 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ServerConfig } from "./config";
-import { createServerApp, type ServerAppOptions } from "./gateway/appShell";
-import { registerServerRoutes } from "./gateway/routeRegistry";
-import type { PluginHost } from "./modules/plugins/host";
+import type { ServerConfig } from "./config.js";
+import { createServerApp, type ServerAppOptions } from "./gateway/appShell.js";
+import { registerServerRoutes } from "./gateway/routeRegistry.js";
+import type { PluginHost } from "./modules/plugins/host/index.js";
 
 export interface BuildServerOptions extends ServerAppOptions {
   /** Optional plugin host — activates built-in plugins after SERVER_MODULES. */

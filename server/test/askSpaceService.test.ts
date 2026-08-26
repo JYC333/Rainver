@@ -2,11 +2,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
   AskSpaceDomain,
   RetrievalBriefResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../src/config";
-import { AskSpaceService } from "../src/modules/askSpace";
-import { __setProviderCommandStoreForTests } from "../src/modules/providers/commands/store";
-import type { BriefCandidate } from "../src/modules/retrieval";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../src/config.js";
+import { AskSpaceService } from "../src/modules/askSpace/service.js";
+import { __setProviderCommandStoreForTests } from "../src/modules/providers/commands/store.js";
+import type { BriefCandidate } from "../src/modules/retrieval/index.js";
 
 const CONFIG = { databaseUrl: "postgres://test", agentSpaceHome: "/tmp" } as unknown as ServerConfig;
 

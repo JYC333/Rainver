@@ -1,6 +1,6 @@
 import { pgTable, index, unique, foreignKey, varchar, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
 
 export const routeDecisions = pgTable("route_decisions", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

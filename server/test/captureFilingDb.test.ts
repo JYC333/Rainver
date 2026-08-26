@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { CaptureFilingService } from "../src/modules/captureFiling/service";
-import { ContentAccessAuditService } from "../src/modules/contentAccess/audit";
-import { PgActivityRepository } from "../src/modules/activity/repository";
-import { PgAnnotationRepository } from "../src/modules/reader/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { CaptureFilingService } from "../src/modules/captureFiling/service.js";
+import { ContentAccessAuditService } from "../src/modules/contentAccess/audit.js";
+import { PgActivityRepository } from "../src/modules/activity/repository.js";
+import { PgAnnotationRepository } from "../src/modules/reader/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const STRANGER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -14,7 +14,7 @@ const PROJECT = "33333333-3333-4333-8333-333333333333";
 const CAPTURE = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

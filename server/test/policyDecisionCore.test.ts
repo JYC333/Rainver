@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadActionRegistry } from "../src/modules/policy/actionRegistry";
+import { loadActionRegistry } from "../src/modules/policy/actionRegistry.js";
 import {
   checkHardInvariants,
   engineCheck,
   hasRoleAtLeast,
   normalizeRole,
-} from "../src/modules/policy/decisionCore";
+} from "../src/modules/policy/decisionCore.js";
 import {
   buildAuditEnvelope,
   checkProposalApplyPolicy,
@@ -15,8 +15,8 @@ import {
   resolveFailureMode,
   SUPPORTED_PROPOSAL_TYPES,
   type Registry,
-} from "../src/modules/policy/gateway";
-import { sanitizePolicyMetadata } from "../src/modules/policy/sanitizer";
+} from "../src/modules/policy/gateway.js";
+import { sanitizePolicyMetadata } from "../src/modules/policy/sanitizer.js";
 
 let registry: Registry;
 beforeAll(async () => {

@@ -10,7 +10,7 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import type { ServerConfig } from "../../../config";
+import type { ServerConfig } from "../../../config.js";
 import type {
   AgentSpacePlugin,
   PluginHostContext,
@@ -23,15 +23,15 @@ import type {
   PluginSchedulerPort,
   Queryable,
   ResolvedIdentity,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { JobEnvelopeForHandler, JobHandler } from "../../jobs/handlerRegistry";
-import type { ScheduledTask } from "../../scheduler/registry";
-import type { ProposalApplier, ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry";
-import { getDbPool } from "../../../db/pool";
-import { resolveIdentity, sendRouteError, jsonBody } from "../../routeUtils/common";
-import { requireOfficialPluginEnabled } from "../guards";
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { pluginService } from "../service";
+} from "@agent-space/protocol";
+import type { JobEnvelopeForHandler, JobHandler } from "../../jobs/handlerRegistry.js";
+import type { ScheduledTask } from "../../scheduler/registry.js";
+import type { ProposalApplier, ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry.js";
+import { getDbPool } from "../../../db/pool.js";
+import { resolveIdentity, sendRouteError, jsonBody } from "../../routeUtils/common.js";
+import { requireOfficialPluginEnabled } from "../guards.js";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { pluginService } from "../service.js";
 
 export type PluginRouteFn = (app: FastifyInstance) => void;
 

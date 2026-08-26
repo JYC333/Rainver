@@ -1,13 +1,13 @@
-import type { ResearchCompiledQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { readSpaceRetrievalSettings } from "../../retrieval/settings";
-import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
-import { SourceProviderCatalogService } from "../../sources/catalog/sourceProviderCatalogService";
-import { CustomSourceCredentialService } from "../../sources/customSources/customSourceCredentialService";
-import { SearchExecutionAdapter } from "../../sources/search/searchExecutionAdapter";
-import { fetchSource, type SourceFetchResult } from "../../sources/sourceFetch";
-import { consumeConnectionQuota } from "../../sources/sourceQuotaBucket";
-import type { ResearchPreviewBatch, ResearchPreviewCandidate } from "./previewRelevanceAssessor";
+import type { ResearchCompiledQuery } from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
+import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { SourceProviderCatalogService } from "../../sources/catalog/sourceProviderCatalogService.js";
+import { CustomSourceCredentialService } from "../../sources/customSources/customSourceCredentialService.js";
+import { SearchExecutionAdapter } from "../../sources/search/searchExecutionAdapter.js";
+import { fetchSource, type SourceFetchResult } from "../../sources/sourceFetch.js";
+import { consumeConnectionQuota } from "../../sources/sourceQuotaBucket.js";
+import type { ResearchPreviewBatch, ResearchPreviewCandidate } from "./previewRelevanceAssessor.js";
 
 type PreviewFetcher = (
   url: string,

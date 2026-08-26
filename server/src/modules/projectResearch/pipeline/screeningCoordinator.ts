@@ -1,12 +1,12 @@
-import type { Queryable } from "../../routeUtils/common";
-import { objectValue, optionalString } from "../../routeUtils/common";
-import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config";
+import type { Queryable } from "../../routeUtils/common.js";
+import { objectValue, optionalString } from "../../routeUtils/common.js";
+import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config.js";
 import {
   SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,
   checkpointBlocks,
   screeningExceedsAutoBudget,
   waiveCheckpointAutomatically,
-} from "../researchCheckpointPolicy";
+} from "../researchCheckpointPolicy.js";
 import {
   applyResearchStatePatch,
   deriveSkippedAfterScreeningSteps,
@@ -15,7 +15,7 @@ import {
   advanceOperation as advanceResearchOperation,
   type ResearchOperationState,
   type ResearchStepOverride,
-} from "../operationProjection";
+} from "../operationProjection.js";
 
 export interface ScreeningOperationRow {
   id: string;

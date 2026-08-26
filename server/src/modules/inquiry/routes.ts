@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -12,15 +12,15 @@ import {
   requiredString,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { InquiryThreadService } from "./threadService";
-import { InquiryIterationService } from "./iterationService";
-import { InquirySignalService } from "./signalService";
-import { registerInquiryProjectIntegration } from "./projectIntegration";
-import { InquiryGraphService } from "./graphService";
-import { InquiryAdviceService } from "./adviceService";
-import { inquiryRetrievalRegistry } from "./retrievalAdapter";
-import { RetrievalSearchService } from "../retrieval";
+} from "../routeUtils/common.js";
+import { InquiryThreadService } from "./threadService.js";
+import { InquiryIterationService } from "./iterationService.js";
+import { InquirySignalService } from "./signalService.js";
+import { registerInquiryProjectIntegration } from "./projectIntegration.js";
+import { InquiryGraphService } from "./graphService.js";
+import { InquiryAdviceService } from "./adviceService.js";
+import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
+import { RetrievalSearchService } from "../retrieval/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerInquiryProjectIntegration();

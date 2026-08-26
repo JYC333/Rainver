@@ -1,23 +1,23 @@
-import type { CanonicalToolCall, RuntimeHostExecuteRequest, RuntimeHostExecuteResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+import type { CanonicalToolCall, RuntimeHostExecuteRequest, RuntimeHostExecuteResponse } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   retrievalToolContribution,
   type RuntimeHostExecutor,
-} from "../runs/managedRetrievalTools";
+} from "../runs/managedRetrievalTools.js";
 import {
   executeManagedToolLoop,
   mergeManagedToolContributions,
   type ManagedToolContribution,
-} from "../runs/managedToolLoop";
-import type { RunRecord } from "../runs/repository";
+} from "../runs/managedToolLoop.js";
+import type { RunRecord } from "../runs/repository.js";
 import {
   SystemActionDispatcher,
   type SystemActionDispatcherDeps,
-} from "./systemActionDispatcher";
+} from "./systemActionDispatcher.js";
 import {
   DURABLE_ACTION_CLAIM_POLICY,
   PLAIN_STATUS_RESPONSE_POLICY,
-} from "./conversationPolicy";
+} from "./conversationPolicy.js";
 
 export interface ManagedAgentToolSurfaceDeps extends SystemActionDispatcherDeps {
   abortSignal?: AbortSignal;

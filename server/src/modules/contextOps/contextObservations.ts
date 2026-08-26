@@ -3,10 +3,10 @@ import type {
   ContextOpsContextObservationReport,
   ContextOpsContextObservationScanRequest,
   ContextObservationItem,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import { ContextOpsService } from "./service";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import { ContextOpsService } from "./service.js";
 
 export const CONTEXT_OBSERVATION_REPORT_ARTIFACT_TYPE = "context_observation_report";
 

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
-import { PgUsageRepository } from "../src/modules/usage/repository";
-import type { OversightMode } from "../src/modules/access/contentAccessTypes";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
+import { PgUsageRepository } from "../src/modules/usage/repository.js";
+import type { OversightMode } from "../src/modules/access/contentAccessTypes.js";
 
 const SPACE = "77777777-7777-4777-8777-777777777777";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -13,7 +13,7 @@ const ADMIN = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const OCCURRED_AT = new Date("2026-07-10T12:00:00.000Z");
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 async function seed(mode: OversightMode): Promise<PgUsageRepository> {
   await resetTables(

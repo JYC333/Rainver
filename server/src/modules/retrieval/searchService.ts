@@ -7,15 +7,15 @@ import type {
   RetrievalRuntimeRankingConfig,
   RetrievalSearchResponse,
   RetrievalSearchResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { normalizeAlias, tokenizeSimple } from "./normalize";
-import { normalizeTextForSearch } from "./normalize";
-import { toVectorLiteral } from "./embeddingStore";
-import { RetrievalFeedbackService } from "./feedback";
-import { applyRankingSignals, newRankingTelemetry, type RankingSignalConfig } from "./ranking";
-import { classifyIntent, rankingConfigForIntent } from "./intent";
-import { parseRelationalIntent, type RelationalIntent } from "./relationalIntent";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { normalizeAlias, tokenizeSimple } from "./normalize.js";
+import { normalizeTextForSearch } from "./normalize.js";
+import { toVectorLiteral } from "./embeddingStore.js";
+import { RetrievalFeedbackService } from "./feedback.js";
+import { applyRankingSignals, newRankingTelemetry, type RankingSignalConfig } from "./ranking.js";
+import { classifyIntent, rankingConfigForIntent } from "./intent.js";
+import { parseRelationalIntent, type RelationalIntent } from "./relationalIntent.js";
 import {
   applyAdaptiveReturn,
   armFetchLimit,
@@ -33,7 +33,7 @@ import {
   GRAPH_MAX_HOPS,
   resultFromCandidate,
   similarityFromDistance,
-} from "./searchInternals";
+} from "./searchInternals.js";
 import {
   applyRerank,
   rerankWindowSize,
@@ -42,9 +42,9 @@ import {
   type RerankCandidate,
   type RerankConfig,
   type RerankScore,
-} from "./reranker";
-import { mergeRewriteVariants, type QueryRewriter } from "./queryRewrite";
-import { ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "./egress/egressPolicy";
+} from "./reranker.js";
+import { mergeRewriteVariants, type QueryRewriter } from "./queryRewrite.js";
+import { ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "./egress/egressPolicy.js";
 import {
   assembleBrief,
   buildBriefCandidates,
@@ -52,19 +52,19 @@ import {
   type SynthesisConfig,
   type SynthesisResult,
   type Synthesizer,
-} from "./synthesis";
+} from "./synthesis.js";
 import {
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromJson,
   sourceEgressPoliciesForSnapshots,
   sourcePolicyAllowsRead,
-} from "./sourcePolicy";
-import type { RetrievalRegistry } from "./registry";
+} from "./sourcePolicy.js";
+import type { RetrievalRegistry } from "./registry.js";
 import {
   ContentAccessAuditService,
   contentResourceTypeForRetrievalObject,
-} from "../contentAccess/audit";
+} from "../contentAccess/audit.js";
 import type {
   QueryEmbedder,
   RetrievalSearchMode,
@@ -72,7 +72,7 @@ import type {
   RevalidatedObject,
   ScoredCandidate,
   SearchCandidate,
-} from "./types";
+} from "./types.js";
 
 interface SearchInput {
   spaceId: string;

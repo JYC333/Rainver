@@ -1,6 +1,6 @@
-import type { PromptResolveResult } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { resolvePrompt } from "../prompts/resolver";
+import type { PromptResolveResult } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { resolvePrompt } from "../prompts/resolver.js";
 
 export const AGENT_DEFAULT_ASSISTANT_SYSTEM_PROMPT_KEY = "agent.default_assistant.system";
 

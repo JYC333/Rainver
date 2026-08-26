@@ -1,19 +1,19 @@
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { LedgerLoadResult } from "../beancount/entries";
-import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine";
-import { transactionBalanceErrors } from "../beancount/validation";
-import { rootTypeForAccountName } from "./accountName";
-import { Amount, assertCommoditySymbol } from "./amount";
-import { parseBooking } from "./booking";
-import { parseDecimal } from "./decimal";
-import { financeDirectiveRepository } from "./directiveRepository";
+import type { Queryable } from "@agent-space/protocol";
+import type { LedgerLoadResult } from "../beancount/entries.js";
+import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
+import { transactionBalanceErrors } from "../beancount/validation.js";
+import { rootTypeForAccountName } from "./accountName.js";
+import { Amount, assertCommoditySymbol } from "./amount.js";
+import { parseBooking } from "./booking.js";
+import { parseDecimal } from "./decimal.js";
+import { financeDirectiveRepository } from "./directiveRepository.js";
 import {
   exportBeancountFromDb,
   importBeancountToDb,
   type ExportBeancountResult,
   type ImportBeancountInput,
   type ImportBeancountResult,
-} from "./importExportService";
+} from "./importExportService.js";
 import type {
   AccountVisibility,
   BalanceScope,
@@ -27,14 +27,14 @@ import type {
   FinanceDirectiveRow,
   FinancePostingRow,
   FinanceValidationError,
-} from "./directives";
+} from "./directives.js";
 import {
   financeLedgerRepository,
   type CreateCommodityRecord,
   type InsertPostingRecord,
-} from "./repository";
-import { Inventory } from "./inventory";
-import { Position } from "./position";
+} from "./repository.js";
+import { Inventory } from "./inventory.js";
+import { Position } from "./position.js";
 
 export interface CreateFinanceBookInput {
   name: string;

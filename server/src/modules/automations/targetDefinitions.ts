@@ -1,7 +1,7 @@
 import type {
   AutomationTargetDefinition,
   AutomationTargetType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 let cached: ReadonlyMap<AutomationTargetType, AutomationTargetDefinition> | null = null;
 

@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  ContextWindowPlanner,
-  RetrievalCoordinator,
-  RuntimeContextPlanner,
-  RuntimeContextPlanningError,
-  RuntimeContextPlanningService,
-  contextItemText,
-  normalizeContextItem,
-} from "../src/modules/runtimeContext";
-import { runtimeContextProviderDestination } from "../src/modules/runtimeContext/productionAcquisition";
+import { ContextWindowPlanner, RuntimeContextPlanningError } from "../src/modules/runtimeContext/windowPlanner.js";
+import { RetrievalCoordinator } from "../src/modules/runtimeContext/retrievalCoordinator.js";
+import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
+import { RuntimeContextPlanningService } from "../src/modules/runtimeContext/planningService.js";
+import { contextItemText, normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
+import { runtimeContextProviderDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
 
 const SPACE_ID = "00000000-0000-4000-8000-000000000001";
 const CONTROL_ID = "00000000-0000-4000-8000-000000000002";

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isKnownSpaceRole, isSpaceOwnerOrAdmin } from "../src/modules/access/roles";
-import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
-import { contentResourceDefinition } from "../src/modules/access/contentAccessRegistry";
-import { contentAccessLevelSql, contentAccessSql } from "../src/modules/access/contentAccessSql";
+import { isKnownSpaceRole, isSpaceOwnerOrAdmin } from "../src/modules/access/roles.js";
+import { decideContentAccess } from "../src/modules/access/contentAccessPolicy.js";
+import { contentResourceDefinition } from "../src/modules/access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentAccessSql } from "../src/modules/access/contentAccessSql.js";
 
 const resource = {
   id: "resource-1",

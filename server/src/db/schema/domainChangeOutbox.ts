@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
+import { spaces } from "./spaces.js";
 
 // Transport/audit infrastructure only (see PROJECTS.md's source-reference
 // and change-event contract"): it does not own domain state or generic

@@ -1,24 +1,24 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
+import * as protocol from "@agent-space/protocol";
+import type { Pool } from "../../db/pool.js";
 import type {
   RuntimeContextPolicyResolveRequest,
   RuntimeContextPolicyScope,
   RuntimeContextPolicyVersion,
   RuntimeContextPolicyWriteRequest,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { withTransaction } from "../../db/tx";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { contentReadSql } from "../access/contentAccessSql";
-import { canReadProject } from "../projects/access";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "@agent-space/protocol";
+import { withTransaction } from "../../db/tx.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { canReadProject } from "../projects/access.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   assertPolicyDoesNotWiden,
   assertPolicyPreferencesWithinConstraints,
   policyTypedDiff,
   resolveRuntimeContextPolicies,
-} from "./runtimeContextPolicyResolver";
+} from "./runtimeContextPolicyResolver.js";
 
 export interface RuntimeContextPolicyIdentity {
   spaceId: string;
@@ -104,7 +104,6 @@ export class RuntimeContextPolicyRepository {
     scopeId: string,
     request: RuntimeContextPolicyWriteRequest,
   ): Promise<RuntimeContextPolicyVersion> {
-    const protocol = await loadProtocol();
     const policy = protocol.RuntimeContextPolicyDocumentSchema.parse(request.policy);
     if (scopeType === "user" && Object.keys(policy.constraints).length > 0) {
       throw new HttpError(422, "User Runtime Context Policy may contain preferences only");

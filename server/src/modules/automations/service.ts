@@ -1,41 +1,41 @@
-import type { ServerConfig } from "../../config";
-import type { AutomationTargetType } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ServerConfig } from "../../config.js";
+import type { AutomationTargetType } from "@agent-space/protocol";
 import {
   OperationalAlertService,
   safelyEmitOperationalAlert,
   type OperationalAlertPort,
-} from "../notifications/operationalAlerts";
-import { getDbPool, type PoolClient } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { HttpError } from "../routeUtils/common";
-import { enforce } from "../policy";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { computeDecision } from "../policy/gateway";
-import { PgRunRepository } from "../runs/repository";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters";
-import { resolveEvolvableAssetVersion } from "../evolution/assetResolutionService";
-import { WorkflowExecutionService } from "./workflowExecutionService";
-import { computeNextRunAt, InvalidScheduleError } from "./schedule";
+} from "../notifications/operationalAlerts.js";
+import { getDbPool, type PoolClient } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { HttpError } from "../routeUtils/common.js";
+import { enforce } from "../policy/index.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { computeDecision } from "../policy/gateway.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/index.js";
+import { resolveEvolvableAssetVersion } from "../evolution/assetResolutionService.js";
+import { WorkflowExecutionService } from "./workflowExecutionService.js";
+import { computeNextRunAt, InvalidScheduleError } from "./schedule.js";
 import {
   PgAutomationRepository,
   automationToOut,
   type AutomationRepositoryPort,
   type AutomationRow,
-} from "./repository";
+} from "./repository.js";
 import {
   requireAutomationTargetHandler,
   type AutomationTargetExecutionContext,
   type AutomationTargetPreflightInput,
-} from "./targetRegistry";
-import { registerAutomationOwnedTargetHandlers } from "./targetHandlers";
-import { loadAutomationTargetDefinition } from "./targetDefinitions";
+} from "./targetRegistry.js";
+import { registerAutomationOwnedTargetHandlers } from "./targetHandlers.js";
+import { loadAutomationTargetDefinition } from "./targetDefinitions.js";
 import {
   automationBudgetSource,
   automationContract,
   automationScheduleWasHandled,
   lockAndCheckAutomationBudget,
-} from "./targetSupport";
+} from "./targetSupport.js";
 
 const VALID_TRIGGER_TYPES = new Set(["manual", "schedule"]);
 const VALID_STATUSES = new Set(["active", "paused", "archived"]);

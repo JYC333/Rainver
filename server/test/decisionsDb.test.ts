@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { DecisionCaseService } from "../src/modules/decisions/caseService";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for the Decision slice: Decision Case referencing
 // Inquiry Thread findings by
@@ -18,7 +18,7 @@ const PROJECT = "66666666-6666-4666-8666-666666666666";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

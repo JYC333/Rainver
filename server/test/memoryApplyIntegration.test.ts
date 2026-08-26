@@ -1,13 +1,13 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { seedRun } from "./support/domainSeeds";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { seedRun } from "./support/domainSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 import {
   MemoryApplyError,
   MemoryApplyUnsupportedError,
   PgMemoryApplyRepository,
   type ApplyProposal,
-} from "../src/modules/memory/memoryApplyRepository";
+} from "../src/modules/memory/memoryApplyRepository.js";
 
 // Real-PostgreSQL integration tests for the memory appliers. These run the
 // actual INSERT/UPDATE memory_entries + provenance / relation writes against a
@@ -19,7 +19,7 @@ let repo: PgMemoryApplyRepository | undefined;
 const SPACE = "space-1";
 const USER = "user-1";
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;

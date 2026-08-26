@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { ProjectOverviewService } from "../src/modules/projects/overviewService";
-import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService";
-import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry";
-import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry";
-import { DecisionCaseService } from "../src/modules/decisions/caseService";
-import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration";
-import { LearningService } from "../src/modules/learning/service";
-import { registerLearningProjectIntegration } from "../src/modules/learning/projectIntegration";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
+import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
+import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry.js";
+import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
+import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration.js";
+import { LearningService } from "../src/modules/learning/service.js";
+import { registerLearningProjectIntegration } from "../src/modules/learning/projectIntegration.js";
 
 // Proves the Decision/Learning <-> Project Kernel integration, mirroring
 // inquiryProjectIntegrationDb.test.ts: the Project Overview's Decision and
@@ -22,7 +22,7 @@ const SPACE = "44444444-4444-4444-8444-444444444444";
 const OWNER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 afterEach(() => {
   projectAttentionRegistry.__resetForTests();

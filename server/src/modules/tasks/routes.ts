@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   boolQuery,
   dbPool,
@@ -10,14 +10,14 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgTaskRepository } from "./repository";
-import { resolveProvidersDbPort } from "../providers/dbReader";
+} from "../routeUtils/common.js";
+import { PgTaskRepository } from "./repository.js";
+import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import { PgPlanRepository } from "../plans/repository.js";
 import {
   applyContentCreationContext,
   resolveContentCreationContext,
-} from "../access/creationContext";
+} from "../access/creationContext.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () =>

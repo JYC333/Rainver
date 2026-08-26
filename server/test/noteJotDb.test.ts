@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 // NC/N7: notes and evidence connect both ways. The "jot a note" affordance on
 // an evidence or material card has to create the note *and* the link in one
@@ -16,7 +16,13 @@ const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

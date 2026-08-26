@@ -1,18 +1,18 @@
-import type { ServerConfig } from "../../config";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectReadable } from "./access";
-import { PgProjectRepository } from "./repository";
-import { ProjectCorpusRepository } from "./corpusRepository";
+import type { ServerConfig } from "../../config.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectReadable } from "./access.js";
+import { PgProjectRepository } from "./repository.js";
+import { ProjectCorpusRepository } from "./corpusRepository.js";
 import {
   MODE_PLACEHOLDER_ENTITIES,
   fallbackModeProjection,
   projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
-} from "./overviewRegistry";
-import { ProjectAttentionService } from "./attentionService";
-import { ProjectKernelService } from "./kernelService";
-import type { ProjectPrimaryMode } from "./primaryMode";
+} from "./overviewRegistry.js";
+import { ProjectAttentionService } from "./attentionService.js";
+import { ProjectKernelService } from "./kernelService.js";
+import type { ProjectPrimaryMode } from "./primaryMode.js";
 
 interface ProjectSummaryRow {
   id: string;

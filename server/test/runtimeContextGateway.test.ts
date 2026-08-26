@@ -1,11 +1,8 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { ExecutionControlSnapshot, InvocationSnapshotSafe } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import {
-  RuntimeContextInvocationGateway,
-  RuntimeContextPlanningService,
-  normalizeContextItem,
-  type InvocationSnapshotStorePort,
-} from "../src/modules/runtimeContext";
+import type { ExecutionControlSnapshot, InvocationSnapshotSafe } from "@agent-space/protocol";
+import { RuntimeContextInvocationGateway, type InvocationSnapshotStorePort } from "../src/modules/runtimeContext/gateway.js";
+import { RuntimeContextPlanningService } from "../src/modules/runtimeContext/planningService.js";
+import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
 
 const SPACE = "40000000-0000-4000-8000-000000000001";
 const USER = "40000000-0000-4000-8000-000000000002";

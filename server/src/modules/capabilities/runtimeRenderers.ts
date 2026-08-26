@@ -2,7 +2,7 @@ import type {
   CapabilityDefinition,
   NormalizedSkill,
   RuntimeRenderedSkill,
-} from "./types";
+} from "./types.js";
 
 export function renderClaudeSkill(input: {
   capability: CapabilityDefinition;

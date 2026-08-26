@@ -1,6 +1,6 @@
-import { HttpError } from "../routeUtils/common";
-import { backfillFetchTimeoutMs, isNarrowableFailure, SourceFetchFailure } from "./sourceConnectionFetch";
-import type { SourceFetchResult } from "./sourceFetch";
+import { HttpError } from "../routeUtils/common.js";
+import { backfillFetchTimeoutMs, isNarrowableFailure, SourceFetchFailure } from "./sourceConnectionFetch.js";
+import type { SourceFetchResult } from "./sourceFetch.js";
 
 /**
  * How far to climb down when a provider cannot answer a full history page.

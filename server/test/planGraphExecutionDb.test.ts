@@ -1,19 +1,19 @@
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { PgPlanRepository } from "../src/modules/plans/repository";
-import { PgProposalApplyService } from "../src/modules/proposals/applyService";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
-import { PgTaskRepository } from "../src/modules/tasks/repository";
-import { PgAutomationRepository } from "../src/modules/automations/repository";
-import { assertBudgetSourcesAvailable } from "../src/modules/runs/budgetEnforcement";
-import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
-import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "../src/modules/automations/actionNodeRegistry";
-import { withQueryableTransaction, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import type { RunBudgetSource } from "../src/modules/runs/contractSnapshot";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { PgPlanRepository } from "../src/modules/plans/repository.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { PgAutomationRepository } from "../src/modules/automations/repository.js";
+import { assertBudgetSourcesAvailable } from "../src/modules/runs/budgetEnforcement.js";
+import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
+import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "../src/modules/automations/actionNodeRegistry.js";
+import { withQueryableTransaction, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import type { RunBudgetSource } from "../src/modules/runs/contractSnapshot.js";
 
 const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -32,7 +32,7 @@ const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

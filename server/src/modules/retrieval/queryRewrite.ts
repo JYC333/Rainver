@@ -1,4 +1,4 @@
-import { normalizeAlias } from "./normalize";
+import { normalizeAlias } from "./normalize.js";
 
 /**
  * Pre-recall query rewriting stage (Phase 2, step 8).

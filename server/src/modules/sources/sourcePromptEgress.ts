@@ -1,13 +1,13 @@
-import { HttpError, type Queryable } from "../routeUtils/common";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   retrievalEgressAllowed,
   retrievalProviderEgressDestination,
   type RetrievalEgressDestination,
-} from "../retrieval/egress/egressPolicy";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/specs";
-import { normalizeSourceConnectionReadGovernance } from "./sourceConsent";
-import type { SourceConnectionRow } from "./sourceRepositoryRows";
+} from "../retrieval/egress/egressPolicy.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/specs.js";
+import { normalizeSourceConnectionReadGovernance } from "./sourceConsent.js";
+import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
 /**
  * The consent/egress gate every path that ships source content to a model must

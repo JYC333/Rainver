@@ -9,10 +9,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { systemModule } from "../src/modules/system";
-import { catalogModule } from "../src/modules/catalog";
-import { loadConfig } from "../src/config";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { systemModule } from "../src/modules/system/index.js";
+import { catalogModule } from "../src/modules/catalog/index.js";
+import { loadConfig } from "../src/config.js";
 
 let fixtureRoot: string;
 let app: FastifyInstance;

@@ -1,9 +1,9 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { spaceObjects } from "./knowledge";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { spaceObjects } from "./knowledge.js";
 
 // Decision Domain: a resolved Inquiry
 // findings -> Create Decision Case" action). A Decision Case is a

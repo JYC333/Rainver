@@ -3,7 +3,7 @@
  * server runs. Callers depend on the port and import from here; nothing else
  * imports the implementation module directly.
  */
-import type { ManagedAgentLoopPort } from "./managedAgentLoopPort";
-import { piManagedAgentLoop } from "./piManagedAgentLoop";
+import type { ManagedAgentLoopPort } from "./managedAgentLoopPort.js";
+import { piManagedAgentLoop } from "./piManagedAgentLoop.js";
 
 export const managedAgentLoop: ManagedAgentLoopPort = piManagedAgentLoop;

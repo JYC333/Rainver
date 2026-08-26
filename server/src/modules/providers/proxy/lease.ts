@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { InvocationAuditRefs } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { InvocationAuditRefs } from "@agent-space/protocol";
 
 export interface ProviderProxyLeaseInput {
   run_id: string;

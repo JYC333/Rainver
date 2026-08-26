@@ -1,14 +1,14 @@
-import type { Pool } from "../../../db/pool";
-import { getDbPool } from "../../../db/pool";
-import type { ServerConfig } from "../../../config";
-import { withDbTransaction, optionalString } from "../../routeUtils/common";
+import type { Pool } from "../../../db/pool.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { ServerConfig } from "../../../config.js";
+import { withDbTransaction, optionalString } from "../../routeUtils/common.js";
 import {
   JobDeferredError,
   type JobHandlerRegistry,
   type JobHandlerResult,
-} from "../../jobs/handlerRegistry";
-import { RoomService } from "../../rooms/service";
-import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository";
+} from "../../jobs/handlerRegistry.js";
+import { RoomService } from "../../rooms/service.js";
+import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 
 export const RESEARCH_OPERATION_FAILURE_NOTIFY_JOB = "research_operation_failure_notify";
 

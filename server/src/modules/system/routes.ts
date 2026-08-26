@@ -12,15 +12,15 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { computeFeatures, featuresBody, healthBody } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { computeFeatures, featuresBody, healthBody } from "./service.js";
 import {
   buildStatusBody,
   databaseUnavailableStatusBody,
   isDatabaseReachable,
-} from "./statusService";
-import { getDbPool } from "../../db/pool";
-import { resolveIdentity } from "../routeUtils/common";
+} from "./statusService.js";
+import { getDbPool } from "../../db/pool.js";
+import { resolveIdentity } from "../routeUtils/common.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const health = async (_request: FastifyRequest, reply: FastifyReply) => {

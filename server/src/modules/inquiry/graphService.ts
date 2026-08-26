@@ -1,10 +1,10 @@
-import type { GraphProjection, GraphProjectionEdge, GraphProjectionNode } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectReadable } from "../projects/access";
-import { GraphProjectionBuilder } from "../graph/projectionBuilder";
-import { GraphProjectionRepository } from "../graph/projectionRepository";
+import type { GraphProjection, GraphProjectionEdge, GraphProjectionNode } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectReadable } from "../projects/access.js";
+import { GraphProjectionBuilder } from "../graph/projectionBuilder.js";
+import { GraphProjectionRepository } from "../graph/projectionRepository.js";
 
 interface ThreadNodeRow {
   id: string;

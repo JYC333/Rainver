@@ -1,4 +1,4 @@
-import type { LinkType } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { LinkType } from "@agent-space/protocol";
 
 /**
  * Link Type declarations: legal endpoints and governance, per edge type.
@@ -224,10 +224,10 @@ function registerCoreLinkTypes(): void {
 registerCoreLinkTypes();
 
 /**
- * Whether a protocol vocabulary value has a declaration here. The protocol
- * package is ESM and this server is CJS, so the vocabulary is not imported at
- * runtime; a test dynamically imports it and asserts the two agree, which also
- * keeps the contract package free of behaviour.
+ * Whether a protocol vocabulary value has a declaration here. The registry is
+ * the server-side authority and the protocol package only carries the
+ * client-facing vocabulary; a test asserts the two agree, which keeps the
+ * contract package free of behaviour.
  */
 export function hasDeclaration(linkType: string): boolean {
   return registry.has(linkType as LinkType);

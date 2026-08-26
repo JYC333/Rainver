@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { materializeAcademicPaperFromSourceItem } from "../src/modules/academic/paperMaterializer";
-import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
-import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
-import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { materializeAcademicPaperFromSourceItem } from "../src/modules/academic/paperMaterializer.js";
+import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository.js";
+import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService.js";
+import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository.js";
 
 // Real-Postgres coverage for Academic Research arXiv paper materialization:
 // arXiv source items materialize into academic_paper_v1 objects (deduped by
@@ -20,7 +20,7 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

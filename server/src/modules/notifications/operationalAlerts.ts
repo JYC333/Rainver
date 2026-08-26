@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
-import { redactEvidenceText, sanitizeEvidenceJson } from "../runs/evidenceRedaction";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { redactEvidenceText, sanitizeEvidenceJson } from "../runs/evidenceRedaction.js";
 
 export interface OperationalAlertInput {
   kind: "job_exhausted" | "automation_fire_failed" | "scheduler_task_failed" | "autonomous_review_timeout";

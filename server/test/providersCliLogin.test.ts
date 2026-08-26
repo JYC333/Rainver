@@ -2,17 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  __setLoginFactoriesForTests,
-  __setMountinfoReaderForTests,
-  cliLoginAdapterFor,
-  resolveHostPath,
-  runCliLogin,
-  sendCliLoginInput,
-  type LoginEvent,
-  type LoginRuntimeConfig,
-  type PtyFactory,
-} from "../src/modules/providers";
+import { __setLoginFactoriesForTests, runCliLogin, sendCliLoginInput, type LoginEvent, type LoginRuntimeConfig, type PtyFactory } from "../src/modules/providers/cli/loginEngine.js";
+import { __setMountinfoReaderForTests, resolveHostPath } from "../src/modules/providers/cli/hostPath.js";
+import { cliLoginAdapterFor } from "../src/modules/providers/cli/loginAdapters/index.js";
 
 let tempDir: string | undefined;
 

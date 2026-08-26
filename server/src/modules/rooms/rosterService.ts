@@ -1,26 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
-import { HttpError, withDbTransaction } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import {
   assertProjectReadable,
   assertProjectWriter,
   canWriteProject,
-} from "../projects/access";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { projectReadAccessSql } from "../access/contentAccessSql";
-import { PgAgentRepository, type AgentCreateInput } from "../agents/repository";
+} from "../projects/access.js";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { PgAgentRepository, type AgentCreateInput } from "../agents/repository.js";
 import {
   PgRoomRepository,
   type RoomRecord,
-} from "./repository";
+} from "./repository.js";
 import {
   PgRoomRosterRepository,
   type RoomInvitationApprovalRecord,
   type RoomInvitationRecord,
-} from "./rosterRepository";
-import { listRoomAgentPresets, roomAgentPresetById } from "./presets";
+} from "./rosterRepository.js";
+import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 

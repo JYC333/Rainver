@@ -1,8 +1,8 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { retrievalObjectType, tsVector, pgVector } from "./_types";
-import { users } from "./auth";
-import { spaces } from "./spaces";
+import { retrievalObjectType, tsVector, pgVector } from "./_types.js";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
 
 export const retrievalObjects = pgTable("retrieval_objects", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

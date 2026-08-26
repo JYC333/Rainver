@@ -1,7 +1,7 @@
 import { pgTable, index, unique, check, foreignKey, varchar, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { proposals } from "./proposals";
+import { spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
 
 export const policies = pgTable("policies", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

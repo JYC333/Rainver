@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { lockActiveProjectForMutation } from "../projects/access";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgRunRepository } from "../runs/repository";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import type { RunBudgetSource } from "../runs/contractSnapshot";
-import { materializePlanGraph, type MaterializedPlanGraph } from "../plans/graph";
-import type { AutomationRow } from "./repository";
-import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler";
-import { InputBindingResolutionError, resolveNodeInputs, type ResolvedNodeInputs } from "../execution/nodeInputResolver";
-import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "./actionNodeRegistry";
-import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry";
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { lockActiveProjectForMutation } from "../projects/access.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
+import type { RunBudgetSource } from "../runs/contractSnapshot.js";
+import { materializePlanGraph, type MaterializedPlanGraph } from "../plans/graph.js";
+import type { AutomationRow } from "./repository.js";
+import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
+import { InputBindingResolutionError, resolveNodeInputs, type ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
+import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "./actionNodeRegistry.js";
+import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry.js";
+import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
 
 export interface ResolvedWorkflowExecutionTarget {
   versionId: string;

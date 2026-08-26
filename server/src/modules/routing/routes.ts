@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, params, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { PgRouteDecisionRepository } from "./repository";
-import { PgRunRepository } from "../runs/repository";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { PgRouteDecisionRepository } from "./repository.js";
+import { PgRunRepository } from "../runs/repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/runs/:runId/route-decision", async (request, reply) => {

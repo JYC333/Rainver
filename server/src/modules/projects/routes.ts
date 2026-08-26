@@ -1,12 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import * as protocol from "@agent-space/protocol";
 import type {
   ProjectPublicSummaryDraftRequest,
   ProjectPublicSummaryUpsertRequest,
   RetrievalBriefRequest,
   RetrievalFeedbackRequest,
   RetrievalSearchRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ModuleContext } from "../../gateway/routeRegistry";
+} from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -18,31 +19,30 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   RetrievalFeedbackService,
   RetrievalSearchService,
   persistRetrievalBriefArtifact,
-} from "../retrieval";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { projectRetrievalRegistry } from "./retrievalAdapter";
-import { ProjectCorpusRepository } from "./corpusRepository";
-import { ProjectPublicSummaryGenerator } from "./publicSummaryGenerator";
-import { PgProjectRepository } from "./repository";
-import { ProjectSourceBindingService } from "./projectSourceBindingService";
-import { ProjectSourceProposalService } from "./projectSourceProposalService";
-import { ProjectKernelService } from "./kernelService";
-import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "./attentionService";
-import { ProjectOverviewService } from "./overviewService";
-import { enforceSources } from "../sources/enforceSources";
-import { ProjectOperationService } from "./projectOperationService";
+} from "../retrieval/index.js";
+import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { projectRetrievalRegistry } from "./retrievalAdapter.js";
+import { ProjectCorpusRepository } from "./corpusRepository.js";
+import { ProjectPublicSummaryGenerator } from "./publicSummaryGenerator.js";
+import { PgProjectRepository } from "./repository.js";
+import { ProjectSourceBindingService } from "./projectSourceBindingService.js";
+import { ProjectSourceProposalService } from "./projectSourceProposalService.js";
+import { ProjectKernelService } from "./kernelService.js";
+import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "./attentionService.js";
+import { ProjectOverviewService } from "./overviewService.js";
+import { enforceSources } from "../sources/enforceSources.js";
+import { ProjectOperationService } from "./projectOperationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => PgProjectRepository.fromConfig(context.config);
@@ -274,7 +274,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalSearchBody(protocol.RetrievalSearchRequestSchema, jsonBody(request));
       const objectTypes = body.object_types ?? ["project_public_summary"];
       if (objectTypes.some((objectType) => objectType !== "project_public_summary")) {
@@ -339,7 +338,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalBriefBody(protocol.RetrievalBriefRequestSchema, jsonBody(request));
       const objectTypes = body.object_types ?? ["project_public_summary"];
       if (objectTypes.some((objectType) => objectType !== "project_public_summary")) {
@@ -433,7 +431,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseBodyWith<RetrievalFeedbackRequest>(
         protocol.RetrievalFeedbackRequestSchema,
         jsonBody(request),
@@ -490,7 +487,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseBodyWith<ProjectPublicSummaryUpsertRequest>(
         protocol.ProjectPublicSummaryUpsertRequestSchema,
         jsonBody(request),
@@ -522,7 +518,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseBodyWith<ProjectPublicSummaryDraftRequest>(
         protocol.ProjectPublicSummaryDraftRequestSchema,
         jsonBody(request),

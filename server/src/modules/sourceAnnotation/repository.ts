@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import type { AnnotationPromptItem } from "./instruction";
-import type { ParsedItemAnnotation } from "./resultParser";
+import type { Queryable } from "../routeUtils/common.js";
+import type { AnnotationPromptItem } from "./instruction.js";
+import type { ParsedItemAnnotation } from "./resultParser.js";
 
 export const SOURCE_ANNOTATION_JOB_TYPE = "source_annotation_event";
 

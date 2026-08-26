@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { canAccessProject } from "../memory/projectAccess";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { canAccessProject } from "../memory/projectAccess.js";
 import {
   HttpError,
   countFromRow,
@@ -14,19 +14,19 @@ import {
   requiredString,
   toDbDate,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { SourceExtractionWorker } from "./extractionWorker";
-import { upsertCanonicalEvidence } from "./evidenceIdentity";
-import { runCustomSourceHandlerScanJob } from "./customSources/customSourceScanWorker";
-import { RECIPE_SCAN_JOB_IMPLEMENTATION, runSourceRecipeScanJob } from "./sourceRecipes/recipeScanWorker";
-import { insertProposalRow } from "../proposals/reviewPackets";
+} from "../routeUtils/common.js";
+import { SourceExtractionWorker } from "./extractionWorker.js";
+import { upsertCanonicalEvidence } from "./evidenceIdentity.js";
+import { runCustomSourceHandlerScanJob } from "./customSources/customSourceScanWorker.js";
+import { RECIPE_SCAN_JOB_IMPLEMENTATION, runSourceRecipeScanJob } from "./sourceRecipes/recipeScanWorker.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 import {
   contentAccessLevelSql,
   contentReadSql,
-} from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
+} from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import {
   buildSummary,
   evidenceLinkOut,
@@ -39,7 +39,7 @@ import {
   sha256,
   sourceDomain,
   stringList,
-} from "./sourceRepositoryMappers";
+} from "./sourceRepositoryMappers.js";
 import {
   CONNECTION_COLUMNS,
   EVIDENCE_COLUMNS,
@@ -55,24 +55,24 @@ import {
   type SourceItemRow,
   type SourceConnectionRow,
   type SourceChannelConnectionRow,
-} from "./sourceRepositoryRows";
+} from "./sourceRepositoryRows.js";
 import {
   enforceSourceDerivedImportTarget,
   enforceSourceRetentionPolicy,
   normalizeSourceConnectionReadGovernance,
-} from "./sourceConsent";
+} from "./sourceConsent.js";
 import {
   reindexExtractedEvidenceAndParentForRetrieval,
   reindexSourceItemAndEvidenceForRetrieval,
-} from "./retrievalIndexing";
-import { projectSourceRoutingHook } from "../projects/projectSourceRoutingRegistry";
+} from "./retrievalIndexing.js";
+import { projectSourceRoutingHook } from "../projects/projectSourceRoutingRegistry.js";
 import {
   evidenceEffectiveAccessLevelSql,
   evidenceProvenanceReadableClause,
   sourceItemConnectionGateClause,
   sourceItemReadableClause,
-} from "./sourceItemAccess";
-import { ProjectSourceBindingRepository } from "../projects/projectSourceBindingRepository";
+} from "./sourceItemAccess.js";
+import { ProjectSourceBindingRepository } from "../projects/projectSourceBindingRepository.js";
 
 const EVIDENCE_LINK_TYPES = new Set([
   "supports",

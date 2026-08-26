@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { getDbPool, type Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
 import {
   validateNetworkProfileInput,
   type NetworkProfileMode,
   type ResolvedNetworkProfile,
-} from "./transport";
+} from "./transport.js";
 
 export interface NetworkProfileCreateInput {
   name: string;

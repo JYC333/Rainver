@@ -1,7 +1,7 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerAutonomousTickAutomationTarget } from "./automationTarget";
-import { autonomyDiscovererRegistry } from "./registry";
-import { registerAutonomyRunFinalizationReconciler } from "./finalizationReconciler";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerAutonomousTickAutomationTarget } from "./automationTarget.js";
+import { autonomyDiscovererRegistry } from "./registry.js";
+import { registerAutonomyRunFinalizationReconciler } from "./finalizationReconciler.js";
 
 export const autonomyModule: ServerModule = {
   name: "autonomy",
@@ -14,6 +14,6 @@ export const autonomyModule: ServerModule = {
   },
 };
 
-export { AutonomyService } from "./service";
-export { AutonomyRecoveryService } from "./recoveryService";
-export { autonomyDiscovererRegistry } from "./registry";
+export { AutonomyService } from "./service.js";
+export { AutonomyRecoveryService } from "./recoveryService.js";
+export { autonomyDiscovererRegistry } from "./registry.js";

@@ -1,6 +1,6 @@
-import { Amount } from "../domain/amount";
-import { compareDecimal, multiplyDecimal, negateDecimal } from "../domain/decimal";
-import { Cost, CostSpec } from "../domain/position";
+import { Amount } from "../domain/amount.js";
+import { compareDecimal, multiplyDecimal, negateDecimal } from "../domain/decimal.js";
+import { Cost, CostSpec } from "../domain/position.js";
 import type {
   BalanceEntry,
   LedgerEntry,
@@ -9,9 +9,9 @@ import type {
   PadEntry,
   PostingEntry,
   TransactionEntry,
-} from "./entries";
-import { isDatedEntry } from "./entries";
-import { sortEntries } from "./sort";
+} from "./entries.js";
+import { isDatedEntry } from "./entries.js";
+import { sortEntries } from "./sort.js";
 
 export function transformEntries(entries: readonly LedgerEntry[]): LedgerEntry[] {
   return applyPadDirectives(interpolateEntries(entries));

@@ -1,45 +1,45 @@
 import { createHash } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce, type EnforceResult } from "../policy/service";
-import { HttpError, withDbTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgRunRepository, type RunRecord } from "../runs/repository";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce, type EnforceResult } from "../policy/service.js";
+import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import {
   PgConversationBackendRepository,
   type ResolvedConversationBackend,
-} from "../sessions/conversationBackendRepository";
+} from "../sessions/conversationBackendRepository.js";
 import {
   PgConversationRuntimeSessionRepository,
   type ConversationRuntimeSession,
-} from "../sessions/conversationRuntimeSessionRepository";
-import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+} from "../sessions/conversationRuntimeSessionRepository.js";
+import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
   loadRoomConversationReplayThroughMessage,
-} from "../runtimeContext/conversationContinuity";
+} from "../runtimeContext/conversationContinuity.js";
 import {
   assembleRoomConversationContext,
   estimateRoomSummaryTokens,
   ROOM_RECENT_TOKEN_BUDGET,
-} from "../rooms/conversationContext";
-import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../systemActions/scenarioToolAllowance";
+} from "../rooms/conversationContext.js";
+import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../systemActions/scenarioToolAllowance.js";
 import {
   ACTION_RESULT_REPORTING_POLICY,
   DURABLE_ACTION_CLAIM_POLICY,
   QUESTION_DECOMPOSITION_ACTION_POLICY,
   RESEARCH_EXECUTION_POLICY,
-} from "../systemActions/conversationPolicy";
+} from "../systemActions/conversationPolicy.js";
 import {
   type AgentCapabilitySnapshotRecord,
   type AgentRunGroupRecord,
   type AgentRunMessageRecord,
   type RunDelegationRecord,
   PgAgentGroupRepository,
-} from "./repository";
+} from "./repository.js";
 
-import type { PolicyCheckRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { PolicyCheckRequest } from "@agent-space/protocol";
 
 export interface AgentGroupIdentity {
   spaceId: string;

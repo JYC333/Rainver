@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, parsePage, params, resolveIdentity, sendRouteError, optionalString } from "../routeUtils/common";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
-import { PgPlanRepository } from "./repository";
-import { PlanExecutionService } from "./executionService";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, parsePage, params, resolveIdentity, sendRouteError, optionalString } from "../routeUtils/common.js";
+import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
+import { PgPlanRepository } from "./repository.js";
+import { PlanExecutionService } from "./executionService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgPlanRepository(dbPool(context.config));

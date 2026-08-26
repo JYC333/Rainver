@@ -1,17 +1,15 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import {
-  RetrievalProjectionService,
-  RetrievalSearchService,
-  type QueryRewriter,
-} from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { runRecallCases, type RecallCase } from "./support/retrievalEval";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { type QueryRewriter } from "../src/modules/retrieval/queryRewrite.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import { runRecallCases, type RecallCase } from "./support/retrievalEval.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Pre-recall query rewriting on real Postgres. The rewriter is an in-process fake
 // (no provider). It proves that:
@@ -55,7 +53,7 @@ function constantRewriter(variant: string): QueryRewriter {
 const nullRewriter: QueryRewriter = { async rewrite() { return null; } };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { HttpError, dbPool, jsonBody, optionalString, params, parsePage, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
-import { AcademicService } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { HttpError, dbPool, jsonBody, optionalString, params, parsePage, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
+import { AcademicService } from "./service.js";
 
 let serviceFactoryOverride: ((context: ModuleContext) => AcademicService) | null = null;
 

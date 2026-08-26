@@ -1,6 +1,6 @@
-import type { Booking } from "../domain/booking";
-import type { Amount } from "../domain/amount";
-import type { Cost, CostSpec } from "../domain/position";
+import type { Booking } from "../domain/booking.js";
+import type { Amount } from "../domain/amount.js";
+import type { Cost, CostSpec } from "../domain/position.js";
 
 export interface SourceLocation {
   filename: string;

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease";
-import { startProviderProxyServer, type ProviderProxyServerHandle } from "../src/modules/providers/proxy/server";
-import type { UsageAttribution, UsageObservation } from "../src/modules/usage";
-import { startMockUpstream, type MockUpstream } from "./support/mockUpstream";
+import { loadConfig } from "../src/config.js";
+import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease.js";
+import { startProviderProxyServer, type ProviderProxyServerHandle } from "../src/modules/providers/proxy/server.js";
+import type { UsageAttribution, UsageObservation } from "../src/modules/usage/index.js";
+import { startMockUpstream, type MockUpstream } from "./support/mockUpstream.js";
 
 const handles: ProviderProxyServerHandle[] = [];
 const upstreams: MockUpstream[] = [];

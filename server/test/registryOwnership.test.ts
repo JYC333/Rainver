@@ -1,34 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { buildServer } from "../src/server";
+import { loadConfig } from "../src/config.js";
+import { buildServer } from "../src/server.js";
 import {
   actionNodeHandlerRegistry,
   type ActionNodeHandler,
-} from "../src/modules/automations/actionNodeRegistry";
+} from "../src/modules/automations/actionNodeRegistry.js";
 import {
   automationTargetHandlerRegistry,
   type AutomationTargetHandler,
-} from "../src/modules/automations/targetRegistry";
+} from "../src/modules/automations/targetRegistry.js";
 import {
   workflowExecutionOutcomeHandlerRegistry,
   type WorkflowExecutionOutcomeHandler,
-} from "../src/modules/automations/workflowExecutionOutcomeRegistry";
+} from "../src/modules/automations/workflowExecutionOutcomeRegistry.js";
 import {
   autonomyDiscovererRegistry,
   type AutonomyDiscoverer,
-} from "../src/modules/autonomy/registry";
+} from "../src/modules/autonomy/registry.js";
 import {
   projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
   type ProjectEntitySummaryAdapter,
   type ProjectModeProjectionAdapter,
-} from "../src/modules/projects/overviewRegistry";
+} from "../src/modules/projects/overviewRegistry.js";
 import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
-} from "../src/modules/projects/attentionRegistry";
-import { runFinalizationReconcilerRegistry } from "../src/modules/runs/finalizationReconcilerRegistry";
-import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry";
+} from "../src/modules/projects/attentionRegistry.js";
+import { runFinalizationReconcilerRegistry } from "../src/modules/runs/finalizationReconcilerRegistry.js";
+import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
 
 const actionHandler: ActionNodeHandler = async () => ({ output: {} });
 const automationHandler: AutomationTargetHandler = {

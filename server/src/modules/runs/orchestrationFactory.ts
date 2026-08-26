@@ -1,11 +1,11 @@
-import type { ServerConfig } from "../../config";
-import { RunOrchestrationService } from "./orchestrationService";
-import { RunMaterializationService } from "./materializationService";
-import { PgRunRepository } from "./repository";
-import { sharedCliProcessRegistry } from "./processRegistry";
-import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
-import { PgVerificationEngine } from "./verification";
-import type { RuntimeHostLogger } from "../runtimeHost";
+import type { ServerConfig } from "../../config.js";
+import { RunOrchestrationService } from "./orchestrationService.js";
+import { RunMaterializationService } from "./materializationService.js";
+import { PgRunRepository } from "./repository.js";
+import { sharedCliProcessRegistry } from "./processRegistry.js";
+import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders/index.js";
+import { PgVerificationEngine } from "./verification/index.js";
+import type { RuntimeHostLogger } from "../runtimeHost/index.js";
 
 /**
  * The one wiring of a fully adaptered `RunOrchestrationService`. This adapter

@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { __setRoomServiceFactoryForTests, roomsModule } from "../src/modules/rooms";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setRoomServiceFactoryForTests } from "../src/modules/rooms/routes.js";
+import { roomsModule } from "../src/modules/rooms/index.js";
 
 let app: FastifyInstance | undefined;
 

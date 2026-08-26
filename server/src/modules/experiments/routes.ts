@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, params, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { ExperimentDefinitionService } from "./definitionService";
-import { ExperimentRunService } from "./runService";
-import { ExperimentInterpretationService } from "./interpretationService";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, params, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { ExperimentDefinitionService } from "./definitionService.js";
+import { ExperimentRunService } from "./runService.js";
+import { ExperimentInterpretationService } from "./interpretationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const definitions = () => new ExperimentDefinitionService(dbPool(context.config));

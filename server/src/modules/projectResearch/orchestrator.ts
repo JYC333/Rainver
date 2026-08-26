@@ -1,33 +1,33 @@
 import { createHash, randomUUID } from "node:crypto";
-import { getDbPool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, dateIso, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
-import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { ProjectOperationService } from "../projects/projectOperationService";
-import { PgJobQueueRepository } from "../jobs/repository";
-import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry";
-import { SourceBackfillPlanningService } from "../sources/sourceBackfillService";
-import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService";
-import { ARXIV_HISTORY_FLOOR } from "../sources/sourceBackfillStrategy";
-import { SourcePostProcessingService } from "../sources/postProcessing/service";
-import { SourcePostProcessingRecoveryService } from "../sources/postProcessing/recoveryService";
-import { SourceChannelService } from "../sources/channels/sourceChannelService";
-import { upsertSourceChannelScanTask } from "../sources/sourceConnectionScheduler";
-import { computeNextCheckAt } from "../sources/sourceScanCadence";
-import { ProjectResearchRepository } from "./repository";
-import { ProjectResearchAreaService } from "./areaService";
-import { ProjectResearchReportStatusService } from "./reportStatusService";
-import { rejectLegacyResearchRuntimeFields } from "./inputValidation";
+import { getDbPool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { ProjectOperationService } from "../projects/projectOperationService.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry.js";
+import { SourceBackfillPlanningService } from "../sources/sourceBackfillService.js";
+import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService.js";
+import { ARXIV_HISTORY_FLOOR } from "../sources/sourceBackfillStrategy.js";
+import { SourcePostProcessingService } from "../sources/postProcessing/service.js";
+import { SourcePostProcessingRecoveryService } from "../sources/postProcessing/recoveryService.js";
+import { SourceChannelService } from "../sources/channels/sourceChannelService.js";
+import { upsertSourceChannelScanTask } from "../sources/sourceConnectionScheduler.js";
+import { computeNextCheckAt } from "../sources/sourceScanCadence.js";
+import { ProjectResearchRepository } from "./repository.js";
+import { ProjectResearchAreaService } from "./areaService.js";
+import { ProjectResearchReportStatusService } from "./reportStatusService.js";
+import { rejectLegacyResearchRuntimeFields } from "./inputValidation.js";
 import {
   normalizeResearchScope,
   researchScopeFromRefinement,
   type ResearchScopeContext,
-} from "./researchContext";
+} from "./researchContext.js";
 import {
   ProjectResearchExecutionProfileService,
   type ResearchExecutionSelection,
-} from "./executionProfileService";
+} from "./executionProfileService.js";
 import {
   deriveSkippedAfterScreeningSteps,
   deriveStepStates,
@@ -40,50 +40,50 @@ import {
   type ResearchReportDepth,
   type ResearchStepOverride,
   type ResearchMutationResult,
-} from "./operationProjection";
-import { ProjectResearchIntegrityMonitorService } from "./integrityMonitorService";
+} from "./operationProjection.js";
+import { ProjectResearchIntegrityMonitorService } from "./integrityMonitorService.js";
 import {
   ProjectResearchStandingComparisonService,
   STANDING_COMPARISON_JOB_TYPE,
   STANDING_COMPARISON_RECONCILE_JOB_TYPE,
-} from "./standingComparisonService";
+} from "./standingComparisonService.js";
 import {
   createResearchWorkflow,
   researchWorkflowProjection,
   setResearchWorkflowThread,
   type ResearchWorkflowRow,
-} from "./workflowOntology";
-import { ProjectResearchRetryService } from "./pipeline/retryService";
-import { ProjectResearchInitialIntakeCoordinator } from "./pipeline/initialIntakeCoordinator";
-import { ProjectResearchMonitoringCoordinator } from "./pipeline/monitoringCoordinator";
-import { setResearchOperationState } from "./pipeline/operationProjectionWriter";
-import { upsertPendingResearchCheckpoint } from "./checkpointWriter";
-import { ProjectResearchScreeningCoordinator } from "./pipeline/screeningCoordinator";
+} from "./workflowOntology.js";
+import { ProjectResearchRetryService } from "./pipeline/retryService.js";
+import { ProjectResearchInitialIntakeCoordinator } from "./pipeline/initialIntakeCoordinator.js";
+import { ProjectResearchMonitoringCoordinator } from "./pipeline/monitoringCoordinator.js";
+import { setResearchOperationState } from "./pipeline/operationProjectionWriter.js";
+import { upsertPendingResearchCheckpoint } from "./checkpointWriter.js";
+import { ProjectResearchScreeningCoordinator } from "./pipeline/screeningCoordinator.js";
 import {
   ProjectResearchSynthesisCoordinator,
   type QueueSynthesisInput,
-} from "./pipeline/synthesisCoordinator";
-import { startSynthesisOnlyExecution } from "./synthesisOnlyExecution";
-import { startResearchReconcilePass } from "./researchPassExecution";
+} from "./pipeline/synthesisCoordinator.js";
+import { startSynthesisOnlyExecution } from "./synthesisOnlyExecution.js";
+import { startResearchReconcilePass } from "./researchPassExecution.js";
 import {
   summarizeBackfillFailures,
   backfillCanProceed,
   isDeferredBackfillPlan,
   type FailedBackfillRow,
-} from "./backfillFailureDiagnostics";
+} from "./backfillFailureDiagnostics.js";
 import {
   resolveResearchThreadScope,
   normalizeThreadScope,
   checkPinnedThreadDrift,
   type ResearchThreadScopeRef,
-} from "./threadScope";
-import { InquiryIterationService } from "../inquiry/iterationService";
-import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "./pipeline/researchOperationFailureNotifyJob";
+} from "./threadScope.js";
+import { InquiryIterationService } from "../inquiry/iterationService.js";
+import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "./pipeline/researchOperationFailureNotifyJob.js";
 import {
   PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS,
   latestPublicationWatermarkForItems,
-} from "./monitoringWindow";
-import { tryCompleteSearchStepForWorkflow, tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob";
+} from "./monitoringWindow.js";
+import { tryCompleteSearchStepForWorkflow, tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob.js";
 
 const MONITORING_FIELDS = new Set(["submittedDate", "lastUpdatedDate"]);
 const MAX_ITEMS_DEFAULT = 10_000;

@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const sessionsModule: ServerModule = {
   name: "sessions",
@@ -9,4 +9,4 @@ export const sessionsModule: ServerModule = {
 export {
   __setSessionIdentityForTests,
   __setSessionServicesFactoryForTests,
-} from "./routes";
+} from "./routes.js";

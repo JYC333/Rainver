@@ -1,22 +1,22 @@
 import type {
   ProviderFromPresetCreateRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../db";
-import { isSpaceOwnerOrAdmin } from "../../access/roles";
-import { updateSpaceRetrievalSettings } from "../../retrieval/settings";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../db.js";
+import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { updateSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import {
   enqueueRetrievalEmbeddingBackfill,
   resetRetrievalEmbeddingsForSpace,
-} from "../../retrieval/embedding/job";
-import { providerPresetById, type ProviderPreset } from "../presets";
+} from "../../retrieval/embedding/job.js";
+import { providerPresetById, type ProviderPreset } from "../presets/index.js";
 import {
   ProviderCommandForbiddenError,
   ProviderCommandNotFoundError,
   ProviderCommandValidationError,
   type ModelProviderCreateInput,
   type ProviderCommandStore,
-} from "./store";
+} from "./store.js";
 
 function trimmed(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;

@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock";
+import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection.js";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
 import {
   redactEvidenceText,
   sanitizeErrorJson,
   sanitizeEvidenceJson,
-} from "./evidenceRedaction";
-import { assertProjectInSpace } from "../projects/access";
-import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
+} from "./evidenceRedaction.js";
+import { assertProjectInSpace } from "../projects/access.js";
+import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import {
   addOptionalFilter,
   extractErrorMessage,
   recordValue,
   validateRunCreateInput,
-} from "./runRepositoryHelpers";
+} from "./runRepositoryHelpers.js";
 import {
   type ArtifactSummaryRecord,
   type ModelProviderSummaryRecord,
@@ -42,7 +42,7 @@ import {
   type RunStepRecord,
   type RunTerminalUpdate,
   type ConversationRuntimeTerminalSync,
-} from "./runRepositoryTypes";
+} from "./runRepositoryTypes.js";
 import {
   taskChecklistFromRunEvaluation,
   taskConfidenceForOutcome,
@@ -50,16 +50,16 @@ import {
   taskRecommendationForOutcome,
   taskScoreForOutcome,
   taskSummaryFromRunEvaluation,
-} from "./taskEvaluationProjection";
+} from "./taskEvaluationProjection.js";
 import {
   createRunContractSnapshot,
   type RunContractSnapshotInput,
-} from "./contractSnapshot";
-import { assertBudgetSourcesAvailable, checkRunBudget } from "./budgetEnforcement";
-import { withQueryableTransaction } from "../routeUtils/common";
-import type { VerificationResultRecord } from "./verification/types";
-import { PgUsageRepository } from "../usage/repository";
-import { buildRunToolGrants } from "../systemActions/runToolGrants";
+} from "./contractSnapshot.js";
+import { assertBudgetSourcesAvailable, checkRunBudget } from "./budgetEnforcement.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import type { VerificationResultRecord } from "./verification/types.js";
+import { PgUsageRepository } from "../usage/repository.js";
+import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
 
 export {
   RunCreateValidationError,
@@ -86,9 +86,9 @@ export {
   type RunStepRecord,
   type RunTerminalUpdate,
   type ConversationRuntimeTerminalSync,
-} from "./runRepositoryTypes";
+} from "./runRepositoryTypes.js";
 
-export type { VerificationResultRecord } from "./verification/types";
+export type { VerificationResultRecord } from "./verification/types.js";
 
 interface RuntimeProfileForRun {
   id: string;

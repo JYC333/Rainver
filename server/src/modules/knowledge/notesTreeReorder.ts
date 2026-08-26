@@ -3,13 +3,13 @@ import {
   optionalString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   assertNoteCollectionProjectWriter,
   bindNoteToPlacementProject,
-} from "./noteWriter";
-import { assertProjectWriter } from "../projects/access";
-import { contentReadSql } from "../access/contentAccessSql";
+} from "./noteWriter.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 
 /**
  * A note reorder addresses a **placement**, not a note.

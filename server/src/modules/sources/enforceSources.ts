@@ -1,7 +1,7 @@
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { enforce } from "../policy";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import type { SpaceUserIdentity } from "../routeUtils/common";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { enforce } from "../policy/index.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import type { SpaceUserIdentity } from "../routeUtils/common.js";
 
 /** Shared policy gate for every source route (built-in and Custom Source). */
 export async function enforceSources(

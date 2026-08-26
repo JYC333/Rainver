@@ -1,15 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { getDbPool } from "../../db/pool";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { RuntimeToolError, RuntimeToolRegistry } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { getDbPool } from "../../db/pool.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { RuntimeToolError, RuntimeToolRegistry } from "./service.js";
 import {
   RuntimeToolPolicyRepository,
   type SpaceRuntimeToolPolicy,
-} from "./policies";
-import { SpaceAssistantService } from "../agents/spaceAssistantService";
+} from "./policies.js";
+import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;

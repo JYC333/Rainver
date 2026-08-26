@@ -1,8 +1,8 @@
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { assertProjectWriter } from "../projects/access";
-import { markdownToPm } from "./noteDocument";
-import { ensureProjectNotesFolder } from "./noteProjectFolders";
-import { withNoteWrites } from "./noteWriter";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { markdownToPm } from "./noteDocument.js";
+import { ensureProjectNotesFolder } from "./noteProjectFolders.js";
+import { withNoteWrites } from "./noteWriter.js";
 
 /**
  * Projection of a capture into the caller's private marginalia note.

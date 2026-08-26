@@ -2,7 +2,7 @@ import type {
   EvolutionExperienceCreateInput,
   EvolutionExperienceRow,
   EvolutionRunExperienceContext,
-} from "./types";
+} from "./types.js";
 
 export interface EvolutionRunEvaluationForSolidifier {
   id?: string | null;

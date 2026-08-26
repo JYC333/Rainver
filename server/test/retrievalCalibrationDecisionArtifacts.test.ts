@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { RetrievalCalibrationDecisionRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../src/modules/routeUtils/common";
+import type { RetrievalCalibrationDecisionRequest } from "@agent-space/protocol";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 import {
   persistRetrievalCalibrationDecisionArtifact,
   RETRIEVAL_CALIBRATION_DECISION_ARTIFACT_TYPE,
   RetrievalCalibrationDecisionError,
-} from "../src/modules/retrieval/artifacts/calibration";
+} from "../src/modules/retrieval/artifacts/calibration.js";
 
 function fakeDb(
   evidenceRows: Array<{ id: string; artifact_type: string; visibility: string }>,

@@ -1,11 +1,11 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-export { __setRoomServiceFactoryForTests } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+export { __setRoomServiceFactoryForTests } from "./routes.js";
 
 export const roomsModule: ServerModule = {
   name: "rooms",
   registerRoutes,
 };
 
-export { PgRoomRepository } from "./repository";
-export { RoomService } from "./service";
+export { PgRoomRepository } from "./repository.js";
+export { RoomService } from "./service.js";

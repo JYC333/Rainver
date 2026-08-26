@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { resolveNotebookNote } from "../src/modules/projectResearch/notebookNotes";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { resolveNotebookNote } from "../src/modules/projectResearch/notebookNotes.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 // NA: the project research baseline used to be bound by title string, so
 // renaming a starter note silently removed it from the baseline and the
@@ -17,7 +17,13 @@ const PROJECT = "22222222-2222-4222-8222-222222222222";
 const OTHER_PROJECT = "33333333-3333-4333-8333-333333333333";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

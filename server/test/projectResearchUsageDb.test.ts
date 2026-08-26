@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
-import { PgUsageRepository } from "../src/modules/usage/repository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
+import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
+import { PgUsageRepository } from "../src/modules/usage/repository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // The project research review read model must use the canonical usage ledger.
 // Provider-reported usage must remain visible in the review UI through the
@@ -23,7 +23,7 @@ const RUN = "95555555-5555-4555-8555-555555555555";
 const CHECKPOINT = "a6666666-6666-4666-8666-666666666666";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

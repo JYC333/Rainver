@@ -7,22 +7,22 @@
  * runs the unified jobs worker and in-process schedulers.
  */
 
-import { buildServer } from "./server";
+import { buildServer } from "./server.js";
 import {
   collectConfigDiagnostics,
   ConfigError,
   createConfigSnapshot,
   describeConfig,
   loadConfig,
-} from "./config";
-import { startBackgroundServices } from "./modules/scheduler/backgroundServices";
-import { enforceBackupPolicy, BackupPolicyError } from "./modules/backups/guard";
-import { startProviderProxyServer } from "./modules/providers/proxy/server";
-import { PluginHost } from "./modules/plugins/host";
-import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins";
-import { runBuiltInSeeds } from "./db/seeds";
-import { getDbPool } from "./db/pool";
-import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations";
+} from "./config.js";
+import { startBackgroundServices } from "./modules/scheduler/backgroundServices.js";
+import { enforceBackupPolicy, BackupPolicyError } from "./modules/backups/guard.js";
+import { startProviderProxyServer } from "./modules/providers/proxy/server.js";
+import { PluginHost } from "./modules/plugins/host/index.js";
+import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins.js";
+import { runBuiltInSeeds } from "./db/seeds.js";
+import { getDbPool } from "./db/pool.js";
+import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations.js";
 
 async function main(): Promise<void> {
   let config;

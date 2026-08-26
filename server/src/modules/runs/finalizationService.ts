@@ -3,15 +3,15 @@ import {
   type RunEvaluationRecord,
   type RunFinalizationRecord,
   type RunRecord,
-} from "./repository";
-import type { EvolutionRunEvaluationForSolidifier } from "../evolution/solidifier";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
+} from "./repository.js";
+import type { EvolutionRunEvaluationForSolidifier } from "../evolution/solidifier.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
 import {
   hasDeclaredVerificationChecks,
   summarizeVerificationResults,
-} from "./verification";
-import type { VerificationResultRecord } from "./verification";
-import type { RunSupervisorPort } from "./supervisor";
+} from "./verification/index.js";
+import type { VerificationResultRecord } from "./verification/index.js";
+import type { RunSupervisorPort } from "./supervisor.js";
 
 export const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 

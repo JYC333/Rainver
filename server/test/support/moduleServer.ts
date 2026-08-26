@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { createConfigSnapshot, type ServerConfig } from "../../src/config";
+import { createConfigSnapshot, type ServerConfig } from "../../src/config.js";
 import {
   createServerApp,
   registerGatewayConventions,
   registerUnknownApiRoute,
   type ServerAppOptions,
-} from "../../src/gateway/appShell";
+} from "../../src/gateway/appShell.js";
 // Type-only: the registry's value import would load every module.
-import type { ModuleContext, ServerModule } from "../../src/gateway/routeRegistry";
+import type { ModuleContext, ServerModule } from "../../src/gateway/routeRegistry.js";
 
 /**
  * The server's app shell with only the given modules' routes on it.

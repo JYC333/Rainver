@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { contentResourceDefinition } from "./contentAccessRegistry";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentResourceDefinition } from "./contentAccessRegistry.js";
 
 export async function inheritContentAccessGrants(
   db: Queryable,

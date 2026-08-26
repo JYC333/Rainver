@@ -1,4 +1,4 @@
-import { HttpError, type Queryable } from "../routeUtils/common";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -7,8 +7,8 @@ import {
   settingsRecord,
   spaceUserSettingsScopeId,
   type ScopedSettingsRead,
-} from "../settings";
-import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore";
+} from "../settings/index.js";
+import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore.js";
 
 export interface DailyReportSettingRow {
   id: string;

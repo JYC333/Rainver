@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { ActionApprovalGrantService } from "./actionApprovalGrantService";
-import { redactEvidenceText } from "../runs/evidenceRedaction";
-import { PgJobQueueRepository } from "../jobs/repository";
+import type { Pool, PoolClient } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { ActionApprovalGrantService } from "./actionApprovalGrantService.js";
+import { redactEvidenceText } from "../runs/evidenceRedaction.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 
 interface DecisionRow {
   id: string;

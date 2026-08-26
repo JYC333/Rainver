@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createQuestionThreadScope, seedArxivSourceChain, seedPendingScreeningGate } from "./support/researchSeeds";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
-import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { createQuestionThreadScope, seedArxivSourceChain, seedPendingScreeningGate } from "./support/researchSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for rescanning a literature intake operation that
 // finished a legitimately (or wrongly) empty backfill. The operation is
@@ -34,7 +34,7 @@ let threadScope: { thread_id: string; version: number; kind: string; statement: 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 const CONFIG = loadConfig({});
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

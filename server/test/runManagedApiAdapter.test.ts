@@ -1,25 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
+import { loadConfig } from "../src/config.js";
+import { getDbPool } from "../src/db/pool.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 import {
   executeManagedApiNoToolAdapter,
   type RuntimeHostExecutor,
-} from "../src/modules/runs/managedApiAdapter";
-import type { RetrievalToolService } from "../src/modules/retrieval/tool/service";
-import type { RunRecord } from "../src/modules/runs/repository";
-import type { InvocationDelivery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts";
-import {
-  __setProviderCommandStoreForTests,
-  __setProviderHttpClientForTests,
-  type ProviderCommandStore,
-  type ProviderHttpClient,
-} from "../src/modules/providers";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
-import { executeRuntimeHost } from "../src/modules/runtimeHost";
+} from "../src/modules/runs/managedApiAdapter.js";
+import type { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { InvocationDelivery } from "@agent-space/protocol";
+import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts.js";
+import { __setProviderCommandStoreForTests, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { __setProviderHttpClientForTests, type ProviderHttpClient } from "../src/modules/providers/invocation/invocation.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
+import { executeRuntimeHost } from "../src/modules/runtimeHost/service.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

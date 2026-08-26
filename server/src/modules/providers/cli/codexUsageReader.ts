@@ -20,7 +20,7 @@ import {
   type CliUsageImportEvent,
   type CliUsageImportScan,
   type TokenUsage,
-} from "./usageReader";
+} from "./usageReader.js";
 
 interface Counts {
   input: number;

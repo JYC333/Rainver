@@ -1,10 +1,10 @@
-import { claudeCodeLoginAdapter } from "./claudeCodeLoginAdapter";
-import { codexLoginAdapter } from "./codexLoginAdapter";
-import { geminiLoginAdapter } from "./geminiLoginAdapter";
-import { opencodeLoginAdapter } from "./opencodeLoginAdapter";
-import type { CliLoginAdapter } from "./types";
+import { claudeCodeLoginAdapter } from "./claudeCodeLoginAdapter.js";
+import { codexLoginAdapter } from "./codexLoginAdapter.js";
+import { geminiLoginAdapter } from "./geminiLoginAdapter.js";
+import { opencodeLoginAdapter } from "./opencodeLoginAdapter.js";
+import type { CliLoginAdapter } from "./types.js";
 
-export type { CliLoginAdapter } from "./types";
+export type { CliLoginAdapter } from "./types.js";
 
 export const CLI_LOGIN_ADAPTERS: CliLoginAdapter[] = [
   claudeCodeLoginAdapter,

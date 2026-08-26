@@ -3,66 +3,66 @@ import type {
   MessageOut,
   RetrievalObjectType,
   SemanticCheckpoint,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   PgRuntimeContextAcquisitionRepository,
   type RunContextRecord,
-} from "./acquisitionRepository";
-import { RetrievalRegistry, RetrievalSearchService } from "../retrieval";
-import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter";
-import { memoryRetrievalAdapter } from "../memory/retrievalAdapter";
-import { projectRetrievalAdapter } from "../projects/retrievalAdapter";
-import { sourceRetrievalAdapter } from "../sources/retrievalAdapter";
-import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter";
-import { contentReadSql } from "../access/contentAccessSql";
+} from "./acquisitionRepository.js";
+import { RetrievalRegistry, RetrievalSearchService } from "../retrieval/index.js";
+import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter.js";
+import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
+import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
+import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
+import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   loadSourcePolicySnapshots,
   sourceEgressPoliciesForSnapshots,
-} from "../retrieval/sourcePolicy";
+} from "../retrieval/sourcePolicy.js";
 import {
   retrievalEgressAllowed,
   runtimeProviderEgressDestination,
   type RetrievalEgressDestination,
-} from "../retrieval/egress/egressPolicy";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
+} from "../retrieval/egress/egressPolicy.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import {
   ContentAccessAuditService,
   contentResourceTypeForRetrievalObject,
-} from "../contentAccess/audit";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { ContextWindowReconciliationRepository } from "./reconciliationRepository";
-import { normalizeContextItem } from "./itemNormalizer";
+} from "../contentAccess/audit.js";
+import { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
+import { normalizeContextItem } from "./itemNormalizer.js";
 import {
   RuntimeContextAcquisitionComposition,
   type RuntimeContextAuthorityPort,
   type RuntimeContextAuthoritySnapshot,
   type RuntimeContextChannelProvider,
   type RuntimeContextRetrievalIntentPort,
-} from "./acquisitionComposition";
-import { RuntimeContextPlanningService, type RuntimeContextPlanningRequest } from "./planningService";
-import { RetrievalCoordinator, type RetrievalContextAuthorizationPort } from "./retrievalCoordinator";
-import { resolveExplicitReferences, roomScopedAgentReadSql } from "./workContextService";
-import { PgSessionRepository } from "../sessions/repository";
+} from "./acquisitionComposition.js";
+import { RuntimeContextPlanningService, type RuntimeContextPlanningRequest } from "./planningService.js";
+import { RetrievalCoordinator, type RetrievalContextAuthorizationPort } from "./retrievalCoordinator.js";
+import { resolveExplicitReferences, roomScopedAgentReadSql } from "./workContextService.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 import {
   buildChatConversationWindow,
   renderConversationWindow,
-} from "../agents/messageContinuityWindow";
+} from "../agents/messageContinuityWindow.js";
 import {
   loadActiveSemanticCheckpoint,
   loadConversationContinuityThroughMessage,
   loadRoomContinuityForRunRequest,
-} from "./conversationContinuity";
-import { assembleRoomConversationContext, type RoomSummaryCoverage } from "../rooms/conversationContext";
+} from "./conversationContinuity.js";
+import { assembleRoomConversationContext, type RoomSummaryCoverage } from "../rooms/conversationContext.js";
 import {
   PgRuntimeSkillProvider,
   renderRuntimeSkillCandidate,
   type RuntimeSkillCandidate,
-} from "../capabilities/runtimeSkillProvider";
-import { enforce } from "../policy/service";
-import { loadActionRegistry } from "../policy/actionRegistry";
+} from "../capabilities/runtimeSkillProvider.js";
+import { enforce } from "../policy/service.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
 
 type SetupRow = {
   id: string;
@@ -723,7 +723,7 @@ class PgRetrievalAuthorization implements RetrievalContextAuthorizationPort {
         WHERE id=$1 AND space_id=$2`,
       [request.executionControlSnapshotId, request.spaceId],
     );
-    const snapshot = (await loadProtocol()).ExecutionControlSnapshotSchema.parse(result.rows[0]?.snapshot_json);
+    const snapshot = protocol.ExecutionControlSnapshotSchema.parse(result.rows[0]?.snapshot_json);
     if (snapshot.agent_id !== request.agentId) throw new Error("Retrieval Agent does not match execution authority");
     const globalEligible = snapshot.egress.sensitivity_ceiling === "highly_restricted"
       && (snapshot.egress.destination_type === "local_runtime"

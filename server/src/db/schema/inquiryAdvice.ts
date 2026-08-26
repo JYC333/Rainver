@@ -1,9 +1,9 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { inquiryThreads } from "./inquiry";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { inquiryThreads } from "./inquiry.js";
 
 /**
  * Model-generated advice about a Thread's next step. This is a suggestion

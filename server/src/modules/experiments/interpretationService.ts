@@ -8,11 +8,11 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { InquirySignalService } from "../inquiry/signalService";
-import { ExperimentDefinitionService } from "./definitionService";
-import { stringArray } from "./common";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { InquirySignalService } from "../inquiry/signalService.js";
+import { ExperimentDefinitionService } from "./definitionService.js";
+import { stringArray } from "./common.js";
 
 const VERDICTS = new Set(["supports", "contradicts", "inconclusive"]);
 

@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const runtimeToolsModule: ServerModule = {
   name: "runtimeTools",
@@ -19,4 +19,4 @@ export {
   type RuntimeToolManifest,
   type RuntimeToolResolverPort,
   type RuntimeToolStatus,
-} from "./service";
+} from "./service.js";

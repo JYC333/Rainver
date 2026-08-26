@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings";
+import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings.js";
 
 function settingsRow(overrides: Record<string, unknown> = {}) {
   return {

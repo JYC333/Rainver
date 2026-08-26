@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
-import { advanceOperation } from "../src/modules/projectResearch/operationProjection";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
-import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectOperationService } from "../src/modules/projects/projectOperationService.js";
+import { advanceOperation } from "../src/modules/projectResearch/operationProjection.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -22,7 +22,7 @@ const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "77777777-7777-4777-8777-777777777777";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

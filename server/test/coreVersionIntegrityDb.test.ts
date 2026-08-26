@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { loadConfig } from "../src/config";
-import { withTransaction } from "../src/db/tx";
-import { PgAgentRepository } from "../src/modules/agents/repository";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { loadConfig } from "../src/config.js";
+import { withTransaction } from "../src/db/tx.js";
+import { PgAgentRepository } from "../src/modules/agents/repository.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "version-integrity-space";
 const USER = "version-integrity-user";
@@ -17,7 +17,7 @@ const PROVIDER = "version-integrity-provider";
 const CAPABILITY_KEY = "research.search";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -170,7 +170,7 @@ describe("core version integrity", () => {
     expect(versions.rows.slice(1).map((row) => row.id)).toContain(current.rows[0]?.current_version_id);
   });
 
-  it("reuses transaction connections for model validation under db.pool saturation", async (ctx) => {
+  it("reuses transaction connections for model validation under pool saturation", async (ctx) => {
     if (!db.available) return ctx.skip();
     const saturatedPool = new Pool({ connectionString: db.connectionUri, max: 2 });
     try {

@@ -1,4 +1,4 @@
-import type { ResearchProviderKey } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ResearchProviderKey } from "@agent-space/protocol";
 
 export const RESEARCH_QUERY_POLICY_VERSION = "adaptive-recall.v1";
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { dateIso, type Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { type NextFocusKind } from "./threadService";
+import { dateIso, type Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { type NextFocusKind } from "./threadService.js";
 
 /**
  * Steps: the durable record of what a Thread is actually doing.

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -11,16 +11,16 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgRunRepository } from "../runs/repository";
-import { RunOrchestrationService } from "../runs/orchestrationService";
-import { RunMaterializationService } from "../runs/materializationService";
-import { PgVerificationEngine } from "../runs/verification";
-import { resolveRequestId } from "../../gateway/requestContext";
-import { EvolutionRepository } from "./repository";
-import { registerEvolvableAssetRoutes } from "./assetRoutes";
-import { RunWorkflowService, type SaveRunAsWorkflowInput } from "./runWorkflowService";
-import { registerEvolutionBundleRoutes } from "./bundleRoutes";
+} from "../routeUtils/common.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { RunOrchestrationService } from "../runs/orchestrationService.js";
+import { RunMaterializationService } from "../runs/materializationService.js";
+import { PgVerificationEngine } from "../runs/verification/index.js";
+import { resolveRequestId } from "../../gateway/requestContext.js";
+import { EvolutionRepository } from "./repository.js";
+import { registerEvolvableAssetRoutes } from "./assetRoutes.js";
+import { RunWorkflowService, type SaveRunAsWorkflowInput } from "./runWorkflowService.js";
+import { registerEvolutionBundleRoutes } from "./bundleRoutes.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new EvolutionRepository(dbPool(context.config));

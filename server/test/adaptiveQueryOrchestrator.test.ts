@@ -5,15 +5,15 @@ import type {
   ResearchProviderKey,
   ResearchQueryDecision,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../src/config";
-import { AdaptiveQueryOrchestrator, errorClass } from "../src/modules/research/queryPlanning/adaptiveQueryOrchestrator";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../src/config.js";
+import { AdaptiveQueryOrchestrator, errorClass } from "../src/modules/research/queryPlanning/adaptiveQueryOrchestrator.js";
 import type {
   CreateResearchQueryAttemptInput,
   CreateResearchQueryStrategyInput,
   StoredResearchQueryStrategy,
-} from "../src/modules/research/queryPlanning/repository";
-import { HttpError, type Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/research/queryPlanning/repository.js";
+import { HttpError, type Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("AdaptiveQueryOrchestrator", () => {
   it("evaluates providers independently and selects after different attempt counts", async () => {

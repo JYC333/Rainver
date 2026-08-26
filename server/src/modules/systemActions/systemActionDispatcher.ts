@@ -3,19 +3,20 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
+import { systemActionInputJsonSchema } from "@agent-space/protocol";
 import type {
   SystemActionDefinition,
   SystemActionId,
   SystemActionPolicyResource,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   resolveAgentDelegationToolBinding,
   runAgentRoomToolCall,
   agentDelegatePolicyInput,
   type AgentDelegationToolDeps,
-} from "../runs/managedAgentDelegationTools";
+} from "../runs/managedAgentDelegationTools.js";
 import {
   resolveRetrievalToolBinding,
   isRetrievalPreflightMode,
@@ -23,19 +24,18 @@ import {
   runRetrievalToolCall,
   validateRetrievalToolInput,
   type ResolvedRetrievalToolBinding,
-} from "../runs/managedRetrievalTools";
-import type { RunRecord } from "../runs/repository";
-import { PgRunRepository } from "../runs/repository";
-import { getDbPool } from "../../db/pool";
-import { loadSystemActionRegistry } from "./registry";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { SystemActionGateway, SystemActionGatewayError, type SystemActionExecutor } from "./gateway";
-import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "../retrieval/tool/policy";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce } from "../policy/service";
-import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
-import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService";
-import { registerModuleSystemActionExecutors } from "./executorRegistry";
+} from "../runs/managedRetrievalTools.js";
+import type { RunRecord } from "../runs/repository.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { getDbPool } from "../../db/pool.js";
+import { loadSystemActionRegistry } from "./registry.js";
+import { SystemActionGateway, SystemActionGatewayError, type SystemActionExecutor } from "./gateway.js";
+import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce } from "../policy/service.js";
+import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
+import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
+import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
 
 export interface SystemActionDispatcherDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
@@ -80,7 +80,6 @@ export class SystemActionDispatcher {
       resolveAgentDelegationToolBinding(config, run, deps.agentDelegationTools),
     ]);
     const registry = await loadSystemActionRegistry();
-    const { systemActionInputJsonSchema } = await loadProtocol();
     const executors = new Map<SystemActionId, SystemActionExecutor>();
     const grantedActionIds = new Set(
       assembleRunInputEnvelope(run).tool_grants.map((grant) => grant.action_id),

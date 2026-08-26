@@ -14,13 +14,13 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { interestTopics } from "./interestProfiles";
-import { projects } from "./projects";
-import { runs } from "./runs";
-import { sourceItems } from "./sources";
-import { sourceChannels } from "./sourceChannels";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { interestTopics } from "./interestProfiles.js";
+import { projects } from "./projects.js";
+import { runs } from "./runs.js";
+import { sourceItems } from "./sources.js";
+import { sourceChannels } from "./sourceChannels.js";
+import { spaces } from "./spaces.js";
 
 /** One daily delivery snapshot for either one reader or one Project. */
 export const informationDigests = pgTable("information_digests", {

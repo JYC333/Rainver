@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const hostsModule: ServerModule = { name: "hosts", registerRoutes };
 
@@ -11,4 +11,4 @@ export {
   type HostOut,
   type HostFailure,
   type DaemonHelloInfo,
-} from "./repository";
+} from "./repository.js";

@@ -1,5 +1,5 @@
 import { pgTable, index, foreignKey, varchar, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
-import { users } from "./auth";
+import { users } from "./auth.js";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D1: a physical

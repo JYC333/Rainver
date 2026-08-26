@@ -1,4 +1,4 @@
-import { ARXIV_CATEGORY_GROUPS } from "./arxivCategoryTaxonomy";
+import { ARXIV_CATEGORY_GROUPS } from "./arxivCategoryTaxonomy.js";
 
 export interface SourceProviderCategoryOption {
   value: string;

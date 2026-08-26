@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { buildServer } from "../src/server";
-import { loadConfig } from "../src/config";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { buildServer } from "../src/server.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 /**
  * Before this route existed, no code path anywhere could create an
@@ -26,7 +26,13 @@ const NOW = "2026-07-26T12:00:00.000Z";
 
 let app: FastifyInstance | undefined;
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

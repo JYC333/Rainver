@@ -6,23 +6,23 @@ import type {
   RetrievalSearchMode,
   RetrievalToolMode,
   SpaceRetrievalSettingsUpdate,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
   defineScopedSetting,
   settingsRecord,
   type ScopedSettingsRead,
-} from "../settings";
-import { RetrievalEmbeddingStore } from "./embeddingStore";
-import { DEFAULT_EMBED_DIMENSIONS } from "./embedding/config";
+} from "../settings/index.js";
+import { RetrievalEmbeddingStore } from "./embeddingStore.js";
+import { DEFAULT_EMBED_DIMENSIONS } from "./embedding/config.js";
 import {
   contentReadSql,
   contentVisibilityFilterSql,
-} from "../access/contentAccessSql";
+} from "../access/contentAccessSql.js";
 
 export interface SpaceRetrievalSettingsOut {
   space_id: string;

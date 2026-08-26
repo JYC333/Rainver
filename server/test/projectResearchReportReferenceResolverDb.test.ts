@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { resolveResearchReportReferences } from "../src/modules/projectResearch/reportReferenceResolver";
-import { assignReportReferenceIds } from "../src/modules/projectResearch/reportReferenceNumbering";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { resolveResearchReportReferences } from "../src/modules/projectResearch/reportReferenceResolver.js";
+import { assignReportReferenceIds } from "../src/modules/projectResearch/reportReferenceNumbering.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for evidence_id reference resolution: synthesis
 // models cite extracted_evidence rows (sometimes by a truncated id prefix),
@@ -16,7 +16,7 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

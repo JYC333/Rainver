@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
@@ -9,9 +9,9 @@ import {
   resolveIdentity,
   sendRouteError,
   stringArray,
-} from "../routeUtils/common";
-import { PgProposalApplyService } from "../proposals/applyService";
-import { EvolutionBundleRepository, type EvolutionBundleDecision } from "./bundleRepository";
+} from "../routeUtils/common.js";
+import { PgProposalApplyService } from "../proposals/applyService.js";
+import { EvolutionBundleRepository, type EvolutionBundleDecision } from "./bundleRepository.js";
 
 function requiredString(body: Record<string, unknown>, field: string): string {
   const value = body[field];

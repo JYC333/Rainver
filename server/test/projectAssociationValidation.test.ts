@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { PgActivityRepository } from "../src/modules/activity/repository";
-import { PgProposalRepository } from "../src/modules/proposals/repository";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { PgActivityRepository } from "../src/modules/activity/repository.js";
+import { PgProposalRepository } from "../src/modules/proposals/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 class FakeDb implements Queryable {
   constructor(private readonly handler: (sql: string, params: readonly unknown[]) => unknown[]) {}

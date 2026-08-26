@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSandboxLevelForRuntime } from "../src/modules/runs/runRepositoryHelpers";
+import { resolveSandboxLevelForRuntime } from "../src/modules/runs/runRepositoryHelpers.js";
 
 describe("runtime sandbox resolution", () => {
   it("uses an ephemeral run directory for a CLI without a workspace", () => {

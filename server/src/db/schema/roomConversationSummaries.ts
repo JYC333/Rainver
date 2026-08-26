@@ -13,11 +13,11 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { rooms } from "./rooms";
-import { projects } from "./projects";
-import { sessions } from "./sessions";
-import { spaces } from "./spaces";
-import { users } from "./auth";
+import { rooms } from "./rooms.js";
+import { projects } from "./projects.js";
+import { sessions } from "./sessions.js";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
 
 /** Append-only, member-visible rolling summaries for Room conversations. */
 export const roomConversationSummaryVersions = pgTable("room_conversation_summary_versions", {

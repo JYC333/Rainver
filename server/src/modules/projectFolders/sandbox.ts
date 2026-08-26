@@ -1,13 +1,13 @@
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import type { RunRecord } from "../runs/repository";
-import { gitOutput, isGitRepo, runGit } from "./git";
-import { isInside } from "./pathPolicy";
-import { PgProjectFolderRepository, type ProjectFolderRow } from "./repository";
-import { resolveServerHostLocationForRun, locationAbsoluteRoot } from "./workspaceLocations";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import type { RunRecord } from "../runs/repository.js";
+import { gitOutput, isGitRepo, runGit } from "./git.js";
+import { isInside } from "./pathPolicy.js";
+import { PgProjectFolderRepository, type ProjectFolderRow } from "./repository.js";
+import { resolveServerHostLocationForRun, locationAbsoluteRoot } from "./workspaceLocations.js";
 
 export interface PreparedRunSandbox {
   sandbox_cwd: string | null;

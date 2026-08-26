@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { LocalCliRuntimeAdapterSpec } from "./specs";
+import type { LocalCliRuntimeAdapterSpec } from "./specs.js";
 
 export class RuntimeSubagentConfigError extends Error {
   constructor(message: string) {

@@ -1,5 +1,5 @@
-import type { RunToolGrant } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadSystemActionRegistry } from "./registry";
+import type { RunToolGrant } from "@agent-space/protocol";
+import { loadSystemActionRegistry } from "./registry.js";
 
 export async function buildRunToolGrants(
   capabilities: readonly unknown[],

@@ -8,25 +8,25 @@ import type {
   RuntimeSemanticEvent,
   ExecutionControlSnapshot,
   TurnContextRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { getDbPool } from "../../db/pool";
+} from "@agent-space/protocol";
+import { RETRIEVAL_INTENT_MAX_CHARS } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
 import {
   executeManagedApiNoToolAdapter,
   type ManagedApiNoToolAdapterDeps,
-} from "./managedApiAdapter";
+} from "./managedApiAdapter.js";
 import {
   executeVendorCliAdapter,
   type VendorCliAdapterDeps,
-} from "./vendorCliAdapter";
-import { executeRemoteHostCliAdapter } from "./remoteHostCliAdapter";
-import { PgHostThreadEventRepository, createSerializedThreadEventSink } from "../hosts/threadEventRepository";
-import { serializeCalls } from "../routeUtils/common";
-import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector";
-import type { CliProcessRegistry } from "./localCliExecution";
-import { PgRunRepository } from "./repository";
-import { dispatchesToHostDaemon } from "./runRemoteness";
+} from "./vendorCliAdapter.js";
+import { executeRemoteHostCliAdapter } from "./remoteHostCliAdapter.js";
+import { PgHostThreadEventRepository, createSerializedThreadEventSink } from "../hosts/threadEventRepository.js";
+import { serializeCalls } from "../routeUtils/common.js";
+import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector.js";
+import type { CliProcessRegistry } from "./localCliExecution.js";
+import { PgRunRepository } from "./repository.js";
+import { dispatchesToHostDaemon } from "./runRemoteness.js";
 import type {
   RunEventInput,
   RunRecord,
@@ -34,47 +34,47 @@ import type {
   RunStepRecord,
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
-} from "./repository";
+} from "./repository.js";
 import {
   EPHEMERAL_CLEANUP_KIND,
   prepareEphemeralDir,
   removeEphemeralDir,
   workingDirScopeForLevel,
-} from "./ephemeralSandbox";
+} from "./ephemeralSandbox.js";
 import {
   prepareConversationRuntimeState,
   removeConversationRuntimeState,
-} from "./conversationRuntimeState";
-import type { RunSandboxManagerPort } from "../projectFolders";
+} from "./conversationRuntimeState.js";
+import type { RunSandboxManagerPort } from "../projectFolders/index.js";
 import {
   getRuntimeAdapterSpec,
   isVendorCliAdapter,
   type RuntimeExecutorFamily,
-} from "../runtimeAdapters";
-import type { RunMaterializationService } from "./materializationService";
+} from "../runtimeAdapters/index.js";
+import type { RunMaterializationService } from "./materializationService.js";
 import {
   createProductionRuntimeContextInvocationGateway,
   RuntimeContextCliContinuityService,
   WorkContextService,
   type RuntimeContextGatewayPort,
   type RuntimeContextInvocationGatewayPort,
-} from "../runtimeContext";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce, type EnforceResult } from "../policy/service";
+} from "../runtimeContext/index.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce, type EnforceResult } from "../policy/service.js";
 import {
   ExecutionControlSnapshotRepository,
   type EffectiveRunContextBindings,
-} from "../policy/executionControlSnapshots";
-import { RuntimeContextPolicyRepository } from "../policy/runtimeContextPolicyRepository";
-import { RuntimeToolRegistry } from "../runtimeTools";
-import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies";
-import { PgRouteDecisionRepository } from "../routing/repository";
-import { RunApprovalRequiredError, RunPreparationError } from "./orchestrationErrors";
-import { resolveSandboxLevelForRuntime } from "./runRepositoryHelpers";
+} from "../policy/executionControlSnapshots.js";
+import { RuntimeContextPolicyRepository } from "../policy/runtimeContextPolicyRepository.js";
+import { RuntimeToolRegistry } from "../runtimeTools/index.js";
+import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies.js";
+import { PgRouteDecisionRepository } from "../routing/repository.js";
+import { RunApprovalRequiredError, RunPreparationError } from "./orchestrationErrors.js";
+import { resolveSandboxLevelForRuntime } from "./runRepositoryHelpers.js";
 import {
   credentialPolicyMetadata,
   managedExecutionPolicyFromContract,
-} from "../policy/managedExecutionPolicy";
+} from "../policy/managedExecutionPolicy.js";
 import {
   adapterFailureEnvelope,
   adapterTimeoutEnvelope,
@@ -95,28 +95,28 @@ import {
   toRunPreparationError,
   waitingForDependencyFromAdapter,
   withTimeout,
-} from "./orchestrationResults";
+} from "./orchestrationResults.js";
 import type {
   VerificationEnginePort,
   VerificationResultRecord,
-} from "./verification";
-import { assembleRunInputEnvelope } from "./runInputEnvelope";
+} from "./verification/index.js";
+import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import {
   createRunInvocationAttemptLifecycle,
   type RunInvocationAttemptLifecycle,
-} from "./runtimeContextAttempts";
-import { publishChatTextDelta } from "../streaming/conversationDeltaBus";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+} from "./runtimeContextAttempts.js";
+import { publishChatTextDelta } from "../streaming/conversationDeltaBus.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import {
   RunExchangeManager,
   type RunExchangeHandle,
   type RunExchangePort,
-} from "./runExchange";
+} from "./runExchange.js";
 import {
   recordUsageObservation,
-} from "../usage/service";
-import type { UsageObservation } from "../usage/types";
-import { PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository";
+} from "../usage/service.js";
+import type { UsageObservation } from "../usage/types.js";
+import { PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -3109,7 +3109,6 @@ function cliVendor(adapterType: string): string {
 export async function retrievalIntentFor(prompt: string | null | undefined): Promise<string | null> {
   const trimmed = prompt?.trim();
   if (!trimmed) return null;
-  const { RETRIEVAL_INTENT_MAX_CHARS } = await loadProtocol();
   if (trimmed.length <= RETRIEVAL_INTENT_MAX_CHARS) return trimmed;
   return trimmed.slice(0, RETRIEVAL_INTENT_MAX_CHARS).trim();
 }

@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { EVOLVABLE_ASSET_EVALUATION_JOB, EvaluationHarnessService } from "./evaluationHarnessService";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { EVOLVABLE_ASSET_EVALUATION_JOB, EvaluationHarnessService } from "./evaluationHarnessService.js";
 
 export function registerEvaluationHarnessHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   registry.register(EVOLVABLE_ASSET_EVALUATION_JOB, async (job) => {

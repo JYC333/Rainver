@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Engine-owned access to the `retrieval_chunks` embedding columns. Like the rest

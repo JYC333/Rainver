@@ -5,12 +5,12 @@ import type {
   InvocationSnapshotSafe,
   RuntimeHostExecuteResponse,
   TurnContextRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import type {
   RuntimeContextInvocationGatewayPort,
   RuntimeContextInvocationInput,
-} from "../runtimeContext";
-import type { RunRecord } from "./repository";
+} from "../runtimeContext/index.js";
+import type { RunRecord } from "./repository.js";
 
 export interface RunInvocationAttemptLifecycle {
   prepare(): Promise<InvocationDelivery>;

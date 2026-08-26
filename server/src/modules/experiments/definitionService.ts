@@ -1,5 +1,5 @@
-import { contentReadSql } from "../access/contentAccessSql";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -10,14 +10,14 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   assertProjectReadable,
   assertProjectWriter,
   assertProjectFolderInProject,
   lockActiveProjectForMutation,
-} from "../projects/access";
-import { enumValue, EXECUTOR_TYPES, normalizeExecutorConfig } from "./common";
+} from "../projects/access.js";
+import { enumValue, EXECUTOR_TYPES, normalizeExecutorConfig } from "./common.js";
 
 const DEFINITION_STATUSES = new Set(["draft", "active", "paused", "completed", "archived"]);
 const VERSION_STATUSES = new Set(["draft", "approved", "archived"]);

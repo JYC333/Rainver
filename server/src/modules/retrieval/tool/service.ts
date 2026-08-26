@@ -3,8 +3,8 @@ import type {
   RetrievalObjectType,
   RetrievalSearchMode,
   RetrievalSearchResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RetrievalSearchService } from "..";
+} from "@agent-space/protocol";
+import type { RetrievalSearchService } from "../index.js";
 
 /**
  * Agent-space-controlled retrieval tool surface (W10).

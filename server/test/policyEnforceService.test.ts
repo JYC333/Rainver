@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadActionRegistry, type PolicyActionDefinition } from "../src/modules/policy/actionRegistry";
-import { enforce, enforceProposalApply } from "../src/modules/policy/service";
-import type { ServerConfig } from "../src/config";
+import { loadActionRegistry, type PolicyActionDefinition } from "../src/modules/policy/actionRegistry.js";
+import { enforce, enforceProposalApply } from "../src/modules/policy/service.js";
+import type { ServerConfig } from "../src/config.js";
 
 /**
  * Service-level result mapping for the enforce port. The durable-audit write

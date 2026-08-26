@@ -1,4 +1,4 @@
-import { sha256 } from "../sourceRepositoryMappers";
+import { sha256 } from "../sourceRepositoryMappers.js";
 
 /**
  * Real TypeScript port of the string-processing heuristics embedded as a

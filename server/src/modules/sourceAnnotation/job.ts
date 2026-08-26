@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobEnvelopeForHandler, JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry";
-import { SOURCE_ANNOTATION_JOB_TYPE } from "./repository";
-import { SourceAnnotationService, type AnnotationSweepResult } from "./service";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobEnvelopeForHandler, JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry.js";
+import { SOURCE_ANNOTATION_JOB_TYPE } from "./repository.js";
+import { SourceAnnotationService, type AnnotationSweepResult } from "./service.js";
 
 export function registerSourceAnnotationHandler(
   registry: JobHandlerRegistry,

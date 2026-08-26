@@ -9,8 +9,8 @@ import type {
   RouteTrustLevel,
   SandboxLevel,
   ScoredRouteCandidate,
-} from "./types";
-import { isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+} from "./types.js";
+import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 
 const TRUST_RANK: Record<RouteTrustLevel, number> = { low: 1, medium: 2, high: 3 };
 const SANDBOX_RANK: Record<SandboxLevel, number> = {

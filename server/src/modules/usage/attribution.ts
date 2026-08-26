@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import {
   isContentAccessLevel,
   isContentVisibility,
   type ContentAccessLevel,
   type ContentVisibility,
-} from "../access/contentAccessTypes";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import type { UsageAttribution, UsageGrantSnapshot, UsageObservation } from "./types";
+} from "../access/contentAccessTypes.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import type { UsageAttribution, UsageGrantSnapshot, UsageObservation } from "./types.js";
 
 interface SourcePolicyRow {
   owner_user_id: string | null;

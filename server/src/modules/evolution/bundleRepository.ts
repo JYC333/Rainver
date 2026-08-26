@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient } from "../../db/pool";
-import { contentReadSql } from "../access/contentAccessSql";
-import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import type { ProposalTransactionResult } from "../proposals/applyService";
-import { lockEvolutionAssets } from "./assetLocks";
-import { stableJsonStringify } from "./hash";
+import type { Pool, PoolClient } from "../../db/pool.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import type { ProposalTransactionResult } from "../proposals/applyService.js";
+import { lockEvolutionAssets } from "./assetLocks.js";
+import { stableJsonStringify } from "./hash.js";
 
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 

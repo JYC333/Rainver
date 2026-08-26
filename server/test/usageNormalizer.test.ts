@@ -3,7 +3,7 @@ import {
   normalizeUsageObservation,
   safeTraceObject,
   sumUsageBuckets,
-} from "../src/modules/usage/normalizer";
+} from "../src/modules/usage/normalizer.js";
 
 const privateAttribution = {
   owner_user_id: "user-1",

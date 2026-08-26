@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadConfig } from "../src/config";
-import { managedAgentLoop } from "../src/modules/runs/managedAgentLoopBinding";
-import { piManagedAgentLoop } from "../src/modules/runs/piManagedAgentLoop";
-import { validToolLoopSuffix } from "../src/modules/runtimeHost/deliveryAuthorizer";
+} from "@agent-space/protocol";
+import { loadConfig } from "../src/config.js";
+import { managedAgentLoop } from "../src/modules/runs/managedAgentLoopBinding.js";
+import { piManagedAgentLoop } from "../src/modules/runs/piManagedAgentLoop.js";
+import { validToolLoopSuffix } from "../src/modules/runtimeHost/deliveryAuthorizer.js";
 
 const config = loadConfig({});
 

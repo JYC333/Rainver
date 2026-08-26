@@ -5,7 +5,7 @@ import {
   normalizeStrategy,
   planSegments,
   resolveStrategyBounds,
-} from "../src/modules/sources/sourceBackfillStrategy";
+} from "../src/modules/sources/sourceBackfillStrategy.js";
 
 describe("source backfill history strategy", () => {
   it("resolves all available arXiv history to the connector floor", () => {

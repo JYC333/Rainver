@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins";
-import { getOfficialPlugin, listOfficialPlugins } from "../src/modules/plugins/registry";
+import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins.js";
+import { getOfficialPlugin, listOfficialPlugins } from "../src/modules/plugins/registry.js";
 
 describe("official plugin registry", () => {
   it("does not expose the retired research atlas plugin", () => {

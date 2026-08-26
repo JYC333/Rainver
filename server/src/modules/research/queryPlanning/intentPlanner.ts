@@ -2,13 +2,13 @@ import type {
   ResearchContext,
   ResearchSemanticConcept,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { resolvePrompt } from "../../prompts/resolver";
-import { resolveProviderCommandStore } from "../../providers/commands/store";
-import { completeProviderMessages } from "../../providers/invocation/invocation";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { resolvePrompt } from "../../prompts/resolver.js";
+import { resolveProviderCommandStore } from "../../providers/commands/store.js";
+import { completeProviderMessages } from "../../providers/invocation/invocation.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 
 export const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
 
@@ -25,7 +25,6 @@ export class ResearchIntentPlanner {
     context: ResearchContext,
     execution: ResearchIntentExecution = {},
   ): Promise<ResearchSemanticQuery> {
-    const protocol = await loadProtocol();
     const validatedContext = protocol.ResearchContextSchema.parse(context);
     if (!execution.modelProviderId) return heuristicResearchIntent(validatedContext);
 

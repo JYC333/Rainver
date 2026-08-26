@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { RelationsRepository } from "../src/modules/relations/repository";
-import { RelationsService } from "../src/modules/relations/service";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RelationsRepository } from "../src/modules/relations/repository.js";
+import { RelationsService } from "../src/modules/relations/service.js";
 
 // Real-Postgres coverage for Relation Core: the space_objects composite-FK
 // extension pattern, proposal-gated canonical affiliation edges, and space isolation across relation
@@ -15,7 +15,7 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

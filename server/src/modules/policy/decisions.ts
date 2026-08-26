@@ -9,7 +9,7 @@
 import type {
   PolicyDecisionValue,
   PolicyRiskLevel,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export type Decision = PolicyDecisionValue; // "allow" | "deny" | "require_approval"
 export type RiskLevel = PolicyRiskLevel; // "low" | "medium" | "high" | "critical"

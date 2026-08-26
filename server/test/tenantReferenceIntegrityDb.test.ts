@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const USER = "tenant-integrity-user";
 const SPACE_A = "tenant-integrity-space-a";
@@ -19,7 +19,7 @@ const RUN_A = "tenant-integrity-run-a";
 const RUN_B = "tenant-integrity-run-b";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

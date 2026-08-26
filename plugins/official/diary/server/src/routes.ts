@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { Queryable, PluginHostContext } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { diaryRepository } from "./domain/repository";
-import { JOB_TYPE_DIARY_REFLECTION } from "./jobs";
+import type { Queryable, PluginHostContext } from "@agent-space/protocol";
+import { diaryRepository } from "./domain/repository.js";
+import { JOB_TYPE_DIARY_REFLECTION } from "./jobs.js";
 
 function optionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;

@@ -3,9 +3,9 @@ import type {
   ContextItem,
   RuntimeContextEnvelope,
   TurnContextRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { ContextWindowPlanner } from "./windowPlanner";
-import type { ModelWindowOverride } from "../usage/modelCatalog";
+} from "@agent-space/protocol";
+import { ContextWindowPlanner } from "./windowPlanner.js";
+import type { ModelWindowOverride } from "../usage/modelCatalog.js";
 
 export interface RuntimeContextPlanningInput {
   executionControlSnapshotId: string;

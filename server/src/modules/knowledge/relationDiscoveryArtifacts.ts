@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { RelationDiscoveryReport } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
+import type { RelationDiscoveryReport } from "@agent-space/protocol";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import {
   acceptReviewPacket,
   insertProposalRow,
   reviewScopeValue,
   visibilityForReviewScope,
   type ChildProposalDraft,
-} from "../proposals/reviewPackets";
-import type { Queryable } from "../routeUtils/common";
+} from "../proposals/reviewPackets.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Slice F packetization: the discovery report becomes an owner-private (or

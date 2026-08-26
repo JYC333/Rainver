@@ -1,4 +1,4 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 
 export type ProjectAttentionSeverity = "low" | "normal" | "high" | "critical";
 

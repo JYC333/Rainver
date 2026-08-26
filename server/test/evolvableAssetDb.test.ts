@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for generic prompt/workflow template evolution:
 // asset/version/pin CRUD, immutability
@@ -21,7 +21,7 @@ const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

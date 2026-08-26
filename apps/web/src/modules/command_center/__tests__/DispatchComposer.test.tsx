@@ -23,9 +23,16 @@ const REMOTE_HOST = {
     runtimes: ['claude', 'git'],
     options: {
       claude: {
-        models: ['default', 'claude-fable-5[1m]', 'sonnet'],
+        // As the runtime describes them: it names `claude-fable-5[1m]` "Fable",
+        // and only `default`'s description says which model it resolves to.
+        models: [
+          { value: 'default', name: 'Default (recommended)', description: 'Opus (1M context)' },
+          { value: 'claude-fable-5[1m]', name: 'Fable', description: 'Fable 5' },
+          { value: 'sonnet', name: 'Sonnet', description: null },
+        ],
         current_model: 'claude-fable-5[1m]',
-        efforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+        efforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max']
+          .map(value => ({ value, name: value, description: null })),
         current_effort: 'high',
       },
     },
@@ -368,7 +375,11 @@ describe('DispatchComposer — choosing a backend', () => {
     vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
     await readyNew()
     await userEvent.click(screen.getByRole('button', { name: 'Model backend' }))
-    expect(screen.getByRole('option', { name: /This machine's login · claude-fable-5\[1m\]/ })).toBeInTheDocument()
+    // By name, with the effort — not the raw id with its variant suffix.
+    const option = screen.getByRole('option', { name: /This machine's login · Fable/ })
+    expect(option).toBeInTheDocument()
+    expect(option).not.toHaveTextContent('[1m]')
+    expect(option).toHaveTextContent('high')
   })
 
   it("still offers the machine's login when its CLI pins no model", async () => {
@@ -381,13 +392,86 @@ describe('DispatchComposer — choosing a backend', () => {
     expect(screen.getByRole('option', { name: "This machine's login" })).toBeInTheDocument()
   })
 
+  it("offers the runtime's models on a host default that is itself the machine's login", async () => {
+    // The backend is the same either way. Requiring "This machine's login" to
+    // be restated just to see a model list made the default look as if it had
+    // none.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    // Still on the inherited default — nothing was selected.
+    expect(screen.getByRole('button', { name: 'Model backend' })).toHaveTextContent("This host's default")
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toBeInTheDocument())
+    await choose('Model', 'Sonnet')
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+
+    const body = lastDispatchBody()
+    expect(body.model).toBe('sonnet')
+    // Inheriting, so the provider key stays absent rather than pinning one.
+    expect('model_provider_id' in body).toBe(false)
+  })
+
+  it("offers a bound host default's own models, not the runtime's", async () => {
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({
+      items: [{ host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: 'prov-1', model: null, updated_at: '' }],
+    })
+    await readyNew()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
+    expect(screen.getByRole('option', { name: 'MiniMax-M2' })).toBeInTheDocument()
+    // The runtime's own catalogue belongs to the machine's login, not to this.
+    expect(screen.queryByRole('option', { name: 'Sonnet' })).not.toBeInTheDocument()
+  })
+
+  it('shows the model in force, by name, without a synthetic default entry', async () => {
+    // One name for one thing: the list is what can be chosen, the selection is
+    // what is chosen. An "as configured" entry beside a list the current value
+    // had been removed from said it twice and hid the real name.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    const trigger = await screen.findByRole('button', { name: 'Model' })
+    // The bracketed variant suffix is part of the value, not of the name.
+    // The runtime's own name for it, not the raw id.
+    expect(trigger).toHaveTextContent('Fable')
+    expect(trigger).not.toHaveTextContent('[1m]')
+    expect(trigger).not.toHaveTextContent(/As configured/)
+
+    await userEvent.click(trigger)
+    // Every option is listed, the current one included.
+    expect(screen.getByRole('option', { name: 'Fable' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Sonnet' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /As configured/ })).not.toBeInTheDocument()
+
+    // `Default` alone answers nothing, so it carries what it resolves to.
+    expect(screen.getByRole('option', { name: 'Default (Opus (1M context))' })).toBeInTheDocument()
+  })
+
+  it('selects the effort in force rather than describing it', async () => {
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    const trigger = await screen.findByRole('button', { name: 'Reasoning effort' })
+    expect(trigger).toHaveTextContent('high')
+    expect(trigger).not.toHaveTextContent(/As configured/)
+  })
+
+  it('sends the whole model id, suffix included, when one is chosen', async () => {
+    // The suffix is trimmed for reading only — it is part of what identifies
+    // the model to the runtime.
+    vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+    await readyNew()
+    await choose('Model', 'Fable')
+    await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
+    await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
+    expect(lastDispatchBody().model).toBe('claude-fable-5[1m]')
+  })
+
   it("lets the machine's own login be given a different model", async () => {
     // The whole point of naming it: with no binding the model is the CLI's,
     // and until now there was no way to run this one turn on another.
     vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
     await readyNew()
     await choose('Model backend', /This machine's login/)
-    await choose('Model', 'sonnet')
+    await choose('Model', 'Sonnet')
     await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
     await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())
 
@@ -402,7 +486,7 @@ describe('DispatchComposer — choosing a backend', () => {
     vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
     await readyNew()
     await choose('Model backend', /This machine's login/)
-    await choose('Model', 'sonnet')
+    await choose('Model', 'Sonnet')
     await choose('Reasoning effort', 'xhigh')
     await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }))
     await waitFor(() => expect(tasksApi.createRunWithoutTask).toHaveBeenCalled())

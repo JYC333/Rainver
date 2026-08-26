@@ -1,20 +1,20 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
 import type {
   MemoryOut,
   MemoryPage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import {
   canReadMemory,
   shouldRedactMemoryContent,
   type MemoryAuthFields,
-} from "./memoryReadAuth";
-import { accessibleProjectIds, canAccessProject } from "./projectAccess";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { resolveOversightLevel } from "../access/oversightResolver";
-import { memorySensitivityReadSql } from "./memorySensitivitySql";
-import { ContentAccessAuditService } from "../contentAccess/audit";
+} from "./memoryReadAuth.js";
+import { accessibleProjectIds, canAccessProject } from "./projectAccess.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { resolveOversightLevel } from "../access/oversightResolver.js";
+import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
+import { ContentAccessAuditService } from "../contentAccess/audit.js";
 
 export interface QueryResult<Row> {
   rows: Row[];

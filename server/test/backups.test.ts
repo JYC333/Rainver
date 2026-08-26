@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BackupPolicyError, enforceBackupPolicy } from "../src/modules/backups/guard";
+import { BackupPolicyError, enforceBackupPolicy } from "../src/modules/backups/guard.js";
 import {
   BACKUP_DATA_DIRS,
   BackupError,
   BackupService,
   assertSafeBackupTree,
-} from "../src/modules/backups/service";
-import { loadConfig } from "../src/config";
+} from "../src/modules/backups/service.js";
+import { loadConfig } from "../src/config.js";
 
 describe("backup policy guard", () => {
   it("fails fast in prod when backups are disabled and unacknowledged", () => {

@@ -1,13 +1,13 @@
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import type { RetrievalRegistry } from "../registry";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import type { RetrievalRegistry } from "../registry.js";
 import {
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromJson,
   sourcePolicyAllowsRead,
-} from "../sourcePolicy";
-import type { RevalidatedObject } from "../types";
+} from "../sourcePolicy.js";
+import type { RevalidatedObject } from "../types.js";
 
 /**
  * Retrieval maintenance scan — the "context review cycle" review-candidate generator (W7).

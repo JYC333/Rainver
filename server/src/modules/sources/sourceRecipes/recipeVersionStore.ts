@@ -3,10 +3,10 @@ import type {
   SourcePolicyEnvelope,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { dateIso, type Queryable } from "../../routeUtils/common";
-import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler";
-import { resolveRequestedSourceSchedule } from "../sourceScheduleInput";
+} from "@agent-space/protocol";
+import { dateIso, type Queryable } from "../../routeUtils/common.js";
+import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
+import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
 
 /**
  * SQL access for `source_recipe_versions` (Level 2 Source recipes). Follows

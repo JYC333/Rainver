@@ -1,21 +1,21 @@
 import type {
   AssistantMessage,
   ChatTurnCompletion,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews";
-import { PgSessionRepository } from "../sessions/repository";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 import {
   ManagedSemanticCheckpointProvider,
   RuntimeContextContinuityService,
-} from "../runtimeContext";
-import { runOutputResult } from "./orchestrationResults";
+} from "../runtimeContext/index.js";
+import { runOutputResult } from "./orchestrationResults.js";
 import {
   PgRunRepository,
   type RunRecord,
-} from "./repository";
-import { requestRoomConversationSummary } from "../rooms/conversationSummaryService";
+} from "./repository.js";
+import { requestRoomConversationSummary } from "../rooms/conversationSummaryService.js";
 
 const TERMINAL_STATUSES = new Set([
   "succeeded",

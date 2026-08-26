@@ -3,7 +3,7 @@ import {
   buildChatConversationWindow,
   conversationWindowToMessages,
   renderConversationWindow,
-} from "../src/modules/agents/messageContinuityWindow";
+} from "../src/modules/agents/messageContinuityWindow.js";
 
 function message(
   id: string,

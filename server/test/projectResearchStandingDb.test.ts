@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import {
   ProjectResearchStandingComparisonService,
   STANDING_COMPARISON_DAILY_RUN_LIMIT,
   STANDING_COMPARISON_JOB_TYPE,
-} from "../src/modules/projectResearch/standingComparisonService";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService";
-import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
-import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+} from "../src/modules/projectResearch/standingComparisonService.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService.js";
+import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService.js";
+import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository.js";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
+import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // R5's standing service deliberately has no Workflow or Inquiry Thread
 // prerequisite. These tests keep PostgreSQL, Project ACLs, durable Jobs, Run
@@ -29,7 +29,7 @@ const VERSION = "44444444-4444-4444-8444-444444444444";
 const identity = { spaceId: SPACE, userId: USER };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

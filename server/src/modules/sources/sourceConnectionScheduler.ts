@@ -2,8 +2,8 @@ import {
   PgSchedulerTaskStore,
   type SchedulerTaskRow,
   type SchedulerTaskStatus,
-} from "../scheduler/taskStore";
-import type { Queryable } from "../routeUtils/common";
+} from "../scheduler/taskStore.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 export const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
 

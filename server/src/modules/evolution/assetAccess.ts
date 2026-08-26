@@ -1,6 +1,6 @@
-import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { assertProjectWriter, canWriteProject } from "../projects/access";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectWriter, canWriteProject } from "../projects/access.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 
 export interface EvolvableAssetAccessRow {
   id: string;

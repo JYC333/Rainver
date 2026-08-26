@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   FINANCE_LEDGER_PLUGIN_ID,
   financeLedgerDescriptor,
-} from "../src/modules/plugins/official/financeLedger";
-import { getOfficialPlugin } from "../src/modules/plugins/registry";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
+} from "../src/modules/plugins/official/financeLedger.js";
+import { getOfficialPlugin } from "../src/modules/plugins/registry.js";
+import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 
 const {
   plugin: { financeLedgerPlugin },

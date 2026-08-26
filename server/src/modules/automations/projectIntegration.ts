@@ -1,9 +1,9 @@
-import { contentReadSql } from "../access/contentAccessSql";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
-} from "../projects/attentionRegistry";
+} from "../projects/attentionRegistry.js";
 import {
   projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
@@ -11,8 +11,8 @@ import {
   type ProjectEntitySummary,
   type ProjectEntitySummaryAdapter,
   type ProjectModeProjectionAdapter,
-} from "../projects/overviewRegistry";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+} from "../projects/overviewRegistry.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 
 interface OperationsSnapshot {
   active_automations: number;

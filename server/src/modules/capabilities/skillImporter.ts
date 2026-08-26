@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { fetch } from "undici";
-import { HttpError } from "../routeUtils/common";
-import { parseSkillMarkdown } from "./skillParser";
-import { analyzeSkillRisk } from "./skillRisk";
+import { HttpError } from "../routeUtils/common.js";
+import { parseSkillMarkdown } from "./skillParser.js";
+import { analyzeSkillRisk } from "./skillRisk.js";
 import type {
   NormalizedSkillResource,
   SkillImportPreview,
   SkillPackageFilePreview,
   SkillSourceType,
-} from "./types";
+} from "./types.js";
 
 export interface SkillFetcher {
   (url: string): Promise<{ body: string; finalUrl?: string | null; contentType?: string | null }>;

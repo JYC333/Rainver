@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Real-PostgreSQL coverage for Slice F discovery. Locks the SQL-facing behavior
 // the FakeDb unit tests cannot: the knowledge_items/space_objects join, the
@@ -14,7 +14,7 @@ const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

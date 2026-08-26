@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository.js";
 
 let repo: PgSpaceRepository | undefined;
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

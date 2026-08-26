@@ -1,29 +1,29 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common";
-import { assertProjectWriter } from "../projects/access";
-import { sourceItemReadableClause } from "../sources/sourceItemAccess";
-import { resolvePrompt } from "../prompts/resolver";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { completeProviderMessages } from "../providers/invocation/invocation";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService";
+import type { ServerConfig } from "../../config.js";
+import * as protocol from "@agent-space/protocol";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { resolvePrompt } from "../prompts/resolver.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { completeProviderMessages } from "../providers/invocation/invocation.js";
+import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService.js";
 import {
   RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT,
   RESEARCH_QUESTION_SUBQUESTION_REPAIR_OUTPUT_CONTRACT,
   type StructuredOutputContract,
-} from "./outputSchemas";
+} from "./outputSchemas.js";
 import {
   PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY,
   PROJECT_RESEARCH_QUESTION_SUBQUESTION_REPAIR_PROMPT_KEY,
-} from "./promptRegistry";
-import type { ResearchContextVersion } from "./question/contracts";
-import { ResearchContextRepository } from "./question/researchContextRepository";
+} from "./promptRegistry.js";
+import type { ResearchContextVersion } from "./question/contracts.js";
+import { ResearchContextRepository } from "./question/researchContextRepository.js";
 import {
   ProjectResearchQuestionAssessmentRepository,
   type BegunQuestionAssessmentTurn,
   type QuestionAssessmentConversation,
-} from "./questionAssessmentRepository";
+} from "./questionAssessmentRepository.js";
 
 export interface QuestionRefinementClarifyingQuestion {
   question: string;
@@ -455,7 +455,6 @@ async function normalizeResult(
     scope: { in: boundedCriteria(objectValue(value.scope).in), out: boundedCriteria(objectValue(value.scope).out) },
     clarifying_questions: clarifyingQuestions(value.clarifying_questions),
   };
-  const protocol = await loadProtocol();
   const parsed = protocol.ProjectResearchQuestionRefinementSchema.safeParse(normalized);
   if (!parsed.success && repairSubQuestions && normalized.sub_questions.some((question) => question.length > 200)) {
     try {

@@ -1,32 +1,32 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { checkInternalToken } from "../../gateway/internalAuth";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { PgActivityRepository } from "../activity/repository";
-import { PgArtifactRepository } from "../artifacts/repository";
-import { PgProposalRepository } from "../proposals/repository";
-import { dbPool, page, sendRouteError } from "../routeUtils/common";
-import { PgRunRepository, type RunRecord } from "./repository";
-import type { RunOrchestrationService } from "./orchestrationService";
-import { enqueueAgentRunJob } from "./agentRunHandler";
-import { RunMaterializationService } from "./materializationService";
-import { buildRunOrchestration } from "./orchestrationFactory";
-import { InvocationSnapshotService } from "../runtimeContext";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { checkInternalToken } from "../../gateway/internalAuth.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { PgActivityRepository } from "../activity/repository.js";
+import { PgArtifactRepository } from "../artifacts/repository.js";
+import { PgProposalRepository } from "../proposals/repository.js";
+import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
+import { PgRunRepository, type RunRecord } from "./repository.js";
+import type { RunOrchestrationService } from "./orchestrationService.js";
+import { enqueueAgentRunJob } from "./agentRunHandler.js";
+import { RunMaterializationService } from "./materializationService.js";
+import { buildRunOrchestration } from "./orchestrationFactory.js";
+import { InvocationSnapshotService } from "../runtimeContext/index.js";
 import {
   canonicalRunOutput,
   isHardTerminalRunStatus,
-} from "./orchestrationResults";
+} from "./orchestrationResults.js";
 import {
   CliAgentToolTransport,
   cliRunToolIdentities,
-} from "./cliToolTransport";
-import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope";
+} from "./cliToolTransport.js";
+import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope.js";
 import {
   NonTerminalRunError,
   RunNotFoundError,
-} from "./finalizationService";
+} from "./finalizationService.js";
 import {
   artifactSummaryToOut,
   proposalSummaryToOut,
@@ -38,8 +38,8 @@ import {
   runStepToOut,
   runToOut,
   verificationResultToOut,
-} from "./runReadModel";
-import { resolveRunRemoteness } from "./runRemoteness";
+} from "./runReadModel.js";
+import { resolveRunRemoteness } from "./runRemoteness.js";
 
 interface RunsCommandServices {
   orchestration: Pick<RunOrchestrationService, "executeRun" | "cancelRun">;

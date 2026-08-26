@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeActions, normalizeInputConfig } from "../src/modules/sources/postProcessing/repository";
+import { normalizeActions, normalizeInputConfig } from "../src/modules/sources/postProcessing/repository.js";
 
 describe("source post-processing config", () => {
   it("defaults retrieval context to disabled project context", () => {

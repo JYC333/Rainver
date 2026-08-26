@@ -1,9 +1,9 @@
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { randomUUID } from "node:crypto";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import type { ExtractionProfileMaterializationInput } from "../extractionProfiles/registry";
-import { canonicalAcademicIdentity } from "./identity";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import type { ExtractionProfileMaterializationInput } from "../extractionProfiles/registry.js";
+import { canonicalAcademicIdentity } from "./identity.js";
 
 interface SourceItemForMaterialization {
   id: string;

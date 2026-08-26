@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { useTestDatabase } from "./support/testDatabase";
-import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { loadConfig } from "../src/config.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for the system-managed "Auto Research" agent's
 // capabilities_json. It is fixed on the agent's current version at first
@@ -20,7 +20,7 @@ const PROVIDER = "99999999-9999-4999-8999-999999999999";
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

@@ -1,4 +1,4 @@
-import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@agent-space/protocol";
 
 /**
  * Facts about how a provider's compiler expresses boolean structure, used by

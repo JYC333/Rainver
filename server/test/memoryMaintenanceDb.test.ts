@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { MemoryMaintenanceService } from "../src/modules/memory/maintenance";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { MemoryMaintenanceService } from "../src/modules/memory/maintenance.js";
 import {
   createMemoryMaintenanceProposalPacket,
   persistMemoryMaintenanceReportArtifact,
-} from "../src/modules/memory/maintenanceArtifacts";
-import { PgMemoryReadRepository } from "../src/modules/memory/repository";
-import { withDbTransaction } from "../src/modules/routeUtils/common";
+} from "../src/modules/memory/maintenanceArtifacts.js";
+import { PgMemoryReadRepository } from "../src/modules/memory/repository.js";
+import { withDbTransaction } from "../src/modules/routeUtils/common.js";
 
 // Real-PostgreSQL coverage for Memory maintenance. The unit and route tests use
 // FakeDb rows; this applies the committed baseline migration to a throwaway DB
@@ -21,7 +21,7 @@ const VIEWER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

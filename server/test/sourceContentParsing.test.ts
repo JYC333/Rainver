@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractStructuredReaderContent,
   parseStructuredReaderContent,
-} from "../src/modules/sources/contentParsing";
+} from "../src/modules/sources/contentParsing.js";
 
 describe("extractStructuredReaderContent", () => {
   it("extracts readable article blocks with remote image references", () => {

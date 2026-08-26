@@ -1,4 +1,4 @@
-import type { ProviderPreset } from "./types";
+import type { ProviderPreset } from "./types.js";
 
 export const ZEROENTROPY_PRESETS: ProviderPreset[] = [
   {

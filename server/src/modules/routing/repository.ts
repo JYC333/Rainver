@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
   effectiveProviderDefault,
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
   type ProviderEligibilityRow,
-} from "../providers/eligibility";
-import { contractRecord } from "../runs/contractSnapshot";
-import type { RunRecord } from "../runs/runRepositoryTypes";
-import type { Queryable } from "../routeUtils/common";
-import { loadSystemActionRegistry } from "../systemActions/registry";
-import { DeterministicRouteSelector, mergeRouteHints } from "./router";
-import type { RouteCandidate, RouteHints } from "./types";
+} from "../providers/eligibility.js";
+import { contractRecord } from "../runs/contractSnapshot.js";
+import type { RunRecord } from "../runs/runRepositoryTypes.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { loadSystemActionRegistry } from "../systemActions/registry.js";
+import { DeterministicRouteSelector, mergeRouteHints } from "./router.js";
+import type { RouteCandidate, RouteHints } from "./types.js";
 
 interface RuntimeCandidateRow extends ProviderEligibilityRow {
   agent_kind: string;

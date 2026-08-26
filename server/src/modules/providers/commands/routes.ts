@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ProviderFromPresetCreateRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { errorEnvelope, sendErrorEnvelope } from "../../../gateway/errorEnvelope";
-import { checkInternalToken } from "../../../gateway/internalAuth";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../../gateway/requestContext";
-import { introspectIdentity } from "../../auth/identity";
-import { loadProtocol } from "../protocolRuntime";
-import { resolveProviderCommandStore } from "./store";
+import * as protocol from "@agent-space/protocol";
+import type { ProviderFromPresetCreateRequest } from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../../gateway/errorEnvelope.js";
+import { checkInternalToken } from "../../../gateway/internalAuth.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../../gateway/requestContext.js";
+import { introspectIdentity } from "../../auth/identity.js";
+import { resolveProviderCommandStore } from "./store.js";
 import type {
   ModelProviderCreateInput,
   ModelProviderUpdateInput,
@@ -14,23 +14,23 @@ import type {
   ProviderPoolCredentialAddInput,
   ProviderTaskChainEntry,
   RotationStrategy,
-} from "./store";
-import { ProviderCommandForbiddenError } from "./store";
+} from "./store.js";
+import { ProviderCommandForbiddenError } from "./store.js";
 import {
   completeProviderChat,
   completeProviderEmbedding,
   completeProviderRerank,
   completeProviderText,
   listProviderModels,
-} from "../invocation/invocation";
-import { CliCredentialBroker } from "../cli/credentialBroker";
+} from "../invocation/invocation.js";
+import { CliCredentialBroker } from "../cli/credentialBroker.js";
 import {
   enqueueRetrievalEmbeddingBackfill,
   resetRetrievalEmbeddingsForSpace,
-} from "../../retrieval/embedding/job";
-import { RETRIEVAL_EMBEDDING_TASK } from "../../retrieval/embedding/config";
-import { createProviderFromPreset } from "./fromPreset";
-import { getDbPool } from "../db";
+} from "../../retrieval/embedding/job.js";
+import { RETRIEVAL_EMBEDDING_TASK } from "../../retrieval/embedding/config.js";
+import { createProviderFromPreset } from "./fromPreset.js";
+import { getDbPool } from "../db.js";
 import {
   createManagedSubscriptionLoginSession,
   disconnectManagedSubscription,
@@ -38,8 +38,8 @@ import {
   parseManagedSubscriptionType,
   refreshManagedSubscriptionQuota,
   type ManagedSubscriptionLoginSession,
-} from "../subscriptionOAuth";
-import { requireProviderVendor } from "../vendors";
+} from "../subscriptionOAuth.js";
+import { requireProviderVendor } from "../vendors.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -156,7 +156,6 @@ async function parseWith<T>(
   schemaName: string,
   value: unknown,
 ): Promise<T> {
-  const protocol = await loadProtocol();
   const schema = (protocol as unknown as Record<string, { parse(v: unknown): T }>)[schemaName];
   return schema.parse(value);
 }

@@ -10,30 +10,30 @@ import { chmod, copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile }
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger, FastifyReply } from "fastify";
-import type { ServerConfig } from "../../../config";
-import { getDbPool, type Pool } from "../db";
-import { resolveHostPath } from "./hostPath";
-import { runCliLogin, sendCliLoginInput } from "./loginEngine";
-import { CLI_LOGIN_ADAPTERS, cliLoginAdapterFor } from "./loginAdapters";
-import { readClaudeTokenUsage, unsupportedTokenUsage, type TokenUsage } from "./usageReader";
-import { readCodexTokenUsage } from "./codexUsageReader";
-import type { QuotaResult } from "./usageProbe";
-import { probeClaudeOAuthQuota } from "./claudeOAuthUsageProbe";
-import { probeCodexQuota } from "./codexUsageProbe";
-import { CLI_USAGE_REFRESH_INTERVAL_SECONDS } from "./usageScheduler";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool, type Pool } from "../db.js";
+import { resolveHostPath } from "./hostPath.js";
+import { runCliLogin, sendCliLoginInput } from "./loginEngine.js";
+import { CLI_LOGIN_ADAPTERS, cliLoginAdapterFor } from "./loginAdapters/index.js";
+import { readClaudeTokenUsage, unsupportedTokenUsage, type TokenUsage } from "./usageReader.js";
+import { readCodexTokenUsage } from "./codexUsageReader.js";
+import type { QuotaResult } from "./usageProbe.js";
+import { probeClaudeOAuthQuota } from "./claudeOAuthUsageProbe.js";
+import { probeCodexQuota } from "./codexUsageProbe.js";
+import { CLI_USAGE_REFRESH_INTERVAL_SECONDS } from "./usageScheduler.js";
 
 /** The settings contract exposes milliseconds; the scheduled task uses seconds. */
 const CLI_USAGE_REFRESH_INTERVAL_MS = CLI_USAGE_REFRESH_INTERVAL_SECONDS * 1000;
-import { RuntimeToolRegistry } from "../../runtimeTools";
-import { resolveNetworkProfileRepository } from "../../networkProfiles";
-import { SandboxRunnerCliCommandExecutor } from "../../sandboxRunner/client";
-import { subscriptionEgressLeases, type SubscriptionRuntime } from "../proxy/subscriptionEgress";
-import { SandboxRunnerPtyFactory } from "../../sandboxRunner/ptyFactory";
-import { isSpaceOwnerOrAdmin } from "../../access/roles";
+import { RuntimeToolRegistry } from "../../runtimeTools/index.js";
+import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
+import { SandboxRunnerCliCommandExecutor } from "../../sandboxRunner/client.js";
+import { subscriptionEgressLeases, type SubscriptionRuntime } from "../proxy/subscriptionEgress.js";
+import { SandboxRunnerPtyFactory } from "../../sandboxRunner/ptyFactory.js";
+import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
 import {
   ProviderCommandNotFoundError,
   ProviderCommandValidationError,
-} from "../commands/types";
+} from "../commands/types.js";
 
 export interface CredentialProfile {
   id: string;

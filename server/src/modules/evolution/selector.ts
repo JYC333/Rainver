@@ -1,15 +1,15 @@
-import { objectValue } from "../routeUtils/common";
+import { objectValue } from "../routeUtils/common.js";
 import {
   confidenceScore,
   strategyRiskRank,
   strategySignals,
-} from "./strategyAssets";
+} from "./strategyAssets.js";
 import type {
   EvolutionSelection,
   EvolutionSignalRow,
   EvolutionStrategyAssetRow,
   EvolutionTargetRow,
-} from "./types";
+} from "./types.js";
 
 interface EvolutionSelectorInput {
   target: EvolutionTargetRow;

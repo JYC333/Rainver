@@ -5,14 +5,14 @@ import {
   newRankingTelemetry,
   rankingBoost,
   DEFAULT_RANKING_SIGNALS,
-} from "../src/modules/retrieval/ranking";
+} from "../src/modules/retrieval/ranking.js";
 import {
   applyAdaptiveReturn,
   boundRerankText,
   fuseCandidates,
   scoreBucket,
-} from "../src/modules/retrieval/searchInternals";
-import type { RetrievalTrace, ScoredCandidate, SearchCandidate } from "../src/modules/retrieval/types";
+} from "../src/modules/retrieval/searchInternals.js";
+import type { RetrievalTrace, ScoredCandidate, SearchCandidate } from "../src/modules/retrieval/types.js";
 
 const NOW = Date.parse("2026-06-23T00:00:00.000Z");
 

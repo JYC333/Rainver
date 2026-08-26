@@ -3,69 +3,54 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
-import type { ServerConfig } from "../src/config";
-import { resolveProviderCommandStore } from "../src/modules/providers/commands/store";
+import type { ServerConfig } from "../src/config.js";
+import { resolveProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import {
   __setManagedSubscriptionFetchForTests,
   __setManagedSubscriptionOAuthForTests,
   loginManagedSubscription,
   refreshManagedSubscriptionQuota,
-} from "../src/modules/providers/subscriptionOAuth";
-import {
-  getTestPostgres,
-  isTestPostgresUnavailableError,
-  type TestPostgresDatabase,
-} from "./support/sharedPostgres";
+} from "../src/modules/providers/subscriptionOAuth.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 const SPACE = "7b000000-0000-4000-8000-000000000001";
 const OWNER = "7b000000-0000-4000-8000-000000000002";
 const OTHER = "7b000000-0000-4000-8000-000000000003";
 
-let database: TestPostgresDatabase | undefined;
-let pool: Pool | undefined;
 let agentSpaceHome: string | undefined;
-let available = false;
+
+const db = useTestDatabase(import.meta.filename, { max: 5 });
 
 beforeAll(async () => {
-  try {
-    database = await getTestPostgres(__filename);
-    pool = new Pool({ connectionString: database.getConnectionUri(), max: 5 });
-    agentSpaceHome = await mkdtemp(join(tmpdir(), "aspace-managed-subscription-"));
-    await pool.query(
-      `INSERT INTO spaces (id,name,type,created_at,updated_at)
-       VALUES ($1,'Managed subscription','personal',now(),now())`,
-      [SPACE],
-    );
-    await pool.query(
-      `INSERT INTO users (id,display_name,status,created_at,updated_at)
-       VALUES ($1,'Owner','active',now(),now()),($2,'Other','active',now(),now())`,
-      [OWNER, OTHER],
-    );
-    await pool.query(
-      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
-       VALUES ($1,$2,$3,'owner','active',now(),now()),
-              ($4,$2,$5,'member','active',now(),now())`,
-      [randomUUID(), SPACE, OWNER, randomUUID(), OTHER],
-    );
-    available = true;
-  } catch (error) {
-    if (!isTestPostgresUnavailableError(error)) throw error;
-    console.warn(`[managed-subscription-oauth-db] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  if (!db.available) return;
+  agentSpaceHome = await mkdtemp(join(tmpdir(), "aspace-managed-subscription-"));
+  await db.pool.query(
+    `INSERT INTO spaces (id,name,type,created_at,updated_at)
+     VALUES ($1,'Managed subscription','personal',now(),now())`,
+    [SPACE],
+  );
+  await db.pool.query(
+    `INSERT INTO users (id,display_name,status,created_at,updated_at)
+     VALUES ($1,'Owner','active',now(),now()),($2,'Other','active',now(),now())`,
+    [OWNER, OTHER],
+  );
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+     VALUES ($1,$2,$3,'owner','active',now(),now()),
+            ($4,$2,$5,'member','active',now(),now())`,
+    [randomUUID(), SPACE, OWNER, randomUUID(), OTHER],
+  );
 }, 180_000);
 
 afterAll(async () => {
   __setManagedSubscriptionOAuthForTests(null);
   __setManagedSubscriptionFetchForTests(null);
-  await pool?.end();
-  await database?.stop();
   if (agentSpaceHome) await rm(agentSpaceHome, { recursive: true, force: true });
 });
 
 describe("managed subscription OAuth persistence", () => {
   it("keeps Codex tokens encrypted, owner-bound, and refreshes once under a row lock", async () => {
-    if (!available || !pool || !database || !agentSpaceHome) return;
+    if (!db.available || !agentSpaceHome) return;
     let refreshes = 0;
     __setManagedSubscriptionOAuthForTests(async () => ({
       async login() {
@@ -96,7 +81,7 @@ describe("managed subscription OAuth persistence", () => {
     }), { status: 200 }));
 
     const config = {
-      databaseUrl: database.getConnectionUri(),
+      databaseUrl: db.connectionUri,
       agentSpaceHome,
     } as ServerConfig;
     const provider = await loginManagedSubscription(
@@ -113,7 +98,7 @@ describe("managed subscription OAuth persistence", () => {
       subscription_type: "openai_codex",
     });
 
-    const stored = await pool.query<{ secret_ref: string; credential_type: string }>(
+    const stored = await db.pool.query<{ secret_ref: string; credential_type: string }>(
       `SELECT c.secret_ref,c.credential_type
          FROM credentials c JOIN model_providers p ON p.credential_id=c.id
         WHERE p.id=$1`,
@@ -122,7 +107,7 @@ describe("managed subscription OAuth persistence", () => {
     expect(stored.rows[0]?.credential_type).toBe("subscription_oauth");
     expect(stored.rows[0]?.secret_ref).toMatch(/^model_provider_oauth:v1:/);
     expect(stored.rows[0]?.secret_ref).not.toContain("codex-login-access-secret");
-    const poolMembers = await pool.query(
+    const poolMembers = await db.pool.query(
       `SELECT id FROM model_provider_credentials WHERE provider_id=$1`,
       [provider.id],
     );

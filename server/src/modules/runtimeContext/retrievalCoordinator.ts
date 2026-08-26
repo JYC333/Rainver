@@ -2,9 +2,9 @@ import type {
   ContextItem,
   RetrievalObjectType,
   RetrievalSearchResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { normalizeContextItem } from "./itemNormalizer";
-import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy";
+} from "@agent-space/protocol";
+import { normalizeContextItem } from "./itemNormalizer.js";
+import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
 
 export interface RuntimeContextRetrievalRequest {
   spaceId: string;

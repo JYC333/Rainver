@@ -1,5 +1,5 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared";
+import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared.js";
 
 // plainQuery has no boolean operators at all — core, qualifiers, and
 // expansions all get flattened into one space-joined keyword string, so

@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld } from "./support/customSourceWorld";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig, type ServerConfig } from "../src/config";
-import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
-import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService";
-import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
-import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sources/customSources/customSourceArtifactRetention";
-import { HttpError } from "../src/modules/routeUtils/common";
+import { seedCustomSourceWorld } from "./support/customSourceWorld.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
+import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
+import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService.js";
+import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
+import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sources/customSources/customSourceArtifactRetention.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres integration tests for Phase 12 (rate limiting, artifact
 // retention, and observability). Skips gracefully when Docker is unavailable.
@@ -23,7 +24,7 @@ let config: ServerConfig | undefined;
 let createFlow: CustomSourceCreateFlowService | undefined;
 let artifactStorageRoot: string | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -50,9 +51,7 @@ afterEach(async () => {
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
-const FIXTURE_HTML = `<html><body>
-  <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-</body></html>`;
+const FIXTURE_HTML = ONE_ARTICLE_HTML;
 
 async function createDraftConnection(suffix = "", actor = IDENTITY) {
   const channel = await createFlow!.createDraft(actor, {

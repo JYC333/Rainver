@@ -1,7 +1,7 @@
 import type {
   CanonicalModelUsage,
   CanonicalUsage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export interface CliRuntimeMeasurement {
   external_session_id: string | null;

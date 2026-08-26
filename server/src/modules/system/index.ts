@@ -3,8 +3,8 @@
  * packaged in the standard server-owned module shape (`ServerModule`).
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const systemModule: ServerModule = {
   name: "system",
@@ -17,4 +17,4 @@ export {
   isProtocolPackageDetected,
   type FeaturesBody,
   type HealthBody,
-} from "./service";
+} from "./service.js";

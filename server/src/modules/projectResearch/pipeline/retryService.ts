@@ -1,8 +1,8 @@
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
-import { HttpError } from "../../routeUtils/common";
-import { assertProjectWriter } from "../../projects/access";
-import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection";
-import { researchStage, researchState } from "../operationProjection";
+import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError } from "../../routeUtils/common.js";
+import { assertProjectWriter } from "../../projects/access.js";
+import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection.js";
+import { researchStage, researchState } from "../operationProjection.js";
 
 export interface RetryOperationRow {
   id: string;

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import {
   enforceSourceDerivedImportTarget,
   enforceSourceRetentionPolicy,
   normalizeSourceConnectionCreateGovernance,
   normalizeSourceConnectionReadGovernance,
   normalizeSourceConnectionUpdateGovernance,
-} from "../src/modules/sources/sourceConsent";
-import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows";
+} from "../src/modules/sources/sourceConsent.js";
+import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
 
 const identity: SpaceUserIdentity = { spaceId: "space-1", userId: "user-1" };
 

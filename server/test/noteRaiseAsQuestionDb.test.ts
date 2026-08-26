@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 
 // NE: "raise as a question" turns a passage into an Inquiry Thread and keeps
 // the route back to the note it came from. Without the link the Question would
@@ -16,7 +16,13 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

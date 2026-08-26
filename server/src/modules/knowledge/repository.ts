@@ -1,19 +1,19 @@
-import { PgOntologyRepository } from "../ontology/repository";
-import { assertEvidenceableObjectType } from "../ontology/validation";
-import { hasDeclaration } from "../ontology/linkTypes";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { PgOntologyRepository } from "../ontology/repository.js";
+import { assertEvidenceableObjectType } from "../ontology/validation.js";
+import { hasDeclaration } from "../ontology/linkTypes.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import {
   appendMarginalia,
   type MarginaliaInput,
   type MarginaliaProjection,
-} from "./noteMarginalia";
+} from "./noteMarginalia.js";
 import {
   accessibleProjectIds,
   assertProjectReadable,
   assertProjectWriter,
   canWriteProject,
-} from "../projects/access";
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
+} from "../projects/access.js";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -29,12 +29,12 @@ import {
   type SpaceUserIdentity,
   type Queryable,
   confidence,
-} from "../routeUtils/common";
-import { contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql";
-import { recordDetailRead } from "../contentAccess/audit";
-import { proposalToOut } from "../proposals/repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import type { ProposalOut } from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "../routeUtils/common.js";
+import { contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql.js";
+import { recordDetailRead } from "../contentAccess/audit.js";
+import { proposalToOut } from "../proposals/repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import type { ProposalOut } from "@agent-space/protocol";
 import {
   canMutateClaim,
   canMutateKnowledge,
@@ -50,7 +50,7 @@ import {
   objectRelationOut,
   sourceOut,
   sourceSummaryOut,
-} from "./knowledgeRepositoryMappers";
+} from "./knowledgeRepositoryMappers.js";
 import {
   CLAIM_COLUMNS,
   CLAIM_CONFIDENCE_METHODS,
@@ -85,23 +85,23 @@ import {
   type ObjectRelationRow,
   type ProvenanceLinkRow,
   type SourceRow,
-} from "./knowledgeRepositoryRows";
+} from "./knowledgeRepositoryRows.js";
 import {
   RetrievalProjectionService,
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourcePolicyAllowsRead,
-} from "../retrieval";
-import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
-import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes";
-import { markdownToPm } from "./noteDocument";
-import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders";
-import { NOTE_PROJECT_ROLE_DEFAULT_TITLES } from "./noteProjectRoles";
-import { listNoteRevisions as listNoteRevisionRows } from "./noteRevisionService";
+} from "../retrieval/index.js";
+import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
+import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes.js";
+import { markdownToPm } from "./noteDocument.js";
+import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
+import { NOTE_PROJECT_ROLE_DEFAULT_TITLES } from "./noteProjectRoles.js";
+import { listNoteRevisions as listNoteRevisionRows } from "./noteRevisionService.js";
 import {
   listSpaceObjectProjectShares,
   revokeSpaceObjectProjectShare,
-} from "./spaceObjectProjectShares";
+} from "./spaceObjectProjectShares.js";
 import {
   addNotePlacement,
   moveNoteToCollection,
@@ -109,12 +109,12 @@ import {
   withNoteWrites,
   type NoteInsert,
   type NoteWriteScope,
-} from "./noteWriter";
+} from "./noteWriter.js";
 import {
   claimCreateStatusError,
   claimResolutionStateError,
   claimStatusTransitionError,
-} from "./claimStatusRules";
+} from "./claimStatusRules.js";
 
 interface SpaceObjectRow {
   id: string;

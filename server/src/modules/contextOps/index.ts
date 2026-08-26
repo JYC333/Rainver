@@ -1,6 +1,6 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-import { registerContextOpsReviewCycleAutomationTarget } from "./automationTarget";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+import { registerContextOpsReviewCycleAutomationTarget } from "./automationTarget.js";
 
 export const contextOpsModule: ServerModule = {
   name: "contextOps",
@@ -10,4 +10,4 @@ export const contextOpsModule: ServerModule = {
   },
 };
 
-export { ContextOpsService } from "./service";
+export { ContextOpsService } from "./service.js";

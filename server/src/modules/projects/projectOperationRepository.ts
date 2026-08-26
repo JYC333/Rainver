@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
 
 const KINDS = new Set(["source_setup", "source_backfill", "research", "custom"]);
 

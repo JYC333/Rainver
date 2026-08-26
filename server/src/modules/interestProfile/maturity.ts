@@ -1,5 +1,5 @@
-import { domainDefinitions } from "../sourceAnnotation";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings";
+import { domainDefinitions } from "../sourceAnnotation/index.js";
+import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings.js";
 
 /**
  * Profile maturity.

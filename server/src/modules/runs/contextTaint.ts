@@ -1,4 +1,4 @@
-import type { ContentVisibility } from "../access/contentAccessTypes";
+import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
 export interface ContextTaintInput {
   ownerUserId: string | null;

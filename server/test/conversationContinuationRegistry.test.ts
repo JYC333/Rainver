@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ConversationContinuationRegistry,
   type ContinuationProposal,
-} from "../src/modules/proposals/continuationRegistry";
-import { registerInquiryThreadContinuation } from "../src/modules/inquiry/inquiryThreadProposalApplier";
-import { registerProjectDefinitionContinuation } from "../src/modules/projects/projectDefinitionProposalApplier";
-import type { Queryable } from "../src/modules/proposals/repository";
+} from "../src/modules/proposals/continuationRegistry.js";
+import { registerInquiryThreadContinuation } from "../src/modules/inquiry/inquiryThreadProposalApplier.js";
+import { registerProjectDefinitionContinuation } from "../src/modules/projects/projectDefinitionProposalApplier.js";
+import type { Queryable } from "../src/modules/proposals/repository.js";
 
 // Unit coverage for the registry's own dispatch logic (plan:
 // .agent/plans/room-advancement-reliability-plan.md, Phase 2) — the parts

@@ -1,15 +1,15 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   projectEntitySummaryRegistry,
   type ProjectEntitySummary,
   type ProjectEntitySummaryAdapter,
-} from "../projects/overviewRegistry";
+} from "../projects/overviewRegistry.js";
 import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
-} from "../projects/attentionRegistry";
-import { ProjectCorpusRepository } from "../projects/corpusRepository";
+} from "../projects/attentionRegistry.js";
+import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 
 async function readableCandidateIds(
   db: Queryable,

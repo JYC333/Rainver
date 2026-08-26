@@ -3,14 +3,14 @@ import type {
   PluginHostContext,
   Queryable,
   ResolvedIdentity,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import type {
   BalanceScope,
   DirectiveStatus,
   DirectiveType,
   FinanceBookRow,
-} from "./domain/directives";
-import { financeLedgerService } from "./domain/service";
+} from "./domain/directives.js";
+import { financeLedgerService } from "./domain/service.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];

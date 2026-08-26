@@ -1,30 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { ServerConfig } from "../../config";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
-import { redactSecretPatterns } from "../runs/evidenceRedaction";
+import type { ServerConfig } from "../../config.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 import {
   LocalCliProcessRegistry,
   type CliCommandExecutor,
   type CliExecutionResult,
-} from "../runs/localCliExecution";
-import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client";
-import type { CliCredentialBrokerPort } from "../runs/vendorCliAdapter";
-import { buildSubprocessEnv } from "../runs/cliSubprocessEnv";
-import { renderCliCommand } from "../runs/cliCommandRendering";
+} from "../runs/localCliExecution.js";
+import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client.js";
+import type { CliCredentialBrokerPort } from "../runs/vendorCliAdapter.js";
+import { buildSubprocessEnv } from "../runs/cliSubprocessEnv.js";
+import { renderCliCommand } from "../runs/cliCommandRendering.js";
 import {
   ensureRuntimeSubagentsDisabled,
   getLocalCliRuntimeAdapterSpec,
-} from "../runtimeAdapters";
-import { RuntimeToolRegistry } from "../runtimeTools";
-import type { RuntimeToolResolverPort } from "../runtimeTools";
+} from "../runtimeAdapters/index.js";
+import { RuntimeToolRegistry } from "../runtimeTools/index.js";
+import type { RuntimeToolResolverPort } from "../runtimeTools/index.js";
 import type {
   ConformanceCheck,
   ConformanceCheckObservation,
   ConformanceProbeContext,
   ConformanceProbeRunner,
-} from "./service";
+} from "./service.js";
 
 interface ProbeRunResult {
   result: CliExecutionResult;

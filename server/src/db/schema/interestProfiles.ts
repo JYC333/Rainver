@@ -1,7 +1,7 @@
 import { pgTable, index, unique, check, foreignKey, varchar, boolean, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { users } from "./auth";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
 
 /**
  * A reader's interest profile.

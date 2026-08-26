@@ -1,7 +1,7 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes as registerProjectResearchRoutes } from "./routes";
-import { registerProjectResearchProjectIntegration } from "./projectIntegration";
-import { registerProjectResearchExecutionHandlers } from "./executionRegistration";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes as registerProjectResearchRoutes } from "./routes.js";
+import { registerProjectResearchProjectIntegration } from "./projectIntegration.js";
+import { registerProjectResearchExecutionHandlers } from "./executionRegistration.js";
 
 function registerRoutes(
   app: Parameters<typeof registerProjectResearchRoutes>[0],
@@ -17,16 +17,16 @@ export const projectResearchModule: ServerModule = {
   registerRoutes,
 };
 
-export { registerProjectResearchProjectIntegration } from "./projectIntegration";
-export { registerProjectResearchExecutionHandlers } from "./executionRegistration";
+export { registerProjectResearchProjectIntegration } from "./projectIntegration.js";
+export { registerProjectResearchExecutionHandlers } from "./executionRegistration.js";
 
-export { __setProjectResearchRepositoryFactoryForTests, __setProjectResearchOrchestratorFactoryForTests } from "./routes";
-export { ProjectResearchRepository } from "./repository";
-export { ProjectResearchReportRepository } from "./reportRepository";
-export { ProjectResearchOrchestrator, registerProjectResearchHandler } from "./orchestrator";
-export { ProjectResearchPipelineService } from "./pipeline/researchPipelineService";
-export { ProjectResearchExecutionProfileService } from "./executionProfileService";
+export { __setProjectResearchRepositoryFactoryForTests, __setProjectResearchOrchestratorFactoryForTests } from "./routes.js";
+export { ProjectResearchRepository } from "./repository.js";
+export { ProjectResearchReportRepository } from "./reportRepository.js";
+export { ProjectResearchOrchestrator, registerProjectResearchHandler } from "./orchestrator.js";
+export { ProjectResearchPipelineService } from "./pipeline/researchPipelineService.js";
+export { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
 export {
   PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY,
   resolveProjectResearchSynthesisPrompt,
-} from "./promptRegistry";
+} from "./promptRegistry.js";

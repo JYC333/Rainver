@@ -1,7 +1,7 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { sources } from "./knowledge";
+import { spaces } from "./spaces.js";
+import { sources } from "./knowledge.js";
 
 // Academic object extensions. A paper is backed by the *existing*
 // `sources` extension (object_type='source', source_type='paper' — already

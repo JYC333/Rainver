@@ -16,8 +16,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import type { ServerConfig } from "../../config";
-import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
+import type { ServerConfig } from "../../config.js";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 export interface RuntimeToolDefinition {
   runtime: string;

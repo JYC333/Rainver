@@ -6,7 +6,7 @@ import {
   isZeroDecimal,
   negateDecimal,
   parseDecimal,
-} from "./decimal";
+} from "./decimal.js";
 
 const COMMODITY_SYMBOL_RE = /^[A-Z][A-Z0-9_-]*$/;
 

@@ -1,4 +1,4 @@
-import type { HostThreadEventType } from "./threadEventRepository";
+import type { HostThreadEventType } from "./threadEventRepository.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;

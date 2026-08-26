@@ -1,1 +1,1 @@
-export { getDbPool, type Pool } from "../../db/pool";
+export { getDbPool, type Pool } from "../../db/pool.js";

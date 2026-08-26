@@ -2,7 +2,7 @@ import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator";
+import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
 
 const LIMITS = {
   timeout_ms: 30000,

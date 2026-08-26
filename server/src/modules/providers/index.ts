@@ -5,15 +5,15 @@
  * CLI credential login/brokering/audit, and internal credential-release ports.
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const providersModule: ServerModule = {
   name: "providers",
   registerRoutes,
 };
 
-export { getProviderConfig, listProviderConfigs } from "./service";
+export { getProviderConfig, listProviderConfigs } from "./service.js";
 export {
   decryptModelProviderApiKeySecretRefV1,
   encryptModelProviderApiKeySecretRefV1,
@@ -27,7 +27,7 @@ export {
   encryptModelProviderOAuthSecretRefV1,
   parseModelProviderApiKeySecretRefV1,
   SecretRefCompatibilityError,
-} from "./secretRefCrypto";
+} from "./secretRefCrypto.js";
 export {
   __setProviderCommandStoreForTests,
   orderPoolMembers,
@@ -41,7 +41,7 @@ export {
   type ProviderInfo,
   type ProviderTaskChainEntry,
   type RotationStrategy,
-} from "./commands/store";
+} from "./commands/store.js";
 export {
   __setNetworkRetryDelayForTests,
   __setProviderHttpClientForTests,
@@ -52,8 +52,8 @@ export {
   ProviderInvocationError,
   type ProviderRerankResult,
   type ProviderHttpClient,
-} from "./invocation/invocation";
-export { classifyProviderFailure } from "./invocation/resilience";
+} from "./invocation/invocation.js";
+export { classifyProviderFailure } from "./invocation/resilience.js";
 export {
   __setLoginFactoriesForTests,
   runCliLogin,
@@ -62,13 +62,13 @@ export {
   type LoginEvent,
   type LoginRuntimeConfig,
   type PtyFactory,
-} from "./cli/loginEngine";
+} from "./cli/loginEngine.js";
 export {
   CLI_LOGIN_ADAPTERS,
   cliLoginAdapterFor,
   type CliLoginAdapter,
-} from "./cli/loginAdapters";
-export { __setMountinfoReaderForTests, resolveHostPath } from "./cli/hostPath";
+} from "./cli/loginAdapters/index.js";
+export { __setMountinfoReaderForTests, resolveHostPath } from "./cli/hostPath.js";
 export {
   readClaudeUsageImportEvents,
   readClaudeTokenUsage,
@@ -76,8 +76,8 @@ export {
   type CliUsageImportEvent,
   type CliUsageImportScan,
   type TokenUsage,
-} from "./cli/usageReader";
-export { readCodexTokenUsage, readCodexUsageImportEvents } from "./cli/codexUsageReader";
+} from "./cli/usageReader.js";
+export { readCodexTokenUsage, readCodexUsageImportEvents } from "./cli/codexUsageReader.js";
 export {
   __setProbeFactoryForTests,
   parseQuota,
@@ -86,24 +86,24 @@ export {
   type ProbePtyFactory,
   type ProbeToolResolver,
   type QuotaResult,
-} from "./cli/usageProbe";
+} from "./cli/usageProbe.js";
 export {
   __setClaudeOAuthUsageHttpClientForTests,
   parseClaudeOAuthUsageResponse,
   probeClaudeOAuthQuota,
   probeClaudeOAuthQuotaWithAccessToken,
   type ClaudeOAuthHttpClient,
-} from "./cli/claudeOAuthUsageProbe";
+} from "./cli/claudeOAuthUsageProbe.js";
 export {
   __setCodexRpcFactoryForTests,
   parseCodexManagedUsageResponse,
   probeCodexQuota,
   type CodexRpcFactory,
   type CodexRpcHandle,
-} from "./cli/codexUsageProbe";
+} from "./cli/codexUsageProbe.js";
 export {
   CLI_USAGE_REFRESH_INTERVAL_SECONDS,
   createCliUsageRefreshTask,
   type CliUsageRefreshBroker,
   type CliUsageRefreshTask,
-} from "./cli/usageScheduler";
+} from "./cli/usageScheduler.js";

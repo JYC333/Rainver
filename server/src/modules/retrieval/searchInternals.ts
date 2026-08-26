@@ -1,4 +1,4 @@
-import { excerptAroundQuery } from "./normalize";
+import { excerptAroundQuery } from "./normalize.js";
 import type {
   CreateSafety,
   EvidenceContract,
@@ -7,7 +7,7 @@ import type {
   RevalidatedObject,
   ScoredCandidate,
   SearchCandidate,
-} from "./types";
+} from "./types.js";
 
 /**
  * Pure, stateless helpers for the retrieval search pipeline: RRF fusion, the

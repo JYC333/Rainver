@@ -3,13 +3,13 @@ import type {
   ResearchQueryAttemptDirection,
   ResearchSemanticConcept,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { ARXIV_LADDER_STRATEGY } from "./providers/arxiv";
-import { OPENALEX_LADDER_STRATEGY } from "./providers/openAlex";
-import { SEMANTIC_SCHOLAR_LADDER_STRATEGY } from "./providers/semanticScholar";
-import { type QueryAdaptationStrategy } from "./providers/shared";
-import { WEB_SEARCH_LADDER_STRATEGY } from "./providers/webSearch";
-import { MAX_RESEARCH_QUERY_ATTEMPTS } from "./queryPolicy";
+} from "@agent-space/protocol";
+import { ARXIV_LADDER_STRATEGY } from "./providers/arxiv.js";
+import { OPENALEX_LADDER_STRATEGY } from "./providers/openAlex.js";
+import { SEMANTIC_SCHOLAR_LADDER_STRATEGY } from "./providers/semanticScholar.js";
+import { type QueryAdaptationStrategy } from "./providers/shared.js";
+import { WEB_SEARCH_LADDER_STRATEGY } from "./providers/webSearch.js";
+import { MAX_RESEARCH_QUERY_ATTEMPTS } from "./queryPolicy.js";
 
 // Each provider file owns the facts about its own compiler's boolean
 // structure (see QueryAdaptationStrategy in providers/shared.ts); this is

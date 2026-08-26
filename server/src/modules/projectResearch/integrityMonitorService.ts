@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
+import type { Queryable } from "../routeUtils/common.js";
+import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 
 export type ResearchIntegrityEventType = "retraction" | "correction" | "expression_of_concern" | "reinstatement";
 export type ResearchIntegrityAlert = {

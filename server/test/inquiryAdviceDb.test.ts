@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { InquiryAdviceService, INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY } from "../src/modules/inquiry/adviceService";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { adviceJobMayPersist, queueAdviceForFocusedThread, runInquiryAdviceJob } from "../src/modules/inquiry/adviceJob";
-import { PgJobQueueRepository } from "../src/modules/jobs/repository";
-import type { ServerConfig } from "../src/config";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { InquiryAdviceService, INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY } from "../src/modules/inquiry/adviceService.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { adviceJobMayPersist, queueAdviceForFocusedThread, runInquiryAdviceJob } from "../src/modules/inquiry/adviceJob.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import type { ServerConfig } from "../src/config.js";
 
 // Real-Postgres coverage for model-generated next-step advice. The provider
 // call itself is injected, so these assert the durable contract around it:
@@ -19,7 +19,7 @@ const SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 let PROJECT: string;
 let THREAD: string;

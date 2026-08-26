@@ -1,6 +1,6 @@
-import type { RetrievalEvalReportRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter";
+import type { RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 
 export const RETRIEVAL_EVAL_REPORT_ARTIFACT_TYPE = "retrieval_eval_report";
 

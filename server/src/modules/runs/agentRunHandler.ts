@@ -1,21 +1,21 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { RunMaterializationService } from "./materializationService";
-import type { RunOrchestrationService } from "./orchestrationService";
-import { PgRunRepository } from "./repository";
-import { buildRunOrchestration } from "./orchestrationFactory";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { RunMaterializationService } from "./materializationService.js";
+import type { RunOrchestrationService } from "./orchestrationService.js";
+import { PgRunRepository } from "./repository.js";
+import { buildRunOrchestration } from "./orchestrationFactory.js";
 import {
   JobDeferredError,
   type JobEnvelopeForHandler,
   type JobHandlerRegistry,
-} from "../jobs/handlerRegistry";
-import type { JobHandlerResult } from "../jobs/handlerRegistry";
-import { PgJobQueueRepository } from "../jobs/repository";
-import type { RuntimeHostLogger } from "../runtimeHost";
-import { finalizeChatTurn } from "./chatTurnFinalizer";
-import { recordHostTaskThreadOutcome } from "../hosts/threadOutcome";
-import { protocolRunStatus } from "./orchestrationResults";
-import { withDbTransaction } from "../routeUtils/common";
+} from "../jobs/handlerRegistry.js";
+import type { JobHandlerResult } from "../jobs/handlerRegistry.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import type { RuntimeHostLogger } from "../runtimeHost/index.js";
+import { finalizeChatTurn } from "./chatTurnFinalizer.js";
+import { recordHostTaskThreadOutcome } from "../hosts/threadOutcome.js";
+import { protocolRunStatus } from "./orchestrationResults.js";
+import { withDbTransaction } from "../routeUtils/common.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,

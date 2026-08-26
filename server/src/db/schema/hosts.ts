@@ -1,7 +1,7 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { machines } from "./machines";
+import { users } from "./auth.js";
+import { machines } from "./machines.js";
 
 /**
  * An execution host per ADR 0016: the server host (exactly one row, seeded,

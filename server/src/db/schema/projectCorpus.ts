@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, doublePrecision, jsonb, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { extractedEvidence, spaceObjects } from "./knowledge";
-import { projects } from "./projects";
-import { sourceConnections, sourceItems, sourcePostProcessingItemDecisions } from "./sources";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { extractedEvidence, spaceObjects } from "./knowledge.js";
+import { projects } from "./projects.js";
+import { sourceConnections, sourceItems, sourcePostProcessingItemDecisions } from "./sources.js";
+import { spaces } from "./spaces.js";
 
 export const projectCorpusItems = pgTable("project_corpus_items", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

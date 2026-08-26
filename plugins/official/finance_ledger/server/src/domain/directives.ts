@@ -1,4 +1,4 @@
-import type { Booking } from "./booking";
+import type { Booking } from "./booking.js";
 
 export type RootType = "assets" | "liabilities" | "equity" | "income" | "expenses";
 export type DirectiveStatus = "draft" | "proposed" | "posted" | "voided";

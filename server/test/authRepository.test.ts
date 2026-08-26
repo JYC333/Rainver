@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgAuthRepository } from "../src/modules/auth/identity";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgAuthRepository } from "../src/modules/auth/identity.js";
 
 let repo: PgAuthRepository | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;

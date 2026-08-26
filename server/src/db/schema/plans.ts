@@ -13,14 +13,14 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { users } from "./auth";
-import { agents } from "./agents";
-import { projects } from "./projects";
-import { projectFolders } from "./projectFolders";
-import { tasks } from "./tasks";
-import { runs } from "./runs";
-import { evolvableAssetVersions } from "./evolvableAssets";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
+import { agents } from "./agents.js";
+import { projects } from "./projects.js";
+import { projectFolders } from "./projectFolders.js";
+import { tasks } from "./tasks.js";
+import { runs } from "./runs.js";
+import { evolvableAssetVersions } from "./evolvableAssets.js";
 
 export const plans = pgTable("plans", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

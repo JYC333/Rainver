@@ -1,19 +1,19 @@
-import { graphableEntityTypes } from "../ontology/entities";
+import { graphableEntityTypes } from "../ontology/entities.js";
 import type {
   GraphProjection,
   GraphProjectionEdge,
   GraphProjectionNode,
   GraphProjectionViewMode,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
+} from "@agent-space/protocol";
+import type { SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
 import {
   GraphProjectionRepository,
   type ClusterEdgeSummaryRow,
   type GraphEdgeRow,
   type GraphObjectRow,
   type KindCountRow,
-} from "./projectionRepository";
+} from "./projectionRepository.js";
 
 export type ServerGraphProjectionMode = Exclude<GraphProjectionViewMode, "debug">;
 export type GraphLensId = "academic_citation_v1";

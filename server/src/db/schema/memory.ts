@@ -1,11 +1,11 @@
 import { pgTable, index, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { artifacts } from "./artifacts";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { artifacts } from "./artifacts.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
 
 export const memoryEntries = pgTable("memory_entries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

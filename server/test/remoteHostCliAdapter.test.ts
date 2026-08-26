@@ -1,17 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RunRecord } from "../src/modules/runs/repository";
-import type { RuntimeSemanticEvent } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { executeRemoteHostCliAdapter, remoteStallTimeoutSeconds } from "../src/modules/runs/remoteHostCliAdapter";
-import { loadConfig } from "../src/config";
-import { __setProvidersDbPortForTests } from "../src/modules/providers/dbReader";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { RuntimeSemanticEvent } from "@agent-space/protocol";
+import { executeRemoteHostCliAdapter, remoteStallTimeoutSeconds } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { loadConfig } from "../src/config.js";
+import { __setProvidersDbPortForTests } from "../src/modules/providers/dbReader.js";
 import {
   ProviderProxyLeaseRegistry,
   setProviderProxyBaseUrlForProcess,
-} from "../src/modules/providers/proxy/lease";
-import { NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter";
-import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry";
-import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution";
-import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization";
+} from "../src/modules/providers/proxy/lease.js";
+import { NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
+import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
+import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization.js";
 
 // These tests exercise the remote protocol plumbing, not model backends, so
 // they state outright that they have no binding subsystem. The adapter refuses
@@ -51,6 +51,13 @@ class FakeSink implements HostFrameSink {
   }
   close(): void {}
 }
+
+// Files share a worker: a fake clock left installed here would stall every
+// file that runs after this one.
+afterEach(() => {
+  vi.useRealTimers();
+  __setProvidersDbPortForTests(null);
+});
 
 describe("executeRemoteHostCliAdapter", () => {
   it("rejects an unimplemented adapter (gemini_cli) before ever dispatching a frame, but still emits a terminal thread event", async () => {

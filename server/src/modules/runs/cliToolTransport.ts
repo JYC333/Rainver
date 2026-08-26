@@ -3,14 +3,14 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RunTriggerOrigin,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   SystemActionDispatcher,
   type SystemActionDispatcherDeps,
-} from "../systemActions/systemActionDispatcher";
-import { assembleRunInputEnvelope } from "./runInputEnvelope";
-import type { RunRecord } from "./repository";
+} from "../systemActions/systemActionDispatcher.js";
+import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
+import type { RunRecord } from "./repository.js";
 
 interface RunToolIdentity {
   run_id: string;

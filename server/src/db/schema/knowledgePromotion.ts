@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { knowledgeItems } from "./knowledge";
-import { domainChangeOutbox } from "./domainChangeOutbox";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { knowledgeItems } from "./knowledge.js";
+import { domainChangeOutbox } from "./domainChangeOutbox.js";
 
 // Knowledge Candidate extraction and revalidation. Scoped to
 // the knowledge_items-backed candidate kinds (concept/lesson/procedure/

@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import type { RetrievalBriefResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle";
-import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief";
-import { RetrievalProjectionService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import type { RetrievalBriefResponse } from "@agent-space/protocol";
+import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle.js";
+import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -19,7 +19,7 @@ const TARGET = "00000000-0000-4000-8000-000000000105";
 const LONG = "This object has enough searchable operational content to avoid being classified as thin.";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

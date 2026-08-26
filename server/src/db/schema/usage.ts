@@ -14,14 +14,14 @@ import {
 	type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents, cliCredentialProfiles } from "./agents";
-import { users } from "./auth";
-import { modelProviders } from "./providers";
-import { projects } from "./projects";
-import { runs } from "./runs";
-import { sessions } from "./sessions";
-import { spaces } from "./spaces";
-import { projectFolders } from "./projectFolders";
+import { agents, cliCredentialProfiles } from "./agents.js";
+import { users } from "./auth.js";
+import { modelProviders } from "./providers.js";
+import { projects } from "./projects.js";
+import { runs } from "./runs.js";
+import { sessions } from "./sessions.js";
+import { spaces } from "./spaces.js";
+import { projectFolders } from "./projectFolders.js";
 
 export const instanceIdentity = pgTable("instance_identity", {
 	id: varchar({ length: 32 }).primaryKey().notNull(),

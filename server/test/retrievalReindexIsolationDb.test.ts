@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { RetrievalProjectionService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // The retrieval projection tables (retrieval_objects/_aliases/_chunks/_edges)
 // are shared by every domain registry. A full-space rebuild of ONE domain must
@@ -19,7 +19,7 @@ const KNOW = "77777777-7777-4777-8777-777777777777";
 const MEM = "33333333-3333-4333-8333-333333333333";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

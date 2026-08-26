@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
 import {
   ArtifactNotExportableError,
   ArtifactValidationError,
   PgArtifactRepository,
-} from "./repository";
+} from "./repository.js";
 
 type ArtifactIdentity = { spaceId: string; userId: string };
 type ArtifactIdentityOverride =

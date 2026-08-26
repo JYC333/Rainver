@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { assertProjectWriter } from "../projects/access";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { assertProjectWriter } from "../projects/access.js";
 
 /**
  * Additional Project scopes for a `space_objects` row — the write side of the

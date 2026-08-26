@@ -4,8 +4,8 @@
  * The server owns the SSE transport, run-event reads, and access checks.
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const streamingModule: ServerModule = {
   name: "streaming",
@@ -15,4 +15,4 @@ export const streamingModule: ServerModule = {
 export {
   RUN_EVENT_APPENDED_TYPE,
   __setStreamingRepositoryFactoryForTests,
-} from "./service";
+} from "./service.js";

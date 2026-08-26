@@ -1,12 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY,
-  RUNTIME_INVOCATION_INVENTORY,
-} from "../src/modules/runtimeContext";
+import { MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY, RUNTIME_INVOCATION_INVENTORY } from "../src/modules/runtimeContext/invocationInventory.js";
 
-const modulesRoot = join(__dirname, "..", "src", "modules");
+const modulesRoot = join(import.meta.dirname, "..", "src", "modules");
 const providerInvocationSource = readFileSync(
   join(modulesRoot, "providers", "invocation", "invocation.ts"),
   "utf8",
@@ -116,7 +113,7 @@ function providerCallsites(source: string, relativeFile: string): string[] {
 }
 
 function isProviderInvocationModule(modulePath: string): boolean {
-  return /(?:\/invocation\/invocation|\/providers(?:\/index)?|^\.\.?\/providers)$/.test(modulePath);
+  return /(?:\/invocation\/invocation|\/providers(?:\/index)?|^\.\.?\/providers)(?:\.js)?$/.test(modulePath);
 }
 
 function locallyReExportsProviderInvocation(source: string): boolean {
@@ -141,7 +138,7 @@ function cliRunCommandCallsites(source: string, relativeFile: string): string[] 
 }
 
 function importsProviderInvocation(source: string): boolean {
-  const providerModule = String.raw`[^"']*(?:\/invocation\/invocation|\/providers(?:\/index)?|\.\.?\/providers)`;
+  const providerModule = String.raw`[^"']*(?:\/invocation\/invocation|\/providers(?:\/index)?|\.\.?\/providers)(?:\.js)?`;
   const namedImports = new RegExp(
     String.raw`import\s*\{([^}]*)\}\s*from\s*["']${providerModule}["']`,
     "gs",
@@ -172,16 +169,16 @@ function importsProviderInvocation(source: string): boolean {
 
 function importsAgentInvocation(source: string, relativeFile: string): boolean {
   const namedPatterns = [
-    /import\s*\{[^}]*\bexecuteManagedApiNoToolAdapter\b[^}]*\}\s*from\s*["'][^"']*managedApiAdapter["']/s,
-    /import\s*\{[^}]*\bexecuteVendorCliAdapter\b[^}]*\}\s*from\s*["'][^"']*vendorCliAdapter["']/s,
-    /import\s*\{[^}]*\bexecuteRuntimeHost\b[^}]*\}\s*from\s*["'][^"']*(?:runtimeHost|\.\/service)["']/s,
+    /import\s*\{[^}]*\bexecuteManagedApiNoToolAdapter\b[^}]*\}\s*from\s*["'][^"']*managedApiAdapter(?:\.js)?["']/s,
+    /import\s*\{[^}]*\bexecuteVendorCliAdapter\b[^}]*\}\s*from\s*["'][^"']*vendorCliAdapter(?:\.js)?["']/s,
+    /import\s*\{[^}]*\bexecuteRuntimeHost\b[^}]*\}\s*from\s*["'][^"']*(?:runtimeHost(?:\/index)?|\.\/service)(?:\.js)?["']/s,
   ];
   if (namedPatterns.some((pattern) => pattern.test(source))) return true;
-  const modulePattern = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost)`;
+  const modulePattern = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?)(?:\.js)?`;
   if (new RegExp(String.raw`import\s*\*\s*as\s+\w+\s*from\s*["']${modulePattern}["']`).test(source)) return true;
   if (new RegExp(String.raw`(?:import\s*\(|require\s*\()\s*["']${modulePattern}["']\s*\)`).test(source)) return true;
   if (relativeFile.startsWith("runtimeHost/")
-    && /(?:import\s*\*\s*as\s+\w+\s*from|(?:import|require)\s*\()\s*["']\.\/service["']/.test(source)) {
+    && /(?:import\s*\*\s*as\s+\w+\s*from|(?:import|require)\s*\()\s*["']\.\/service(?:\.js)?["']/.test(source)) {
     return true;
   }
   return false;
@@ -197,7 +194,7 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
   ];
   const helperPattern = exportedHelpers.join("|");
   const isAgentModule = (modulePath: string) =>
-    /(?:managedApiAdapter|vendorCliAdapter|runtimeHost|\.\/service)$/.test(modulePath);
+    /(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?$/.test(modulePath);
 
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
     if (!isAgentModule(match[2] ?? "")) continue;
@@ -238,7 +235,7 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
 }
 
 function reExportsAgentInvocation(source: string): boolean {
-  const agentModule = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost|\.\/service)`;
+  const agentModule = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?`;
   if (new RegExp(
     String.raw`export\s*\{[^}]*\b${agentInvocationExportName}\b[^}]*\}\s*from\s*["']${agentModule}["']`,
     "s",
@@ -247,7 +244,7 @@ function reExportsAgentInvocation(source: string): boolean {
 
   const importedLocals = new Set<string>();
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
-    if (!new RegExp(`(?:managedApiAdapter|vendorCliAdapter|runtimeHost|\\./service)$`).test(match[2] ?? "")) continue;
+    if (!new RegExp(`(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:/index)?|\\./service)(?:\\.js)?$`).test(match[2] ?? "")) continue;
     for (const binding of (match[1] ?? "").split(",")) {
       const parsed = /^(\w+)(?:\s+as\s+(\w+))?$/.exec(binding.trim());
       if (parsed && new RegExp(`^${agentInvocationExportName}$`).test(parsed[1]!)) {

@@ -6,15 +6,15 @@ import {
   type RetrievalObjectType,
   type RevalidatedObject,
   loadSourceConnectionIdsForTargets,
-} from "../retrieval";
+} from "../retrieval/index.js";
 import {
   shouldRedactMemoryContent,
   type MemoryAuthFields,
-} from "./memoryReadAuth";
-import { memorySensitivityReadSql } from "./memorySensitivitySql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
+} from "./memoryReadAuth.js";
+import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 
 const MEMORY_OBJECT_TYPES = ["memory_entry"] as const;
 

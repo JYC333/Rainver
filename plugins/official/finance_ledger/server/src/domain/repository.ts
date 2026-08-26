@@ -1,4 +1,4 @@
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { Queryable } from "@agent-space/protocol";
 import type {
   AccountVisibility,
   CommodityType,
@@ -11,8 +11,8 @@ import type {
   FinancePostingRow,
   FinanceTransactionRow,
   RootType,
-} from "./directives";
-import type { Booking } from "./booking";
+} from "./directives.js";
+import type { Booking } from "./booking.js";
 
 export interface CreateBookRecord {
   spaceId: string;

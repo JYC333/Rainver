@@ -12,8 +12,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { isProvenanceSourceType } from "../ontology/entities";
-import type { ProvenanceEntry } from "./sourceMonitoring";
+import { isProvenanceSourceType } from "../ontology/entities.js";
+import type { ProvenanceEntry } from "./sourceMonitoring.js";
 
 export const TARGET_MEMORY = "memory";
 export const TARGET_POLICY = "policy";

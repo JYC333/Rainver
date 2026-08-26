@@ -1,51 +1,51 @@
 import { createHash, randomUUID } from "node:crypto";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import { type SourceConnectionRow } from "./sourceRepositoryRows";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import { type SourceConnectionRow } from "./sourceRepositoryRows.js";
 import {
   extractStructuredReaderContent,
   type StructuredReaderContent,
-} from "./contentParsing";
-import { extractPdfReaderContent } from "./pdfExtract";
-import { arxivHtmlUrl, arxivPdfUrl, parseArxivReference } from "./connectors/arxiv";
-import { acquireArxivRequestSlot } from "./connectors/arxivThrottle";
-import { fetchSource, type SourceFetchResult } from "./sourceFetch";
-import { normalizeUrl, sourceDomain } from "./sourceRepositoryMappers";
-import { projectSourceRoutingHook } from "../projects/projectSourceRoutingRegistry";
+} from "./contentParsing.js";
+import { extractPdfReaderContent } from "./pdfExtract.js";
+import { arxivHtmlUrl, arxivPdfUrl, parseArxivReference } from "./connectors/arxiv.js";
+import { acquireArxivRequestSlot } from "./connectors/arxivThrottle.js";
+import { fetchSource, type SourceFetchResult } from "./sourceFetch.js";
+import { normalizeUrl, sourceDomain } from "./sourceRepositoryMappers.js";
+import { projectSourceRoutingHook } from "../projects/projectSourceRoutingRegistry.js";
 import {
   emitSourcePostProcessingDeepAnalysisEvent,
   emitSourcePostProcessingEvent,
-} from "./postProcessing/eventEmitter";
-import { enqueueItemsForAnnotation } from "../sourceAnnotation";
+} from "./postProcessing/eventEmitter.js";
+import { enqueueItemsForAnnotation } from "../sourceAnnotation/index.js";
 import {
   reindexExtractedEvidenceAndParentForRetrieval,
   reindexSourceItemAndEvidenceForRetrieval,
-} from "./retrievalIndexing";
-import { computeNextCheckAt } from "./sourceScanCadence";
+} from "./retrievalIndexing.js";
+import { computeNextCheckAt } from "./sourceScanCadence.js";
 import {
   fetchSourceConnection,
   SourceFetchFailure,
   type SourceFetchFailureDiagnostics,
-} from "./sourceConnectionFetch";
-import { fetchBackfillPageWithNarrowing } from "./sourceBackfillPageFetch";
+} from "./sourceConnectionFetch.js";
+import { fetchBackfillPageWithNarrowing } from "./sourceBackfillPageFetch.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
-} from "./sourceConnectionScheduler";
+} from "./sourceConnectionScheduler.js";
 import {
   enforceSourceRetentionPolicy,
   normalizeSourceConnectionReadGovernance,
-} from "./sourceConsent";
-import { PgCustomSourceHandlerRepository } from "./customSources/customSourceHandlerRepository";
-import { capturePolicyScanState } from "./capturePolicy";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { sourceConnectorRegistry, type SourceConnectorHandler } from "./catalog/sourceConnectorRegistry";
-import { ProjectResearchPipelineService } from "../projectResearch/pipeline/researchPipelineService";
-import { CustomSourceCredentialService } from "./customSources/customSourceCredentialService";
-import { upsertCanonicalEvidence } from "./evidenceIdentity";
+} from "./sourceConsent.js";
+import { PgCustomSourceHandlerRepository } from "./customSources/customSourceHandlerRepository.js";
+import { capturePolicyScanState } from "./capturePolicy.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { sourceConnectorRegistry, type SourceConnectorHandler } from "./catalog/sourceConnectorRegistry.js";
+import { ProjectResearchPipelineService } from "../projectResearch/pipeline/researchPipelineService.js";
+import { CustomSourceCredentialService } from "./customSources/customSourceCredentialService.js";
+import { upsertCanonicalEvidence } from "./evidenceIdentity.js";
 
 interface ExtractionJobRow {
   id: string;

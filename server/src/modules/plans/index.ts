@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const plansModule: ServerModule = { name: "plans", registerRoutes };
 
@@ -11,6 +11,6 @@ export {
   evaluatePlanAtomicity,
   materializePlanGraph,
   planNodeContentHash,
-} from "./graph";
-export { PgPlanRepository } from "./repository";
-export { PlanExecutionService } from "./executionService";
+} from "./graph.js";
+export { PgPlanRepository } from "./repository.js";
+export { PlanExecutionService } from "./executionService.js";

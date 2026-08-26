@@ -3,9 +3,9 @@ import {
   buildClaimTrajectory,
   scanClaimContradictions,
   type ClaimContradictionLlmJudge,
-} from "../src/modules/knowledge/claimReviewLoop";
-import type { ClaimRow } from "../src/modules/knowledge/knowledgeRepositoryRows";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/knowledge/claimReviewLoop.js";
+import type { ClaimRow } from "../src/modules/knowledge/knowledgeRepositoryRows.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 
 function claimRow(overrides: Partial<ClaimRow> = {}): ClaimRow {
   return {

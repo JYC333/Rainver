@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const repoRoot = join(__dirname, "..", "..");
+const repoRoot = join(import.meta.dirname, "..", "..");
 const roots = [
   "server/src",
   "server/test",

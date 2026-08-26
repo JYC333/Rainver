@@ -129,15 +129,20 @@ describe("what a runtime says it can be set to", () => {
       bin === "git"
         ? null
         : {
-            models: ["default", "claude-fable-5[1m]", "sonnet"],
+            models: [
+              { value: "default", name: "Default (recommended)", description: "Opus (1M context)" },
+              { value: "claude-fable-5[1m]", name: "Fable", description: null },
+              { value: "sonnet", name: "Sonnet", description: null },
+            ],
             current_model: "claude-fable-5[1m]",
-            efforts: ["default", "low", "medium", "high", "xhigh", "max"],
+            efforts: ["default", "low", "medium", "high", "xhigh", "max"]
+              .map((value) => ({ value, name: value, description: null })),
             current_effort: "high",
           });
 
     for (const bin of runtimes) {
       if (bin === "git") continue;
-      expect(options[bin]?.efforts).toContain("xhigh");
+      expect(options[bin]?.efforts.map((e) => e.value)).toContain("xhigh");
       // The model id keeps its own brackets — they are part of its name.
       expect(models[bin]).toBe("claude-fable-5[1m]");
       expect(reasoning[bin]).toBe("high");
@@ -169,7 +174,12 @@ describe("what a runtime says it can be set to", () => {
     let asks = 0;
     const ask = async () => {
       asks += 1;
-      return { models: ["m"], current_model: "m", efforts: ["high"], current_effort: "high" };
+      return {
+        models: [{ value: "m", name: null, description: null }],
+        current_model: "m",
+        efforts: [{ value: "high", name: null, description: null }],
+        current_effort: "high",
+      };
     };
     const first = await detectCapabilities(ask);
     const asksAfterFirst = asks;

@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 export interface ProjectChatActionPreview {
   action_id: string;

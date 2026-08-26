@@ -2,26 +2,26 @@ import type {
   ResearchContextVersion,
   ResearchProviderKey,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { ResearchContextRepository } from "../../projectResearch/question/researchContextRepository";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
-import { ProviderPreviewGateway } from "../discovery/providerPreviewGateway";
-import { PreviewRelevanceAssessor } from "../discovery/previewRelevanceAssessor";
-import { AdaptiveQueryEvaluator, type AdaptiveQueryEvaluation } from "./adaptiveQueryEvaluator";
-import { ResearchIntentPlanner, type ResearchIntentExecution } from "./intentPlanner";
-import { ResearchProviderCompiler } from "./providerCompiler";
-import { ResearchQueryLadderBuilder, type ResearchQueryLadderStep } from "./queryLadderBuilder";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { ResearchContextRepository } from "../../projectResearch/question/researchContextRepository.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { ProviderPreviewGateway } from "../discovery/providerPreviewGateway.js";
+import { PreviewRelevanceAssessor } from "../discovery/previewRelevanceAssessor.js";
+import { AdaptiveQueryEvaluator, type AdaptiveQueryEvaluation } from "./adaptiveQueryEvaluator.js";
+import { ResearchIntentPlanner, type ResearchIntentExecution } from "./intentPlanner.js";
+import { ResearchProviderCompiler } from "./providerCompiler.js";
+import { ResearchQueryLadderBuilder, type ResearchQueryLadderStep } from "./queryLadderBuilder.js";
 import {
   RESEARCH_QUERY_POLICY_VERSION,
   researchQueryPolicy,
   researchQueryPolicySnapshot,
-} from "./queryPolicy";
+} from "./queryPolicy.js";
 import {
   ResearchQueryRepository,
   type StoredResearchQueryProviderPlan,
   type StoredResearchQueryStrategy,
-} from "./repository";
+} from "./repository.js";
 
 export interface AdaptiveResearchQueryInput {
   projectId: string;

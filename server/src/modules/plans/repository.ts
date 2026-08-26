@@ -4,18 +4,18 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgRunRepository } from "../runs/repository";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { assertBudgetSourceReferences, assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot";
-import { loadCanonicalPlanBudgetAuthority, type CanonicalBudgetAuthority } from "../runs/budgetAuthority";
-import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, planNodeContentHash, type MaterializedPlanGraph } from "./graph";
-import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerification";
-import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler";
-import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver";
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { assertBudgetSourceReferences, assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
+import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot.js";
+import { loadCanonicalPlanBudgetAuthority, type CanonicalBudgetAuthority } from "../runs/budgetAuthority.js";
+import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, planNodeContentHash, type MaterializedPlanGraph } from "./graph.js";
+import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerification.js";
+import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
+import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
+import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
 
 export interface AgentPlanProposalInput {
   sourceTaskId: string;

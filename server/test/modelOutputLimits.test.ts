@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { effectiveMaxOutputTokens, recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits";
-import { DEFAULT_MODEL_CONFIG, defaultModelConfigFor } from "../src/modules/agents/agentRepositoryHelpers";
+import { effectiveMaxOutputTokens, recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits.js";
+import { DEFAULT_MODEL_CONFIG, defaultModelConfigFor } from "../src/modules/agents/agentRepositoryHelpers.js";
 
 // max_tokens caps the completion, not the context window; reasoning models
 // spend their thinking inside the same budget. The registry keeps per-model

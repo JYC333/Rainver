@@ -1,25 +1,25 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders";
-import { RunMaterializationService } from "../runs/materializationService";
-import { RunOrchestrationService } from "../runs/orchestrationService";
-import { runOutputResult } from "../runs/orchestrationResults";
-import { sharedCliProcessRegistry } from "../runs/processRegistry";
-import { PgRunRepository, type RunRecord } from "../runs/repository";
-import { PgVerificationEngine } from "../runs/verification";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { CONNECTION_COLUMNS, type SourceConnectionRow } from "../sources/sourceRepositoryRows";
-import { assertSourcePromptEgressAllowed } from "../sources/sourcePromptEgress";
-import { ensureSourceAnnotatorAgent, resolveSystemActorUserId } from "./agent";
-import { renderAnnotationInstruction, type AnnotationPromptItem } from "./instruction";
-import { PgSourceAnnotationRepository, type PendingAnnotationRow } from "./repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
+import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders/index.js";
+import { RunMaterializationService } from "../runs/materializationService.js";
+import { RunOrchestrationService } from "../runs/orchestrationService.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
+import { sharedCliProcessRegistry } from "../runs/processRegistry.js";
+import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { PgVerificationEngine } from "../runs/verification/index.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { CONNECTION_COLUMNS, type SourceConnectionRow } from "../sources/sourceRepositoryRows.js";
+import { assertSourcePromptEgressAllowed } from "../sources/sourcePromptEgress.js";
+import { ensureSourceAnnotatorAgent, resolveSystemActorUserId } from "./agent.js";
+import { renderAnnotationInstruction, type AnnotationPromptItem } from "./instruction.js";
+import { PgSourceAnnotationRepository, type PendingAnnotationRow } from "./repository.js";
 import {
   SOURCE_ANNOTATION_SCHEMA_ID,
   SourceAnnotationParseError,
   parseSourceAnnotationResult,
   sourceAnnotationOutputContract,
-} from "./resultParser";
+} from "./resultParser.js";
 
 /**
  * How many items go into one annotation request.

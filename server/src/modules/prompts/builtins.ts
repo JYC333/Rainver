@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { PromptAssetContentSchema } from "@agent-space/protocol";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import type { PromptAssetContent } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
-import { HttpError, optionalString, type Queryable } from "../routeUtils/common";
-import { sha256Json, stableJsonStringify } from "./hash";
+import type { PromptAssetContent } from "@agent-space/protocol";
+import { HttpError, optionalString, type Queryable } from "../routeUtils/common.js";
+import { sha256Json, stableJsonStringify } from "./hash.js";
 
 const PROMPT_ASSET_TYPE = "prompt_template";
 
@@ -25,7 +25,6 @@ export interface PromptManifest {
  * rather than register a partial or malformed baseline.
  */
 export async function loadPromptManifests(catalogRoot: string): Promise<PromptManifest[]> {
-  const { PromptAssetContentSchema } = await loadProtocol();
   const dir = join(catalogRoot, "prompts");
   let files: string[];
   try {

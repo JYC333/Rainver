@@ -2,16 +2,12 @@
  * Canonical action registry access.
  *
  * The registry data is owned by the shared protocol package
- * (`POLICY_ACTION_REGISTRY`). Because the server is CommonJS and the
- * protocol is ESM, the data is loaded once through the cached dynamic import and
- * indexed into a Map.
+ * (`POLICY_ACTION_REGISTRY`); this module indexes it into a Map for lookup.
  */
 
-import { loadProtocol } from "../providers/protocolRuntime";
 
-import type { PolicyActionDefinition } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { PolicyActionDefinition } from "@agent-space/protocol";
+import { POLICY_ACTION_REGISTRY } from "@agent-space/protocol";
 
 export type { PolicyActionDefinition };
 
@@ -32,7 +28,6 @@ export function loadActionRegistry(): Promise<
   ReadonlyMap<string, PolicyActionDefinition>
 > {
   cached ??= (async () => {
-    const { POLICY_ACTION_REGISTRY } = await loadProtocol();
     const map = new Map<string, PolicyActionDefinition>();
     for (const def of POLICY_ACTION_REGISTRY) {
       map.set(def.action, def);

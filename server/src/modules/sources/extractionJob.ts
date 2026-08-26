@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { SourceExtractionWorker } from "./extractionWorker";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { SourceExtractionWorker } from "./extractionWorker.js";
 
 export function registerSourceExtractionHandler(
   registry: JobHandlerRegistry,

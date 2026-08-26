@@ -2,7 +2,7 @@ import type {
   CapabilityDefinition,
   CapabilityPackDescriptor,
   CapabilityRuntimeBinding,
-} from "./types";
+} from "./types.js";
 
 const RESEARCH_ARTIFACT_TYPES = [
   "research_report.archive.v1",

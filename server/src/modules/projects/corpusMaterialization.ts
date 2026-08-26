@@ -1,5 +1,5 @@
-import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry";
-import type { Queryable } from "../routeUtils/common";
+import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 interface PassingCorpusProfileRow {
   corpus_item_id: string;

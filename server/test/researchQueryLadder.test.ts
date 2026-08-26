@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { ResearchQueryLadderBuilder, type ResearchQueryLadderStep } from "../src/modules/research/queryPlanning/queryLadderBuilder";
-import { MAX_RESEARCH_QUERY_ATTEMPTS } from "../src/modules/research/queryPlanning/queryPolicy";
+import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import { ResearchQueryLadderBuilder, type ResearchQueryLadderStep } from "../src/modules/research/queryPlanning/queryLadderBuilder.js";
+import { MAX_RESEARCH_QUERY_ATTEMPTS } from "../src/modules/research/queryPlanning/queryPolicy.js";
 
 describe("ResearchQueryLadderBuilder", () => {
   it("broadens one lever at a time: expansion vocabulary first, then the qualifier (arxiv genuinely ORs expansions in)", () => {

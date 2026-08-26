@@ -3,14 +3,14 @@ import {
   objectValue,
   optionalString,
   stringArray,
-} from "../routeUtils/common";
-import { strategyAssetToOut } from "./strategyAssets";
+} from "../routeUtils/common.js";
+import { strategyAssetToOut } from "./strategyAssets.js";
 import type {
   EvolutionSelection,
   EvolutionSignalRow,
   EvolutionStrategyAssetRow,
   EvolutionTargetRow,
-} from "./types";
+} from "./types.js";
 
 export const EVOLUTION_PLAN_PROMPT_VERSION = "evolution_plan.prompt.v1";
 export const EVOLUTION_PLAN_REVIEW_SCHEMA = "agent-space.evolution_plan_review.v1";

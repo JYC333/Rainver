@@ -2,13 +2,13 @@ import type {
   ProposalApplierRegistry,
   ProposalApplyContext,
   ProposalApplyResult,
-} from "../../proposals/applierRegistry";
+} from "../../proposals/applierRegistry.js";
 import {
   RECIPE_VERSION_COLUMNS,
   activateSourceRecipeVersionTx,
   recipeVersionOut,
   type RecipeVersionRow,
-} from "./recipeVersionStore";
+} from "./recipeVersionStore.js";
 
 /**
  * Applier for `source_recipe_activation` proposals — the Level 2 analogue of

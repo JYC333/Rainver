@@ -2,8 +2,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { SpaceObjectWriteError, buildSpaceObjectInsert } from "../src/db/spaceObjectWriter";
-import { entityDefinition } from "../src/modules/ontology/entities";
+import { SpaceObjectWriteError, buildSpaceObjectInsert } from "../src/db/spaceObjectWriter.js";
+import { entityDefinition } from "../src/modules/ontology/entities.js";
 
 const VALID = {
   id: "obj-1",
@@ -27,7 +27,7 @@ describe("space object writer", () => {
   // Hardening the writer is worthless if a domain can hand-roll the insert next
   // to it, so the choke point is asserted before any of the rules are.
   it("is the only place that writes a space_objects row", () => {
-    const offenders = sourceFiles(join(__dirname, "..", "src"))
+    const offenders = sourceFiles(join(import.meta.dirname, "..", "src"))
       .filter((file) => !file.endsWith(join("db", "spaceObjectWriter.ts")))
       .filter((file) => /INSERT\s+INTO\s+space_objects/i.test(readFileSync(file, "utf8")));
     expect(offenders).toEqual([]);

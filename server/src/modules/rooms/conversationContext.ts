@@ -1,5 +1,5 @@
-import type { MessageOut } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { estimateModelTokens } from "../usage/modelCatalog";
+import type { MessageOut } from "@agent-space/protocol";
+import { estimateModelTokens } from "../usage/modelCatalog.js";
 
 export const ROOM_SUMMARY_TOKEN_BUDGET = 2_000;
 export const ROOM_RECENT_TOKEN_BUDGET = 6_000;

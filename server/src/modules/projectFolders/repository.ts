@@ -1,27 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce } from "../policy/service";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { assertProjectWriter } from "../projects/access";
-import { projectFolderReadAccessSql } from "./access";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce } from "../policy/service.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { projectFolderReadAccessSql } from "./access.js";
 import {
   diffTouchesSecretLikePath,
   looksSecretLikePath,
   redactSecretLikeDiff,
   validatePath,
-} from "./pathPolicy";
-import { isGitRepo, runGit } from "./git";
-import { PgHostRepository } from "../hosts/repository";
+} from "./pathPolicy.js";
+import { isGitRepo, runGit } from "./git.js";
+import { PgHostRepository } from "../hosts/repository.js";
 import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
   resolvePreferredServerHostLocation,
-} from "./workspaceLocations";
+} from "./workspaceLocations.js";
 
 const MAX_DEPTH = 5;
 const MAX_FILES = 500;

@@ -1,5 +1,5 @@
-import type { RerankCandidate } from "..";
-import { RERANK_SNIPPET_MAX_CHARS } from "./config";
+import type { RerankCandidate } from "../index.js";
+import { RERANK_SNIPPET_MAX_CHARS } from "./config.js";
 
 /**
  * Prompt construction + response parsing for the LLM reranker. The model is used

@@ -3,15 +3,15 @@ import type {
   OfficialPluginEffectiveState,
   OfficialPluginListItem,
   OfficialPluginEffectiveMap,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { getOfficialPlugin, listOfficialPlugins } from "./registry";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { getOfficialPlugin, listOfficialPlugins } from "./registry.js";
 import {
   pluginRepository,
   type PluginEnablementRow,
   type PluginInstallRow,
-} from "./repository";
-import { HttpError } from "../routeUtils/common";
+} from "./repository.js";
+import { HttpError } from "../routeUtils/common.js";
 
 function rowToEffective(
   descriptor: OfficialPluginDescriptor,

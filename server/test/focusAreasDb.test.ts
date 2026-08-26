@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { FocusAreaService } from "../src/modules/focusAreas/service";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { FocusAreaService } from "../src/modules/focusAreas/service.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // A focus area classifies and never gates (ADR 0015). The properties worth
 // real-Postgres coverage are therefore the ones a service-level test cannot
@@ -19,7 +19,7 @@ const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 const otherIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OTHER_USER };
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

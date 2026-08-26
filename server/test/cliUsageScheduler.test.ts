@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CLI_USAGE_REFRESH_INTERVAL_SECONDS,
-  createCliUsageRefreshTask,
-} from "../src/modules/providers";
+import { CLI_USAGE_REFRESH_INTERVAL_SECONDS, createCliUsageRefreshTask } from "../src/modules/providers/cli/usageScheduler.js";
 
 describe("createCliUsageRefreshTask", () => {
   it("is a scheduled task, not a self-owned timer", () => {

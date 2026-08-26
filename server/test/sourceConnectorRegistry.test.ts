@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry";
-import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler";
+import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
+import { ResearchProviderCompiler } from "../src/modules/research/queryPlanning/providerCompiler.js";
 
 describe("central arXiv provider compilation", () => {
   const handler = sourceConnectorRegistry.get("arxiv_api");

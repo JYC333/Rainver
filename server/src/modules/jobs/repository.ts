@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
-import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection";
-import { withQueryableTransaction } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
-} from "../runs/evidenceRedaction";
+} from "../runs/evidenceRedaction.js";
 
 export type JobStatus =
   | "pending"

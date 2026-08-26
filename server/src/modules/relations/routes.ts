@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   intQuery,
@@ -11,9 +11,9 @@ import {
   resolveIdentity,
   sendRouteError,
   dbPool,
-} from "../routeUtils/common";
-import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
-import { RelationsService } from "./service";
+} from "../routeUtils/common.js";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
+import { RelationsService } from "./service.js";
 
 let serviceFactoryOverride: ((context: ModuleContext) => RelationsService) | null = null;
 

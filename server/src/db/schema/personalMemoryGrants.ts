@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { proposals } from "./proposals";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
 
 export const participationRecords = pgTable("participation_records", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

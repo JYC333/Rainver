@@ -2,22 +2,22 @@ import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
+import { loadConfig } from "../src/config.js";
 import {
   buildSubprocessEnv,
   executeVendorCliAdapter,
   type CliCommandExecutor,
   type CliCredentialBrokerPort,
   type CliExecutionResult,
-} from "../src/modules/runs/vendorCliAdapter";
-import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease";
-import { materializeRunCredentialHome } from "../src/modules/providers/cli/credentialBroker";
-import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools";
-import type { RunRecord } from "../src/modules/runs/repository";
-import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope";
-import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol";
-import type { InvocationDelivery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts";
+} from "../src/modules/runs/vendorCliAdapter.js";
+import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease.js";
+import { materializeRunCredentialHome } from "../src/modules/providers/cli/credentialBroker.js";
+import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope.js";
+import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
+import type { InvocationDelivery } from "@agent-space/protocol";
+import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts.js";
 
 const tmpPaths: string[] = [];
 

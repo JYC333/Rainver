@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import {
   createRetrievalDiagnosticsProposalPacket,
   registerRetrievalDiagnosticsProposalAppliers,
   RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE,
-} from "../src/modules/retrieval/artifacts/diagnostics";
-import type { Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/retrieval/artifacts/diagnostics.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 interface CapturedQuery {
   sql: string;

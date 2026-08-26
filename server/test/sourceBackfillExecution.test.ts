@@ -1,7 +1,7 @@
 import { describe,expect,it } from "vitest";
-import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry";
-import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
+import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { vi } from "vitest";
 
 describe("source backfill extraction windows",()=>{

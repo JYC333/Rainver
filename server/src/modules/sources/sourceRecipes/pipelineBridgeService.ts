@@ -1,8 +1,9 @@
 import type {
   CustomSourcePolicyEnvelope,
   SourcePolicyEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
 import {
   HttpError,
   objectValue,
@@ -10,17 +11,16 @@ import {
   withDbTransaction,
   type Pool,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { SourceChannelService } from "../channels/sourceChannelService";
-import { connectionColumnsForAlias, type SourceChannelConnectionRow } from "../sourceRepositoryRows";
-import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository";
-import { analyzeSourceRecipe } from "./primitiveRegistry";
-import { recipeFromPipelineDefinition } from "./recipeInterpreter";
+} from "../../routeUtils/common.js";
+import { SourceChannelService } from "../channels/sourceChannelService.js";
+import { connectionColumnsForAlias, type SourceChannelConnectionRow } from "../sourceRepositoryRows.js";
+import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository.js";
+import { analyzeSourceRecipe } from "./primitiveRegistry.js";
+import { recipeFromPipelineDefinition } from "./recipeInterpreter.js";
 import {
   insertSourceRecipeVersion,
   recipeVersionOut,
-} from "./recipeVersionStore";
+} from "./recipeVersionStore.js";
 
 /**
  * Phase 7 compatibility bridge: existing `declarative_pipeline_v1` handler
@@ -49,7 +49,6 @@ export class SourceRecipePipelineBridgeService {
       throw new HttpError(422, "Only declarative_pipeline_v1 handler versions can be bridged into a recipe source");
     }
 
-    const protocol = await loadProtocol();
     const manifest = objectValue(handlerVersion.manifest_json);
     const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(manifest.pipeline);
     if (!parsedPipeline.success) {

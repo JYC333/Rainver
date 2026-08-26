@@ -5,13 +5,13 @@ import type {
   RunMaterializationItemSummary,
   RunStatus,
   RunTerminalStatus,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
-} from "./evidenceRedaction";
-import { RunPreparationError } from "./orchestrationErrors";
-import type { RunRecord } from "./repository";
+} from "./evidenceRedaction.js";
+import { RunPreparationError } from "./orchestrationErrors.js";
+import type { RunRecord } from "./repository.js";
 
 interface PreparedRuntimeInput {
   prompt: string | null;

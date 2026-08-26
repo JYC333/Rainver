@@ -1,14 +1,14 @@
 export {
   PgVerificationRepository,
   type VerificationPlanReader,
-} from "./repository";
+} from "./repository.js";
 export {
   PgVerificationEngine,
   buildVerificationDeclarations,
   hasDeclaredVerificationChecks,
   summarizeVerificationResults,
   verifyEvaluationOutput,
-} from "./engine";
+} from "./engine.js";
 export {
   VERIFICATION_ENGINE_VERSION,
   type ValidationRecipePlan,
@@ -20,4 +20,4 @@ export {
   type VerificationSummary,
   type EvaluationVerificationResult,
   type VerifierType,
-} from "./types";
+} from "./types.js";

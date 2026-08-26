@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { AcademicRepository } from "../src/modules/academic/repository";
-import { AcademicService } from "../src/modules/academic/service";
-import { RelationsRepository } from "../src/modules/relations/repository";
-import { RelationsService } from "../src/modules/relations/service";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { AcademicRepository } from "../src/modules/academic/repository.js";
+import { AcademicService } from "../src/modules/academic/service.js";
+import { RelationsRepository } from "../src/modules/relations/repository.js";
+import { RelationsService } from "../src/modules/relations/service.js";
 
 // Real-Postgres coverage for the Academic Research preset's object extensions:
 // papers built on the existing `sources` extension (not a new space_objects
@@ -16,7 +16,7 @@ const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

@@ -1,8 +1,8 @@
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
 
 export interface PublicationImportContext {
   targetSpaceId: string;

@@ -1,15 +1,15 @@
 import type {
   AgentSpacePlugin,
   PluginHostContext,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import type { FastifyInstance } from "fastify";
-import { registerFinanceLedgerProposalAppliers } from "./proposalAppliers";
-import { registerFinanceLedgerRoutes } from "./routes";
-import { financeLedgerMigrations } from "./schema";
+import { registerFinanceLedgerProposalAppliers } from "./proposalAppliers.js";
+import { registerFinanceLedgerRoutes } from "./routes.js";
+import { financeLedgerMigrations } from "./schema.js";
 import {
   FINANCE_LEDGER_PLUGIN_ID,
   FINANCE_LEDGER_PLUGIN_VERSION,
-} from "./manifest";
+} from "./manifest.js";
 
 export const financeLedgerPlugin: AgentSpacePlugin = {
   id: FINANCE_LEDGER_PLUGIN_ID,

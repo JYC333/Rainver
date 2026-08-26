@@ -1,4 +1,4 @@
-import { contentFullOversightSql } from "../access/contentAccessSql";
+import { contentFullOversightSql } from "../access/contentAccessSql.js";
 
 /**
  * SQL counterpart to the `highly_restricted` gate in `memoryReadAuth.ts`.

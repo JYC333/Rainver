@@ -1,17 +1,17 @@
-import type { ContextEvent, SemanticCheckpoint } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
-import { resolveProviderCommandStore } from "../../providers/commands/store";
-import { completeProviderText } from "../../providers/invocation/invocation";
-import type { SemanticCheckpointProviderPort } from "./service";
-import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy";
+import type { ContextEvent, SemanticCheckpoint } from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { resolveProviderCommandStore } from "../../providers/commands/store.js";
+import { completeProviderText } from "../../providers/invocation/invocation.js";
+import type { SemanticCheckpointProviderPort } from "./service.js";
+import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy.js";
 import {
   loadSourcePolicySnapshots,
   loadSourceConnectionIdsForTargets,
   sourceConnectionIdsFromMetadata,
   sourceConnectionIdsFromSourceRefs,
   sourceEgressPoliciesForSnapshots,
-} from "../../retrieval/sourcePolicy";
+} from "../../retrieval/sourcePolicy.js";
 
 const TASK = "context.checkpoint.extract";
 const SYSTEM = `You extract a complete Runtime Context semantic checkpoint.

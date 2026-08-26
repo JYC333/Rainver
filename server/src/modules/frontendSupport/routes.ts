@@ -8,9 +8,9 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { resolveIdentity, sendRouteError, type SpaceUserIdentity } from "../routeUtils/common";
-import { PgFrontendSupportService } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { resolveIdentity, sendRouteError, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { PgFrontendSupportService } from "./service.js";
 
 type FrontendSupportService = Pick<
   PgFrontendSupportService,

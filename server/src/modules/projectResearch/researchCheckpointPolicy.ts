@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Which research checkpoints still stop the workflow, and why.

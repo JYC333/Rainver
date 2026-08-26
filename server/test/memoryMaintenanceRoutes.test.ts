@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { loadConfig } from "../src/config";
-import { __setMemoryIdentityForTests, memoryModule } from "../src/modules/memory";
-import type { MemoryRow } from "../src/modules/memory/repository";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { loadConfig } from "../src/config.js";
+import { __setMemoryIdentityForTests } from "../src/modules/memory/routes.js";
+import { memoryModule } from "../src/modules/memory/index.js";
+import type { MemoryRow } from "../src/modules/memory/repository.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

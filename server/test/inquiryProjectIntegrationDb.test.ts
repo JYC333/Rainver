@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { ProjectOverviewService } from "../src/modules/projects/overviewService";
-import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService";
-import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry";
-import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquirySignalService } from "../src/modules/inquiry/signalService";
-import { registerInquiryProjectIntegration } from "../src/modules/inquiry/projectIntegration";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
+import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
+import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
+import { registerInquiryProjectIntegration } from "../src/modules/inquiry/projectIntegration.js";
 
 // Proves the Project Kernel <-> Inquiry integration: the Kernel's Mode
 // Overview and Attention registries (ADR 0011 decision 5) are actually
@@ -21,7 +21,7 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 afterEach(() => {
   projectAttentionRegistry.__resetForTests();

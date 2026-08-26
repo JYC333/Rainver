@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import {
   contentAccessLevelSql,
   contentAccessSql,
   contentOwnerFilterSql,
   contentVisibilityFilterSql,
-} from "../access/contentAccessSql";
-import { countFromRow, type Queryable } from "../routeUtils/common";
-import type { NormalizedUsageObservation } from "./types";
-import { accuracyMixZero } from "./normalizer";
+} from "../access/contentAccessSql.js";
+import { countFromRow, type Queryable } from "../routeUtils/common.js";
+import type { NormalizedUsageObservation } from "./types.js";
+import { accuracyMixZero } from "./normalizer.js";
 
 export interface UsageEventRecord {
   id: string;

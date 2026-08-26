@@ -4,14 +4,14 @@ import type {
   MemoryMaintenanceJobCreateRequest,
   MemoryMaintenanceJobRunResponse,
   MemoryMaintenanceScanRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "./repository";
-import { PgMemoryReadRepository } from "./repository";
-import { MemoryMaintenanceService } from "./maintenance";
+} from "@agent-space/protocol";
+import type { Queryable } from "./repository.js";
+import { PgMemoryReadRepository } from "./repository.js";
+import { MemoryMaintenanceService } from "./maintenance.js";
 import {
   createMemoryMaintenanceProposalPacket,
   persistMemoryMaintenanceReportArtifact,
-} from "./maintenanceArtifacts";
+} from "./maintenanceArtifacts.js";
 
 interface MemoryMaintenanceJobRow {
   id: string;

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { objectValue } from "../routeUtils/common";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
+import type { Queryable } from "../routeUtils/common.js";
+import { objectValue } from "../routeUtils/common.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 
 const MATRIX_SOURCE_ACCESS = contentResourceDefinition("source_item")!;
 const MATRIX_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;

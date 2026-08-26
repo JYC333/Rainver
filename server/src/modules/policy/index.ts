@@ -7,17 +7,17 @@
  * decision authority.
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const policyModule: ServerModule = {
   name: "policy",
   registerRoutes,
 };
 
-export { enforce, enforceProposalApply } from "./service";
-export { computeDecision, checkProposalApplyPolicy } from "./gateway";
-export { loadActionRegistry } from "./actionRegistry";
-export { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository";
-export { resolveRuntimeContextPolicies } from "./runtimeContextPolicyResolver";
-export { ExecutionControlSnapshotRepository } from "./executionControlSnapshots";
+export { enforce, enforceProposalApply } from "./service.js";
+export { computeDecision, checkProposalApplyPolicy } from "./gateway.js";
+export { loadActionRegistry } from "./actionRegistry.js";
+export { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository.js";
+export { resolveRuntimeContextPolicies } from "./runtimeContextPolicyResolver.js";
+export { ExecutionControlSnapshotRepository } from "./executionControlSnapshots.js";

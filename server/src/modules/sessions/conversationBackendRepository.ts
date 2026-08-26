@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import type {
   ConversationBackendBinding,
   ConversationBackendOption,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters";
+} from "@agent-space/protocol";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
-} from "../providers/eligibility";
-import type { Queryable } from "../routeUtils/common";
+} from "../providers/eligibility.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 interface BackendRow {
   agent_kind: string;

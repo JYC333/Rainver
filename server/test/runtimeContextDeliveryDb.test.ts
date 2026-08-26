@@ -1,20 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { seedServerHost } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import {
-  InvocationSnapshotService,
-  PgInvocationDeliveryAuthorizer,
-  RuntimeContextContinuityService,
-  RuntimeContextPlanner,
-  SealedPayloadCipher,
-  SealedPayloadService,
-  createProductionRuntimeContextPlanningService,
-  loadConversationContinuityThroughMessage,
-  normalizeContextItem,
-} from "../src/modules/runtimeContext";
-import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
+import { PgInvocationDeliveryAuthorizer } from "../src/modules/runtimeContext/gateway.js";
+import { RuntimeContextContinuityService } from "../src/modules/runtimeContext/continuity/service.js";
+import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
+import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayloadCrypto.js";
+import { createProductionRuntimeContextPlanningService } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { loadConversationContinuityThroughMessage } from "../src/modules/runtimeContext/conversationContinuity.js";
+import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
+import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost/deliveryAuthorizer.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
@@ -31,7 +29,7 @@ const HOST = "30000000-0000-4000-8000-000000000014";
 const THREAD = "30000000-0000-4000-8000-000000000013";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -42,16 +40,7 @@ beforeEach(async () => {
   );
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
   await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
-  await db.pool.query(
-    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
-     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
-    [HOST],
-  );
-  await db.pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
-    [HOST],
-  );
+  await seedServerHost(db.pool, { id: HOST });
   await db.pool.query(
     `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,'owner','active',now(),now())`,

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { writeOpenCodeProviderConfig } from "../src/modules/runs/opencodeProviderConfig";
+import { writeOpenCodeProviderConfig } from "../src/modules/runs/opencodeProviderConfig.js";
 
 describe("OpenCode provider configuration", () => {
   it("writes a run-scoped OpenAI-compatible provider without exposing the upstream key", async () => {

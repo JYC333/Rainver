@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { loadProtocol } from "../providers/protocolRuntime";
+import * as protocol from "@agent-space/protocol";
 import {
   HttpError,
   dateIso,
@@ -8,7 +8,7 @@ import {
   optionalString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanPinScope,
@@ -19,7 +19,7 @@ import {
   normalizeAssetOwnerScopeForCreate,
   normalizeVersionScopeForWrite,
   type EvolvableAssetAccessRow,
-} from "./assetAccess";
+} from "./assetAccess.js";
 
 const ASSET_TYPES = new Set([
   "prompt_template",
@@ -537,7 +537,6 @@ async function validateAssetVersionContent(
 ): Promise<Record<string, unknown> | null> {
   if (assetType !== "workflow_template") return contentJson;
   if (!contentJson) throw new HttpError(422, "workflow_template versions require content_json");
-  const protocol = await loadProtocol();
   const parsed = protocol.WorkflowDefinitionSchema.safeParse(contentJson);
   if (!parsed.success) {
     throw new HttpError(422, `workflow_definition.v1 is invalid: ${parsed.error.issues[0]?.message ?? "invalid content"}`);

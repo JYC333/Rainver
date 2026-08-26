@@ -1,9 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { __setAgentGroupsServiceFactoryForTests, authorityWidening, agentGroupsModule } from "../src/modules/agentGroups";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setAgentGroupsServiceFactoryForTests } from "../src/modules/agentGroups/routes.js";
+import { authorityWidening } from "../src/modules/agentGroups/service.js";
+import { agentGroupsModule } from "../src/modules/agentGroups/index.js";
 
 let app: FastifyInstance | undefined;
 

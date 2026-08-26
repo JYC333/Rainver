@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { PgVerificationRepository } from "../src/modules/runs/verification/repository";
-import { PgRunSupervisor } from "../src/modules/runs/supervisor";
-import { PostRunFinalizationService } from "../src/modules/runs/finalizationService";
-import { PgRouteDecisionRepository } from "../src/modules/routing/repository";
-import { PgUsageRepository } from "../src/modules/usage/repository";
-import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
-import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters";
-import { insertProposalRow } from "../src/modules/proposals/reviewPackets";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgVerificationRepository } from "../src/modules/runs/verification/repository.js";
+import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
+import { PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
+import { PgUsageRepository } from "../src/modules/usage/repository.js";
+import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
+import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 
 const SPACE = "81111111-1111-4111-8111-111111111111";
 const USER = "82222222-2222-4222-8222-222222222222";
@@ -25,7 +25,7 @@ const PROVIDER_CREDENTIAL = "89999999-9999-4999-8999-999999999999";
 const PROVIDER_GRANT = "8aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

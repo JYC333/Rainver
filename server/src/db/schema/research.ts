@@ -1,11 +1,11 @@
 import { check, doublePrecision, foreignKey, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, varchar, integer, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { projects } from "./projects";
-import { projectOperations } from "./projectOperations";
-import { projectResearchContextVersions } from "./projectResearchContext";
-import { researchScanSummaries } from "./projectResearch";
-import { proposals } from "./proposals";
+import { users } from "./auth.js";
+import { projects } from "./projects.js";
+import { projectOperations } from "./projectOperations.js";
+import { projectResearchContextVersions } from "./projectResearchContext.js";
+import { researchScanSummaries } from "./projectResearch.js";
+import { proposals } from "./proposals.js";
 
 export const researchQueryStrategies = pgTable("research_query_strategies", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

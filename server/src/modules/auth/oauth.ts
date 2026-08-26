@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { request as undiciRequest } from "undici";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 
 export const OAUTH_STATE_COOKIE = "oauth_state";
 export const POST_LOGIN_NEXT_COOKIE = "post_login_next";

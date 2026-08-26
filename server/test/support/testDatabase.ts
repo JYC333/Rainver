@@ -1,10 +1,11 @@
 import { Pool } from "pg";
+import { closeDbPool } from "../../src/db/pool.js";
 import { afterAll, beforeAll } from "vitest";
 import {
   getTestPostgres,
   isTestPostgresUnavailableError,
   type TestPostgresDatabase,
-} from "./sharedPostgres";
+} from "./sharedPostgres.js";
 
 export interface TestDatabase {
   /** False when the shared container could not be reached; tests then return early. */
@@ -51,6 +52,9 @@ export function useTestDatabase(
 
   afterAll(async () => {
     await pool?.end();
+    // Services under test reach the same database through `getDbPool`;
+    // its cached pool would block the DROP behind `stop()`.
+    if (container) await closeDbPool(container.getConnectionUri());
     await container?.stop();
   });
 

@@ -1,5 +1,5 @@
-import { getRuntimeAdapterSpec } from "../runtimeAdapters";
-import { HOST_BINDING_MODEL_SOURCE } from "./remoteProviderBinding";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { HOST_BINDING_MODEL_SOURCE } from "./remoteProviderBinding.js";
 import type {
   ArtifactSummaryRecord,
   ModelProviderSummaryRecord,
@@ -9,8 +9,8 @@ import type {
   RunFinalizationRecord,
   RunRecord,
   RunStepDetailRecord,
-} from "./repository";
-import type { VerificationResultRecord } from "./verification";
+} from "./repository.js";
+import type { VerificationResultRecord } from "./verification/index.js";
 
 export function runToOut(
   run: RunRecord,

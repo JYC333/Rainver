@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mergeRewriteVariants, MAX_REWRITE_VARIANTS } from "../src/modules/retrieval/queryRewrite";
-import { parseQueryRewriteVariants } from "../src/modules/retrieval/queryRewriteProvider/prompt";
-import { ProviderQueryRewriter } from "../src/modules/retrieval/queryRewriteProvider/providerQueryRewriter";
-import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
-import { piAiHttpClient } from "./support/piAiHttp";
+import { mergeRewriteVariants, MAX_REWRITE_VARIANTS } from "../src/modules/retrieval/queryRewrite.js";
+import { parseQueryRewriteVariants } from "../src/modules/retrieval/queryRewriteProvider/prompt.js";
+import { ProviderQueryRewriter } from "../src/modules/retrieval/queryRewriteProvider/providerQueryRewriter.js";
+import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
+import { piAiHttpClient } from "./support/piAiHttp.js";
 
 function __setProviderHttpClientForTests(client: Parameters<typeof setRawProviderHttpClientForTests>[0]): void {
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);

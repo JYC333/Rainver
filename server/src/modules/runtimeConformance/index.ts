@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const runtimeConformanceModule: ServerModule = {
   name: "runtimeConformance",
@@ -15,8 +15,8 @@ export {
   type ConformanceProbeContext,
   type ConformanceProbeRunner,
   type ConformanceResult,
-} from "./service";
+} from "./service.js";
 export {
   LocalCliConformanceProbeRunner,
   type LocalCliConformanceProbeRunnerDeps,
-} from "./probeRunner";
+} from "./probeRunner.js";

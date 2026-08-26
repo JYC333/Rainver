@@ -3,15 +3,15 @@ import type {
   CanonicalUsage,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { resolveProviderCommandStore } from "../providers/commands/store";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import {
   completeProviderMessages,
   ProviderInvocationError,
-} from "../providers/invocation/invocation";
-import { redactSecretPatterns } from "../runs/evidenceRedaction";
-import { normalizeUsageDetails } from "../usage/normalizer";
+} from "../providers/invocation/invocation.js";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
+import { normalizeUsageDetails } from "../usage/normalizer.js";
 
 export interface RuntimeHostLogger {
   error(details: Record<string, unknown>, message: string): void;

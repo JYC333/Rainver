@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { PromptRepository } from "./repository";
-import { resolvePrompt } from "./resolver";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { PromptRepository } from "./repository.js";
+import { resolvePrompt } from "./resolver.js";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => PromptRepository) | null = null;
 

@@ -6,7 +6,7 @@ import {
   type RetrievalObjectType,
   type RevalidatedObject,
   sourceConnectionIdsFromSourceRefs,
-} from "../retrieval";
+} from "../retrieval/index.js";
 
 const PROJECT_PUBLIC_SUMMARY_OBJECT_TYPES = ["project_public_summary"] as const;
 

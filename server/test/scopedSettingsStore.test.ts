@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ScopedSettingsStore,
-  defineScopedSetting,
-  parseSpaceUserSettingsScopeId,
-  settingsRecord,
-  spaceUserSettingsScopeId,
-} from "../src/modules/settings";
+import { ScopedSettingsStore, defineScopedSetting, parseSpaceUserSettingsScopeId, settingsRecord, spaceUserSettingsScopeId } from "../src/modules/settings/scopedSettings.js";
 
 interface DemoSettings {
   enabled: boolean;

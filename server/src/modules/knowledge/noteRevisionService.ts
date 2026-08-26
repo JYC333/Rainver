@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { applyNoteOps, normalizePmText, parseNoteOps, pmBlocksText, type NoteOp } from "./noteDocument";
-import { addedBlockIds, withBlockIds } from "./noteBlockIds";
-import { emitDomainChangeEvent } from "../knowledgePromotion/outbox";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { applyNoteOps, normalizePmText, parseNoteOps, pmBlocksText, type NoteOp } from "./noteDocument.js";
+import { addedBlockIds, withBlockIds } from "./noteBlockIds.js";
+import { emitDomainChangeEvent } from "../knowledgePromotion/outbox.js";
 
 export type NoteRevisionSource = "user_edit" | "ai_monitoring" | "ai_adhoc" | "seed" | "rollback";
 

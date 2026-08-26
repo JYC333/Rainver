@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository";
-import { HttpError } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-PostgreSQL integration tests for PgCustomSourceHandlerRepository.
 // Repository-level tests with a fake Queryable cannot catch the SQL bugs
@@ -21,7 +21,7 @@ const CUSTOM_SOURCE_INSTANCE_RUNNER_SETTINGS_KEY = "source.custom_source.runner"
 
 let repo: PgCustomSourceHandlerRepository | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;

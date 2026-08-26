@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
-import { objectValue, optionalString } from "../../routeUtils/common";
-import type { SpaceUserIdentity } from "../../routeUtils/common";
-import { HttpError } from "../../routeUtils/common";
-import { syncProjectCorpusDecisionForSourceItem } from "../../projects/corpusRepository";
-import { ResearchMonitoringCoordinator } from "../../research/queryPlanning/monitoringCoordinator";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { objectValue, optionalString } from "../../routeUtils/common.js";
+import type { SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError } from "../../routeUtils/common.js";
+import { syncProjectCorpusDecisionForSourceItem } from "../../projects/corpusRepository.js";
+import { ResearchMonitoringCoordinator } from "../../research/queryPlanning/monitoringCoordinator.js";
 import {
   COMPARISON_BATCH_SIZE,
   ProjectResearchMonitorComparisonService,
   parseMonitorComparisons,
   type MonitorComparison,
-} from "../monitorComparisonService";
+} from "../monitorComparisonService.js";
 import {
   deriveSkippedAfterScreeningSteps,
   researchState,
@@ -19,12 +19,12 @@ import {
   refreshOperation,
   type ResearchOperationState,
   type ResearchMutationResult,
-} from "../operationProjection";
+} from "../operationProjection.js";
 import {
   filterItemsForPublicationWindow,
   laterPublicationWatermark,
   latestPublicationWatermarkForItems,
-} from "../monitoringWindow";
+} from "../monitoringWindow.js";
 
 interface MonitoringOperation {
   id: string;

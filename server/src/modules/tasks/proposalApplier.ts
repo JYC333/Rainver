@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { HttpError, optionalString, objectValue } from "../routeUtils/common";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError, optionalString, objectValue } from "../routeUtils/common.js";
 
 const VALID_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const VALID_RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);

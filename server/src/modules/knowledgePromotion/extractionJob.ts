@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { KnowledgeExtractionService } from "./extractionService";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { KnowledgeExtractionService } from "./extractionService.js";
 
 export function registerKnowledgeExtractionHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;

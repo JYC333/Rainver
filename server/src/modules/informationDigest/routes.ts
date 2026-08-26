@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { InterestProfileService } from "../interestProfile/service";
-import { domainDefinitions, isKnownDomain, PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "../sourceAnnotation";
-import type { InterestProfileSettings } from "../interestProfile/settings";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { assertProjectReadable } from "../projects/access";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { InterestProfileService } from "../interestProfile/service.js";
+import { domainDefinitions, isKnownDomain, PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "../sourceAnnotation/index.js";
+import type { InterestProfileSettings } from "../interestProfile/settings.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { assertProjectReadable } from "../projects/access.js";
 import {
   dbPool,
   HttpError,
@@ -15,10 +15,10 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { assertDate, InformationDigestService } from "./service";
-import { SerendipityFeedbackService, type SerendipityFeedback } from "./feedbackService";
-import { INTEREST_STARTER_PACKS, InterestStarterPackService } from "./starterPacks";
+} from "../routeUtils/common.js";
+import { assertDate, InformationDigestService } from "./service.js";
+import { SerendipityFeedbackService, type SerendipityFeedback } from "./feedbackService.js";
+import { INTEREST_STARTER_PACKS, InterestStarterPackService } from "./starterPacks.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/spaces/:spaceId/information-digests/personal", async (request, reply) => {

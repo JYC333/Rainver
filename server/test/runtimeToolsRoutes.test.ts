@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { runtimeToolsModule } from "../src/modules/runtimeTools";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
+import { loadConfig } from "../src/config.js";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { runtimeToolsModule } from "../src/modules/runtimeTools/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

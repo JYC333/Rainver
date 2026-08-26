@@ -1,5 +1,5 @@
-import type { SynthesisResult } from "..";
-import { SYNTHESIS_SNIPPET_MAX_CHARS, SYNTHESIS_TOTAL_TEXT_MAX_CHARS } from "./config";
+import type { SynthesisResult } from "../index.js";
+import { SYNTHESIS_SNIPPET_MAX_CHARS, SYNTHESIS_TOTAL_TEXT_MAX_CHARS } from "./config.js";
 
 /**
  * Prompt construction + response parsing for the Context Brief synthesizer. The

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isTestPostgresUnavailableError,
   TestPostgresUnavailableError,
-} from "./support/sharedPostgres";
+} from "./support/sharedPostgres.js";
 
 describe("shared PostgreSQL availability classification", () => {
   it("downgrades an explicitly unavailable shared container", () => {

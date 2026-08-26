@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { withTransaction } from "../src/db/tx";
-import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { withTransaction } from "../src/db/tx.js";
+import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 // Fixed workspace roots remain immovable at the server boundary. Project-backed
 // folders are different: they retain protected destructive actions but can be
@@ -14,7 +14,7 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 beforeEach(async () => {
   if (!db.available) return;

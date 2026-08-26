@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, params, query, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common";
-import { ProjectResearchAreaService } from "./areaService";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, params, query, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
+import { ProjectResearchAreaService } from "./areaService.js";
 
 function requireParam(request: Parameters<typeof params>[0], name: string): string {
   const value = params(request)[name];

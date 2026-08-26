@@ -1,24 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryConclusionProposalService } from "../src/modules/inquiry/inquiryConclusionProposalService";
-import { registerInquiryConclusionProposalAppliers } from "../src/modules/inquiry/inquiryConclusionProposalApplier";
-import { InquiryThreadProposalService } from "../src/modules/inquiry/inquiryThreadProposalService";
-import { registerInquiryThreadProposalAppliers } from "../src/modules/inquiry/inquiryThreadProposalApplier";
-import { ProjectDefinitionProposalService } from "../src/modules/projects/projectDefinitionProposalService";
-import { registerProjectDefinitionProposalAppliers } from "../src/modules/projects/projectDefinitionProposalApplier";
-import { ProjectOverviewService } from "../src/modules/projects/overviewService";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import type { ServerConfig } from "../src/config";
-import { HttpError } from "../src/modules/routeUtils/common";
-import { loadConfig } from "../src/config";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher";
-import type { CanonicalToolCall, RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryConclusionProposalService } from "../src/modules/inquiry/inquiryConclusionProposalService.js";
+import { registerInquiryConclusionProposalAppliers } from "../src/modules/inquiry/inquiryConclusionProposalApplier.js";
+import { InquiryThreadProposalService } from "../src/modules/inquiry/inquiryThreadProposalService.js";
+import { registerInquiryThreadProposalAppliers } from "../src/modules/inquiry/inquiryThreadProposalApplier.js";
+import { ProjectDefinitionProposalService } from "../src/modules/projects/projectDefinitionProposalService.js";
+import { registerProjectDefinitionProposalAppliers } from "../src/modules/projects/projectDefinitionProposalApplier.js";
+import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import type { ServerConfig } from "../src/config.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
+import { loadConfig } from "../src/config.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
+import type { CanonicalToolCall, RuntimeHostExecuteRequest } from "@agent-space/protocol";
 
 // Real-Postgres coverage for `inquiry.record_conclusion` (plan:
 // `.agent/plans/project-conversational-advancement-plan.md`, Phase A): an
@@ -33,7 +33,7 @@ const AGENT_VERSION_ID = "2ddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const RUN_ID = "2ccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 let PROJECT: string;
 

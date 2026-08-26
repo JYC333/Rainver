@@ -1,20 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { spacesModule } from "../src/modules/spaces";
-import { authModule } from "../src/modules/auth";
-import { loadConfig } from "../src/config";
-import {
-  __setGoogleOAuthClientForTests,
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-  type AuthFailure,
-  type GoogleOAuthClient,
-} from "../src/modules/auth";
-import {
-  __setSpaceRepositoryForTests,
-  type SpaceRepository,
-} from "../src/modules/spaces";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { spacesModule } from "../src/modules/spaces/index.js";
+import { authModule } from "../src/modules/auth/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setGoogleOAuthClientForTests, type GoogleOAuthClient } from "../src/modules/auth/oauth.js";
+import { __setAuthRepositoryForTests, type AuthRepository, type AuthFailure } from "../src/modules/auth/identity.js";
+import { __setSpaceRepositoryForTests, type SpaceRepository } from "../src/modules/spaces/repository.js";
 
 let app: FastifyInstance | undefined;
 

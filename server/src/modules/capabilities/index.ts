@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const capabilitiesModule: ServerModule = {
   name: "capabilities",
@@ -10,27 +10,27 @@ export {
   assertPackReferencesValid,
   getBuiltInCapabilityPack,
   listBuiltInCapabilityPacks,
-} from "./packRegistry";
+} from "./packRegistry.js";
 export {
   assertUniqueCapabilityIds,
   getBuiltInCapabilityDefinition,
   listBuiltInCapabilityDefinitions,
-} from "./registry";
-export { parseSkillMarkdown } from "./skillParser";
-export { analyzeSkillRisk } from "./skillRisk";
+} from "./registry.js";
+export { parseSkillMarkdown } from "./skillParser.js";
+export { analyzeSkillRisk } from "./skillRisk.js";
 export {
   previewSkillImport,
   type SkillFetcher,
   type SkillImportOptions,
   type SkillPackageLister,
   type SkillPackageTreeEntry,
-} from "./skillImporter";
+} from "./skillImporter.js";
 export {
   renderAllRuntimeSkills,
   renderClaudeSkill,
   renderCodexSkill,
   renderGenericPromptSkill,
-} from "./runtimeRenderers";
+} from "./runtimeRenderers.js";
 export {
   PgRuntimeSkillProvider,
   renderRuntimeSkillCandidate,
@@ -38,14 +38,14 @@ export {
   type RuntimeSkillCandidate,
   type RuntimeSkillProvider,
   type RuntimeSkillRunContext,
-} from "./runtimeSkillProvider";
-export { CapabilitiesService } from "./service";
-export { PgCapabilitiesRepository } from "./repository";
+} from "./runtimeSkillProvider.js";
+export { CapabilitiesService } from "./service.js";
+export { PgCapabilitiesRepository } from "./repository.js";
 export {
   __setCapabilitiesIdentityForTests,
   __setCapabilitiesRepositoryFactoryForTests,
   __setCapabilitiesSkillFetcherForTests,
-} from "./routes";
+} from "./routes.js";
 export type {
   CapabilityDefinition,
   CapabilityPackDescriptor,
@@ -57,4 +57,4 @@ export type {
   SkillPackageFile,
   SkillPackageFilePreview,
   SkillRiskAnalysis,
-} from "./types";
+} from "./types.js";

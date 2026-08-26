@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { AgentGroupRunService } from "../src/modules/agentGroups";
-import type { QueryResult } from "../src/modules/routeUtils/common";
-import type { RunRecord } from "../src/modules/runs/repository";
+import { loadConfig } from "../src/config.js";
+import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
+import type { QueryResult } from "../src/modules/routeUtils/common.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 
 class AgentGroupServiceDb {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

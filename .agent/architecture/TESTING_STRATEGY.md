@@ -106,6 +106,40 @@ and tears down on exit. Per-file databases are always recreated, and setup
 reclaims databases left by runs killed before teardown once they are older than
 two hours (younger ones may belong to a concurrent run).
 
+**Rules the hygiene test enforces.** A real-Postgres file declares its
+database with `useTestDatabase`, never its own container or `Pool`; a file
+mocks `src/db/pool.js` — or anything, see Runtime — only if it is already on
+the hygiene test's list, which must only shrink; a module's barrel (`../src/modules/<x>/index.js`) is imported
+only for its `xModule` object — everything else comes from its own file; and a
+family that already has a `*Group.test.ts` takes new small tests there rather
+than in a new file. Test data keys on UUIDs: `resetTables` does not reset
+sequences, so nothing may depend on a sequence value.
+
+## Test Support Index
+
+`server/test/support/` is the one place for test infrastructure. Search it
+before writing setup.
+
+| File | Provides |
+|---|---|
+| `testDatabase` | `useTestDatabase(import.meta.filename)` — the file's real-Postgres database |
+| `sharedPostgres` | The shared container handle behind it; not called from tests directly |
+| `resetTables` | `resetTables(pool, tables, { cascade })` between tests |
+| `moduleServer` | `buildModuleServer(config, [xModule])` — the app shell with only the modules under test |
+| `domainSeeds` | Space/owner/project, member, agent + version, run, server host |
+| `researchSeeds` | arXiv source chain, relevant corpus item, research Operation, screening gate, question Thread |
+| `customSourceWorld` | The Custom Source connector/provider/mapping world and its Space policy row |
+| `customSourceFixtures` | Runner settings, policy envelopes, listing-page HTML for Custom Source unit tests |
+| `knowledgeFixtures` | Knowledge items and note collections |
+| `memoryFixtures` | Memory entries |
+| `researchWorkflow` | `insertResearchWorkflowFixture` |
+| `routeFakes` | Fake auth repository, retrieval settings row for route tests |
+| `sourceRetrievalTestSql` | SQL router shared by the fake-db source tests |
+| `retrievalEval`, `usageAttribution` | Domain fixtures for retrieval evaluation and usage attribution |
+| `mockUpstream`, `piAiHttp` | Provider HTTP fakes (proxy upstream, Pi SSE wire) |
+| `sourceFiles` | `listTsFiles` for meta-tests that scan the source tree |
+| `sqlCapture` | Records executed SQL when `SQL_CAPTURE_DIR` is set (see COMMANDS.md) |
+
 ## Route Tests Build Only Their Module
 
 Route tests build the app with `buildModuleServer(config, [xModule, ...])` from
@@ -125,8 +159,25 @@ cross-module registrations (automation targets).
 
 Vitest 4 with `experimental.fsModuleCache` on, cached per package under
 `node_modules/.vitest-cache`; the first run after a dependency change
-repopulates it. Module import is the largest cost of the server suite, so keep
-the cache on.
+repopulates it.
+
+**Two server projects, split by `vi.mock`.** Module evaluation is the largest
+cost of the server suite: every file that imports a service pulls in most of
+the module graph (~1.3s). `server/vitest.config.ts` therefore runs files
+without `vi.mock()` in a `shared` project with `isolate: false` — one module
+graph per worker, evaluated once — and files that `vi.mock()` in an `isolated`
+project, because a mock stays registered for every file that follows in its
+worker. Membership is computed from the file contents; the hygiene test
+freezes the isolated list so it only shrinks.
+
+Sharing a worker means module-level state outlives a file. Three rules follow,
+all enforced by the hygiene test: a file that sets a `__set*ForTests` seam
+resets it (`null`) in `afterEach`/`afterAll`; a file that fakes timers restores
+them in `afterEach`; and `useTestDatabase` closes the `getDbPool` pool for its
+database in teardown (`closeDbPool`), because `DROP DATABASE` waits on any
+connection a service opened. A failure that appears only in the full run and
+not when the file runs alone is a leak of this kind in whichever file ran
+before it in that worker.
 
 The web suite runs at full parallelism and starts a jsdom environment per file.
 Test files that touch no DOM declare `// @vitest-environment node` on their

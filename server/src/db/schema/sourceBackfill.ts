@@ -1,12 +1,12 @@
 import { pgTable, index, unique, check, foreignKey, varchar, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { extractionJobs } from "./sources";
-import { sourceChannels } from "./sourceChannels";
-import { projectSourceBindings } from "./projectSources";
-import { projectOperations } from "./projectOperations";
-import { users } from "./auth";
-import { proposals } from "./proposals";
+import { spaces } from "./spaces.js";
+import { extractionJobs } from "./sources.js";
+import { sourceChannels } from "./sourceChannels.js";
+import { projectSourceBindings } from "./projectSources.js";
+import { projectOperations } from "./projectOperations.js";
+import { users } from "./auth.js";
+import { proposals } from "./proposals.js";
 
 export const sourceBackfillPlans = pgTable("source_backfill_plans", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

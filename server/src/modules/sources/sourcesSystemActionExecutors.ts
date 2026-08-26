@@ -1,10 +1,10 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { SourceChannelService } from "./channels/sourceChannelService";
-import { SourceBackfillPlanningService } from "./sourceBackfillService";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { SourceChannelService } from "./channels/sourceChannelService.js";
+import { SourceBackfillPlanningService } from "./sourceBackfillService.js";
 
 /**
  * `source.channel.propose_activation` and `source.backfill.propose_start`

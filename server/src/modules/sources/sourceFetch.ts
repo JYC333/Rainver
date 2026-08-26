@@ -1,6 +1,6 @@
 import { extname } from "node:path";
 import { TextDecoder } from "node:util";
-import { HttpError } from "../routeUtils/common";
+import { HttpError } from "../routeUtils/common.js";
 
 export interface SourceFetchResult {
   status: number;

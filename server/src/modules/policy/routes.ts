@@ -8,15 +8,15 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { checkInternalToken } from "../../gateway/internalAuth";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { loadActionRegistry } from "./actionRegistry";
-import { enforce, enforceProposalApply } from "./service";
-import { ActionApprovalGrantService } from "./actionApprovalGrantService";
-import { AuthorizationRequestService } from "./authorizationRequestService";
-import { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository";
-import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { checkInternalToken } from "../../gateway/internalAuth.js";
+import { loadActionRegistry } from "./actionRegistry.js";
+import { enforce, enforceProposalApply } from "./service.js";
+import { ActionApprovalGrantService } from "./actionApprovalGrantService.js";
+import { AuthorizationRequestService } from "./authorizationRequestService.js";
+import { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository.js";
+import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
 
 function jsonBody(request: FastifyRequest): unknown {
   const text = request.body instanceof Buffer ? request.body.toString("utf8") : "";
@@ -38,7 +38,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runtime-context/policies/:scopeType/:scopeId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
       const scopeId = requiredString(params(request).scopeId, "scope_id");
       const active = await runtimeContextPolicies().getActive(identity, scopeType, scopeId);
@@ -49,7 +48,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runtime-context/policies/:scopeType/:scopeId/versions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
       const scopeId = requiredString(params(request).scopeId, "scope_id");
       const items = await runtimeContextPolicies().listVersions(identity, scopeType, scopeId);
@@ -60,7 +58,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.put("/api/v1/runtime-context/policies/:scopeType/:scopeId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
       const scopeId = requiredString(params(request).scopeId, "scope_id");
       const parsed = protocol.RuntimeContextPolicyWriteRequestSchema.safeParse(publicJsonBody(request));
@@ -73,7 +70,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/runtime-context/policies/resolve", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.RuntimeContextPolicyResolveRequestSchema.safeParse(publicJsonBody(request));
       if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid policy resolution request");
       const resolved = await runtimeContextPolicies().resolve(identity, parsed.data);
@@ -122,7 +118,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(401).send({ detail: "Unauthorized" });
     }
     try {
-      const protocol = await loadProtocol();
       const req = protocol.PolicyCheckRequestSchema.parse(jsonBody(request));
       const registry = await loadActionRegistry();
       const result = await enforce(context.config, registry, req);
@@ -137,7 +132,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(401).send({ detail: "Unauthorized" });
     }
     try {
-      const protocol = await loadProtocol();
       const req = protocol.PolicyProposalApplyRequestSchema.parse(jsonBody(request));
       const result = await enforceProposalApply(
         context.config,

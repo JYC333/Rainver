@@ -1,10 +1,10 @@
-import type { AutomationTargetType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { HttpError } from "../routeUtils/common";
+import type { AutomationTargetType } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { HttpError } from "../routeUtils/common.js";
 import type {
   AutomationRepositoryPort,
   AutomationRow,
-} from "./repository";
+} from "./repository.js";
 
 export interface AutomationTargetPreflightInput {
   targetType: AutomationTargetType;

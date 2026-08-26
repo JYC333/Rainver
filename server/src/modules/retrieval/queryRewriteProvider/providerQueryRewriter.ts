@@ -1,12 +1,12 @@
-import type { QueryRewriter } from "..";
-import { getDbPool } from "../../../db/pool";
-import { completeProviderText } from "../../providers/invocation/invocation";
-import type { ProviderCommandStore } from "../../providers/commands/store";
-import { writePolicyAudit } from "../../policy/auditWriter";
-import type { RetrievalEgressPolicy } from "../egress/egressPolicy";
-import { resolveRetrievalQueryRewritePrompt, type ResolvedQueryRewritePrompt } from "../promptRegistry";
-import { RETRIEVAL_QUERY_REWRITE_TASK } from "./config";
-import { parseQueryRewriteVariants } from "./prompt";
+import type { QueryRewriter } from "../index.js";
+import { getDbPool } from "../../../db/pool.js";
+import { completeProviderText } from "../../providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import { writePolicyAudit } from "../../policy/auditWriter.js";
+import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
+import { resolveRetrievalQueryRewritePrompt, type ResolvedQueryRewritePrompt } from "../promptRegistry.js";
+import { RETRIEVAL_QUERY_REWRITE_TASK } from "./config.js";
+import { parseQueryRewriteVariants } from "./prompt.js";
 
 export type QueryRewritePromptResolver = (
   spaceId: string,

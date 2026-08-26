@@ -9,8 +9,8 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import type { CodexProbeToolResolver, QuotaResult } from "./usageProbe";
-import type { CliCommandExecutor, CliStdioController } from "../../runs/localCliExecution";
+import type { CodexProbeToolResolver, QuotaResult } from "./usageProbe.js";
+import type { CliCommandExecutor, CliStdioController } from "../../runs/localCliExecution.js";
 
 export interface CodexRpcHandle {
   write(data: string): void;

@@ -1,4 +1,4 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   projectEntitySummaryRegistry,
   projectModeProjectionRegistry,
@@ -6,7 +6,7 @@ import {
   type ProjectEntitySummary,
   type ProjectEntitySummaryAdapter,
   type ProjectModeProjectionAdapter,
-} from "../projects/overviewRegistry";
+} from "../projects/overviewRegistry.js";
 
 interface ResearchState {
   active_workflows: number;

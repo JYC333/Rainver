@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   RunMaterializationItemSummary,
   RuntimeDelegationOutputItem,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { PgRunRepository, type RunRecord } from "../runs/repository";
-import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
-import { AgentGroupRunService } from "./service";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
+import { AgentGroupRunService } from "./service.js";
 
 export interface RuntimeDelegationMaterializationResult {
   items: RunMaterializationItemSummary[];
@@ -59,7 +59,6 @@ export class AgentGroupRuntimeDelegationMaterializer
     run: RunRecord;
     output_json: unknown;
   }): Promise<RuntimeDelegationMaterializationResult> {
-    const protocol = await loadProtocol();
     const raw = recordValue(input.output_json);
     if (!Object.prototype.hasOwnProperty.call(raw, "delegations")) {
       return { items: [], errors: [] };

@@ -1,4 +1,4 @@
-import { HttpError } from "../routeUtils/common";
+import { HttpError } from "../routeUtils/common.js";
 
 /**
  * How a Project advances. The system's one classification axis, and it

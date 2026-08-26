@@ -21,8 +21,8 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 
 /** One physical model turn. Implementations call this once per turn, never directly a provider. */
 export type ManagedModelRequest = (

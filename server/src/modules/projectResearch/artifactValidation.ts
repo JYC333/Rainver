@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { redactSecretPatterns } from "../runs/evidenceRedaction";
-import { loadProtocol } from "../providers/protocolRuntime";
+import * as protocol from "@agent-space/protocol";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 export interface ResearchArtifactRecord { id: string; artifact_type: string; content: string | null }
 export interface ResearchArtifactValidationFailure {
@@ -18,7 +18,6 @@ export async function validateResearchArtifacts(artifacts: ResearchArtifactRecor
   if (!archive.content) return failure("research_artifact_missing_content", "Research report archive has no inline JSON content", archive, "empty_content");
   const parsed = parseJson(archive.content);
   if (!parsed.ok) return failure("research_artifact_invalid_json", "Research report archive is not valid JSON", archive, parsed.error);
-  const protocol = await loadProtocol();
   const result = protocol.ResearchReportV1Schema.safeParse(parsed.value);
   if (!result.success) return failure("research_artifact_schema_invalid", `Research report failed schema validation: ${result.error.message}`, archive, result.error.message);
   return { ok: true, report: result.data as Record<string, unknown>, archive };

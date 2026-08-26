@@ -1,16 +1,16 @@
 import type {
   AgentSpacePlugin,
   PluginHostContext,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import type { FastifyInstance } from "fastify";
-import { registerDiaryRoutes } from "./routes";
-import { JOB_TYPE_DIARY_REFLECTION, buildDiaryReflectionHandler } from "./jobs";
-import { buildDiaryDailyPromptTask } from "./scheduler";
-import { diaryMigrations } from "./schema";
+import { registerDiaryRoutes } from "./routes.js";
+import { JOB_TYPE_DIARY_REFLECTION, buildDiaryReflectionHandler } from "./jobs.js";
+import { buildDiaryDailyPromptTask } from "./scheduler.js";
+import { diaryMigrations } from "./schema.js";
 import {
   DIARY_PLUGIN_ID,
   DIARY_PLUGIN_VERSION,
-} from "./manifest";
+} from "./manifest.js";
 
 export const diaryPlugin: AgentSpacePlugin = {
   id: DIARY_PLUGIN_ID,

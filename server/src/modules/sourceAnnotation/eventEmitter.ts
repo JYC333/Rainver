@@ -1,6 +1,6 @@
-import { PgJobQueueRepository } from "../jobs/repository";
-import type { Queryable } from "../routeUtils/common";
-import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository.js";
 
 /**
  * How far back a scan may reach when queueing its items for annotation.

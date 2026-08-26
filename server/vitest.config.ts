@@ -1,11 +1,29 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { defineConfig } from "vitest/config";
+
+// Files that `vi.mock()` a module must run in their own worker: without
+// isolation a mock stays registered for every file that follows in that
+// worker. Everything else shares one module graph per worker, which is the
+// difference between ~520s and ~60s of module evaluation across the suite.
+function listTestFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return listTestFiles(path);
+    return entry.name.endsWith(".test.ts") ? [path] : [];
+  });
+}
+const mockingFiles = listTestFiles("test").filter((file) => readFileSync(file, "utf8").includes("vi.mock("));
 
 // Plain Node environment — the gateway has no DOM or framework UI; tests exercise
 // config parsing, server-owned routes, and the proxy against a mock upstream.
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["test/**/*.test.ts"],
+    projects: [
+      { extends: true, test: { name: "shared", include: ["test/**/*.test.ts"], exclude: mockingFiles, isolate: false } },
+      { extends: true, test: { name: "isolated", include: mockingFiles, isolate: true } },
+    ],
     globalSetup: ["./test/setupOfficialPlugins.ts"],
     // Records executed SQL when SQL_CAPTURE_DIR is set, so the statements that
     // are assembled at runtime (and therefore invisible to the static SQL

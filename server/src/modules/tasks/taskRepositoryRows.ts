@@ -1,4 +1,4 @@
-import type { RunRecord } from "../runs/repository";
+import type { RunRecord } from "../runs/repository.js";
 
 export interface BoardRow {
   id: string;

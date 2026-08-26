@@ -2,11 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   RetrievalFeedbackSignal,
   RetrievalObjectType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { normalizeTextForSearch } from "./normalize";
-import type { RetrievalRegistry } from "./registry";
-import type { ScoredCandidate } from "./types";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { normalizeTextForSearch } from "./normalize.js";
+import type { RetrievalRegistry } from "./registry.js";
+import type { ScoredCandidate } from "./types.js";
 
 export interface RetrievalFeedbackConfig {
   /** Implicit signals saturate separately so repeated opens cannot dominate. */

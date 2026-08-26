@@ -1,9 +1,9 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { sourceItems } from "./sources";
-import { sourceChannels } from "./sourceChannels";
-import { runs } from "./runs";
+import { spaces } from "./spaces.js";
+import { sourceItems } from "./sources.js";
+import { sourceChannels } from "./sourceChannels.js";
+import { runs } from "./runs.js";
 
 /**
  * Objective annotation of a SourceItem, produced by the system annotation pass.

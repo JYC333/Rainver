@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { memoryModule } from "../src/modules/memory";
-import { loadConfig } from "../src/config";
-import {
-  __setMemoryIdentityForTests,
-  __setMemoryServicesFactoryForTests,
-} from "../src/modules/memory";
-import { MemoryReadValidationError } from "../src/modules/memory/repository";
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { memoryModule } from "../src/modules/memory/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setMemoryIdentityForTests, __setMemoryServicesFactoryForTests } from "../src/modules/memory/routes.js";
+import { MemoryReadValidationError } from "../src/modules/memory/repository.js";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
 let app: FastifyInstance;
 

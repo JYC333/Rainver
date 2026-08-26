@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-const repoRoot = join(__dirname, "..", "..");
+const repoRoot = join(import.meta.dirname, "..", "..");
 const agentRoot = join(repoRoot, ".agent");
 
 type ContextBundle = {

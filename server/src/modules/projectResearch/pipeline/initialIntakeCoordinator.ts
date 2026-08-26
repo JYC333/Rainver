@@ -1,16 +1,16 @@
-import type { ServerConfig } from "../../../config";
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
-import { HttpError, objectValue } from "../../routeUtils/common";
-import { lockActiveProjectForMutation } from "../../projects/access";
-import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService";
-import { SourceBackfillPlanningService } from "../../sources/sourceBackfillService";
-import { SourceBackfillExecutionService } from "../../sources/sourceBackfillExecutionService";
-import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config";
-import { SourcePostProcessingService } from "../../sources/postProcessing/service";
-import { relevanceProfileFromResearchContext, type ResearchScopeContext } from "../researchContext";
-import { hasProjectScreeningCriteria, loadProjectScreeningCriteria } from "../screeningCriteria";
-import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge";
-import type { ResearchThreadScopeRef } from "../threadScope";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError, objectValue } from "../../routeUtils/common.js";
+import { lockActiveProjectForMutation } from "../../projects/access.js";
+import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService.js";
+import { SourceBackfillPlanningService } from "../../sources/sourceBackfillService.js";
+import { SourceBackfillExecutionService } from "../../sources/sourceBackfillExecutionService.js";
+import { SOURCE_POST_PROCESSING_LIMITS } from "../../sources/postProcessing/config.js";
+import { SourcePostProcessingService } from "../../sources/postProcessing/service.js";
+import { relevanceProfileFromResearchContext, type ResearchScopeContext } from "../researchContext.js";
+import { hasProjectScreeningCriteria, loadProjectScreeningCriteria } from "../screeningCriteria.js";
+import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge.js";
+import type { ResearchThreadScopeRef } from "../threadScope.js";
 
 export interface InitialIntakeRuleInput {
   researchQuestion: string;

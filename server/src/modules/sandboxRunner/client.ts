@@ -1,12 +1,12 @@
 import { createConnection } from "node:net";
 import { relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import type {
   CliCommandExecutor,
   CliExecutionResult,
   CliStdioController,
-} from "../runs/localCliExecution";
+} from "../runs/localCliExecution.js";
 import {
   SANDBOX_RUNNER_PROTOCOL_VERSION,
   type SandboxClientFrame,
@@ -15,7 +15,7 @@ import {
   type SandboxMountRef,
   type SandboxRunnerFrame,
   type SandboxRuntimeEnvironment,
-} from "./protocol";
+} from "./protocol.js";
 
 interface RemoteProcessRegistry {
   registerRemote?(runId: string, terminate: () => void, forceTerminate: () => void): void;

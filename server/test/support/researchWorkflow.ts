@@ -1,6 +1,6 @@
-import type { Queryable } from "../../src/modules/routeUtils/common";
-import { withQueryableTransaction } from "../../src/modules/routeUtils/common";
-import { createResearchWorkflow } from "../../src/modules/projectResearch/workflowOntology";
+import type { Queryable } from "../../src/modules/routeUtils/common.js";
+import { withQueryableTransaction } from "../../src/modules/routeUtils/common.js";
+import { createResearchWorkflow } from "../../src/modules/projectResearch/workflowOntology.js";
 
 /**
  * Real-Postgres fixture writer for the Workflow ontology aggregate. Tests use

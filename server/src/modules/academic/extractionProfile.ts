@@ -1,5 +1,5 @@
-import type { ExtractionProfileRegistry } from "../extractionProfiles/registry";
-import { materializeAcademicPaperFromSourceItem } from "./paperMaterializer";
+import type { ExtractionProfileRegistry } from "../extractionProfiles/registry.js";
+import { materializeAcademicPaperFromSourceItem } from "./paperMaterializer.js";
 
 export const ACADEMIC_PAPER_EXTRACTION_PROFILE_KEY = "academic_paper_v1";
 

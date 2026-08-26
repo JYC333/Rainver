@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchSource } from "../src/modules/sources/sourceFetch";
+import { fetchSource } from "../src/modules/sources/sourceFetch.js";
 
 describe("fetchSource", () => {
   it("detects PDF bytes without decoding them as text", async () => {

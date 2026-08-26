@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import { validateProposalPayload } from "../src/modules/proposals/payloadSchemas";
+import { loadConfig } from "../src/config.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { validateProposalPayload } from "../src/modules/proposals/payloadSchemas.js";
 
 class FakeApplyDb {
   readonly dirtyUpdates: Array<{ kind: string; params: readonly unknown[] }> = [];

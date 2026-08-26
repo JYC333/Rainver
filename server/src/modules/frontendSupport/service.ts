@@ -1,5 +1,5 @@
-import type { ServerConfig } from "../../config";
-import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   ACTIVE_RUN_STATUSES,
   DONE_TASK_STATUSES,
@@ -14,7 +14,7 @@ import {
   runReadSql,
   suggestedActions,
   taskReadSql,
-} from "./frontendSupportReadModel";
+} from "./frontendSupportReadModel.js";
 import type {
   HomeActiveTaskItem,
   HomeArtifactSummaryItem,
@@ -27,13 +27,13 @@ import type {
   MeSummaryOut,
   MeTimelineEntry,
   QueryParams,
-} from "./frontendSupportTypes";
+} from "./frontendSupportTypes.js";
 export type {
   HomeSummaryOut,
   MePendingProposalItem,
   MeSummaryOut,
   MeTimelineEntry,
-} from "./frontendSupportTypes";
+} from "./frontendSupportTypes.js";
 
 export class PgFrontendSupportService {
   constructor(private readonly db: Queryable) {}

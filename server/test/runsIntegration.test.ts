@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
-import { PgJobQueueRepository } from "../src/modules/jobs/repository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import {
   NonTerminalRunError,
   PostRunFinalizationService,
-} from "../src/modules/runs/finalizationService";
+} from "../src/modules/runs/finalizationService.js";
 
 // Real-PostgreSQL integration tests for the server runs repositories. The unit
 // suites use a FakeDb that does not execute SQL, so they cannot catch parameter
@@ -20,7 +20,7 @@ import {
 // still runs everywhere; where Docker is present (dev, CI) it always runs.
 
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeEach(async () => {
   if (!db.available) return;

@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { runOutputResult } from "../runs/orchestrationResults";
+import type { Queryable } from "../routeUtils/common.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
 
 export interface PlanIntegrationVerification {
   status: "passed" | "failed";

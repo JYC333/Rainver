@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { RetrievalEmbeddingStore } from "..";
-import type { Queryable } from "../../routeUtils/common";
+import { RetrievalEmbeddingStore } from "../index.js";
+import type { Queryable } from "../../routeUtils/common.js";
 import {
   EMBED_CLAIM_TTL_MS,
   DEFAULT_EMBED_DIMENSIONS,
   EMBED_MAX_ATTEMPTS,
   DEFAULT_EMBED_BATCH,
-} from "./config";
-import { retrievalEgressAllowed, type RetrievalEgressPolicy } from "../egress/egressPolicy";
+} from "./config.js";
+import { retrievalEgressAllowed, type RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import {
   loadSourcePolicySnapshots,
   sourceConnectionIdsFromJson,
   sourceEgressPoliciesForSnapshots,
-} from "..";
+} from "../index.js";
 
 /**
  * Generates embeddings for a batch of chunk texts. The model name is reported

@@ -1,4 +1,4 @@
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 export type AutonomousAdmissionRefusalReason =
   | "daily_run_limit_reached"

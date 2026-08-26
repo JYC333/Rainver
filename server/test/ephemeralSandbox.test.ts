@@ -8,7 +8,7 @@ import {
   prepareEphemeralDir,
   removeEphemeralDir,
   workingDirScopeForLevel,
-} from "../src/modules/runs/ephemeralSandbox";
+} from "../src/modules/runs/ephemeralSandbox.js";
 
 const roots: string[] = [];
 

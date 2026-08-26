@@ -1,14 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { runsModule } from "../src/modules/runs";
-import { loadConfig } from "../src/config";
-import {
-  __setRunsCommandServicesFactoryForTests,
-  __setRunsIdentityForTests,
-  __setRunsReadResponseForTests,
-} from "../src/modules/runs";
-import type { RunRecord } from "../src/modules/runs/repository";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setRunsCommandServicesFactoryForTests, __setRunsIdentityForTests, __setRunsReadResponseForTests } from "../src/modules/runs/routes.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 
 let app: FastifyInstance;
 

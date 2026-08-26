@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   ExecutionControlSnapshot,
   InvocationDelivery,
   RuntimeContextEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { contextItemText } from "./itemNormalizer";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "@agent-space/protocol";
+import { contextItemText } from "./itemNormalizer.js";
 
 export const MANAGED_RENDERER_VERSION = "managed-semantic.v1";
 
@@ -25,7 +25,6 @@ export interface ManagedDeliveryRenderInput {
 }
 
 export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): Promise<InvocationDelivery> {
-  const protocol = await loadProtocol();
   const envelope = protocol.RuntimeContextEnvelopeSchema.parse(input.envelope);
   const control = protocol.ExecutionControlSnapshotSchema.parse(input.control);
   if (envelope.execution_control_snapshot_id !== control.id) {
@@ -162,7 +161,7 @@ export function managedProviderMessages(delivery: InvocationDelivery): ManagedPr
 
 /** Validate the complete boundary object before deriving a provider request. */
 export async function managedAdapterRequest(delivery: unknown): Promise<ManagedAdapterRequest> {
-  const accepted = (await loadProtocol()).InvocationDeliverySchema.parse(delivery);
+  const accepted = protocol.InvocationDeliverySchema.parse(delivery);
   const rendered = managedProviderMessages(accepted);
   return {
     ...rendered,

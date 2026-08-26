@@ -3,23 +3,23 @@ import type {
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalResponse,
   RetrievalObjectType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter";
-import { memoryRetrievalAdapter } from "../memory/retrievalAdapter";
-import { projectRetrievalAdapter } from "../projects/retrievalAdapter";
-import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter";
-import { RetrievalRegistry } from "../retrieval/registry";
-import { RetrievalSearchService } from "../retrieval/searchService";
-import { sourceRetrievalAdapter } from "../sources/retrievalAdapter";
-import { HttpError, type Queryable } from "../routeUtils/common";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter.js";
+import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
+import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
+import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
+import { RetrievalRegistry } from "../retrieval/registry.js";
+import { RetrievalSearchService } from "../retrieval/searchService.js";
+import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   ContentAccessAuditService,
   contentResourceTypeForRetrievalObject,
-} from "../contentAccess/audit";
+} from "../contentAccess/audit.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
 

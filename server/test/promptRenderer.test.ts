@@ -3,7 +3,7 @@ import {
   missingRequiredVariables,
   renderPromptMessages,
   renderPromptTemplate,
-} from "../src/modules/prompts/renderer";
+} from "../src/modules/prompts/renderer.js";
 
 describe("renderPromptTemplate", () => {
   it("substitutes known variables and reports missing ones", () => {

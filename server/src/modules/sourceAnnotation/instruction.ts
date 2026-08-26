@@ -1,10 +1,10 @@
-import { domainDefinitions } from "./domainSkeleton";
+import { domainDefinitions } from "./domainSkeleton.js";
 import {
   ANNOTATION_DEPTH_HINTS,
   ANNOTATION_GENRE_HINTS,
   MAX_TOPIC_CANDIDATES,
-} from "./vocabulary";
-import { SOURCE_ANNOTATION_SCHEMA_ID } from "./resultParser";
+} from "./vocabulary.js";
+import { SOURCE_ANNOTATION_SCHEMA_ID } from "./resultParser.js";
 
 export interface AnnotationPromptItem {
   id: string;

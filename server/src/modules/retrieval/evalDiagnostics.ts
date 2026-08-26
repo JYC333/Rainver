@@ -1,10 +1,10 @@
-import type { RetrievalEvalReportCase, RetrievalEvalReportRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
+import type { RetrievalEvalReportCase, RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityFilterSql,
-} from "../access/contentAccessSql";
+} from "../access/contentAccessSql.js";
 
 interface BriefArtifactRow {
   artifact_type: string;

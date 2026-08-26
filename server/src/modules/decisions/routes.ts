@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { DecisionCaseService } from "./caseService";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { DecisionCaseService } from "./caseService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const cases = () => new DecisionCaseService(dbPool(context.config));

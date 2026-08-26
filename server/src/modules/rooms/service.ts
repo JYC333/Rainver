@@ -1,33 +1,33 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
-import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "../agentGroups/service";
-import { HttpError, withDbTransaction } from "../routeUtils/common";
-import { PgSessionRepository } from "../sessions/repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
+import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 import {
   assertProjectWriter,
   assertProjectReadableLocked,
   lockActiveProjectForMutation,
-} from "../projects/access";
-import { PgProjectFolderRepository } from "../projectFolders/repository";
+} from "../projects/access.js";
+import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
-} from "../sessions/conversationRuntimeSessionRepository";
+} from "../sessions/conversationRuntimeSessionRepository.js";
 import {
   PgRoomRepository,
   type RoomAgentMemberRecord,
   type RoomRecord,
   type RoomUserMemberRecord,
-} from "./repository";
-import { ProjectOverviewService } from "../projects/overviewService";
-import { SpaceAssistantService } from "../agents/spaceAssistantService";
-import { RoomRosterService } from "./rosterService";
-import { RoomConversationSummaryService } from "./conversationSummaryService";
-import { requestRoomConversationTitle } from "./conversationTitleService";
-import { PgProposalRepository } from "../proposals/repository";
-import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry";
-import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy";
+} from "./repository.js";
+import { ProjectOverviewService } from "../projects/overviewService.js";
+import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
+import { RoomRosterService } from "./rosterService.js";
+import { RoomConversationSummaryService } from "./conversationSummaryService.js";
+import { requestRoomConversationTitle } from "./conversationTitleService.js";
+import { PgProposalRepository } from "../proposals/repository.js";
+import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
+import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
 
 export interface RoomIdentity {
   spaceId: string;

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
+import { loadConfig } from "../src/config.js";
 import {
   CliAgentToolTransport,
   CliRunToolIdentityRegistry,
-} from "../src/modules/runs/cliToolTransport";
-import type { RunRecord } from "../src/modules/runs/repository";
-import type { RetrievalToolService } from "../src/modules/retrieval/tool/service";
+} from "../src/modules/runs/cliToolTransport.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

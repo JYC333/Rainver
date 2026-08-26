@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgSessionRepository } from "../src/modules/sessions/repository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 
 // Real-PostgreSQL integration tests for the server sessions repository. The unit
 // suites use a fake that records arguments but never runs SQL, so they cannot
@@ -15,7 +15,7 @@ import { PgSessionRepository } from "../src/modules/sessions/repository";
 
 let repo: PgSessionRepository | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;

@@ -1,5 +1,5 @@
-import type { RunMaterializationItemSummary } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RunRecord } from "../repository";
+import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { RunRecord } from "../repository.js";
 
 export const VERIFICATION_ENGINE_VERSION = "verification_engine.v1" as const;
 

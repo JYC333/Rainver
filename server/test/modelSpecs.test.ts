@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { modelSpec, registeredModelSpecs } from "../src/modules/providers/modelSpecs";
-import { resolveModelWindow } from "../src/modules/usage/modelCatalog";
-import { recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits";
+import { modelSpec, registeredModelSpecs } from "../src/modules/providers/modelSpecs.js";
+import { resolveModelWindow } from "../src/modules/usage/modelCatalog.js";
+import { recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits.js";
 
 // One registry backs both the completion cap and the context window. The bug
 // this guards against is a model registered on one side only: MiniMax-M3 had

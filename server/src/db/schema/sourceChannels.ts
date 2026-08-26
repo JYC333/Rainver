@@ -1,9 +1,9 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { sourceConnections, sourceItems } from "./sources";
-import { researchQueryAttempts } from "./research";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { sourceConnections, sourceItems } from "./sources.js";
+import { researchQueryAttempts } from "./research.js";
 
 export const sourceChannels = pgTable("source_channels", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

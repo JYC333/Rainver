@@ -1,4 +1,4 @@
-import type { UsageRunSummaryRecord } from "../usage/repository";
+import type { UsageRunSummaryRecord } from "../usage/repository.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -245,7 +245,7 @@ export interface RunCreateInput {
   capability_id?: string | null;
   capabilities_json?: unknown[] | null;
   model_override_json?: Record<string, unknown> | null;
-  contract_snapshot?: import("./contractSnapshot").RunContractSnapshotInput;
+  contract_snapshot?: import("./contractSnapshot.js").RunContractSnapshotInput;
   workflow_version_id?: string | null;
   visibility?: "private" | "space_shared" | "selected_users";
   grantee_user_ids?: string[];
@@ -284,7 +284,7 @@ export interface DelegatedChildRunCreateInput {
   model_override_json?: Record<string, unknown> | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;
-  contract_snapshot?: import("./contractSnapshot").RunContractSnapshotInput;
+  contract_snapshot?: import("./contractSnapshot.js").RunContractSnapshotInput;
   visibility?: "private" | "space_shared" | "selected_users";
   grantee_user_ids?: string[];
   /** Internal-only authority marker propagated from a Room-backed group. */

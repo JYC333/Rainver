@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
+import type { Pool } from "../../db/pool.js";
 import {
   HttpError,
   countFromRow,
@@ -13,31 +13,31 @@ import {
   withDbTransaction,
   type SpaceUserIdentity,
   type Queryable,
-} from "../routeUtils/common";
-import { PgRunRepository } from "../runs/repository";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
-import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot";
-import { runToOut } from "../runs/runReadModel";
-import { resolveRunRemoteness } from "../runs/runRemoteness";
-import { PgUsageRepository } from "../usage/repository";
-import { contentReadSql } from "../access/contentAccessSql";
-import { recordDetailRead } from "../contentAccess/audit";
-import { isContentVisibility } from "../access/contentAccessTypes";
-import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access";
-import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
-import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
-import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository";
-import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository";
-import { advanceThreadQueue } from "../hosts/queueAdvance";
+} from "../routeUtils/common.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
+import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot.js";
+import { runToOut } from "../runs/runReadModel.js";
+import { resolveRunRemoteness } from "../runs/runRemoteness.js";
+import { PgUsageRepository } from "../usage/repository.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { recordDetailRead } from "../contentAccess/audit.js";
+import { isContentVisibility } from "../access/contentAccessTypes.js";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
+import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository.js";
+import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository.js";
+import { advanceThreadQueue } from "../hosts/queueAdvance.js";
 import {
   resolveHostProviderBinding,
   type ProviderLookupPort,
-} from "../hosts/runtimeProviderBindingResolution";
+} from "../hosts/runtimeProviderBindingResolution.js";
 import {
   lockTaskQueueForTerminalMutation,
   withdrawQueuedTaskMessages,
-} from "./taskRunStatusProjection";
+} from "./taskRunStatusProjection.js";
 import {
   bounded01,
   boardColumnOut,
@@ -48,7 +48,7 @@ import {
   taskOut,
   taskProposalOut,
   taskRunOutFromList,
-} from "./taskRepositoryMappers";
+} from "./taskRepositoryMappers.js";
 
 const DEFAULT_TASK_LIMITS = {
   maxRuns: 3,
@@ -69,7 +69,7 @@ import {
   type TaskProposalRow,
   type TaskRow,
   type TaskRunListRow,
-} from "./taskRepositoryRows";
+} from "./taskRepositoryRows.js";
 
 export class PgTaskRepository {
   /**

@@ -6,7 +6,7 @@ import type {
   RuntimeContextEventIngress,
   RuntimeContextEnvelope,
   TurnContextRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export interface RuntimeContextPreviewInput {
   identity: {

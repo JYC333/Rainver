@@ -1,10 +1,10 @@
-import type { PromptResolveResult } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
-import { assetAllowsUserScope } from "../evolution/assetAccess";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { sha256, sha256Json } from "./hash";
-import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer";
-import { findPromptAssetForKey } from "./repository";
+import type { PromptResolveResult } from "@agent-space/protocol";
+import { PromptAssetContentSchema } from "@agent-space/protocol";
+import { assetAllowsUserScope } from "../evolution/assetAccess.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { sha256, sha256Json } from "./hash.js";
+import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
+import { findPromptAssetForKey } from "./repository.js";
 
 export interface ResolvePromptInput {
   spaceId: string;
@@ -24,7 +24,6 @@ export interface ResolvePromptInput {
  * system order. Runtime calls default to the production label.
  */
 export async function resolvePrompt(db: Queryable, input: ResolvePromptInput): Promise<PromptResolveResult> {
-  const { PromptAssetContentSchema } = await loadProtocol();
   const promptAsset = await findPromptAssetForKey(db, { spaceId: input.spaceId, userId: input.userId }, input.assetKey);
   if (!promptAsset) throw new HttpError(404, `No active prompt asset registered for asset_key '${input.assetKey}'`);
   const label = normalizedLabel(input.label ?? "production");

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { contentAccessLevelSql } from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { sourceItemReadableClause } from "../sources/sourceItemAccess";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentAccessLevelSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 
 const SOURCE_ITEM_ACCESS = contentResourceDefinition("source_item")!;
 

@@ -1,6 +1,6 @@
-import type { ProposalApplierRegistry } from "../proposals/applierRegistry";
-import { ProjectSourceBindingService } from "./projectSourceBindingService";
-import { HttpError } from "../routeUtils/common";
+import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
+import { ProjectSourceBindingService } from "./projectSourceBindingService.js";
+import { HttpError } from "../routeUtils/common.js";
 
 export function registerProjectSourceProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("project_source_bind", async ({ db, proposal, userId }) => {

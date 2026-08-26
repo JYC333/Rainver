@@ -1,18 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { listTsFiles } from "./support/sourceFiles.js";
+import { readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
-const srcDir = join(__dirname, "..", "src");
-const officialPluginsDir = join(__dirname, "..", "..", "plugins", "official");
-
-function tsFiles(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) return tsFiles(full);
-    return entry.name.endsWith(".ts") ? [full] : [];
-  });
-}
+const srcDir = join(import.meta.dirname, "..", "src");
+const officialPluginsDir = join(import.meta.dirname, "..", "..", "plugins", "official");
 
 /**
  * Bare module specifiers the server is allowed to import. Relative imports
@@ -81,12 +73,12 @@ const FORBIDDEN_SUBSTRINGS = [
 
 const importRe = /\b(?:from|import)\s+["']([^"']+)["']/g;
 /**
- * `import("pkg")` and the inline type form `typeof import("pkg", { with: … })`.
- * Both are invisible to `importRe`, which requires whitespace before the quote,
- * and both are how an ESM-only package is actually reached from this CJS
- * server — `@earendil-works/pi-agent-core` has no other form anywhere in `src`.
- * Without this pattern the file-scoped allowances below cannot fire for it at
- * all, and a boundary violation lands with every assertion green.
+ * `import("pkg")` and the inline type form `typeof import("pkg")`. Both are
+ * invisible to `importRe`, which requires whitespace before the quote, and
+ * lazily loaded packages such as `@earendil-works/pi-agent-core` appear in
+ * `src` in no other form. Without this pattern the file-scoped allowances
+ * below cannot fire for them at all, and a boundary violation lands with every
+ * assertion green.
  */
 const dynamicImportRe = /\bimport\s*\(\s*["']([^"']+)["']/g;
 
@@ -100,7 +92,7 @@ function importSpecifiers(text: string): string[] {
 describe("server import boundaries", () => {
   it("imports only approved runtime packages, node: builtins and relative modules", () => {
     const offenders: string[] = [];
-    for (const file of tsFiles(srcDir)) {
+    for (const file of listTsFiles(srcDir)) {
       const text = readFileSync(file, "utf8");
       for (const spec of importSpecifiers(text)) {
         for (const bad of FORBIDDEN_SUBSTRINGS) {
@@ -141,7 +133,7 @@ describe("server import boundaries", () => {
     // covers the port too, so no separate assertion for it is needed.
     const offenders: string[] = [];
     const binding = join(srcDir, "modules", "runs", "managedAgentLoopBinding.ts");
-    for (const file of tsFiles(srcDir)) {
+    for (const file of listTsFiles(srcDir)) {
       if (file === binding || file.endsWith(join("runs", "piManagedAgentLoop.ts"))) continue;
       for (const spec of importSpecifiers(readFileSync(file, "utf8"))) {
         if (spec.includes("piManagedAgentLoop")) offenders.push(`${file}: ${spec}`);
@@ -177,7 +169,7 @@ describe("server import boundaries", () => {
 
     // The fabricated carrier itself. `{} as never` in a resolved binding is how
     // a run with no retrieval tool used to reach the loop at all.
-    const offenders = tsFiles(srcDir)
+    const offenders = listTsFiles(srcDir)
       .filter((file) => /service:\s*\{\}\s*as\s+never/.test(readFileSync(file, "utf8")));
     expect(offenders, "no module may fabricate an empty tool-family binding").toEqual([]);
   });
@@ -191,7 +183,7 @@ describe("server import boundaries", () => {
       "Runtime Context owns model-visible windowing; the Pi loop must not configure or import a second compactor",
     ).toEqual([]);
 
-    const offenders = tsFiles(srcDir).filter((file) => {
+    const offenders = listTsFiles(srcDir).filter((file) => {
       const source = readFileSync(file, "utf8");
       return importSpecifiers(source).some((specifier) => specifier.includes("pi-agent-core"))
         && /\b(?:compact|compaction|shouldCompact|prepareCompaction|DEFAULT_COMPACTION_SETTINGS)\b/i.test(source);
@@ -202,7 +194,7 @@ describe("server import boundaries", () => {
   it("plugin files do not import from server modules", () => {
     const pluginsDir = join(srcDir, "plugins");
     const offenders: string[] = [];
-    for (const file of tsFiles(pluginsDir)) {
+    for (const file of listTsFiles(pluginsDir)) {
       const text = readFileSync(file, "utf8");
       for (const spec of importSpecifiers(text)) {
         // Relative imports that traverse into src/modules/ are forbidden from src/plugins/
@@ -216,7 +208,7 @@ describe("server import boundaries", () => {
 
   it("official plugin package files do not import server internals", () => {
     const offenders: string[] = [];
-    for (const file of tsFiles(officialPluginsDir)) {
+    for (const file of listTsFiles(officialPluginsDir)) {
       const text = readFileSync(file, "utf8");
       for (const spec of importSpecifiers(text)) {
         if (
@@ -238,7 +230,7 @@ describe("server import boundaries", () => {
       join(srcDir, "modules", "runs", "localCliExecution.ts"),
     ]);
     const offenders: string[] = [];
-    for (const file of tsFiles(srcDir)) {
+    for (const file of listTsFiles(srcDir)) {
       if (dataReferenceAllowlist.has(file)) continue;
       const text = readFileSync(file, "utf8");
       for (const bad of [

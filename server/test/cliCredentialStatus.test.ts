@@ -2,11 +2,11 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
-import { CliCredentialBroker } from "../src/modules/providers/cli/credentialBroker";
+import { loadConfig } from "../src/config.js";
+import { getDbPool } from "../src/db/pool.js";
+import { CliCredentialBroker } from "../src/modules/providers/cli/credentialBroker.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

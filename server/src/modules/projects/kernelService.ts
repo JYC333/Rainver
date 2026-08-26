@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   dateIso,
@@ -7,12 +8,11 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectOwnerLevel, assertProjectOwnerLevelForMutation, assertProjectReadable, assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "./access";
-import { PRIMARY_MODES, isPrimaryMode, type ProjectPrimaryMode } from "./primaryMode";
-import { projectModeProjectionRegistry } from "./overviewRegistry";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectOwnerLevel, assertProjectOwnerLevelForMutation, assertProjectReadable, assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "./access.js";
+import { PRIMARY_MODES, isPrimaryMode, type ProjectPrimaryMode } from "./primaryMode.js";
+import { projectModeProjectionRegistry } from "./overviewRegistry.js";
 
 
 interface BriefVersionRow {
@@ -162,7 +162,7 @@ export class ProjectKernelService {
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const parsed = (await loadProtocol()).ProjectBriefVersionWriteRequestSchema.safeParse(body);
+    const parsed = protocol.ProjectBriefVersionWriteRequestSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid Project Brief");
     const brief = parsed.data;
     const now = new Date().toISOString();
@@ -261,7 +261,7 @@ export class ProjectKernelService {
 
   async createInstructionVersion(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await assertProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId);
-    const parsed = (await loadProtocol()).ProjectInstructionVersionWriteRequestSchema.safeParse(body);
+    const parsed = protocol.ProjectInstructionVersionWriteRequestSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid Project Instruction");
     const { title, instruction_text: instruction } = parsed.data;
     return withQueryableTransaction(this.db, async (db) => {

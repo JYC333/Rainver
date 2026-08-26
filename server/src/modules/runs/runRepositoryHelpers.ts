@@ -1,8 +1,8 @@
-import { isVendorCliAdapter } from "../runtimeAdapters/specs";
+import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import {
   RunCreateValidationError,
   type RunCreateInput,
-} from "./runRepositoryTypes";
+} from "./runRepositoryTypes.js";
 
 export function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)

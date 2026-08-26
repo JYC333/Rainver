@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository";
-import { advanceThreadQueue } from "./queueAdvance";
-import { runOutputResult } from "../runs/orchestrationResults";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { advanceThreadQueue } from "./queueAdvance.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
 
 /**
  * control-center-phase2-plan.md P1: moved out of the (now-async) dispatch

@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { resolvePrompt } from "../prompts/resolver";
+import type { Queryable } from "../routeUtils/common.js";
+import { resolvePrompt } from "../prompts/resolver.js";
 
 export const RETRIEVAL_QUERY_REWRITE_PROMPT_KEY = "retrieval.query_rewrite";
 export const RETRIEVAL_RERANK_PROMPT_KEY = "retrieval.rerank";

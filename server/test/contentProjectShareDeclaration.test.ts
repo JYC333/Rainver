@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { contentReadSql } from "../src/modules/access/contentAccessSql";
-import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry";
+import { contentReadSql } from "../src/modules/access/contentAccessSql.js";
+import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry.js";
 
 /**
  * The share term is on the read gate of every content resource, so what matters

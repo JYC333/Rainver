@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import type { ServerConfig } from "../src/config";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import type { ServerConfig } from "../src/config.js";
 
 // Real-PostgreSQL tests for automation × project binding: automations.project_id
 // persistence (create/update/clear), the composite (space_id, project_id) FK,
@@ -13,24 +13,24 @@ import type { ServerConfig } from "../src/config";
 
 const dbPoolMock: { current: Pool | undefined } = { current: undefined };
 
-vi.mock("../src/db/pool", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/db/pool")>();
+vi.mock("../src/db/pool.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/db/pool.js")>();
   return {
     ...actual,
     getDbPool: vi.fn((databaseUrl: string) => dbPoolMock.current ?? actual.getDbPool(databaseUrl)),
   };
 });
 
-vi.mock("../src/modules/policy", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/policy")>();
+vi.mock("../src/modules/policy/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/policy/index.js")>();
   return {
     ...actual,
     enforce: vi.fn(async () => ({ status: "allow" as const })),
   };
 });
 
-vi.mock("../src/modules/policy/gateway", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/policy/gateway")>();
+vi.mock("../src/modules/policy/gateway.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/policy/gateway.js")>();
   return {
     ...actual,
     computeDecision: vi.fn(() => ({
@@ -39,14 +39,14 @@ vi.mock("../src/modules/policy/gateway", async (importOriginal) => {
   };
 });
 
-import { AutomationService } from "../src/modules/automations/service";
-import { PgAutomationRepository } from "../src/modules/automations/repository";
-import { PgTaskRepository } from "../src/modules/tasks/repository";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { assertBudgetSourcesAvailable, checkRunBudget } from "../src/modules/runs/budgetEnforcement";
-import type { RunRecord } from "../src/modules/runs/runRepositoryTypes";
-import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
-import { PgProjectRepository } from "../src/modules/projects/repository";
+import { AutomationService } from "../src/modules/automations/service.js";
+import { PgAutomationRepository } from "../src/modules/automations/repository.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { assertBudgetSourcesAvailable, checkRunBudget } from "../src/modules/runs/budgetEnforcement.js";
+import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
+import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -68,7 +68,7 @@ const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

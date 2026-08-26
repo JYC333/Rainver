@@ -1,6 +1,6 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-import { assertPluginRegistryIntegrity } from "./registry";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+import { assertPluginRegistryIntegrity } from "./registry.js";
 
 // Validate descriptor uniqueness at module load time. Throws if violated.
 assertPluginRegistryIntegrity();
@@ -11,7 +11,7 @@ export const pluginsModule: ServerModule = {
 };
 
 // Facade exports for use by other server modules.
-export { requireOfficialPluginEnabled } from "./guards";
-export { getOfficialPlugin, listOfficialPlugins } from "./registry";
-export { pluginService } from "./service";
-export type { PluginGuardOptions } from "./guards";
+export { requireOfficialPluginEnabled } from "./guards.js";
+export { getOfficialPlugin, listOfficialPlugins } from "./registry.js";
+export { pluginService } from "./service.js";
+export type { PluginGuardOptions } from "./guards.js";

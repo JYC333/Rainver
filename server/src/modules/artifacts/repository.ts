@@ -2,11 +2,11 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import type { ReadStream } from "node:fs";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../proposals/repository";
-import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql";
-import { recordDetailRead } from "../contentAccess/audit";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../proposals/repository.js";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { recordDetailRead } from "../contentAccess/audit.js";
 
 export interface ArtifactOut {
   id: string;

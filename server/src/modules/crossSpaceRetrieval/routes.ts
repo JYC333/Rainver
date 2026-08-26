@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { jsonBody, params, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { CrossSpaceRetrievalService } from "./service";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { jsonBody, params, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
+import { CrossSpaceRetrievalService } from "./service.js";
 
 type RouteService = Pick<CrossSpaceRetrievalService,
   "search" | "resolve" | "storeSingleSourceSummary" | "discloseEgress" |
@@ -23,7 +23,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.CrossSpaceRetrievalRequestSchema, jsonBody(request));
       const result = await service(context).search({
         userId: identity.userId,
@@ -41,7 +40,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.CrossSpaceResolveRequestSchema, jsonBody(request));
       return reply.send(protocol.CrossSpaceResolveResponseSchema.parse(
         await service(context).resolve(identity.userId, body.pointer_ids),
@@ -55,7 +53,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.CrossSpaceSummaryStoreRequestSchema, jsonBody(request));
       return reply.code(201).send(protocol.CrossSpaceSummaryStoreResponseSchema.parse(
         await service(context).storeSingleSourceSummary(identity.userId, body.pointer_ids, body.summary),
@@ -69,7 +66,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.CrossSpaceEgressDisclosureRequestSchema, jsonBody(request));
       return reply.send(protocol.CrossSpaceEgressDisclosureResponseSchema.parse(
         await service(context).discloseEgress(identity.userId, body.pointer_ids),
@@ -83,7 +79,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.CrossSpaceFusedConclusionStoreRequestSchema, jsonBody(request));
       return reply.code(201).send(protocol.CrossSpaceFusedConclusionStoreResponseSchema.parse(
         await service(context).storeFusedConclusion({
@@ -102,7 +97,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parse(protocol.SpaceEgressNotificationSettingUpdateSchema, jsonBody(request));
       return reply.send(protocol.SpaceEgressNotificationSettingSchema.parse(
         await service(context).updateEgressNotificationSetting(
@@ -120,7 +114,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       return reply.send(protocol.SpaceMemberNotificationsResponseSchema.parse(
         await service(context).listNotifications(identity.userId),
       ));

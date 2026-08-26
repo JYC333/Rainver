@@ -3,7 +3,7 @@ import {
   memoryAccessDecision,
   shouldRedactMemoryContent,
   type MemoryAuthFields,
-} from "../src/modules/memory/memoryReadAuth";
+} from "../src/modules/memory/memoryReadAuth.js";
 
 function memory(overrides: Partial<MemoryAuthFields> = {}): MemoryAuthFields {
   return {

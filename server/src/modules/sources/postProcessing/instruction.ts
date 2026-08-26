@@ -1,18 +1,18 @@
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { EvidenceRow, SourceItemRow, SourceConnectionRow } from "../sourceRepositoryRows";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { EvidenceRow, SourceItemRow, SourceConnectionRow } from "../sourceRepositoryRows.js";
 import {
   ARXIV_NEW_PAPERS_CONTENT_PROFILE,
   ARXIV_NEW_PAPERS_PROFILE_GUIDANCE,
   arxivPostProcessingItemMetadataLines,
-} from "../catalog/arxivPostProcessingProfile";
+} from "../catalog/arxivPostProcessingProfile.js";
 import {
   isRelevanceScreeningEnabled,
   type SourcePostProcessingActions,
   type SourcePostProcessingInputConfig,
   type SourcePostProcessingRetrievalDomain,
   type SourcePostProcessingTriggerConfig,
-} from "./repository";
-import { joinText, stringList } from "./textUtils";
+} from "./repository.js";
+import { joinText, stringList } from "./textUtils.js";
 
 export interface SourcePostProcessingRetrievalContextRef {
   ref: string;

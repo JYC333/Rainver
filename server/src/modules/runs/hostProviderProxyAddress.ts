@@ -1,9 +1,9 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   providerProxyExternalLeaseUrl,
   providerProxyLeaseUrl,
   type ProviderProxyRoute,
-} from "../providers/proxy/lease";
+} from "../providers/proxy/lease.js";
 
 /**
  * The provider-proxy address *this host* should use, in order of authority:

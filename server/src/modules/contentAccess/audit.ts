@@ -1,7 +1,7 @@
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import type { RetrievalObjectType } from "@agent-space/protocol";
 
 export interface ContentAccessLogEntry {
   id: string;

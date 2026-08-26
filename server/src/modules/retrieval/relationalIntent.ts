@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "./types";
+import type { RetrievalObjectType } from "./types.js";
 
 export type RelationalIntentKind = "related_to" | "connection" | "sources_for" | "projects_related";
 

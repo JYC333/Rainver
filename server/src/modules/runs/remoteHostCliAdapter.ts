@@ -1,17 +1,17 @@
-import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
-import type { RunRecord } from "./repository";
-import { CliRenderError, renderCliCommand } from "./cliCommandRendering";
-import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution";
-import type { VendorCliAdapterType } from "./vendorCliAdapter";
-import { createCliConversationController } from "./cliConversationProtocol";
-import { normalizeVendorEvents } from "./runtimeEventNormalization";
-import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry";
-import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization";
-import { getDbPool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease";
-import type { Queryable } from "../routeUtils/common";
+import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@agent-space/protocol";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import type { RunRecord } from "./repository.js";
+import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
+import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution.js";
+import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
+import { createCliConversationController } from "./cliConversationProtocol.js";
+import { normalizeVendorEvents } from "./runtimeEventNormalization.js";
+import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
+import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
+import { getDbPool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   boundAcpModelId,
   buildRemoteProviderBinding,
@@ -21,7 +21,7 @@ import {
   type RemoteProviderBinding,
   type RemoteProviderBindingFrame,
   type ResolvedRemoteBinding,
-} from "./remoteProviderBinding";
+} from "./remoteProviderBinding.js";
 
 /**
  * ADR 0016 P3: the remote-host counterpart to `executeVendorCliAdapter` —

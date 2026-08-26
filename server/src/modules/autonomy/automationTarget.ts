@@ -1,14 +1,14 @@
-import { getDbPool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { automationTargetHandlerRegistry } from "../automations/targetRegistry";
-import { PgAutomationRepository } from "../automations/repository";
-import { HttpError } from "../routeUtils/common";
-import { AutonomyService } from "./service";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+import { getDbPool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { automationTargetHandlerRegistry } from "../automations/targetRegistry.js";
+import { PgAutomationRepository } from "../automations/repository.js";
+import { HttpError } from "../routeUtils/common.js";
+import { AutonomyService } from "./service.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import type {
   AutonomousAdmissionPolicy,
   AutonomousQuotaSnapshot,
-} from "../runs/autonomousAdmission";
+} from "../runs/autonomousAdmission.js";
 
 export function registerAutonomousTickAutomationTarget(): void {
   automationTargetHandlerRegistry.register("autonomous_tick", {
@@ -95,7 +95,7 @@ async function launchTick(
 }
 
 async function launchTickConfig(
-  config: import("../../config").ServerConfig,
+  config: import("../../config.js").ServerConfig,
   automation: Parameters<AutonomyService["launchCandidates"]>[0]["automation"],
 ): Promise<{
   policy: AutonomousAdmissionPolicy;

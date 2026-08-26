@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { objectValue, withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import { pmBlocksText } from "../knowledge/noteDocument";
-import type { PinnedSourceRef } from "./outbox";
+import { objectValue, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { pmBlocksText } from "../knowledge/noteDocument.js";
+import type { PinnedSourceRef } from "./outbox.js";
 
 interface OutboxEventRow {
   id: string;

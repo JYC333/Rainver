@@ -1,7 +1,7 @@
-import type { ResearchProviderKey } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ProposalApplierRegistry } from "../proposals/applierRegistry";
-import { requiredString } from "../routeUtils/common";
-import { ResearchMonitorMaterializer } from "./discovery/monitorMaterializer";
+import type { ResearchProviderKey } from "@agent-space/protocol";
+import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
+import { requiredString } from "../routeUtils/common.js";
+import { ResearchMonitorMaterializer } from "./discovery/monitorMaterializer.js";
 
 export function registerResearchProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("research_query_strategy_activation", async ({ config, db, proposal, userId }) => {

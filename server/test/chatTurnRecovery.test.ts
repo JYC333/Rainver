@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { reconcileTerminalChatRuns } from "../src/modules/jobs/workerRuntime";
+import { loadConfig } from "../src/config.js";
+import { reconcileTerminalChatRuns } from "../src/modules/jobs/workerRuntime.js";
 import type {
   PgRunRepository,
   RunEventInput,
   RunRecord,
-} from "../src/modules/runs/repository";
+} from "../src/modules/runs/repository.js";
 
 describe("terminal Chat Run reconciliation", () => {
   it("publishes chat_completed for a recovered orphaned Run", async () => {

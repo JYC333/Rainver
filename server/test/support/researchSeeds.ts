@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import type { SpaceUserIdentity } from "../../src/modules/routeUtils/common";
-import { InquiryThreadService } from "../../src/modules/inquiry/threadService";
+import type { SpaceUserIdentity } from "../../src/modules/routeUtils/common.js";
+import { InquiryThreadService } from "../../src/modules/inquiry/threadService.js";
 
 /**
  * Rows the Project Research files seed the same way: an arXiv source chain,

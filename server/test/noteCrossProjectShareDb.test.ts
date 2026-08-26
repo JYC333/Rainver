@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { withTransaction } from "../src/db/tx";
-import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders";
-import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { withTransaction } from "../src/db/tx.js";
+import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders.js";
+import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * S6 boundary set. `contentAccessSql` evaluates the Project scope as a hard AND
@@ -32,7 +32,7 @@ const BETA = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const GAMMA = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 let projectA = "";
 let projectB = "";

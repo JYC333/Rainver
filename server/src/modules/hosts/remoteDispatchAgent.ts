@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import { withDbTransaction } from "../routeUtils/common";
+import type { Pool } from "../../db/pool.js";
+import { withDbTransaction } from "../routeUtils/common.js";
 
 export const REMOTE_DISPATCH_AGENT_KIND = "system_remote_dispatch";
 

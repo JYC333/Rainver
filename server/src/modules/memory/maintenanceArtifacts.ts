@@ -1,16 +1,14 @@
-import type { MemoryMaintenanceReport } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
+import type { MemoryMaintenanceReport } from "@agent-space/protocol";
+import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import {
   acceptReviewPacket,
   insertProposalRow,
   reviewScopeValue,
   visibilityForReviewScope,
   type ChildProposalDraft,
-} from "../proposals/reviewPackets";
-import type { Queryable } from "./repository";
+} from "../proposals/reviewPackets.js";
+import type { Queryable } from "./repository.js";
 
 export const MEMORY_MAINTENANCE_REPORT_ARTIFACT_TYPE = "memory_maintenance_report";
 export const MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE = "memory_maintenance_packet";

@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const artifactsModule: ServerModule = {
   name: "artifacts",
@@ -9,4 +9,4 @@ export const artifactsModule: ServerModule = {
 export {
   __setArtifactIdentityForTests,
   __setArtifactRepositoryFactoryForTests,
-} from "./routes";
+} from "./routes.js";

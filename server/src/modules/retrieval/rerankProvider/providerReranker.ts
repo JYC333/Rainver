@@ -1,16 +1,16 @@
-import type { RerankCandidate, RerankScore, Reranker } from "..";
-import { getDbPool } from "../../../db/pool";
+import type { RerankCandidate, RerankScore, Reranker } from "../index.js";
+import { getDbPool } from "../../../db/pool.js";
 import {
   completeProviderRerank,
   completeProviderText,
   ProviderInvocationError,
-} from "../../providers/invocation/invocation";
-import type { ProviderCommandStore } from "../../providers/commands/store";
-import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy";
-import { writePolicyAudit } from "../../policy/auditWriter";
-import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry";
-import { RETRIEVAL_RERANK_TASK } from "./config";
-import { buildRerankPrompt, parseRerankScores } from "./prompt";
+} from "../../providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy.js";
+import { writePolicyAudit } from "../../policy/auditWriter.js";
+import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry.js";
+import { RETRIEVAL_RERANK_TASK } from "./config.js";
+import { buildRerankPrompt, parseRerankScores } from "./prompt.js";
 
 export type RerankSystemPromptResolver = (
   spaceId: string,

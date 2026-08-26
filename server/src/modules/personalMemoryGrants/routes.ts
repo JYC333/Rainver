@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
@@ -15,7 +15,7 @@ import {
   sendRouteError,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 
 interface GrantRow {
   id: string;

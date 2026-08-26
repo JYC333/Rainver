@@ -1,11 +1,11 @@
 import {
   completeProviderEmbedding,
   type ProviderMeteringContext,
-} from "../../providers/invocation/invocation";
-import type { ProviderCommandStore } from "../../providers/commands/store";
-import type { RetrievalEgressPolicy } from "../egress/egressPolicy";
-import { RETRIEVAL_EMBEDDING_TASK } from "./config";
-import type { RetrievalEmbedder } from "./service";
+} from "../../providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
+import { RETRIEVAL_EMBEDDING_TASK } from "./config.js";
+import type { RetrievalEmbedder } from "./service.js";
 
 /**
  * Production embedder. Routes through the `retrieval_embedding` provider task

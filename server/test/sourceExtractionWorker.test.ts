@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { extractPdfReaderContent } from "../src/modules/sources/pdfExtract";
-import { simplePdfBytes } from "./fixtures/simplePdf";
-import { loadConfig } from "../src/config";
-import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { handleSourceRetrievalTestSql } from "./helpers/sourceRetrievalTestSql";
+import { extractPdfReaderContent } from "../src/modules/sources/pdfExtract.js";
+import { simplePdfBytes } from "./fixtures/simplePdf.js";
+import { loadConfig } from "../src/config.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
 
 class FakeDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

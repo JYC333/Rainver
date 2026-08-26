@@ -2,7 +2,7 @@ import {
   assertRuntimeSubagentsDisabled,
   RuntimeSubagentConfigError,
   type LocalCliRuntimeAdapterSpec,
-} from "../runtimeAdapters";
+} from "../runtimeAdapters/index.js";
 
 export interface RenderedCliCommand {
   argv: string[];

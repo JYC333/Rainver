@@ -3,13 +3,13 @@ import {
   JobDeferredError,
   type JobEnvelopeForHandler,
   type JobHandlerResult,
-} from "./handlerRegistry";
-import type { JobQueuePort } from "./queuePort";
-import type { JobRecord } from "./repository";
+} from "./handlerRegistry.js";
+import type { JobQueuePort } from "./queuePort.js";
+import type { JobRecord } from "./repository.js";
 import {
   safelyEmitOperationalAlert,
   type OperationalAlertPort,
-} from "../notifications/operationalAlerts";
+} from "../notifications/operationalAlerts.js";
 
 export type JobProcessResult =
   | { status: "idle" }

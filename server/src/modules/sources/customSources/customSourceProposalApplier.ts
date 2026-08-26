@@ -1,21 +1,19 @@
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
 import type {
   ProposalApplierRegistry,
   ProposalApplyContext,
   ProposalApplyResult,
-} from "../../proposals/applierRegistry";
+} from "../../proposals/applierRegistry.js";
 import {
   HANDLER_VERSION_COLUMNS,
   handlerVersionOut,
   type HandlerVersionRow,
-} from "./customSourceHandlerRepository";
+} from "./customSourceHandlerRepository.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
-} from "../sourceConnectionScheduler";
-import { resolveRequestedSourceSchedule } from "../sourceScheduleInput";
+} from "../sourceConnectionScheduler.js";
+import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
 
 const CUSTOM_SOURCE_PROPOSAL_TYPES = [
   "custom_source_policy_delta",

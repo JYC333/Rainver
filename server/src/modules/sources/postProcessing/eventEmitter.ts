@@ -1,6 +1,6 @@
-import { PgJobQueueRepository } from "../../jobs/repository";
-import type { Queryable } from "../../routeUtils/common";
-import { PgSourcePostProcessingRepository, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE } from "./repository";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { PgSourcePostProcessingRepository, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE } from "./repository.js";
 
 /**
  * Best-effort source post-processing signal after source materializes new

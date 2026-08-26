@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  analyzeSkillRisk,
-  assertPackReferencesValid,
-  assertUniqueCapabilityIds,
-  listBuiltInCapabilityDefinitions,
-  listBuiltInCapabilityPacks,
-  parseSkillMarkdown,
-  previewSkillImport,
-  renderAllRuntimeSkills,
-} from "../src/modules/capabilities";
+import { analyzeSkillRisk } from "../src/modules/capabilities/skillRisk.js";
+import { assertPackReferencesValid, listBuiltInCapabilityPacks } from "../src/modules/capabilities/packRegistry.js";
+import { assertUniqueCapabilityIds, listBuiltInCapabilityDefinitions } from "../src/modules/capabilities/registry.js";
+import { parseSkillMarkdown } from "../src/modules/capabilities/skillParser.js";
+import { previewSkillImport } from "../src/modules/capabilities/skillImporter.js";
+import { renderAllRuntimeSkills } from "../src/modules/capabilities/runtimeRenderers.js";
 
 describe("capability framework built-ins", () => {
   it("registers the built-in research pack", () => {

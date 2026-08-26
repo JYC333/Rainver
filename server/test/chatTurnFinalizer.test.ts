@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer";
+import { loadConfig } from "../src/config.js";
+import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
 import type {
   RunEventInput,
   RunRecord,
-} from "../src/modules/runs/repository";
+} from "../src/modules/runs/repository.js";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

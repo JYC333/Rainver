@@ -10,9 +10,9 @@ export {
   type RuntimeAdapterSpec,
   type RuntimeAdapterType,
   type RuntimeExecutorFamily,
-} from "./specs";
+} from "./specs.js";
 export {
   assertRuntimeSubagentsDisabled,
   ensureRuntimeSubagentsDisabled,
   RuntimeSubagentConfigError,
-} from "./subagentConfig";
+} from "./subagentConfig.js";

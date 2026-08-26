@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { insertProposalRow } from "../proposals/reviewPackets";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type {
   MessageOut,
   SessionOut,
   SessionPage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { projectReadAccessSql } from "../access/contentAccessSql";
+} from "@agent-space/protocol";
+import { projectReadAccessSql } from "../access/contentAccessSql.js";
 
 export interface CreateSessionInput {
   projectFolderId?: string | null;

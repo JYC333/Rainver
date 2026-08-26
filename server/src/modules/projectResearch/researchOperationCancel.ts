@@ -1,7 +1,7 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common";
-import { assertProjectWriter } from "../projects/access";
-import { PgJobQueueRepository } from "../jobs/repository";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 
 export const RESEARCH_OPERATION_CANCEL_JOB = "research_operation_cancel";
 

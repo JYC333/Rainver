@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { RetrievalExplainResponse } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter";
+import type { RetrievalExplainResponse } from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 
 export const RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE = "retrieval_explain_report";
 

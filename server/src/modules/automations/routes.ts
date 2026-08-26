@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -9,9 +9,9 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { AutomationService, automationToOut } from "./service";
-import { PgAutomationRepository } from "./repository";
+} from "../routeUtils/common.js";
+import { AutomationService, automationToOut } from "./service.js";
+import { PgAutomationRepository } from "./repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () =>

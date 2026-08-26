@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectBriefConversationProjection } from "../src/modules/runtimeContext/productionAcquisition";
+import { projectBriefConversationProjection } from "../src/modules/runtimeContext/productionAcquisition.js";
 
 describe("Project Brief model-visible projection", () => {
   it("keeps semantic definition fields and strips persistence/audit metadata", () => {

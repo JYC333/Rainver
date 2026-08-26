@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import type { RetrievalSourceEgressPolicy } from "./egress/egressPolicy";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+import type { Queryable } from "../routeUtils/common.js";
+import type { RetrievalSourceEgressPolicy } from "./egress/egressPolicy.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 
 const SOURCE_EGRESS_CLASSES = [
   "internal_only",

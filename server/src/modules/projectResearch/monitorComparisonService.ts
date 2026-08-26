@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
-import { PgRunRepository } from "../runs/repository";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { resolveNotebookNote } from "./notebookNotes";
-import type { NoteProjectRole } from "../knowledge/noteProjectRoles";
-import type { ResearchOperationState } from "./operationProjection";
-import { InquirySignalService } from "../inquiry/signalService";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
+import { resolveNotebookNote } from "./notebookNotes.js";
+import type { NoteProjectRole } from "../knowledge/noteProjectRoles.js";
+import type { ResearchOperationState } from "./operationProjection.js";
+import { InquirySignalService } from "../inquiry/signalService.js";
 import {
   PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
   resolveProjectResearchMonitorComparePrompt,
-} from "./promptRegistry";
+} from "./promptRegistry.js";
 
 export const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
   type: "json_schema",

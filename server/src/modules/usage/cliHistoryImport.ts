@@ -1,16 +1,16 @@
-import type { ServerConfig } from "../../config";
-import { HttpError } from "../routeUtils/common";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker";
+import type { ServerConfig } from "../../config.js";
+import { HttpError } from "../routeUtils/common.js";
+import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import {
   readClaudeUsageImportEvents,
   readCodexUsageImportEvents,
   type CliUsageImportEvent,
   type CliUsageImportScan,
-} from "../providers";
-import { normalizeUsageObservation } from "./normalizer";
-import type { PgUsageRepository } from "./repository";
-import type { UsageIdentity } from "./service";
-import type { UsageObservation } from "./types";
+} from "../providers/index.js";
+import { normalizeUsageObservation } from "./normalizer.js";
+import type { PgUsageRepository } from "./repository.js";
+import type { UsageIdentity } from "./service.js";
+import type { UsageObservation } from "./types.js";
 
 const PRIVACY_NOTICE =
   "Imports read local CLI transcript metadata for token usage only. Prompts, completions, tool output, raw transcript lines, absolute paths, environment variables, and credential contents are not imported.";

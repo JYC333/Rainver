@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker";
-import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { handleSourceRetrievalTestSql } from "./helpers/sourceRetrievalTestSql";
+import { loadConfig } from "../src/config.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
 
 type ConnectorKey = "rss" | "atom" | "web_page" | "arxiv_api";
 type CapturePolicy =

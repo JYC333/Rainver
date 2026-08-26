@@ -1,14 +1,14 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import type { RunRecord } from "../runs/repository";
-import type { SystemActionExecutor } from "./gateway";
-import { registerInquirySystemActionExecutors } from "../inquiry/inquirySystemActionExecutors";
-import { registerKnowledgePromotionSystemActionExecutors } from "../knowledgePromotion/knowledgePromotionSystemActionExecutors";
-import { registerProjectResearchSystemActionExecutors } from "../projectResearch/projectResearchSystemActionExecutors";
-import { registerSourcesSystemActionExecutors } from "../sources/sourcesSystemActionExecutors";
-import { registerProjectsSystemActionExecutors } from "../projects/projectsSystemActionExecutors";
-import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionExecutors";
-import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { RunRecord } from "../runs/repository.js";
+import type { SystemActionExecutor } from "./gateway.js";
+import { registerInquirySystemActionExecutors } from "../inquiry/inquirySystemActionExecutors.js";
+import { registerKnowledgePromotionSystemActionExecutors } from "../knowledgePromotion/knowledgePromotionSystemActionExecutors.js";
+import { registerProjectResearchSystemActionExecutors } from "../projectResearch/projectResearchSystemActionExecutors.js";
+import { registerSourcesSystemActionExecutors } from "../sources/sourcesSystemActionExecutors.js";
+import { registerProjectsSystemActionExecutors } from "../projects/projectsSystemActionExecutors.js";
+import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionExecutors.js";
+import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors.js";
 
 /**
  * Central import of per-module `registerXxxSystemActionExecutors` functions,

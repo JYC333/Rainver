@@ -1,6 +1,6 @@
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RetrievalEgressPolicy } from "./egress/egressPolicy";
-import type { ScoredCandidate } from "./types";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
+import type { ScoredCandidate } from "./types.js";
 
 /**
  * Post-fusion, post-revalidate reranking stage (Phase 2, step 8).

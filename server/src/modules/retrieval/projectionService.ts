@@ -1,15 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { extractRetrievalLinks } from "./linkExtractor";
-import { normalizeAlias, stripMarkdownForSearch } from "./normalize";
-import type { RetrievalDomainAdapter, RetrievalRegistry } from "./registry";
+import type { Queryable } from "../routeUtils/common.js";
+import { extractRetrievalLinks } from "./linkExtractor.js";
+import { normalizeAlias, stripMarkdownForSearch } from "./normalize.js";
+import type { RetrievalDomainAdapter, RetrievalRegistry } from "./registry.js";
 import type {
   CanonicalObject,
   RetrievalAlias,
   RetrievalEdge,
   RetrievalObjectRef,
   RetrievalObjectType,
-} from "./types";
+} from "./types.js";
 
 interface RetrievalObjectRow {
   id: string;

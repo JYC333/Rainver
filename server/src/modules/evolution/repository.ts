@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import { contentReadSql } from "../access/contentAccessSql";
-import { withTransaction } from "../../db/tx";
+import type { Pool } from "../../db/pool.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { withTransaction } from "../../db/tx.js";
 import {
   HttpError,
   dateIso,
@@ -10,13 +10,13 @@ import {
   optionalString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { PgRunRepository } from "../runs/repository";
+} from "../routeUtils/common.js";
+import { PgRunRepository } from "../runs/repository.js";
 import {
   buildEvolutionPlanPrompt,
-} from "./prompt";
-import { EvolutionSelector } from "./selector";
-import { strategyAssetToOut } from "./strategyAssets";
+} from "./prompt.js";
+import { EvolutionSelector } from "./selector.js";
+import { strategyAssetToOut } from "./strategyAssets.js";
 import type {
   EvolutionSelection,
   EvolutionExperienceCreateInput,
@@ -28,13 +28,13 @@ import type {
   EvolutionStrategyAssetRow,
   EvolutionTargetRow,
   EvolutionValidationResultRow,
-} from "./types";
-import { TARGET_COLUMNS } from "./types";
+} from "./types.js";
+import { TARGET_COLUMNS } from "./types.js";
 import {
   assertTargetRunnable,
   boundedRunMode,
   requiredBodyString,
-} from "./validation";
+} from "./validation.js";
 
 interface PersistSelectedRunRequestInput {
   identity: SpaceUserIdentity;

@@ -1,13 +1,13 @@
-import type { Queryable, SpaceUserIdentity } from '../routeUtils/common'
-import type { ServerConfig } from '../../config'
-import { HttpError, objectValue, optionalString, requiredString } from '../routeUtils/common'
-import { sourceConnectorRegistry, type SourceConnectorHandler } from './catalog/sourceConnectorRegistry'
-import { SourceProviderCatalogService } from './catalog/sourceProviderCatalogService'
-import { consumeConnectionQuota } from './sourceQuotaBucket'
-import { fetchSource, type SourceFetchResult } from './sourceFetch'
-import { CustomSourceCredentialService } from './customSources/customSourceCredentialService'
-import { ResearchProviderCompiler } from '../research/queryPlanning/providerCompiler'
-import type { ResearchProviderKey } from '@agent-space/protocol' with { 'resolution-mode': 'import' }
+import type { Queryable, SpaceUserIdentity } from '../routeUtils/common.js'
+import type { ServerConfig } from '../../config.js'
+import { HttpError, objectValue, optionalString, requiredString } from '../routeUtils/common.js'
+import { sourceConnectorRegistry, type SourceConnectorHandler } from './catalog/sourceConnectorRegistry.js'
+import { SourceProviderCatalogService } from './catalog/sourceProviderCatalogService.js'
+import { consumeConnectionQuota } from './sourceQuotaBucket.js'
+import { fetchSource, type SourceFetchResult } from './sourceFetch.js'
+import { CustomSourceCredentialService } from './customSources/customSourceCredentialService.js'
+import { ResearchProviderCompiler } from '../research/queryPlanning/providerCompiler.js'
+import type { ResearchProviderKey } from '@agent-space/protocol'
 
 type PreviewFetcher = (url: string, options: { headers?: Record<string, string>; maxDownloadBytes: number; timeoutMs?: number }) => Promise<SourceFetchResult>
 

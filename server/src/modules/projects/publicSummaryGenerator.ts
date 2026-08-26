@@ -1,20 +1,20 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
 import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { resolveProviderCommandStore, type ProviderCommandStore } from "../providers/commands/store";
+} from "../routeUtils/common.js";
+import { resolveProviderCommandStore, type ProviderCommandStore } from "../providers/commands/store.js";
 import {
   ProviderInvocationError,
   completeProviderText,
-} from "../providers/invocation/invocation";
-import type { MemoryAuthFields } from "../memory/memoryReadAuth";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { writePolicyAudit } from "../policy/auditWriter";
-import { assertProjectWriter } from "./access";
+} from "../providers/invocation/invocation.js";
+import type { MemoryAuthFields } from "../memory/memoryReadAuth.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { writePolicyAudit } from "../policy/auditWriter.js";
+import { assertProjectWriter } from "./access.js";
 import {
   PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   buildProjectPublicSummaryPrompt,
@@ -22,14 +22,14 @@ import {
   sourceKey,
   type PublicSummaryPromptContext,
   type PublicSummarySourceRef,
-} from "./publicSummaryPrompt";
-import { PgProjectRepository } from "./repository";
+} from "./publicSummaryPrompt.js";
+import { PgProjectRepository } from "./repository.js";
 
 export const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
 export {
   PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
-} from "./publicSummaryPrompt";
+} from "./publicSummaryPrompt.js";
 
 interface ProjectContextRow {
   id: string;

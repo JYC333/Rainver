@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { RetrievalProjectionService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import {
   RetrievalEmbeddingBackfillService,
   type RetrievalEmbedder,
-} from "../src/modules/retrieval/embedding/service";
-import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS } from "../src/modules/retrieval/embedding/config";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+} from "../src/modules/retrieval/embedding/service.js";
+import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS } from "../src/modules/retrieval/embedding/config.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Exercises the Phase-2 embedding pipeline AND the vector schema end-to-end on a
 // pgvector Postgres: the `vector` extension, the retrieval_chunks.embedding
@@ -31,7 +31,7 @@ function fakeEmbedder(dim: number, model = "fake-embed-v1"): RetrievalEmbedder {
 }
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

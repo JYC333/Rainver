@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { CaptureService } from "../src/modules/capture/service";
-import { RelocationService } from "../src/modules/capture/relocationService";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { PgSpaceRepository } from "../src/modules/spaces/repository";
-import { noteBlocks } from "../src/modules/knowledge/noteBlockIds";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { CaptureService } from "../src/modules/capture/service.js";
+import { RelocationService } from "../src/modules/capture/relocationService.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { PgSpaceRepository } from "../src/modules/spaces/repository.js";
+import { noteBlocks } from "../src/modules/knowledge/noteBlockIds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * Relocation and promotion (ADR 0013 amendment D7).
@@ -24,7 +24,7 @@ const TEAM = "33333333-3333-4333-8333-333333333333";
 const PROJECT = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

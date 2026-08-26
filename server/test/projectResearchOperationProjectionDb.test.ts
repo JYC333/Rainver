@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { seedResearchOperation } from "./support/researchSeeds";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { advanceOperation, type ResearchOperationState } from "../src/modules/projectResearch/operationProjection";
-import { ProjectOperationService } from "../src/modules/projects/projectOperationService";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { seedResearchOperation } from "./support/researchSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { advanceOperation, type ResearchOperationState } from "../src/modules/projectResearch/operationProjection.js";
+import { ProjectOperationService } from "../src/modules/projects/projectOperationService.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -14,7 +14,7 @@ const WORKFLOW = "66666666-6666-4666-8666-666666666666";
 const OPERATION = "77777777-7777-4777-8777-777777777777";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 function operationProjection(): ResearchOperationState {
   return {

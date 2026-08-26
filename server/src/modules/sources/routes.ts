@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
@@ -12,34 +13,33 @@ import {
   resolveIdentity,
   sendRouteError,
   toDbDate,
-} from "../routeUtils/common";
-import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access";
-import { enforceSources } from "./enforceSources";
-import { PgSourcesRepository } from "./repository";
-import { SourcePostProcessingService } from "./postProcessing/service";
-import { registerCustomSourceRoutes } from "./customSources/customSourceRoutes";
-import { registerSourceRecipeRoutes } from "./sourceRecipeRoutes";
-import { listSourceRuns } from "./sourceRunReadModel";
+} from "../routeUtils/common.js";
+import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access.js";
+import { enforceSources } from "./enforceSources.js";
+import { PgSourcesRepository } from "./repository.js";
+import { SourcePostProcessingService } from "./postProcessing/service.js";
+import { registerCustomSourceRoutes } from "./customSources/customSourceRoutes.js";
+import { registerSourceRecipeRoutes } from "./sourceRecipeRoutes.js";
+import { listSourceRuns } from "./sourceRunReadModel.js";
 import {
   RetrievalProjectionService,
   RetrievalSearchService,
   persistRetrievalBriefArtifact,
   type RetrievalObjectType,
-} from "../retrieval";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { sourceRetrievalRegistry } from "./retrievalAdapter";
-import { SourceBackfillPlanningService } from "./sourceBackfillService";
-import { SourceChannelService } from "./channels/sourceChannelService";
-import { SourceProviderCatalogService } from "./catalog/sourceProviderCatalogService";
-import { SourceQueryPreviewService } from "./sourceQueryPreviewService";
-import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext";
+} from "../retrieval/index.js";
+import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
+import { sourceRetrievalRegistry } from "./retrievalAdapter.js";
+import { SourceBackfillPlanningService } from "./sourceBackfillService.js";
+import { SourceChannelService } from "./channels/sourceChannelService.js";
+import { SourceProviderCatalogService } from "./catalog/sourceProviderCatalogService.js";
+import { SourceQueryPreviewService } from "./sourceQueryPreviewService.js";
+import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgSourcesRepository(dbPool(context.config), context.config);
@@ -304,7 +304,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.RetrievalSearchRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
       const body = parsed.data;
@@ -362,7 +361,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.RetrievalBriefRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
       const body = parsed.data;

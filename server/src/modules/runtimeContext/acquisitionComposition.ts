@@ -1,13 +1,13 @@
-import type { ContextItem } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ModelWindowOverride } from "../usage/modelCatalog";
-import type { ExecutionControlSnapshot } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { ContextItem } from "@agent-space/protocol";
+import type { ModelWindowOverride } from "../usage/modelCatalog.js";
+import type { ExecutionControlSnapshot } from "@agent-space/protocol";
 import type {
   AcquiredRuntimeContext,
   RuntimeContextAcquisitionPort,
   RuntimeContextPlanningRequest,
-} from "./planningService";
-import { RetrievalCoordinator, type RuntimeContextRetrievalRequest } from "./retrievalCoordinator";
-import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy";
+} from "./planningService.js";
+import { RetrievalCoordinator, type RuntimeContextRetrievalRequest } from "./retrievalCoordinator.js";
+import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
 
 export interface RuntimeContextAuthoritySnapshot {
   executionControlSnapshotId: string;

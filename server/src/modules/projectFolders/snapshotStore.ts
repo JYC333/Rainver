@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 export const SNAPSHOT_DEFAULT_RETENTION_DAYS = 7;
 export const SNAPSHOT_DEFAULT_MAX_COUNT = 20;

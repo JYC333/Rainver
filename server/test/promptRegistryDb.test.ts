@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { PromptRepository } from "../src/modules/prompts/repository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { PromptRepository } from "../src/modules/prompts/repository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for the prompts facade (server/src/modules/prompts):
 // it must only surface 'prompt_template' evolvable assets that carry a
@@ -20,7 +20,7 @@ const OUTSIDER = "3bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER_SPACE = "32222222-2222-4222-8222-222222222222";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

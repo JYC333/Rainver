@@ -1,26 +1,26 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "./db";
-import { mapProviderRowToDto, type ProviderRow } from "./dbReader";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "./db.js";
+import { mapProviderRowToDto, type ProviderRow } from "./dbReader.js";
 import {
   decryptModelProviderOAuthSecretRefV1,
   encryptModelProviderOAuthSecretRefV1,
   loadOrCreateModelProviderApiKeyMasterKey,
   type ModelProviderOAuthSecretV1,
-} from "./secretRefCrypto";
-import { probeClaudeOAuthQuotaWithAccessToken } from "./cli/claudeOAuthUsageProbe";
-import { parseCodexManagedUsageResponse } from "./cli/codexUsageProbe";
-import type { QuotaResult } from "./cli/usageProbe";
-import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types";
-import { loadManagedOAuthFlow } from "./invocation/piAiChat";
-import { SpaceAssistantService } from "../agents/spaceAssistantService";
+} from "./secretRefCrypto.js";
+import { probeClaudeOAuthQuotaWithAccessToken } from "./cli/claudeOAuthUsageProbe.js";
+import { parseCodexManagedUsageResponse } from "./cli/codexUsageProbe.js";
+import type { QuotaResult } from "./cli/usageProbe.js";
+import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types.js";
+import { loadManagedOAuthFlow } from "./invocation/piAiChat.js";
+import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type {
   ManagedAuthEvent,
   ManagedAuthInteraction,
   ManagedAuthPrompt,
   ManagedOAuthCredential,
   ManagedOAuthFlow,
-} from "./managedOAuth";
+} from "./managedOAuth.js";
 
 export type ManagedSubscriptionType = "anthropic" | "openai_codex";
 let flowOverride: ((type: ManagedSubscriptionType) => Promise<ManagedOAuthFlow>) | null = null;

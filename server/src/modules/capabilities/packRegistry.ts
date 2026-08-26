@@ -1,6 +1,6 @@
-import { RESEARCH_PACK } from "./researchPack";
-import { getBuiltInCapabilityDefinition } from "./registry";
-import type { CapabilityPackDescriptor } from "./types";
+import { RESEARCH_PACK } from "./researchPack.js";
+import { getBuiltInCapabilityDefinition } from "./registry.js";
+import type { CapabilityPackDescriptor } from "./types.js";
 
 export function listBuiltInCapabilityPacks(): CapabilityPackDescriptor[] {
   return [RESEARCH_PACK].sort((a, b) => a.id.localeCompare(b.id));

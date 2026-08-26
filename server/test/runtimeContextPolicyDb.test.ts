@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { seedServerHost } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
-import { RuntimeContextPolicyRepository } from "../src/modules/policy/runtimeContextPolicyRepository";
-import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots";
-import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings";
-import type { RunRecord } from "../src/modules/runs/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { RuntimeContextPolicyRepository } from "../src/modules/policy/runtimeContextPolicyRepository.js";
+import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots.js";
+import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -23,7 +24,7 @@ const PROVIDER_HOME_SPACE = "99999999-9999-4999-8999-999999999999";
 const HOST = "12121212-1212-4212-8212-121212121212";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -37,16 +38,7 @@ beforeEach(async () => {
      VALUES ($1, 'Team', 'household', now(), now())`,
     [SPACE],
   );
-  await db.pool.query(
-    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
-     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
-    [HOST],
-  );
-  await db.pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
-    [HOST],
-  );
+  await seedServerHost(db.pool, { id: HOST });
   for (const id of [OWNER, ADMIN, MEMBER, OTHER]) {
     await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)

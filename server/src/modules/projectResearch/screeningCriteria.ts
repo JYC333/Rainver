@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import { objectValue } from "../routeUtils/common";
-import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry";
+import type { Queryable } from "../routeUtils/common.js";
+import { objectValue } from "../routeUtils/common.js";
+import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
 
 export interface ProjectScreeningCriteria {
   include_keywords: string[];

@@ -1,12 +1,12 @@
-import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { buildArxivQueryUrl, type ArxivQueryConfig } from "../connectors/arxiv";
-import { HttpError } from "../../routeUtils/common";
+import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol";
+import { buildArxivQueryUrl, type ArxivQueryConfig } from "../connectors/arxiv.js";
+import { HttpError } from "../../routeUtils/common.js";
 import {
   sourceConnectorRegistry,
   type NormalizedSourceItem,
   type RequestSpec,
   type SourceConnectorHandler,
-} from "../catalog/sourceConnectorRegistry";
+} from "../catalog/sourceConnectorRegistry.js";
 
 export type SearchExecutionHandler = Pick<
   SourceConnectorHandler,

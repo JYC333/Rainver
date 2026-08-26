@@ -13,13 +13,13 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { artifacts } from "./artifacts";
-import { automationRuns, automations } from "./automations";
-import { users } from "./auth";
-import { evolutionSignals } from "./evolution";
-import { projects } from "./projects";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
+import { artifacts } from "./artifacts.js";
+import { automationRuns, automations } from "./automations.js";
+import { users } from "./auth.js";
+import { evolutionSignals } from "./evolution.js";
+import { projects } from "./projects.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
 
 export const autonomyTicks = pgTable("autonomy_ticks", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

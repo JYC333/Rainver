@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { seedServerHost } from "./support/domainSeeds.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { ProjectKernelService } from "../src/modules/projects/kernelService";
-import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService";
-import { ProjectOverviewService } from "../src/modules/projects/overviewService";
-import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry";
-import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry";
-import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration";
-import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts";
-import { WorkContextService } from "../src/modules/runtimeContext/workContextService";
-import { PgRuntimeContextAcquisitionRepository } from "../src/modules/runtimeContext/acquisitionRepository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectKernelService } from "../src/modules/projects/kernelService.js";
+import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
+import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
+import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry.js";
+import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration.js";
+import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts.js";
+import { WorkContextService } from "../src/modules/runtimeContext/workContextService.js";
+import { PgRuntimeContextAcquisitionRepository } from "../src/modules/runtimeContext/acquisitionRepository.js";
 
 // Real-Postgres coverage for the Project Kernel: Profile application at
 // creation, Brief versioning, Primary Mode transitions, Attention
@@ -24,7 +25,7 @@ const VIEWER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const HOST = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -38,16 +39,7 @@ beforeEach(async () => {
     `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`,
     [SPACE, now],
   );
-  await db.pool.query(
-    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
-     VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
-    [HOST, now],
-  );
-  await db.pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $2, $2)`,
-    [HOST, now],
-  );
+  await seedServerHost(db.pool, { id: HOST, now });
   await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES
        ($1, 'Owner', 'active', $4, $4), ($2, 'Outsider', 'active', $4, $4), ($3, 'Viewer', 'active', $4, $4)`,

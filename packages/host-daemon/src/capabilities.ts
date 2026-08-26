@@ -10,10 +10,16 @@ const PROBED_BINARIES = ["claude", "codex", "opencode", "git"] as const;
 
 export type ProbedBinary = (typeof PROBED_BINARIES)[number];
 
+export interface RuntimeOption {
+  value: string;
+  name: string | null;
+  description: string | null;
+}
+
 export interface RuntimeOptions {
-  models: string[];
+  models: RuntimeOption[];
   current_model: string | null;
-  efforts: string[];
+  efforts: RuntimeOption[];
   current_effort: string | null;
 }
 

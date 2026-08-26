@@ -1,5 +1,5 @@
-import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared";
+import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@agent-space/protocol";
+import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared.js";
 
 export const ARXIV_LADDER_STRATEGY: QueryAdaptationStrategy = {
   coreIsUnion: true,

@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access";
-import { ProjectCorpusRepository } from "../projects/corpusRepository";
-import { sourceItemReadableClause } from "../sources/sourceItemAccess";
-import type { ServerConfig } from "../../config";
-import { ProjectResearchExecutionProfileService } from "./executionProfileService";
-import { PgRunRepository } from "../runs/repository";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { RunOrchestrationService } from "../runs/orchestrationService";
-import { runOutputResult } from "../runs/orchestrationResults";
-import { PgSessionRepository } from "../sessions/repository";
-import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy";
-import { markdownToPm, pmBlocksText } from "../knowledge/noteDocument";
-import { withNoteWrites, type NoteWriteScope } from "../knowledge/noteWriter";
-import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders";
-import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes";
-import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles";
+import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
+import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
+import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import type { ServerConfig } from "../../config.js";
+import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { RunOrchestrationService } from "../runs/orchestrationService.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
+import { PgSessionRepository } from "../sessions/repository.js";
+import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
+import { markdownToPm, pmBlocksText } from "../knowledge/noteDocument.js";
+import { withNoteWrites, type NoteWriteScope } from "../knowledge/noteWriter.js";
+import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders.js";
+import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes.js";
+import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles.js";
 
 export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
 

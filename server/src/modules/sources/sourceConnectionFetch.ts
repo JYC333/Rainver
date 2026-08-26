@@ -1,6 +1,6 @@
-import { HttpError } from "../routeUtils/common";
-import type { SourceConnectorHandler } from "./catalog/sourceConnectorRegistry";
-import { fetchSource, type SourceFetchResult } from "./sourceFetch";
+import { HttpError } from "../routeUtils/common.js";
+import type { SourceConnectorHandler } from "./catalog/sourceConnectorRegistry.js";
+import { fetchSource, type SourceFetchResult } from "./sourceFetch.js";
 
 export interface SourceProviderIdentity {
   providerKey: string;

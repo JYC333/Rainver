@@ -1,8 +1,8 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const knowledgePromotionModule: ServerModule = { name: "knowledge_promotion", registerRoutes };
 
-export { KnowledgePromotionCandidateService } from "./candidateService";
-export { emitDomainChangeEvent, type PinnedSourceRef } from "./outbox";
-export { processUnclaimedDomainChangeEvents, processAllUnclaimedDomainChangeEvents } from "./revalidationService";
+export { KnowledgePromotionCandidateService } from "./candidateService.js";
+export { emitDomainChangeEvent, type PinnedSourceRef } from "./outbox.js";
+export { processUnclaimedDomainChangeEvents, processAllUnclaimedDomainChangeEvents } from "./revalidationService.js";

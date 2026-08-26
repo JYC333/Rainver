@@ -1,10 +1,10 @@
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { canonicalAcademicIdentity } from "./identity";
+import type { PoolClient } from "../../db/pool.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { canonicalAcademicIdentity } from "./identity.js";
 
 export interface AcademicPaperRow {
   object_id: string;

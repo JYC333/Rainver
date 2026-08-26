@@ -5,14 +5,14 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { buildServer } from "../src/server";
-import { loadConfig } from "../src/config";
+import { buildServer } from "../src/server.js";
+import { loadConfig } from "../src/config.js";
 import {
   SERVER_MARKER_HEADER,
   SERVER_MARKER_VALUE,
   readHeader,
-} from "../src/gateway/requestContext";
-import { __setHealthDatabaseForTests } from "../src/modules/system/service";
+} from "../src/gateway/requestContext.js";
+import { __setHealthDatabaseForTests } from "../src/modules/system/service.js";
 
 let app: FastifyInstance;
 

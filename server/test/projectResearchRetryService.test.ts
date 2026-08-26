@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 import {
   ProjectResearchRetryService,
   type ProjectResearchRetryPorts,
   type RetryOperationRow,
-} from "../src/modules/projectResearch/pipeline/retryService";
+} from "../src/modules/projectResearch/pipeline/retryService.js";
 
 const identity = { spaceId: "space", userId: "user" };
 

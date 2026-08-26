@@ -1,6 +1,6 @@
-import { Amount, assertCommoditySymbol, isCommoditySymbol } from "../domain/amount";
-import { parseBooking } from "../domain/booking";
-import { Cost, CostSpec } from "../domain/position";
+import { Amount, assertCommoditySymbol, isCommoditySymbol } from "../domain/amount.js";
+import { parseBooking } from "../domain/booking.js";
+import { Cost, CostSpec } from "../domain/position.js";
 import type {
   EntryMetadata,
   MetadataValue,
@@ -22,7 +22,7 @@ import type {
   PriceEntry,
   QueryEntry,
   TransactionEntry,
-} from "./entries";
+} from "./entries.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

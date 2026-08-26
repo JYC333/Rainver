@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { ContextReviewCycleRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import { visibilityForReviewScope } from "../proposals/reviewPackets";
-import { createClaimCandidatePacketFromArtifacts } from "../knowledge/claimCandidatePackets";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
-import { MemoryMaintenanceService } from "../memory/maintenance";
+import type { ContextReviewCycleRequest } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import { visibilityForReviewScope } from "../proposals/reviewPackets.js";
+import { createClaimCandidatePacketFromArtifacts } from "../knowledge/claimCandidatePackets.js";
+import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
+import { MemoryMaintenanceService } from "../memory/maintenance.js";
 import {
   createMemoryMaintenanceProposalPacket,
   persistMemoryMaintenanceReportArtifact,
-} from "../memory/maintenanceArtifacts";
-import { PgMemoryReadRepository } from "../memory/repository";
+} from "../memory/maintenanceArtifacts.js";
+import { PgMemoryReadRepository } from "../memory/repository.js";
 import {
   RetrievalMaintenanceService,
   buildRetrievalEvalDiagnosticsReport,
@@ -18,9 +18,9 @@ import {
   createRetrievalMaintenanceProposalPacket,
   persistRetrievalEvalReportArtifact,
   persistRetrievalMaintenanceReportArtifact,
-} from "../retrieval";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { ContextOpsService } from "./service";
+} from "../retrieval/index.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { ContextOpsService } from "./service.js";
 
 export const CONTEXT_REVIEW_CYCLE_REPORT_ARTIFACT_TYPE = "context_review_cycle_report";
 

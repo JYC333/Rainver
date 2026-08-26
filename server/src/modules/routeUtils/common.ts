@@ -1,9 +1,9 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
 
 export type { Pool };
 

@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql.js";
 import {
   RetrievalRegistry,
   type CanonicalObject,
@@ -11,8 +11,8 @@ import {
   type RevalidatedObject,
   loadSourceConnectionIdsForTargets,
   sourceConnectionIdsFromMetadata,
-} from "../retrieval";
-import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "./retrievalObjectTypes";
+} from "../retrieval/index.js";
+import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "./retrievalObjectTypes.js";
 
 interface KnowledgeProjectionRow {
   id: string;

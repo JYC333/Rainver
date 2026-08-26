@@ -1,7 +1,7 @@
 import {
   isChineseTitle,
   type ConversationContinuationRegistry,
-} from "../proposals/continuationRegistry";
+} from "../proposals/continuationRegistry.js";
 
 /**
  * Continuation for a delegated child run's completion, fired only when no

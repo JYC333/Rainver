@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { topicKeyFor, MAX_TOPIC_KEY_LENGTH } from "../src/modules/interestProfile/topicKey";
+import { topicKeyFor, MAX_TOPIC_KEY_LENGTH } from "../src/modules/interestProfile/topicKey.js";
 import {
   explorationShare,
   gapsAreMeaningful,
@@ -9,7 +9,7 @@ import {
   WARMING_MIN_READ_ITEMS,
   WARM_MIN_COVERED_DOMAINS,
   WARM_MIN_READ_ITEMS,
-} from "../src/modules/interestProfile/maturity";
+} from "../src/modules/interestProfile/maturity.js";
 
 describe("topic key normalization", () => {
   it("collapses the spellings of one interest", () => {

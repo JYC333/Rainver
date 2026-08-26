@@ -20,14 +20,14 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   getProviderConfig,
   listProviderVendorCatalog,
   listProviderConfigs,
   listProviderPresets,
-} from "./service";
-import { registerProviderCommandRoutes } from "./commands/routes";
+} from "./service.js";
+import { registerProviderCommandRoutes } from "./commands/routes.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerProviderCommandRoutes(app, context.config);

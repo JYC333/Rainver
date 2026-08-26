@@ -8,13 +8,13 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, assertProjectFolderInProject, lockActiveProjectForMutation } from "../projects/access";
-import { ExperimentDefinitionService } from "./definitionService";
-import { enumValue, managedScopeViolation, stringArray } from "./common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { PgRunRepository } from "../runs/repository";
-import { PgJobQueueRepository } from "../jobs/repository";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, assertProjectFolderInProject, lockActiveProjectForMutation } from "../projects/access.js";
+import { ExperimentDefinitionService } from "./definitionService.js";
+import { enumValue, managedScopeViolation, stringArray } from "./common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const OBSERVATION_SOURCES = new Set(["manual", "parsed", "agent"]);

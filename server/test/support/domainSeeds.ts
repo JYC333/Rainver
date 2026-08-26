@@ -86,3 +86,35 @@ export async function seedRun(
   );
 }
 
+/** The unowned server host (machine + host rows) that Project Folder tests attach locations to. */
+export async function seedServerHost(pool: Pool, input: { id: string; now?: string }): Promise<void> {
+  const now = input.now ?? new Date().toISOString();
+  await pool.query(
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
+    [input.id, now],
+  );
+  await pool.query(
+    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
+     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $2, $2)`,
+    [input.id, now],
+  );
+}
+
+/** A user plus their membership in the Space (role `member` unless given). */
+export async function seedSpaceMember(
+  pool: Pool,
+  input: { space: string; user: string; role?: string; now?: string },
+): Promise<void> {
+  const now = input.now ?? new Date().toISOString();
+  await pool.query(
+    `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`,
+    [input.user, now],
+  );
+  await pool.query(
+    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'active',$5,$5)`,
+    [randomUUID(), input.space, input.user, input.role ?? "member", now],
+  );
+}
+

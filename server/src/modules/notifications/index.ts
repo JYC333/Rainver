@@ -5,8 +5,8 @@
  * allowlist is configured.
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const notificationsModule: ServerModule = {
   name: "notifications",
@@ -17,10 +17,10 @@ export {
   evaluateWebhookPolicy,
   normalizeNotificationWebhookUrl,
   type NotificationWebhookPolicy,
-} from "./service";
+} from "./service.js";
 export {
   OperationalAlertService,
   safelyEmitOperationalAlert,
   type OperationalAlertInput,
   type OperationalAlertPort,
-} from "./operationalAlerts";
+} from "./operationalAlerts.js";

@@ -1,25 +1,25 @@
 import { randomUUID, createHash } from "node:crypto";
-import type { PoolClient } from "../../../db/pool";
-import { insertProposalRow } from "../../proposals/reviewPackets";
-import { HttpError, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common";
-import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../../scheduler/taskStore";
-import { computeNextRunAt, InvalidScheduleError } from "../../automations/schedule";
-import type { SourceConnectionRow, SourceItemRow, EvidenceRow } from "../sourceRepositoryRows";
-import { ITEM_COLUMNS, evidenceColumnsForAlias } from "../sourceRepositoryRows";
-import { inheritContentAccessGrants } from "../../access/contentAccessInheritance";
-import { contentAccessLevelSql, contentReadSql } from "../../access/contentAccessSql";
-import { contentResourceDefinition } from "../../access/contentAccessRegistry";
+import type { PoolClient } from "../../../db/pool.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
+import { HttpError, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
+import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../../scheduler/taskStore.js";
+import { computeNextRunAt, InvalidScheduleError } from "../../automations/schedule.js";
+import type { SourceConnectionRow, SourceItemRow, EvidenceRow } from "../sourceRepositoryRows.js";
+import { ITEM_COLUMNS, evidenceColumnsForAlias } from "../sourceRepositoryRows.js";
+import { inheritContentAccessGrants } from "../../access/contentAccessInheritance.js";
+import { contentAccessLevelSql, contentReadSql } from "../../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../../access/contentAccessRegistry.js";
 import {
   reindexExtractedEvidenceAndParentForRetrieval,
-} from "../retrievalIndexing";
+} from "../retrievalIndexing.js";
 import {
   enforceSourceRetentionPolicy,
   normalizeSourceConnectionReadGovernance,
-} from "../sourceConsent";
-import { SOURCE_POST_PROCESSING_LIMITS } from "./config";
-import { upsertCanonicalEvidence } from "../evidenceIdentity";
-import { lockActiveProjectForMutation } from "../../projects/access";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sourceItemAccess";
+} from "../sourceConsent.js";
+import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
+import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
+import { lockActiveProjectForMutation } from "../../projects/access.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sourceItemAccess.js";
 
 const POST_PROCESSING_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const POST_PROCESSING_SOURCE_ACCESS = contentResourceDefinition("source_item")!;

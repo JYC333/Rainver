@@ -1,7 +1,7 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { users } from "./auth";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
 
 /**
  * A user-created durable focus area: "my finances", "Rust", a research subject.

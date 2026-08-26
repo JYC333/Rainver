@@ -11,26 +11,25 @@
 
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { useTestDatabase } from "./support/testDatabase.js";
 import {
   listOfficialPlugins,
   getOfficialPlugin,
   assertPluginRegistryIntegrity,
-} from "../src/modules/plugins/registry";
-import { pluginService } from "../src/modules/plugins/service";
-import { installOfficialPlugin } from "../src/modules/plugins/installer";
-import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins";
-import { DIARY_PLUGIN_ID } from "../src/modules/plugins/official/diary";
-import { FINANCE_LEDGER_PLUGIN_ID } from "../src/modules/plugins/official/financeLedger";
+} from "../src/modules/plugins/registry.js";
+import { pluginService } from "../src/modules/plugins/service.js";
+import { installOfficialPlugin } from "../src/modules/plugins/installer.js";
+import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins.js";
+import { DIARY_PLUGIN_ID } from "../src/modules/plugins/official/diary.js";
+import { FINANCE_LEDGER_PLUGIN_ID } from "../src/modules/plugins/official/financeLedger.js";
 import type {
   AgentSpacePlugin,
   PluginHostContext,
   PluginJobHandler,
   PluginScheduledTask,
   Queryable,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 // ── Registry unit tests (no DB needed) ────────────────────────────────────────
 
@@ -175,8 +174,7 @@ interface DbQueryable {
   ): Promise<{ rows: Row[]; rowCount: number | null }>;
 }
 
-let container: TestPostgresDatabase | null = null;
-let pool: Pool | null = null;
+const testDb = useTestDatabase(import.meta.filename, { empty: true, max: 10 });
 let db: DbQueryable;
 
 const SPACE_A = "space-a-test";
@@ -185,25 +183,19 @@ const USER_1 = "user-1-test";
 const USER_2 = "user-2-test";
 
 beforeAll(async () => {
-  container = await getTestPostgres(__filename, { empty: true });
-  pool = new Pool({ connectionString: container.getConnectionUri() });
-  db = pool;
-  await pool.query(SCHEMA);
+  if (!testDb.available) return;
+  db = testDb.pool;
+  await testDb.pool.query(SCHEMA);
 }, 60_000);
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
-});
-
 beforeEach(async () => {
-  await pool!.query("DROP TABLE IF EXISTS finance_books CASCADE");
-  await pool!.query("DROP TABLE IF EXISTS diary_reflections");
-  await pool!.query("DROP TABLE IF EXISTS diary_entries");
-  await pool!.query("DELETE FROM plugin_migrations");
-  await pool!.query("DELETE FROM plugin_installs");
-  await pool!.query("DELETE FROM official_plugin_events");
-  await pool!.query("DELETE FROM official_plugin_enablements");
+  await testDb.pool.query("DROP TABLE IF EXISTS finance_books CASCADE");
+  await testDb.pool.query("DROP TABLE IF EXISTS diary_reflections");
+  await testDb.pool.query("DROP TABLE IF EXISTS diary_entries");
+  await testDb.pool.query("DELETE FROM plugin_migrations");
+  await testDb.pool.query("DELETE FROM plugin_installs");
+  await testDb.pool.query("DELETE FROM official_plugin_events");
+  await testDb.pool.query("DELETE FROM official_plugin_enablements");
 });
 
 async function installDiary(): Promise<void> {
@@ -226,7 +218,7 @@ async function insertDiaryEntry(
   content: string,
 ): Promise<string> {
   const id = randomUUID();
-  const result = await pool!.query<{ id: string }>(
+  const result = await testDb.pool.query<{ id: string }>(
     `INSERT INTO diary_entries (id, user_id, entry_date, content)
      VALUES ($1, $2, $3::date, $4)
      RETURNING id`,
@@ -241,7 +233,7 @@ async function buildDiaryJobHandler(jobType: string): Promise<PluginJobHandler> 
 
   const app = Fastify({ logger: false });
   const handlers = new Map<string, PluginJobHandler>();
-  const ctx = testPluginHostContext(plugin, app, pool!, handlers);
+  const ctx = testPluginHostContext(plugin, app, testDb.pool!, handlers);
   plugin.activate(ctx);
   await app.close();
 
@@ -305,19 +297,19 @@ describe("pluginService.installPlugin", () => {
   it("installs diary and creates plugin-owned tables through plugin migrations", async () => {
     await installDiary();
 
-    const install = await pool!.query(
+    const install = await testDb.pool.query(
       "SELECT * FROM plugin_installs WHERE plugin_id = $1 AND status = 'active'",
       [DIARY_PLUGIN_ID],
     );
     expect(install.rowCount).toBe(1);
 
-    const migrations = await pool!.query(
+    const migrations = await testDb.pool.query(
       "SELECT * FROM plugin_migrations WHERE plugin_id = $1 AND migration_id = $2",
       [DIARY_PLUGIN_ID, "0001_create_diary_tables"],
     );
     expect(migrations.rowCount).toBe(1);
 
-    await pool!.query("INSERT INTO diary_entries (user_id, entry_date, content) VALUES ($1, $2::date, $3)", [
+    await testDb.pool.query("INSERT INTO diary_entries (user_id, entry_date, content) VALUES ($1, $2::date, $3)", [
       USER_1,
       "2026-06-19",
       "Installed table works",
@@ -327,7 +319,7 @@ describe("pluginService.installPlugin", () => {
   it("installs finance_ledger and creates directive stream tables through plugin migrations", async () => {
     await installFinanceLedger();
 
-    const tables = await pool!.query<{ table_name: string }>(
+    const tables = await testDb.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
@@ -341,7 +333,7 @@ describe("pluginService.installPlugin", () => {
       "finance_postings",
     ]);
 
-    await pool!.query(
+    await testDb.pool.query(
       `INSERT INTO finance_books
          (space_id, name, base_currency, operating_currency, created_by_user_id)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -428,7 +420,7 @@ describe("pluginService.enablePlugin", () => {
       USER_1,
       { settings: { daily_reminder_enabled: true } },
     );
-    await pool!.query(
+    await testDb.pool.query(
       `INSERT INTO official_plugin_enablements
          (id, space_id, user_id, plugin_id, enabled, visible, settings_json, created_at, updated_at)
        VALUES ($1, $2, NULL, $3, false, true, '{}'::jsonb, now(), now())`,
@@ -460,7 +452,7 @@ describe("pluginService.disablePlugin", () => {
     await installDiary();
     await pluginService.enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {});
     await pluginService.disablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1);
-    const rows = await pool!.query(
+    const rows = await testDb.pool.query(
       "SELECT * FROM official_plugin_enablements WHERE plugin_id = $1",
       [DIARY_PLUGIN_ID],
     );
@@ -606,7 +598,7 @@ describe("plugin events audit log", () => {
   it("inserts an enabled event when enabling", async () => {
     await installDiary();
     await pluginService.enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {});
-    const result = await pool!.query(
+    const result = await testDb.pool.query(
       "SELECT * FROM official_plugin_events WHERE plugin_id = $1 AND event_type = 'enabled'",
       [DIARY_PLUGIN_ID],
     );
@@ -617,7 +609,7 @@ describe("plugin events audit log", () => {
     await installDiary();
     await pluginService.enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {});
     await pluginService.disablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1);
-    const result = await pool!.query(
+    const result = await testDb.pool.query(
       "SELECT * FROM official_plugin_events WHERE plugin_id = $1 AND event_type = 'disabled'",
       [DIARY_PLUGIN_ID],
     );
@@ -630,7 +622,7 @@ describe("plugin events audit log", () => {
     await pluginService.patchSettings(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {
       daily_reminder_enabled: true,
     });
-    const result = await pool!.query(
+    const result = await testDb.pool.query(
       "SELECT * FROM official_plugin_events WHERE plugin_id = $1 AND event_type = 'settings_updated'",
       [DIARY_PLUGIN_ID],
     );
@@ -658,7 +650,7 @@ describe("diary reflection job settings", () => {
     });
 
     expect(result).toEqual({ skipped: true, reason: "reflection_disabled" });
-    const reflections = await pool!.query("SELECT * FROM diary_reflections");
+    const reflections = await testDb.pool.query("SELECT * FROM diary_reflections");
     expect(reflections.rowCount).toBe(0);
   });
 
@@ -683,7 +675,7 @@ describe("diary reflection job settings", () => {
     });
 
     expect((result as Record<string, unknown>)["past_entries_count"]).toBe(1);
-    const reflections = await pool!.query<{ content: string; ai_model: string | null }>(
+    const reflections = await testDb.pool.query<{ content: string; ai_model: string | null }>(
       "SELECT content, ai_model FROM diary_reflections",
     );
     expect(reflections.rowCount).toBe(1);

@@ -1,16 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentDecisionFromDb, contentOwnerFromDb } from "../access/contentAccessQuery";
+import type { Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentDecisionFromDb, contentOwnerFromDb } from "../access/contentAccessQuery.js";
 import {
   dbPool,
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
   withDbTransaction,
-} from "../routeUtils/common";
-import { publicationAdapter } from "./publicationRegistry";
+} from "../routeUtils/common.js";
+import { publicationAdapter } from "./publicationRegistry.js";
 
 const MAX_SNAPSHOT_BYTES = 1024 * 1024;
 

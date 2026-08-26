@@ -29,28 +29,28 @@
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import { createHash } from "node:crypto";
 import type {
   InvocationTarget,
   PoolKeyCandidate,
   ProviderCommandStore,
   ProviderInfo,
-} from "../commands/store";
-import type { ProviderTaskAttemptRefs } from "../commands/types";
-import type { UsageAttribution, UsageObservation } from "../../usage";
+} from "../commands/store.js";
+import type { ProviderTaskAttemptRefs } from "../commands/types.js";
+import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
-import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience";
-import { fetchWithNetworkProfile, type ResolvedNetworkProfile } from "../../networkProfiles";
+import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience.js";
+import { fetchWithNetworkProfile, type ResolvedNetworkProfile } from "../../networkProfiles/index.js";
 import {
   retrievalEgressAllowed,
   retrievalProviderEgressDestination,
   type RetrievalEgressPolicy,
-} from "../../retrieval/egress/egressPolicy";
-import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation";
-import { providerSupportsStructuredOutput } from "../structuredOutputCapabilities";
-import { providerVendor } from "../vendors";
-import { completePiAiChat } from "./piAiChat";
+} from "../../retrieval/egress/egressPolicy.js";
+import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation.js";
+import { providerSupportsStructuredOutput } from "../structuredOutputCapabilities.js";
+import { providerVendor } from "../vendors.js";
+import { completePiAiChat } from "./piAiChat.js";
 
 export interface ChatMessage {
   role: string;

@@ -1,7 +1,7 @@
 import { pgTable, index, unique, foreignKey, varchar, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
-import { hosts } from "./hosts";
-import { modelProviders } from "./providers";
-import { users } from "./auth";
+import { hosts } from "./hosts.js";
+import { modelProviders } from "./providers.js";
+import { users } from "./auth.js";
 
 /**
  * The control plane's default answer to "which model backend does this

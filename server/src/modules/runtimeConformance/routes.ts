@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, HttpError, jsonBody, optionalString, query, resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { requireInstanceAdmin } from "../routeUtils/access";
-import { RuntimeToolRegistry } from "../runtimeTools";
-import { LocalCliConformanceProbeRunner } from "./probeRunner";
-import { RuntimeConformanceService } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, HttpError, jsonBody, optionalString, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
+import { RuntimeToolRegistry } from "../runtimeTools/index.js";
+import { LocalCliConformanceProbeRunner } from "./probeRunner.js";
+import { RuntimeConformanceService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.post("/api/v1/runtime-conformance/run", async (request, reply) => {

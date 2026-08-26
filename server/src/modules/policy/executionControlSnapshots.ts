@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
+import * as protocol from "@agent-space/protocol";
+import type { Pool } from "../../db/pool.js";
 import type {
   ExecutionControlSnapshot,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RunRecord } from "../runs/repository";
-import { assembleRunInputEnvelope } from "../runs/runInputEnvelope";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
+} from "@agent-space/protocol";
+import type { RunRecord } from "../runs/repository.js";
+import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
+import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 
 export interface ExecutionControlSnapshotInputs {
   cliCredentialProfileId?: string | null;
@@ -92,7 +92,6 @@ export class ExecutionControlSnapshotRepository {
       ...(constraints.allow_project_instructions === false
         || resolvedPolicy.policy.preferences.include_project_instructions === false ? [] : ["project_instruction"]),
     ];
-    const protocol = await loadProtocol();
     const snapshot = protocol.ExecutionControlSnapshotSchema.parse({
       id,
       version: 2,

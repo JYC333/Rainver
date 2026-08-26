@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ActionApprovalGrantService } from "../src/modules/policy/actionApprovalGrantService";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { ActionApprovalGrantService } from "../src/modules/policy/actionApprovalGrantService.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("ActionApprovalGrantService", () => {
   it("rejects never-grantable actions before inserting", async () => {

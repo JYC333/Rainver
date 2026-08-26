@@ -1,11 +1,11 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import { pinnedResearchThreadId } from "../projectResearch/workflowOntology";
-import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService";
-import { completeBackgroundStep } from "./stepService";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { pinnedResearchThreadId } from "../projectResearch/workflowOntology.js";
+import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService.js";
+import { completeBackgroundStep } from "./stepService.js";
 
 export const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
 

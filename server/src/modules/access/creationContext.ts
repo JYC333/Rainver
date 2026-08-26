@@ -1,6 +1,6 @@
-import type { Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import type { ContentVisibility } from "./contentAccessTypes";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import type { ContentVisibility } from "./contentAccessTypes.js";
 
 export interface ContentCreationContext {
   spaceId: string;

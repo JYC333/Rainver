@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { resolveRequestId } from "../../gateway/requestContext";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { resolveRequestId } from "../../gateway/requestContext.js";
 import {
   boolQuery,
   dbPool,
@@ -11,11 +11,11 @@ import {
   optionalString,
   query,
   resolveIdentity,
-} from "../routeUtils/common";
-import { assertProjectInSpace } from "../projects/access";
-import { GraphProjectionBuilder, parseGraphLensId, type ServerGraphProjectionMode } from "./projectionBuilder";
-import { GraphProjectionRepository } from "./projectionRepository";
-import { GraphViewStateRepository, normalizeStateObject } from "./viewStateRepository";
+} from "../routeUtils/common.js";
+import { assertProjectInSpace } from "../projects/access.js";
+import { GraphProjectionBuilder, parseGraphLensId, type ServerGraphProjectionMode } from "./projectionBuilder.js";
+import { GraphProjectionRepository } from "./projectionRepository.js";
+import { GraphViewStateRepository, normalizeStateObject } from "./viewStateRepository.js";
 
 const DEFAULT_LIMIT = 300;
 const HARD_LIMIT = 2000;

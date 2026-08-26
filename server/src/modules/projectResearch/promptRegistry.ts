@@ -1,7 +1,7 @@
-import type { PromptResolveResult } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { resolvePrompt } from "../prompts/resolver";
-import type { ResearchScopeContext } from "./researchContext";
+import type { PromptResolveResult } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { resolvePrompt } from "../prompts/resolver.js";
+import type { ResearchScopeContext } from "./researchContext.js";
 
 export const PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY = "project_research.synthesis";
 export const PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY = "project_research.question_refine";

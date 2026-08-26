@@ -1,4 +1,4 @@
-import { modelSpec } from "./modelSpecs";
+import { modelSpec } from "./modelSpecs.js";
 
 /**
  * Recommended max output (completion) tokens for known models.

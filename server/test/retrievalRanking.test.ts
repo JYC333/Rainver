@@ -5,8 +5,8 @@ import {
   rankingBoost,
   DEFAULT_RANKING_SIGNALS,
   linkTypeForCandidate,
-} from "../src/modules/retrieval/ranking";
-import type { ScoredCandidate } from "../src/modules/retrieval/types";
+} from "../src/modules/retrieval/ranking.js";
+import type { ScoredCandidate } from "../src/modules/retrieval/types.js";
 
 const NOW = Date.parse("2026-06-23T00:00:00.000Z");
 

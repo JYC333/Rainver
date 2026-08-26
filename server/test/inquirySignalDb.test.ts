@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { InquirySignalService } from "../src/modules/inquiry/signalService";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
 
 // Real-Postgres coverage for the Signals/Candidates/Review/Delta
 // vertical slice. See plan section 10.
@@ -15,7 +15,7 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 let PROJECT: string;
 let THREAD: string;
@@ -179,7 +179,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     await expect(signalSvc.decideCandidate(identity(), PROJECT, candidateId, { decision: "dismiss" })).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("bounds a Review Packet to the configured size and returns leftover Candidates to the db.pool on close", async () => {
+  it("bounds a Review Packet to the configured size and returns leftover Candidates to the pool on close", async () => {
     if (!db.available) return;
     const signalSvc = new InquirySignalService(db.pool);
     const threadSvc = new InquiryThreadService(db.pool);

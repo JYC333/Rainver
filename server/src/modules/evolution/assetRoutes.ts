@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
@@ -9,11 +9,11 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { EvolvableAssetRepository } from "./assetRepository";
-import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository";
-import { resolveEvolvableAssetVersion } from "./assetResolutionService";
-import { EvaluationHarnessService } from "./evaluationHarnessService";
+} from "../routeUtils/common.js";
+import { EvolvableAssetRepository } from "./assetRepository.js";
+import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
+import { resolveEvolvableAssetVersion } from "./assetResolutionService.js";
+import { EvaluationHarnessService } from "./evaluationHarnessService.js";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => EvolvableAssetRepository) | null = null;
 let evaluationRepositoryFactoryOverride: ((context: ModuleContext) => EvolvableAssetEvaluationRepository) | null = null;

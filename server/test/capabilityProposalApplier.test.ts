@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import { registerCapabilityProposalAppliers } from "../src/modules/capabilities/proposalApplier";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import { loadConfig } from "../src/config.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { registerCapabilityProposalAppliers } from "../src/modules/capabilities/proposalApplier.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 
 describe("Capability proposal applier", () => {
   it("rejects a tampered install payload that collides with a built-in capability id", async () => {

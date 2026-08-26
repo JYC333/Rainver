@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decidePermission } from "../src/modules/runs/runPermissionPolicy";
+import { decidePermission } from "../src/modules/runs/runPermissionPolicy.js";
 
 describe("decidePermission", () => {
   it("selects the allow_once option when one is offered", () => {

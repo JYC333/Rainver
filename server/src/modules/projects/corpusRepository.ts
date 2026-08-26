@@ -1,4 +1,4 @@
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -12,11 +12,11 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access";
-import { materializePassingProjectCorpusItems } from "./corpusMaterialization";
+} from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
+import { materializePassingProjectCorpusItems } from "./corpusMaterialization.js";
 
 export type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
 export type ProjectCorpusStatus = "active" | "archived";

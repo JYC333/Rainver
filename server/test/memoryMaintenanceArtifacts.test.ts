@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { MemoryMaintenanceReport } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+import type { MemoryMaintenanceReport } from "@agent-space/protocol";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import {
   createMemoryMaintenanceProposalPacket,
   MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE,
   MEMORY_MAINTENANCE_REPORT_ARTIFACT_TYPE,
   persistMemoryMaintenanceReportArtifact,
   registerMemoryMaintenanceProposalAppliers,
-} from "../src/modules/memory/maintenanceArtifacts";
-import type { Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/memory/maintenanceArtifacts.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 interface CapturedQuery {
   sql: string;

@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { frontendSupportModule } from "../src/modules/frontendSupport";
-import { loadConfig } from "../src/config";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
-import { __setFrontendSupportServiceFactoryForTests } from "../src/modules/frontendSupport/routes";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { frontendSupportModule } from "../src/modules/frontendSupport/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setFrontendSupportServiceFactoryForTests } from "../src/modules/frontendSupport/routes.js";
 
 let app: FastifyInstance;
 

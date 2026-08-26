@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateResearchArtifacts, type ResearchArtifactRecord } from "../src/modules/projectResearch/artifactValidation";
+import { validateResearchArtifacts, type ResearchArtifactRecord } from "../src/modules/projectResearch/artifactValidation.js";
 
 const citation = { arxiv_id: "2601.12345" };
 const report = {

@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { getDbPool } from "../src/db/pool.js";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 

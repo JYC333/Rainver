@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { writeNote } from "../src/modules/knowledge/noteRevisionService";
-import { PgProposalApplyService } from "../src/modules/proposals/applyService";
-import { KnowledgePromotionCandidateService } from "../src/modules/knowledgePromotion/candidateService";
-import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
-import { KnowledgeExtractionService } from "../src/modules/knowledgePromotion/extractionService";
-import { ProjectReviewSessionService } from "../src/modules/projectReview/service";
-import { processUnclaimedDomainChangeEvents } from "../src/modules/knowledgePromotion/revalidationService";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService";
-import { ExperimentRunService } from "../src/modules/experiments/runService";
-import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { writeNote } from "../src/modules/knowledge/noteRevisionService.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { KnowledgePromotionCandidateService } from "../src/modules/knowledgePromotion/candidateService.js";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { KnowledgeExtractionService } from "../src/modules/knowledgePromotion/extractionService.js";
+import { ProjectReviewSessionService } from "../src/modules/projectReview/service.js";
+import { processUnclaimedDomainChangeEvents } from "../src/modules/knowledgePromotion/revalidationService.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
+import { ExperimentRunService } from "../src/modules/experiments/runService.js";
+import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for Knowledge promotion and revalidation:
 // discriminated pinned source references, the domain_change_outbox
@@ -35,7 +35,7 @@ const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

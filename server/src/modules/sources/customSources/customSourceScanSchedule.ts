@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../../routeUtils/common";
-import { listDueSourceChannelScanTasks } from "../sourceConnectionScheduler";
+import type { Queryable } from "../../routeUtils/common.js";
+import { listDueSourceChannelScanTasks } from "../sourceConnectionScheduler.js";
 
 const STUCK_RUN_AFTER_SECONDS = 600;
 

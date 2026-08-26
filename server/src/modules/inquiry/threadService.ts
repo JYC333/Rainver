@@ -1,7 +1,7 @@
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { assertLinkTypeAllowed } from "../ontology/validation";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   dateIso,
@@ -10,13 +10,13 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { contentReadSql } from "../access/contentAccessSql";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { RetrievalProjectionService } from "../retrieval";
-import { inquiryRetrievalRegistry } from "./retrievalAdapter";
-import { recordThreadRevision } from "./threadRevisionService";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
+import { recordThreadRevision } from "./threadRevisionService.js";
 
 /**
  * Actions only, in the order of the stages they belong to. The vocabulary

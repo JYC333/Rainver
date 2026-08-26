@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   HttpError,
   objectValue,
   optionalString,
   withQueryableTransaction,
-} from "../routeUtils/common";
-import { lockActiveProjectForMutation } from "../projects/access";
-import { WorkflowExecutionService } from "../automations/workflowExecutionService";
+} from "../routeUtils/common.js";
+import { lockActiveProjectForMutation } from "../projects/access.js";
+import { WorkflowExecutionService } from "../automations/workflowExecutionService.js";
 import {
   actionNodeHandlerRegistry,
   ActionNodeHandlerError,
-} from "../automations/actionNodeRegistry";
-import { workflowExecutionOutcomeHandlerRegistry } from "../automations/workflowExecutionOutcomeRegistry";
-import { findOrCreateResearchAutomation } from "./synthesisOnlyExecution";
-import { researchState } from "./operationProjection";
-import { isRetryableRunErrorCode } from "../runs/retryPolicy";
+} from "../automations/actionNodeRegistry.js";
+import { workflowExecutionOutcomeHandlerRegistry } from "../automations/workflowExecutionOutcomeRegistry.js";
+import { findOrCreateResearchAutomation } from "./synthesisOnlyExecution.js";
+import { researchState } from "./operationProjection.js";
+import { isRetryableRunErrorCode } from "../runs/retryPolicy.js";
 
 const RESEARCH_PASS_WORKFLOW_ID = "project_research.reconcile_pass";
 const RESEARCH_PASS_ACTION_KEY = "project_research.reconcile_pass";

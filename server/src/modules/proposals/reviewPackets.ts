@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { ProposalAcceptResultType } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { assertCanReviewContextOpsPacket } from "../contextOps/reviewPolicy";
-import type { Queryable } from "../routeUtils/common";
-import type { ProposalApplyContext, ProposalApplyResult } from "./applierRegistry";
-import type { ProposalRow } from "./repository";
+import type { ProposalAcceptResultType } from "@agent-space/protocol";
+import { assertCanReviewContextOpsPacket } from "../contextOps/reviewPolicy.js";
+import type { Queryable } from "../routeUtils/common.js";
+import type { ProposalApplyContext, ProposalApplyResult } from "./applierRegistry.js";
+import type { ProposalRow } from "./repository.js";
 
 /**
  * Shared plumbing for review/context-layer proposal packets.

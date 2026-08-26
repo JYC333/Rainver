@@ -1,7 +1,7 @@
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { HttpError, objectValue } from "../routeUtils/common";
-import { materializePlanGraph, evaluatePlanAtomicity } from "./graph";
-import { PlanExecutionService } from "./executionService";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError, objectValue } from "../routeUtils/common.js";
+import { materializePlanGraph, evaluatePlanAtomicity } from "./graph.js";
+import { PlanExecutionService } from "./executionService.js";
 
 interface PlanReviewPayload { plan_id: string; plan_version_id: string }
 interface PlanCheckpointPayload extends PlanReviewPayload { node_id: string }

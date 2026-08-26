@@ -1,5 +1,5 @@
-import { tokenizeSimple } from "./normalize";
-import { DEFAULT_RANKING_SIGNALS, type RankingSignalConfig } from "./ranking";
+import { tokenizeSimple } from "./normalize.js";
+import { DEFAULT_RANKING_SIGNALS, type RankingSignalConfig } from "./ranking.js";
 
 /**
  * Deterministic, query-only intent classification (W3 of the context-layer

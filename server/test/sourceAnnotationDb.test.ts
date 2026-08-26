@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
-import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter.js";
 
 // Real-Postgres coverage for the system annotation queue: what gets enqueued,
 // what the queue guarantees about not paying twice, how failures terminate, and
@@ -18,7 +18,7 @@ const CONNECTION = "44444444-4444-4444-8444-444444444444";
 const CHANNEL = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

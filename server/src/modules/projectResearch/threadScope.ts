@@ -1,6 +1,6 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, objectValue, optionalString } from "../routeUtils/common";
-import { InquiryThreadService } from "../inquiry/threadService";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalString } from "../routeUtils/common.js";
+import { InquiryThreadService } from "../inquiry/threadService.js";
 
 export interface ResearchThreadScopeRef {
   thread_id: string;

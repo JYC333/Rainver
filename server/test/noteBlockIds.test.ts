@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { addedBlockIds, blockIds, withBlockIds, BLOCK_ID_ATTR } from "../src/modules/knowledge/noteBlockIds";
-import { applyNoteOps } from "../src/modules/knowledge/noteDocument";
+import { addedBlockIds, blockIds, withBlockIds, BLOCK_ID_ATTR } from "../src/modules/knowledge/noteBlockIds.js";
+import { applyNoteOps } from "../src/modules/knowledge/noteDocument.js";
 
 /**
  * Block identity, which relocation later anchors on. A block *index* cannot do

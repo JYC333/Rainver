@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { resolveIdentity, sendRouteError } from "../routeUtils/common";
-import { BackupService } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { BackupService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => new BackupService(context.config);

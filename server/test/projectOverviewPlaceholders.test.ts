@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   assertPlaceholderEntitiesProvided,
   projectEntitySummaryRegistry,
-} from "../src/modules/projects/overviewRegistry";
-import { PROJECT_OWNED_ENTITY_TYPES } from "../src/modules/projects/overviewService";
-import { registerInquiryProjectIntegration } from "../src/modules/inquiry/projectIntegration";
-import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration";
-import { registerTasksProjectIntegration } from "../src/modules/tasks/projectIntegration";
-import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration";
-import { registerLearningProjectIntegration } from "../src/modules/learning/projectIntegration";
-import { registerProjectResearchProjectIntegration } from "../src/modules/projectResearch/projectIntegration";
+} from "../src/modules/projects/overviewRegistry.js";
+import { PROJECT_OWNED_ENTITY_TYPES } from "../src/modules/projects/overviewService.js";
+import { registerInquiryProjectIntegration } from "../src/modules/inquiry/projectIntegration.js";
+import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration.js";
+import { registerTasksProjectIntegration } from "../src/modules/tasks/projectIntegration.js";
+import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration.js";
+import { registerLearningProjectIntegration } from "../src/modules/learning/projectIntegration.js";
+import { registerProjectResearchProjectIntegration } from "../src/modules/projectResearch/projectIntegration.js";
 
 function registerAll(): void {
   registerInquiryProjectIntegration();

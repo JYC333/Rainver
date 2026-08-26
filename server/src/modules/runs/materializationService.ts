@@ -1,41 +1,41 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import type {
   RunAdapterResultEnvelope,
   RunMaterializationItemSummary,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce, type EnforceResult } from "../policy/service";
-import { PostRunFinalizationService } from "./finalizationService";
-import { redactEvidenceText, sanitizeEvidenceJson } from "./evidenceRedaction";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce, type EnforceResult } from "../policy/service.js";
+import { PostRunFinalizationService } from "./finalizationService.js";
+import { redactEvidenceText, sanitizeEvidenceJson } from "./evidenceRedaction.js";
 import {
   PgRunRepository,
   type Queryable,
   type RunFinalizationRecord,
   type RunRecord,
-} from "./repository";
-import { assertProjectInSpace } from "../projects/access";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { EvolutionRepository } from "../evolution/repository";
-import { EvolutionSolidifier } from "../evolution/solidifier";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
-import { PgUsageRepository } from "../usage/repository";
-import { PlanExecutionService } from "../plans/executionService";
-import { WorkflowExecutionService } from "../automations/workflowExecutionService";
-import { PgRunSupervisor } from "./supervisor";
+} from "./repository.js";
+import { assertProjectInSpace } from "../projects/access.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { EvolutionRepository } from "../evolution/repository.js";
+import { EvolutionSolidifier } from "../evolution/solidifier.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
+import { PgUsageRepository } from "../usage/repository.js";
+import { PlanExecutionService } from "../plans/executionService.js";
+import { WorkflowExecutionService } from "../automations/workflowExecutionService.js";
+import { PgRunSupervisor } from "./supervisor.js";
 import {
   AgentGroupRuntimeDelegationMaterializer,
   type RuntimeDelegationMaterializerPort,
-} from "../agentGroups/runtimeDelegationMaterializer";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { runOutputResult } from "./orchestrationResults";
-import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegistry";
-import { outputVisibilityForTaint, parseRunContextTaint } from "./contextTaint";
-import type { ContentVisibility } from "../access/contentAccessTypes";
+} from "../agentGroups/runtimeDelegationMaterializer.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { runOutputResult } from "./orchestrationResults.js";
+import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegistry.js";
+import { outputVisibilityForTaint, parseRunContextTaint } from "./contextTaint.js";
+import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
 export interface RunMaterializationResult {
   items: RunMaterializationItemSummary[];
@@ -776,7 +776,6 @@ async function validateClaimObjectProposalPacket(
   proposalType: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const protocol = await loadProtocol();
   const parsed = protocol.ClaimObjectProposalPayloadSchema.safeParse(payload);
   if (!parsed.success) {
     throw new Error(`invalid structured ${proposalType} packet: ${formatZodIssues(parsed.error.issues)}`);

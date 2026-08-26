@@ -1,4 +1,4 @@
-import { HttpError, objectValue, optionalString } from "../routeUtils/common";
+import { HttpError, objectValue, optionalString } from "../routeUtils/common.js";
 
 const SCHEDULED_FETCH_FREQUENCIES = new Set(["hourly", "daily", "weekly"]);
 

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import * as protocol from "@agent-space/protocol";
 import type {
   RetrievalBriefRequest,
   ClaimCandidatePacketCreateRequest,
@@ -19,9 +20,9 @@ import type {
   RetrievalFeedbackRequest,
   RetrievalMaintenanceScanRequest,
   RetrievalSearchRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   csvQuery,
   dbPool,
@@ -36,16 +37,16 @@ import {
   resolveIdentity,
   sendRouteError,
   withDbTransaction,
-} from "../routeUtils/common";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+} from "../routeUtils/common.js";
+import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import {
   applyContentCreationContext,
   resolveContentCreationContext,
-} from "../access/creationContext";
-import { authRepositoryFromConfig } from "../auth/identity";
-import { PgKnowledgeRepository } from "./repository";
-import { parseNotesTreeReorder, persistNotesTreeReorder } from "./notesTreeReorder";
+} from "../access/creationContext.js";
+import { authRepositoryFromConfig } from "../auth/identity.js";
+import { PgKnowledgeRepository } from "./repository.js";
+import { parseNotesTreeReorder, persistNotesTreeReorder } from "./notesTreeReorder.js";
 import {
   RetrievalFeedbackService,
   RetrievalMaintenanceService,
@@ -59,29 +60,28 @@ import {
   persistRetrievalExplainReportArtifact,
   persistRetrievalMaintenanceReportArtifact,
   persistRetrievalBriefArtifact,
-} from "../retrieval";
-import { createClaimCandidatePacketFromArtifacts } from "./claimCandidatePackets";
-import { buildClaimTrajectory, scanClaimContradictions } from "./claimReviewLoop";
-import { persistClaimContradictionReportArtifact } from "./claimReviewLoopArtifacts";
-import { runRelationDiscoveryScan } from "./relationDiscovery";
+} from "../retrieval/index.js";
+import { createClaimCandidatePacketFromArtifacts } from "./claimCandidatePackets.js";
+import { buildClaimTrajectory, scanClaimContradictions } from "./claimReviewLoop.js";
+import { persistClaimContradictionReportArtifact } from "./claimReviewLoopArtifacts.js";
+import { runRelationDiscoveryScan } from "./relationDiscovery.js";
 import {
   createRelationDiscoveryProposalPacket,
   persistRelationDiscoveryReportArtifact,
-} from "./relationDiscoveryArtifacts";
+} from "./relationDiscoveryArtifacts.js";
 import {
   persistObjectSchemaSuggestionReportArtifact,
   scanObjectSchemaSuggestions,
-} from "../ontology/objectSchemaSuggestions";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings";
-import { canInitiateContextOpsScan, canReviewSpaceOpsPackets } from "../contextOps/reviewPolicy";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "../ontology/objectSchemaSuggestions.js";
+import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
+import { canInitiateContextOpsScan, canReviewSpaceOpsPackets } from "../contextOps/reviewPolicy.js";
+import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgKnowledgeRepository(dbPool(context.config));
@@ -103,7 +103,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalSearchBody(protocol.RetrievalSearchRequestSchema, jsonBody(request));
       const pool = dbPool(context.config);
       const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
@@ -163,7 +162,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalBriefBody(protocol.RetrievalBriefRequestSchema, jsonBody(request));
       const pool = dbPool(context.config);
       const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
@@ -256,7 +254,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalFeedbackBody(protocol.RetrievalFeedbackRequestSchema, jsonBody(request));
       if (!knowledgeRetrievalRegistry.objectTypes().includes(body.object_type)) {
         throw new HttpError(422, `knowledge feedback only supports ${knowledgeRetrievalRegistry.objectTypes().join(", ")}`);
@@ -286,7 +283,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalCreateSafetyBody(
         protocol.RetrievalCreateSafetyRequestSchema,
         jsonBody(request),
@@ -351,7 +347,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalMaintenanceScanBody(
         protocol.RetrievalMaintenanceScanRequestSchema,
         jsonBody(request),
@@ -418,7 +413,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalEvalReportBody(
         protocol.RetrievalEvalReportRequestSchema,
         jsonBody(request),
@@ -452,7 +446,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalCalibrationDecisionBody(
         protocol.RetrievalCalibrationDecisionRequestSchema,
         jsonBody(request),
@@ -497,7 +490,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalEvalDiagnosticsReportBody(
         protocol.RetrievalEvalDiagnosticsReportRequestSchema,
         jsonBody(request),
@@ -580,7 +572,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseClaimCandidatePacketCreateBody(
         protocol.ClaimCandidatePacketCreateRequestSchema,
         jsonBody(request),
@@ -615,7 +606,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const q = query(request);
       // optionalString returns null for missing params, but the schema fields are
       // .optional() (undefined, not null), so only include keys that are present.
@@ -648,7 +638,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseClaimContradictionScanBody(
         protocol.ClaimContradictionScanRequestSchema,
         jsonBody(request),
@@ -725,7 +714,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRelationDiscoveryScanBody(
         protocol.RelationDiscoveryScanRequestSchema,
         jsonBody(request),
@@ -790,7 +778,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseRetrievalExplainBody(
         protocol.RetrievalExplainRequestSchema,
         jsonBody(request),
@@ -869,7 +856,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const q = query(request);
       const { limit, offset } = parsePage(q);
       const body = parseSpaceObjectProfileListRequest(protocol.SpaceObjectProfileListRequestSchema, {
@@ -919,7 +905,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseObjectSchemaImportRequest(
         protocol.ObjectSchemaImportRequestSchema,
         jsonBody(request),
@@ -944,7 +929,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireContextOpsScanRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseObjectSchemaSuggestionScanRequest(
         protocol.ObjectSchemaSuggestionScanRequestSchema,
         jsonBody(request),
@@ -984,7 +968,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseSpaceObjectProfileCreateProposalRequest(
         protocol.SpaceObjectProfileCreateProposalRequestSchema,
         jsonBody(request),
@@ -1008,7 +991,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseSpaceObjectProfileUpdateProposalRequest(
         protocol.SpaceObjectProfileUpdateProposalRequestSchema,
         jsonBody(request),
@@ -1026,7 +1008,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseSpaceObjectProfileStatusProposalRequest(
         protocol.SpaceObjectProfileStatusProposalRequestSchema,
         jsonBody(request),
@@ -1044,7 +1025,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceMaintenanceRole(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = parseSpaceObjectProfileStatusProposalRequest(
         protocol.SpaceObjectProfileStatusProposalRequestSchema,
         jsonBody(request),

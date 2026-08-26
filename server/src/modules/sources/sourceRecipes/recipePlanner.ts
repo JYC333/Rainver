@@ -1,4 +1,4 @@
-import type { SourceRecipeDefinition } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { SourceRecipeDefinition } from "@agent-space/protocol";
 
 /**
  * Deterministic Source planning rules for the conversation-first Create

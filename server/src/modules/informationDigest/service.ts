@@ -1,11 +1,11 @@
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
-import { profileMaturity, type ProfileMaturity } from "../interestProfile/maturity";
-import { InterestProfileService } from "../interestProfile/service";
-import { topicKeyFor } from "../interestProfile/topicKey";
-import { PgInformationDigestRepository, type DigestCandidate, type PersistedDigest } from "./repository";
-import { PgSerendipityRepository } from "./serendipityRepository";
-import { selectSerendipity } from "./serendipitySelection";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import { profileMaturity, type ProfileMaturity } from "../interestProfile/maturity.js";
+import { InterestProfileService } from "../interestProfile/service.js";
+import { topicKeyFor } from "../interestProfile/topicKey.js";
+import { PgInformationDigestRepository, type DigestCandidate, type PersistedDigest } from "./repository.js";
+import { PgSerendipityRepository } from "./serendipityRepository.js";
+import { selectSerendipity } from "./serendipitySelection.js";
 
 export const DEFAULT_INTEREST_SLOTS = 6;
 export const DEFAULT_PROJECT_SLOTS = 8;

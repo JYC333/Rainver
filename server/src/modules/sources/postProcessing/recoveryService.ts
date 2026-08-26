@@ -1,11 +1,11 @@
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { objectValue, optionalString, type Queryable } from "../../routeUtils/common";
-import type { SourcePostProcessingRunOut } from "./repository";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { objectValue, optionalString, type Queryable } from "../../routeUtils/common.js";
+import type { SourcePostProcessingRunOut } from "./repository.js";
 import {
   PgSourcePostProcessingRecoveryRepository,
   type SourcePostProcessingRecoveryScope,
-} from "./recoveryRepository";
-import { SOURCE_POST_PROCESSING_LIMITS } from "./config";
+} from "./recoveryRepository.js";
+import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 
 const RECOVERY_SETTLE_WINDOW_MS = 30_000;
 

@@ -5,9 +5,9 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, lockActiveProjectForMutation } from "../projects/access";
-import type { QuestionRefinementResult } from "./questionRefineService";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, lockActiveProjectForMutation } from "../projects/access.js";
+import type { QuestionRefinementResult } from "./questionRefineService.js";
 
 interface SessionRow {
   id: string;

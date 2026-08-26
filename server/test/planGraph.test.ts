@@ -4,7 +4,7 @@ import {
   decidePlanApproval,
   evaluatePlanAtomicity,
   materializePlanGraph,
-} from "../src/modules/plans/graph";
+} from "../src/modules/plans/graph.js";
 
 function definition(overrides: Record<string, unknown> = {}) {
   return {

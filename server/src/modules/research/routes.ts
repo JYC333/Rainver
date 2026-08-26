@@ -1,19 +1,18 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dbPool, jsonBody, resolveIdentity, sendRouteError, withQueryableTransaction } from "../routeUtils/common";
-import { enforceSources } from "../sources/enforceSources";
-import { AdaptiveQueryOrchestrator } from "./queryPlanning/adaptiveQueryOrchestrator";
-import { ResearchMonitorMaterializer } from "./discovery/monitorMaterializer";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { assertProjectReadable, assertProjectWriter } from "../projects/access";
-import { ResearchStrategyActivationService } from "./discovery/strategyActivationService";
-import { ResearchQueryRepository } from "./queryPlanning/repository";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dbPool, jsonBody, resolveIdentity, sendRouteError, withQueryableTransaction } from "../routeUtils/common.js";
+import { enforceSources } from "../sources/enforceSources.js";
+import { AdaptiveQueryOrchestrator } from "./queryPlanning/adaptiveQueryOrchestrator.js";
+import { ResearchMonitorMaterializer } from "./discovery/monitorMaterializer.js";
+import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
+import { ResearchStrategyActivationService } from "./discovery/strategyActivationService.js";
+import { ResearchQueryRepository } from "./queryPlanning/repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get<{ Params: { projectId: string } }>("/api/v1/projects/:projectId/research/query-strategies", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const db = dbPool(context.config);
       await assertProjectReadable(db, identity.spaceId, request.params.projectId, identity.userId);
       const result = await new ResearchQueryRepository(db).listStrategies(identity.spaceId, request.params.projectId);
@@ -26,7 +25,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/research/query-strategies/evaluate", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const input = protocol.EvaluateResearchQueryStrategyRequestSchema.parse(jsonBody(request));
       const db = dbPool(context.config);
       await assertProjectWriter(db, identity.spaceId, input.project_id, identity.userId);
@@ -47,7 +45,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post<{ Params: { strategyId: string; providerKey: string } }>("/api/v1/research/query-strategies/:strategyId/providers/:providerKey/retry", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const input = protocol.RetryResearchQueryProviderRequestSchema.parse(jsonBody(request));
       const providerKey = protocol.ResearchProviderKeySchema.parse(request.params.providerKey);
       const db = dbPool(context.config);
@@ -72,7 +69,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
       const bindingGate = await enforceSources(context, identity, "project.source.bind", "project_source");
       if (bindingGate.blocked) return reply.code(403).send(bindingGate.reply403);
-      const protocol = await loadProtocol();
       const input = protocol.MaterializeResearchQueryStrategyRequestSchema.parse(jsonBody(request));
       return reply.code(201).send(await new ResearchMonitorMaterializer(dbPool(context.config), context.config).materialize(identity, request.params.strategyId, {
         providerKeys: input.provider_keys,
@@ -87,7 +83,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
       const bindingGate = await enforceSources(context, identity, "project.source.bind", "project_source");
       if (bindingGate.blocked) return reply.code(403).send(bindingGate.reply403);
-      const protocol = await loadProtocol();
       const input = protocol.ActivateResearchQueryStrategyRequestSchema.parse(jsonBody(request));
       const result = await withQueryableTransaction(dbPool(context.config), (db) =>
         new ResearchStrategyActivationService(db).activate({

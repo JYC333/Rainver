@@ -1,7 +1,7 @@
-import { assertLinkTypeAllowed } from "../ontology/validation";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
+import { assertLinkTypeAllowed } from "../ontology/validation.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 import {
   HttpError,
   dateIso,
@@ -10,12 +10,12 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { ProjectCorpusRepository } from "../projects/corpusRepository";
-import { InquiryIterationService } from "./iterationService";
-import { tryQueueAdviceForFocusedThread } from "./adviceJob";
+} from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
+import { InquiryIterationService } from "./iterationService.js";
+import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 
 const SIGNAL_CLASSIFICATIONS = ["supports", "contradicts", "adds_context", "adds_method", "fills_gap", "raises_gap", "unrelated"] as const;
 type SignalClassification = (typeof SIGNAL_CLASSIFICATIONS)[number];

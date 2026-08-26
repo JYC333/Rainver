@@ -1,8 +1,8 @@
 import type { FastifyReply } from "fastify";
-import type { ServerConfig } from "../../config";
-import { authRepositoryFromConfig } from "../auth/identity";
-import { getDbPool } from "../../db/pool";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+import type { ServerConfig } from "../../config.js";
+import { authRepositoryFromConfig } from "../auth/identity.js";
+import { getDbPool } from "../../db/pool.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 
 export async function requireSpaceOwnerOrAdmin(
   config: ServerConfig,

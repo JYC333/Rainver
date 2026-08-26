@@ -1,9 +1,9 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { PlanExecutionService } from "../plans/executionService";
-import { WorkflowExecutionService } from "../automations/workflowExecutionService";
-import type { OperationalAlertPort } from "../notifications/operationalAlerts";
-import { safelyEmitOperationalAlert } from "../notifications/operationalAlerts";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { PlanExecutionService } from "../plans/executionService.js";
+import { WorkflowExecutionService } from "../automations/workflowExecutionService.js";
+import type { OperationalAlertPort } from "../notifications/operationalAlerts.js";
+import { safelyEmitOperationalAlert } from "../notifications/operationalAlerts.js";
 
 export class ExecutionGraphRecoveryService {
   constructor(

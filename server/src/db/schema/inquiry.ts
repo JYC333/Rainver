@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { spaceObjects } from "./knowledge";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { spaceObjects } from "./knowledge.js";
 
 // Inquiry Domain (plan section 9 / ADR 0011). InquiryThread is a
 // Project-owned root table, never a `space_objects` row — see ADR 0011

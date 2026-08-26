@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { globSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 // The runtime half of the SQL guard. `staticSqlPrepare.test.ts` covers SQL
 // written as a complete literal; this covers SQL assembled at runtime from
@@ -52,7 +52,7 @@ function loadCapturedStatements(): CapturedStatement[] {
 }
 
 
-const db = useTestDatabase(__filename, { max: 1 });
+const db = useTestDatabase(import.meta.filename, { max: 1 });
 
 beforeAll(async () => {
   if (!db.available) return;

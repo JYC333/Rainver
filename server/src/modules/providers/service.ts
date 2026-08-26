@@ -7,13 +7,13 @@
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { listProviderVendors } from "./vendors";
-import type { ServerConfig } from "../../config";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { resolveProvidersDbPort } from "./dbReader";
-import { introspectIdentity } from "../auth/identity";
-import { listProviderPresets as listProviderPresetCatalog } from "./presets";
+import { listProviderVendors } from "./vendors.js";
+import type { ServerConfig } from "../../config.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { resolveProvidersDbPort } from "./dbReader.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { listProviderPresets as listProviderPresetCatalog } from "./presets/index.js";
 
 function configIdFromRequest(request: FastifyRequest): string | undefined {
   const params = request.params as Record<string, unknown> | undefined;

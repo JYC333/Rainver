@@ -5,13 +5,13 @@ import {
   DEFAULT_SYNTHESIS_CONFIG,
   type BriefCandidate,
   type SynthesisResult,
-} from "../src/modules/retrieval/synthesis";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import { RETRIEVAL_SYNTHESIS_TASK, SYNTHESIS_TOTAL_TEXT_MAX_CHARS } from "../src/modules/retrieval/synthesisProvider/config";
-import { buildSynthesisPrompt, parseSynthesis } from "../src/modules/retrieval/synthesisProvider/prompt";
-import { ProviderSynthesizer } from "../src/modules/retrieval/synthesisProvider/providerSynthesizer";
-import type { RevalidatedObject, ScoredCandidate } from "../src/modules/retrieval/types";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
+} from "../src/modules/retrieval/synthesis.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { RETRIEVAL_SYNTHESIS_TASK, SYNTHESIS_TOTAL_TEXT_MAX_CHARS } from "../src/modules/retrieval/synthesisProvider/config.js";
+import { buildSynthesisPrompt, parseSynthesis } from "../src/modules/retrieval/synthesisProvider/prompt.js";
+import { ProviderSynthesizer } from "../src/modules/retrieval/synthesisProvider/providerSynthesizer.js";
+import type { RevalidatedObject, ScoredCandidate } from "../src/modules/retrieval/types.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 
 const NOW = Date.parse("2026-06-23T00:00:00.000Z");
 

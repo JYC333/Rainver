@@ -1,8 +1,8 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   accessibleProjectIds as accessibleProjectIdsFromProjects,
   canReadProject,
-} from "../projects/access";
+} from "../projects/access.js";
 
 /**
  * Project-level access gate for memory reads.

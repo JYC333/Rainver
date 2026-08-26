@@ -1,6 +1,6 @@
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { HttpError, objectValue } from "../routeUtils/common";
-import { WorkflowExecutionService } from "./workflowExecutionService";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError, objectValue } from "../routeUtils/common.js";
+import { WorkflowExecutionService } from "./workflowExecutionService.js";
 
 export function registerWorkflowExecutionProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("workflow_execution_checkpoint", applyWorkflowExecutionCheckpoint);

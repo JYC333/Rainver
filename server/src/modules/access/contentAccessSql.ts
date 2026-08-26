@@ -1,11 +1,11 @@
-import { projectFolderReadAccessSql } from "../projectFolders/access";
-import type { ContentProjectShareDeclaration } from "../ontology/entities";
-import type { ContentResourceDefinition } from "./contentAccessRegistry";
-import { contentResourceDefinition } from "./contentAccessRegistry";
+import { projectFolderReadAccessSql } from "../projectFolders/access.js";
+import type { ContentProjectShareDeclaration } from "../ontology/entities.js";
+import type { ContentResourceDefinition } from "./contentAccessRegistry.js";
+import { contentResourceDefinition } from "./contentAccessRegistry.js";
 import {
   isContentVisibility,
   type ContentVisibility,
-} from "./contentAccessTypes";
+} from "./contentAccessTypes.js";
 
 export interface ContentAccessSqlOptions {
   /**

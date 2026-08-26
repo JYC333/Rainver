@@ -1,5 +1,5 @@
-import type { StructuredOutputContract } from "../projectResearch/outputSchemas";
-import { domainKeys, isKnownDomain } from "./domainSkeleton";
+import type { StructuredOutputContract } from "../projectResearch/outputSchemas.js";
+import { domainKeys, isKnownDomain } from "./domainSkeleton.js";
 import {
   ANNOTATION_DEPTHS,
   ANNOTATION_GENRES,
@@ -9,7 +9,7 @@ import {
   isAnnotationGenre,
   type AnnotationDepth,
   type AnnotationGenre,
-} from "./vocabulary";
+} from "./vocabulary.js";
 
 export const SOURCE_ANNOTATION_SCHEMA_ID = "source_annotation.result.v2";
 

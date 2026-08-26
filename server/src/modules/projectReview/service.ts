@@ -1,6 +1,6 @@
-import { type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common";
-import { InquirySignalService } from "../inquiry/signalService";
-import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candidateService";
+import { type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
+import { InquirySignalService } from "../inquiry/signalService.js";
+import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candidateService.js";
 
 /**
  * Composes one bounded human checkpoint without taking ownership of either

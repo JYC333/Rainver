@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql";
-import { projectFolderReadAccessSql } from "../projectFolders/access";
-import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository";
+import * as protocol from "@agent-space/protocol";
+import type { Pool } from "../../db/pool.js";
+import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@agent-space/protocol";
+import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access.js";
+import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { projectFolderReadAccessSql } from "../projectFolders/access.js";
+import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository.js";
 
 interface SetupRow { [key: string]: unknown; id: string; space_id: string; work_context_scope_id: string; scope_kind: string; version: number; user_id: string; project_id: string | null; project_folder_id: string | null; agent_id: string | null; runtime_ref_json: unknown; pinned_refs_json: unknown; excluded_refs_json: unknown; retrieval_preferences_json: unknown; continuity_preferences_json: unknown; project_brief_version_id: string | null; project_instruction_version_id: string | null; project_instruction_enabled: boolean; governing_policy_refs_json: unknown; setup_fingerprint: string; base_version: number | null; typed_diff_json: unknown; reason: string; policy_decision_record_id: string; created_by_user_id: string; created_at: unknown; }
 
@@ -117,7 +117,7 @@ export class WorkContextService {
   }
 
   async create(identity: SpaceUserIdentity, raw: unknown): Promise<Record<string, unknown>> {
-    const parsed = (await loadProtocol()).WorkContextSetupWriteRequestSchema.safeParse(raw);
+    const parsed = protocol.WorkContextSetupWriteRequestSchema.safeParse(raw);
     if (!parsed.success) throw new HttpError(422, "Invalid Work Context Setup: only typed object references and preferences are accepted");
     const requested = parsed.data;
     const scopeBindings = await resolveWorkContextScopeBindings(this.db, identity, requested.scope_kind, requested.work_context_scope_id);

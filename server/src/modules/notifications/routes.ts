@@ -6,8 +6,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { dispatchWebhookRoute, notificationWebhookPolicy } from "./service";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { dispatchWebhookRoute, notificationWebhookPolicy } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/server/notifications/webhooks/policy", async () =>

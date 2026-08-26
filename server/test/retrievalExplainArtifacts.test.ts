@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   persistRetrievalExplainReportArtifact,
   RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE,
-} from "../src/modules/retrieval/artifacts/explain";
-import type { Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/retrieval/artifacts/explain.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 interface CapturedQuery {
   sql: string;

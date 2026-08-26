@@ -1,6 +1,6 @@
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { runOutputResult } from "../runs/orchestrationResults";
+import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
 
 const MAX_BINDING_CHARS = 12_000;
 

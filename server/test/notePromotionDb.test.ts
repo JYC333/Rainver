@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { PgProposalApplyService } from "../src/modules/proposals/applyService";
-import { loadConfig } from "../src/config";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { loadConfig } from "../src/config.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 // ND: promoting a passage produces a knowledge item whose provenance records
 // the originating Note, and the Note is unchanged. "This knowledge came from
@@ -17,7 +17,13 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

@@ -4,7 +4,7 @@ import type {
   SourceRecipePrimitiveDefinitionDTO,
   SourceRecipePrimitiveName,
   SourceRecipeStep,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 /**
  * Fixed, server-owned catalog of Level 2 Source recipe primitives. The

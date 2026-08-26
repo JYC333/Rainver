@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const networkProfilesModule: ServerModule = {
   name: "networkProfiles",
@@ -10,11 +10,11 @@ export {
   resolveNetworkProfileRepository,
   type NetworkProfileCreateInput,
   type NetworkProfileUpdateInput,
-} from "./repository";
+} from "./repository.js";
 export {
   envForNetworkProfile,
   fetchWithNetworkProfile,
   shouldBypassProxy,
   validateNetworkProfileInput,
   type ResolvedNetworkProfile,
-} from "./transport";
+} from "./transport.js";

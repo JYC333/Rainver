@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import type { ServerConfig } from "../src/config";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository";
-import { EvaluationHarnessService } from "../src/modules/evolution/evaluationHarnessService";
-import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier";
-import { registerEvaluationHarnessHandler } from "../src/modules/evolution/evaluationJob";
-import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry";
-import { JobWorker } from "../src/modules/jobs/worker";
-import { PgJobQueueRepository } from "../src/modules/jobs/repository";
-import { PgRunRepository } from "../src/modules/runs/repository";
-import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import type { ServerConfig } from "../src/config.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository.js";
+import { EvaluationHarnessService } from "../src/modules/evolution/evaluationHarnessService.js";
+import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier.js";
+import { registerEvaluationHarnessHandler } from "../src/modules/evolution/evaluationJob.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { JobWorker } from "../src/modules/jobs/worker.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -22,7 +22,7 @@ const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const AGENT_VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;

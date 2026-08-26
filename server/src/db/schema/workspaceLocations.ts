@@ -1,8 +1,8 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hosts } from "./hosts";
-import { projectFolders } from "./projectFolders";
-import { spaces } from "./spaces";
+import { hosts } from "./hosts.js";
+import { projectFolders } from "./projectFolders.js";
+import { spaces } from "./spaces.js";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D2: one

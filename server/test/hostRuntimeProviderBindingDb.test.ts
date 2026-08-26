@@ -1,40 +1,40 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { resolveProvidersDbPort } from "../src/modules/providers/dbReader";
-import { PgHostRuntimeProviderBindingRepository } from "../src/modules/hosts/runtimeProviderBindingRepository";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { resolveProvidersDbPort } from "../src/modules/providers/dbReader.js";
+import { PgHostRuntimeProviderBindingRepository } from "../src/modules/hosts/runtimeProviderBindingRepository.js";
 import {
   resolveHostProviderBinding,
   assertProviderUsable,
   type ProviderLookupPort,
-} from "../src/modules/hosts/runtimeProviderBindingResolution";
-import { HttpError } from "../src/modules/routeUtils/common";
-import { advanceThreadQueue } from "../src/modules/hosts/queueAdvance";
-import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository";
-import { PgTaskRepository } from "../src/modules/tasks/repository";
-import { runToOut } from "../src/modules/runs/runReadModel";
-import type { RunRecord } from "../src/modules/runs/repository";
-import { resolveRunRemoteness } from "../src/modules/runs/runRemoteness";
-import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots";
-import { hostProviderProxyBaseUrl } from "../src/modules/runs/hostProviderProxyAddress";
+} from "../src/modules/hosts/runtimeProviderBindingResolution.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
+import { advanceThreadQueue } from "../src/modules/hosts/queueAdvance.js";
+import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { runToOut } from "../src/modules/runs/runReadModel.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import { resolveRunRemoteness } from "../src/modules/runs/runRemoteness.js";
+import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots.js";
+import { hostProviderProxyBaseUrl } from "../src/modules/runs/hostProviderProxyAddress.js";
 import {
   buildRemoteProviderBinding,
   resolveRemoteRunBinding,
   RemoteProviderBindingError,
   recordRemoteRunBackend,
   PROFILE_ROOT_PLACEHOLDER,
-} from "../src/modules/runs/remoteProviderBinding";
-import { codexModelCatalog } from "../src/modules/runs/codexProviderConfig";
+} from "../src/modules/runs/remoteProviderBinding.js";
+import { codexModelCatalog } from "../src/modules/runs/codexProviderConfig.js";
 import {
   ProviderProxyLeaseRegistry,
   setProviderProxyBaseUrlForProcess,
-} from "../src/modules/providers/proxy/lease";
-import { buildModuleServer } from "./support/moduleServer";
-import { hostsModule } from "../src/modules/hosts";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
+} from "../src/modules/providers/proxy/lease.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { hostsModule } from "../src/modules/hosts/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 // Real-Postgres coverage for which model backend the control plane picks for a
 // host's runtime adapter, and what it refuses. Precedence and validation are
@@ -60,7 +60,13 @@ let app: FastifyInstance | undefined;
 /** Which user the next HTTP request authenticates as. */
 let actingUser = OWNER;
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;
@@ -139,7 +145,7 @@ function providerPort(): ProviderLookupPort {
 
 async function resolve(input: {
   adapterType?: string;
-  override?: { model_provider_id?: unknown; model?: string | null };
+  override?: { model_provider_id?: unknown; model?: string | null; reasoning_effort?: string | null };
   overrideProvided?: boolean;
   modelOverrideProvided?: boolean;
   spaceId?: string;
@@ -177,7 +183,7 @@ const BINDINGS = `/api/v1/hosts/${HOST}/runtime-provider-bindings`;
 describe("host runtime provider binding", () => {
   it("defaults to ambient login when the host has no binding", async () => {
     if (!db.available) return;
-    await expect(resolve({})).resolves.toEqual({ provider_id: null, model: null });
+    await expect(resolve({})).resolves.toEqual({ provider_id: null, model: null, reasoning_effort: null });
   });
 
   it("resolves the host default for the adapter, and only that adapter", async () => {
@@ -193,9 +199,10 @@ describe("host runtime provider binding", () => {
     await expect(resolve({ adapterType: "claude_code" })).resolves.toEqual({
       provider_id: CLAUDE_PROVIDER,
       model: "MiniMax-M2",
+      reasoning_effort: null,
     });
     // A binding is per adapter: codex on the same host is untouched.
-    await expect(resolve({ adapterType: "codex_cli" })).resolves.toEqual({ provider_id: null, model: null });
+    await expect(resolve({ adapterType: "codex_cli" })).resolves.toEqual({ provider_id: null, model: null, reasoning_effort: null });
   });
 
   it("lets a dispatch override the host default, including back to ambient login", async () => {
@@ -213,13 +220,13 @@ describe("host runtime provider binding", () => {
     await expect(resolve({
       override: { model_provider_id: null },
       overrideProvided: true,
-    })).resolves.toEqual({ provider_id: null, model: null });
+    })).resolves.toEqual({ provider_id: null, model: null, reasoning_effort: null });
 
     // And an explicit model narrows the same provider for one dispatch.
     await expect(resolve({
       override: { model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1" },
       overrideProvided: true,
-    })).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1" });
+    })).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1", reasoning_effort: null });
   });
 
   it("refuses a provider that cannot serve the adapter's protocol", async () => {
@@ -236,7 +243,7 @@ describe("host runtime provider binding", () => {
       adapterType: "codex_cli",
       override: { model_provider_id: OPENAI_PROVIDER },
       overrideProvided: true,
-    })).resolves.toEqual({ provider_id: OPENAI_PROVIDER, model: null });
+    })).resolves.toEqual({ provider_id: OPENAI_PROVIDER, model: null, reasoning_effort: null });
   });
 
   it("refuses a provider whose Space grant has been disabled", async () => {
@@ -293,7 +300,16 @@ describe("host runtime provider binding", () => {
     await expect(resolve({
       override: { model: "MiniMax-M2.1" },
       modelOverrideProvided: true,
-    })).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1" });
+    })).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1", reasoning_effort: null });
+  });
+
+  it("carries a dispatch's reasoning_effort through with the provider it overrides", async () => {
+    if (!db.available) return;
+    await expect(resolve({
+      override: { model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1", reasoning_effort: "high" },
+      overrideProvided: true,
+      modelOverrideProvided: true,
+    })).resolves.toEqual({ provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2.1", reasoning_effort: "high" });
   });
 
   it("refuses a provider that is not reachable from the dispatching Space", async () => {
@@ -324,7 +340,7 @@ describe("host runtime provider binding", () => {
     // With no binding there is nothing to validate, so the same outage does
     // not block an ambient-login dispatch.
     await repo().clear(HOST, "claude_code");
-    await expect(resolve({ providers: null })).resolves.toEqual({ provider_id: null, model: null });
+    await expect(resolve({ providers: null })).resolves.toEqual({ provider_id: null, model: null, reasoning_effort: null });
   });
 
   it("rejects an adapter that has no provider binding shape at all", async () => {

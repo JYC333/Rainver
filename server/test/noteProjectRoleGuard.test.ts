@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { listTsFiles } from "./support/sourceFiles.js";
+import { NOTE_PROJECT_ROLE_VALUES } from "@agent-space/protocol";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
   NOTE_PROJECT_ROLES,
   NOTE_PROJECT_ROLE_DEFAULT_TITLES,
-} from "../src/modules/knowledge/noteProjectRoles";
+} from "../src/modules/knowledge/noteProjectRoles.js";
 
 /**
  * The guardrail the plan asks for: nothing may resolve a project's baseline
@@ -19,16 +21,7 @@ import {
  * behaviour test only covers the call path someone remembered to write one for.
  */
 
-const srcDir = join(__dirname, "..", "src");
-
-function tsFiles(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) return tsFiles(full);
-    return entry.name.endsWith(".ts") ? [full] : [];
-  });
-}
+const srcDir = join(import.meta.dirname, "..", "src");
 
 const AREA_SERVICE = join("src", "modules", "projectResearch", "areaService.ts");
 
@@ -68,8 +61,8 @@ describe("project note role guardrail", () => {
   it("resolves no project note by its title outside the one-shot adoption", () => {
     const titles = Object.values(NOTE_PROJECT_ROLE_DEFAULT_TITLES);
     const offenders: string[] = [];
-    for (const file of tsFiles(srcDir)) {
-      const relative = file.slice(join(__dirname, "..").length + 1);
+    for (const file of listTsFiles(srcDir)) {
+      const relative = file.slice(join(import.meta.dirname, "..").length + 1);
       if (relative === DEFINITION_SITE) continue;
       let source = withoutComments(readFileSync(file, "utf8"));
       if (relative === AREA_SERVICE) source = withoutMethods(source, ALLOWED_TITLE_METHODS);
@@ -89,8 +82,8 @@ describe("project note role guardrail", () => {
     // `primary_project_id`. That pairing — a project-scoped note query keyed on
     // title — is the defect, whether or not a literal is visible.
     const offenders: string[] = [];
-    for (const file of tsFiles(srcDir)) {
-      const relative = file.slice(join(__dirname, "..").length + 1);
+    for (const file of listTsFiles(srcDir)) {
+      const relative = file.slice(join(import.meta.dirname, "..").length + 1);
       let source = withoutComments(readFileSync(file, "utf8"));
       if (relative === AREA_SERVICE) source = withoutMethods(source, ALLOWED_TITLE_METHODS);
       for (const statement of source.split(/`/)) {
@@ -112,11 +105,11 @@ describe("project note role guardrail", () => {
   });
 
   it("keeps the server registry and the shared protocol vocabulary identical", async () => {
-    // The server list is a deliberate copy (CJS/ESM, synchronous validation on
-    // the write path). A copy without a check is how gap 3 happened — the
-    // editor's target-kind list drifted from the backend's accepted set with
-    // nothing to notice. This is that check.
-    const { NOTE_PROJECT_ROLE_VALUES } = await import("@agent-space/protocol");
+    // The server list is a deliberate copy: the server registry is the
+    // authority and the protocol package carries the client-facing vocabulary.
+    // A copy without a check is how gap 3 happened — the editor's target-kind
+    // list drifted from the backend's accepted set with nothing to notice.
+    // This is that check.
     expect([...NOTE_PROJECT_ROLES]).toEqual([...NOTE_PROJECT_ROLE_VALUES]);
   });
 

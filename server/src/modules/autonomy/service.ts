@@ -1,28 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import type { AutomationRow } from "../automations/repository";
-import { PgAutomationRepository } from "../automations/repository";
-import { automationBudgetSource, automationContract } from "../automations/targetSupport";
-import { PgJobQueueRepository } from "../jobs/repository";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import type { AutomationRow } from "../automations/repository.js";
+import { PgAutomationRepository } from "../automations/repository.js";
+import { automationBudgetSource, automationContract } from "../automations/targetSupport.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   assertBudgetSourcesAvailable,
   RunBudgetExceededError,
   RunBudgetSourceReferenceError,
-} from "../runs/budgetEnforcement";
+} from "../runs/budgetEnforcement.js";
 import {
   admitAutonomousRun,
   type AutonomousAdmissionDecision,
   type AutonomousAdmissionPolicy,
   type AutonomousQuotaSnapshot,
-} from "../runs/autonomousAdmission";
-import { PgRunRepository } from "../runs/repository";
-import { canReadProject } from "../projects/access";
-import { settleAutonomyCoordinator } from "./finalizationReconciler";
+} from "../runs/autonomousAdmission.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { canReadProject } from "../projects/access.js";
+import { settleAutonomyCoordinator } from "./finalizationReconciler.js";
 import {
   autonomyDiscovererRegistry,
   type AutonomyCandidateKind,
   type DiscoveredAutonomyCandidate,
-} from "./registry";
+} from "./registry.js";
 
 export interface ObserveAutonomyTickInput {
   spaceId: string;

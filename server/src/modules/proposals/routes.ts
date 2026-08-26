@@ -1,17 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { PgProposalRepository, type ProposalListFilters } from "./repository";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { PgProposalRepository, type ProposalListFilters } from "./repository.js";
 import {
   PgProposalApplyService,
   ProposalApplyHttpError,
-} from "./applyService";
+} from "./applyService.js";
 import type {
   ProposalOut,
   ProposalPage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 interface ProposalServices {
   repository: Pick<PgProposalRepository, "listVisible" | "getVisible">;

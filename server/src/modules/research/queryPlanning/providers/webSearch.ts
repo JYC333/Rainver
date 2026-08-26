@@ -1,5 +1,5 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared";
+import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared.js";
 
 // core concepts are space-joined (AND-like), but expansions get their own
 // `(a OR b OR c)` group — a genuine OR, unlike openalex/semantic_scholar's

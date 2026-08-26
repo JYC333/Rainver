@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, optionalString } from "../routeUtils/common";
-import { PgAgentRepository } from "../agents/repository";
-import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, optionalString } from "../routeUtils/common.js";
+import { PgAgentRepository } from "../agents/repository.js";
+import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities.js";
 
 const RESEARCH_AGENT_KIND = "system_research";
 const RESEARCH_AGENT_NAME = "Auto Research";

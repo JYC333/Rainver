@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { normalizeReaderText } from "../reader/repository";
+import { normalizeReaderText } from "../reader/repository.js";
 
 type Node = { type: string; attrs?: Record<string, unknown>; content?: Node[]; text?: string };
 

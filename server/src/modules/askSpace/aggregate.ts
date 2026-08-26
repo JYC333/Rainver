@@ -4,7 +4,7 @@ import type {
   AskSpaceFollowUp,
   AskSpaceGapSummary,
   AskSpaceProvenanceItem,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export const DEFAULT_DOMAINS: AskSpaceDomain[] = ["knowledge"];
 

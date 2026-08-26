@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { getRuntimeAdapterSpec } from "../runtimeAdapters";
+import type { Queryable } from "../routeUtils/common.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 interface RemotenessInput {
   id: string;

@@ -1,22 +1,22 @@
 import { createHash } from "node:crypto";
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { Queryable } from "@agent-space/protocol";
 import type {
   DatedEntry,
   LedgerEntry,
   LedgerError,
   PostingEntry,
   TransactionEntry,
-} from "../beancount/entries";
-import { isDatedEntry } from "../beancount/entries";
-import { financeLedgerEngine } from "../beancount/engine";
-import { parseBeancountText } from "../beancount/importer";
-import { sortEntries } from "../beancount/sort";
-import { interpolateEntries, transformEntries, validateEntries } from "../beancount/validation";
-import { rootTypeForAccountName } from "./accountName";
-import type { DirectiveStatus, FinanceAccountRow, FinanceCommodityRow } from "./directives";
-import { financeDirectiveRepository, type FinanceExportRow } from "./directiveRepository";
-import { Cost, CostSpec } from "./position";
-import { financeLedgerRepository, type InsertPostingRecord } from "./repository";
+} from "../beancount/entries.js";
+import { isDatedEntry } from "../beancount/entries.js";
+import { financeLedgerEngine } from "../beancount/engine.js";
+import { parseBeancountText } from "../beancount/importer.js";
+import { sortEntries } from "../beancount/sort.js";
+import { interpolateEntries, transformEntries, validateEntries } from "../beancount/validation.js";
+import { rootTypeForAccountName } from "./accountName.js";
+import type { DirectiveStatus, FinanceAccountRow, FinanceCommodityRow } from "./directives.js";
+import { financeDirectiveRepository, type FinanceExportRow } from "./directiveRepository.js";
+import { Cost, CostSpec } from "./position.js";
+import { financeLedgerRepository, type InsertPostingRecord } from "./repository.js";
 
 export interface ImportBeancountInput {
   text: string;

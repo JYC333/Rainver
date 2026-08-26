@@ -1,9 +1,9 @@
-import { COHERE_PRESETS } from "./cohere";
-import { MINIMAX_PRESETS } from "./minimax";
-import { OLLAMA_PRESETS } from "./ollama";
-import { OPENAI_PRESETS } from "./openai";
-import { ZEROENTROPY_PRESETS } from "./zeroentropy";
-import type { ProviderPreset } from "./types";
+import { COHERE_PRESETS } from "./cohere.js";
+import { MINIMAX_PRESETS } from "./minimax.js";
+import { OLLAMA_PRESETS } from "./ollama.js";
+import { OPENAI_PRESETS } from "./openai.js";
+import { ZEROENTROPY_PRESETS } from "./zeroentropy.js";
+import type { ProviderPreset } from "./types.js";
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   ...OPENAI_PRESETS,
@@ -22,5 +22,5 @@ export function providerPresetById(id: string): ProviderPreset | null {
   return preset ? { ...preset } : null;
 }
 
-export type { ProviderPreset, ProviderPresetMode } from "./types";
+export type { ProviderPreset, ProviderPresetMode } from "./types.js";
 

@@ -1,8 +1,8 @@
 import {
   HttpError,
   type Queryable,
-} from "../routeUtils/common";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
+} from "../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 
 export async function assertProjectInSpace(
   db: Queryable,

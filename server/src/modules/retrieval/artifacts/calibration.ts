@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type {
   RetrievalCalibrationDecisionRequest,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter";
+} from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityFilterSql,
-} from "../../access/contentAccessSql";
+} from "../../access/contentAccessSql.js";
 
 export const RETRIEVAL_CALIBRATION_DECISION_ARTIFACT_TYPE = "retrieval_calibration_decision";
 

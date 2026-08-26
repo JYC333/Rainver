@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common";
-import { consumeConnectionQuota } from "./sourceQuotaBucket";
-import { nextBackfillRetryAt } from "./sourceBackfillRetry";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
+import { consumeConnectionQuota } from "./sourceQuotaBucket.js";
+import { nextBackfillRetryAt } from "./sourceBackfillRetry.js";
 
 interface PlanRow {
   status: string;

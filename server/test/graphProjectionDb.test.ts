@@ -1,20 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as protocol from "@agent-space/protocol";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import * as poolModule from "../src/db/pool";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { graphModule } from "../src/modules/graph";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
-import { GraphProjectionBuilder } from "../src/modules/graph/projectionBuilder";
-import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import * as poolModule from "../src/db/pool.js";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { graphModule } from "../src/modules/graph/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { GraphProjectionBuilder } from "../src/modules/graph/projectionBuilder.js";
+import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -276,7 +282,6 @@ describe("Graph routes", () => {
         url: `/api/v1/graph/projection?mode=local&root_id=${ids.alpha}&depth=1&limit=10`,
       });
       expect(projectionResponse.statusCode).toBe(200);
-      const protocol = await loadProtocol();
       const parsedProjection = protocol.GraphProjectionSchema.parse(projectionResponse.json());
       expect(parsedProjection.nodes).toHaveLength(2);
 

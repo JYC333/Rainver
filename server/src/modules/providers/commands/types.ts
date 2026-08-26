@@ -1,5 +1,5 @@
-import type { ProviderFailureClass } from "../invocation/resilience";
-import type { UsageAttribution, UsageObservation } from "../../usage";
+import type { ProviderFailureClass } from "../invocation/resilience.js";
+import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
 
 export type RotationStrategy = "fill_first" | "round_robin" | "least_used" | "random";
 
@@ -83,7 +83,7 @@ export interface PoolKeyCandidate {
 
 export interface InvocationTarget {
   provider: ProviderInfo;
-  network_profile: import("../../networkProfiles").ResolvedNetworkProfile | null;
+  network_profile: import("../../networkProfiles/index.js").ResolvedNetworkProfile | null;
   rotation_strategy: RotationStrategy;
   fallback_provider_ids: string[];
   candidates: PoolKeyCandidate[];

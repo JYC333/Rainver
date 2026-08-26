@@ -4,15 +4,15 @@ import type {
   RunAdapterResultEnvelope,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadConfig } from "../src/config";
+} from "@agent-space/protocol";
+import { loadConfig } from "../src/config.js";
 import {
   DEFAULT_MAX_MODEL_TURNS,
   executeManagedToolLoop,
   mergeManagedToolContributions,
   type ManagedToolContribution,
-} from "../src/modules/runs/managedToolLoop";
-import { managedToolDegradation } from "../src/modules/runs/orchestrationResults";
+} from "../src/modules/runs/managedToolLoop.js";
+import { managedToolDegradation } from "../src/modules/runs/orchestrationResults.js";
 
 const config = loadConfig({});
 

@@ -2,19 +2,19 @@ import type {
   MaterializeResearchQueryStrategyResponse,
   ResearchCompiledQuery,
   ResearchProviderKey,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { assertProjectWriter } from "../../projects/access";
-import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { assertProjectWriter } from "../../projects/access.js";
+import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService.js";
 import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
   withQueryableTransaction,
-} from "../../routeUtils/common";
-import { SourceChannelService } from "../../sources/channels/sourceChannelService";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { ResearchStrategyActivationService, type ResearchStrategyActivationReason } from "./strategyActivationService";
+} from "../../routeUtils/common.js";
+import { SourceChannelService } from "../../sources/channels/sourceChannelService.js";
+import { ResearchStrategyActivationService, type ResearchStrategyActivationReason } from "./strategyActivationService.js";
 
 interface SelectedAttemptRow {
   provider_key: string;
@@ -45,7 +45,6 @@ export class ResearchMonitorMaterializer {
   ): Promise<MaterializeResearchQueryStrategyResponse> {
     const requested = [...new Set(input.providerKeys)];
     if (requested.length === 0) throw new HttpError(422, "At least one provider must be materialized");
-    const protocol = await loadProtocol();
     return withQueryableTransaction(this.db, async (tx) => {
       const strategy = await tx.query<{ project_id: string; status: string }>(
         `SELECT project_id,status

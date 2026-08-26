@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { retrievalSettingsRow } from "./support/routeFakes.js";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { loadConfig } from "../src/config";
-import {
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
-import { RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
+import { RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/explain.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 
@@ -66,27 +64,6 @@ function adminAuth(): AuthRepository {
   };
 }
 
-function settingsRow() {
-  return {
-    settings_json: {
-      default_search_mode: "hybrid",
-      rerank_enabled: false,
-      query_rewrite_enabled: false,
-      query_rewrite_default: false,
-      use_query_cache: true,
-      include_trace: false,
-      external_egress_enabled: true,
-      retrieval_tool_mode: "off",
-      context_ops_review_mode: "private_only",
-      context_ops_scan_mode: "admins",
-      embedding_dimensions: 2560,
-      max_results_default: 10,
-    },
-    created_at: "2026-06-12T10:00:00.000Z",
-    updated_at: "2026-06-12T10:00:00.000Z",
-  };
-}
-
 describe("Knowledge retrieval explain route", () => {
   it("returns and persists a safe explain report for an admin-visible Knowledge target", async () => {
     __setAuthRepositoryForTests(adminAuth());
@@ -94,7 +71,7 @@ describe("Knowledge retrieval explain route", () => {
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
         calls.push({ sql, params });
-        if (/FROM settings/.test(sql)) return { rows: [settingsRow()], rowCount: 1 };
+        if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
         if (/FROM retrieval_objects ro/.test(sql) && /ro.object_type = \$2/.test(sql)) {
           return {
             rows: [

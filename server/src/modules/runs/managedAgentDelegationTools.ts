@@ -3,17 +3,17 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
 import {
   AgentGroupRunService,
   type AgentGroupIdentity,
   type SpawnChildRunInput,
-} from "../agentGroups/service";
-import { PgAgentGroupRepository } from "../agentGroups/repository";
-import { PgRunRepository, type RunRecord } from "./repository";
+} from "../agentGroups/service.js";
+import { PgAgentGroupRepository } from "../agentGroups/repository.js";
+import { PgRunRepository, type RunRecord } from "./repository.js";
 
 const AGENT_DELEGATE_TOOL = "agent.delegate";
 const AGENT_WAIT_FOR_RESULTS_TOOL = "agent.wait_for_results";
@@ -52,7 +52,6 @@ export async function resolveAgentDelegationToolBinding(
   };
   const targets = deps.targets ?? await loadDelegationTargets(config, run, pool());
   const service = deps.service ?? new AgentGroupRunService(config, pool());
-  const protocol = await loadProtocol();
   return {
     targets,
     service,
@@ -136,7 +135,7 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
 
 function agentWaitForResultsToolDefinition(
   targets: readonly AgentDelegationTarget[],
-  protocol: Awaited<ReturnType<typeof loadProtocol>>,
+  protocol: typeof import("@agent-space/protocol"),
 ): CanonicalToolDefinition {
   const generatedInputSchema = protocol.systemActionInputJsonSchema({ input_schema: protocol.AgentWaitForResultsInputSchema });
   const generatedProperties = (generatedInputSchema.properties ?? {}) as Record<string, Record<string, unknown>>;
@@ -446,7 +445,7 @@ async function parseAgentWaitArguments(argumentsJson: string): Promise<{
   } catch {
     throw new Error("Tool arguments must be valid JSON.");
   }
-  const parsed = (await loadProtocol()).AgentWaitForResultsInputSchema.safeParse(raw);
+  const parsed = protocol.AgentWaitForResultsInputSchema.safeParse(raw);
   if (!parsed.success) throw new Error(parsed.error.message);
   const record = parsed.data;
   const rawScope = record.scope;

@@ -1,11 +1,11 @@
-import type { mapProviderRowToDto } from "../dbReader";
-import { listProviderVendors, providerVendor } from "../vendors";
+import type { mapProviderRowToDto } from "../dbReader.js";
+import { listProviderVendors, providerVendor } from "../vendors.js";
 import {
   ProviderCommandValidationError,
   type ModelProviderCreateInput,
   type ProviderInfo,
   type RotationStrategy,
-} from "./types";
+} from "./types.js";
 
 /**
  * Vendor identity, credentialing, and published endpoints all come from the

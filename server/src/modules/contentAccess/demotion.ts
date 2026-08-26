@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
+import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
 

@@ -1,4 +1,4 @@
-import { HttpError, objectValue } from "../routeUtils/common";
+import { HttpError, objectValue } from "../routeUtils/common.js";
 
 /**
  * Research execution is intentionally narrower than the general runtime API.

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common";
+import type { RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 interface DeliveryAuthorizationRow {
   delivery_metadata_json: unknown;

@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { checkInternalToken } from "../../gateway/internalAuth";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { executeRuntimeHost } from "./service";
-import { getDbPool } from "../../db/pool";
-import type { RuntimeHostExecuteRequest } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "./deliveryAuthorizer";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { checkInternalToken } from "../../gateway/internalAuth.js";
+import { executeRuntimeHost } from "./service.js";
+import { getDbPool } from "../../db/pool.js";
+import type { RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "./deliveryAuthorizer.js";
 
 let deliveryAuthorizerOverride: ((input: RuntimeHostExecuteRequest) => Promise<void>) | null = null;
 
@@ -34,7 +34,6 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
 }
 
 async function parseWith<T>(schemaName: string, value: unknown): Promise<T> {
-  const protocol = await loadProtocol();
   const schema = (protocol as unknown as Record<string, { parse(v: unknown): T }>)[schemaName];
   return schema.parse(value);
 }
@@ -51,7 +50,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       );
       await assertRuntimeHostDelivery(context, body);
       const response = await executeRuntimeHost(context.config, body, request.log);
-      const protocol = await loadProtocol();
       return reply.send(protocol.RuntimeHostExecuteResponseSchema.parse(response));
     } catch (error) {
       return sendDomainError(reply, error);

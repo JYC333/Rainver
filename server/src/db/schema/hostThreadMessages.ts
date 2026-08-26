@@ -1,9 +1,9 @@
 import { pgTable, index, check, foreignKey, varchar, text, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hostTaskThreads } from "./hostTaskThreads";
-import { modelProviders } from "./providers";
-import { runs } from "./runs";
-import { tasks } from "./tasks";
+import { hostTaskThreads } from "./hostTaskThreads.js";
+import { modelProviders } from "./providers.js";
+import { runs } from "./runs.js";
+import { tasks } from "./tasks.js";
 
 /**
  * control-center-phase2-plan.md P2 (C4): the durable record of every

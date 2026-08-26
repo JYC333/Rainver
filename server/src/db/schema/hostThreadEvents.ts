@@ -1,8 +1,8 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hostTaskThreads } from "./hostTaskThreads";
-import { runs } from "./runs";
-import { projects } from "./projects";
+import { hostTaskThreads } from "./hostTaskThreads.js";
+import { runs } from "./runs.js";
+import { projects } from "./projects.js";
 
 /**
  * control-center-phase2-plan.md P1 (C2): the normalized conversation event

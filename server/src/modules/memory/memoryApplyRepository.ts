@@ -22,17 +22,17 @@ import {
   writeProvenanceLinks,
   TARGET_MEMORY,
   type Queryable,
-} from "./memoryApplyProvenance";
+} from "./memoryApplyProvenance.js";
 import {
   evaluateMemoryProposal,
   monitoringSnapshot,
   provenanceEntriesFromPayload,
   type ProvenanceEntry,
-} from "./sourceMonitoring";
-import { RetrievalProjectionService } from "../retrieval";
-import { memoryRetrievalRegistry } from "./retrievalAdapter";
-import { assertProjectInSpace } from "../projects/access";
-import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes";
+} from "./sourceMonitoring.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { memoryRetrievalRegistry } from "./retrievalAdapter.js";
+import { assertProjectInSpace } from "../projects/access.js";
+import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
 
 // The memory retrieval projection is a derived index. A projection failure must
 // not roll back an accepted canonical memory write, but the reindex runs inside

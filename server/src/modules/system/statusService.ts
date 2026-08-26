@@ -13,14 +13,14 @@
  * here yet rather than being reported as healthy on no evidence.
  */
 
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   getBackgroundServicesStatusSource,
   type BackgroundServicesStatusSource,
-} from "../scheduler/runtimeStatus";
-import type { ScheduledTaskStatus } from "../scheduler/registry";
+} from "../scheduler/runtimeStatus.js";
+import type { ScheduledTaskStatus } from "../scheduler/registry.js";
 
 export type ComponentStatus = "ok" | "degraded" | "error";
 

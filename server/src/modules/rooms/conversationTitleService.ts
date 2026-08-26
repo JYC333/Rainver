@@ -1,18 +1,18 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   providerSupportsTask,
   resolveProviderCommandStore,
   type ProviderCommandStore,
-} from "../providers/commands/store";
-import { completeProviderMessages } from "../providers/invocation/invocation";
+} from "../providers/commands/store.js";
+import { completeProviderMessages } from "../providers/invocation/invocation.js";
 import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
   type ProviderEligibilityRow,
-} from "../providers/eligibility";
+} from "../providers/eligibility.js";
 
 export const ROOM_CONVERSATION_TITLE_JOB = "room_conversation_title";
 export const ROOM_CONVERSATION_TITLE_TASK = "room_conversation_title";

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   __codePatchTestHooks,
   collectWorktreeChanges,
-} from "../src/modules/projectFolders/codePatch";
+} from "../src/modules/projectFolders/codePatch.js";
 
 const execFileAsync = promisify(execFile);
 const tmpRoots: string[] = [];

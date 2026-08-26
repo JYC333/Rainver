@@ -6,9 +6,9 @@ import type {
   RunInputEnvelope,
   RunOutputDeclaration,
   RunToolGrant,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { contractRecord } from "./contractSnapshot";
-import type { RunRecord } from "./repository";
+} from "@agent-space/protocol";
+import { contractRecord } from "./contractSnapshot.js";
+import type { RunRecord } from "./repository.js";
 
 export function assembleRunInputEnvelope(
   run: RunRecord,

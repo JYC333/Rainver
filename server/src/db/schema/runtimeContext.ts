@@ -15,13 +15,13 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { runs } from "./runs";
-import { policyDecisionRecords } from "./policy";
-import { spaces } from "./spaces";
-import { users } from "./auth";
-import { agentRuntimeProfiles, agents, cliCredentialProfiles } from "./agents";
-import { modelProviders } from "./providers";
-import { projects, projectBriefVersions, projectInstructionVersions } from "./projects";
+import { runs } from "./runs.js";
+import { policyDecisionRecords } from "./policy.js";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
+import { agentRuntimeProfiles, agents, cliCredentialProfiles } from "./agents.js";
+import { modelProviders } from "./providers.js";
+import { projects, projectBriefVersions, projectInstructionVersions } from "./projects.js";
 
 export const runtimeContextPolicyVersions = pgTable("runtime_context_policy_versions", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

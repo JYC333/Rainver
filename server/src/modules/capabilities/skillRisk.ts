@@ -1,4 +1,4 @@
-import type { NormalizedSkill, SkillRiskAnalysis, SkillRiskLevel } from "./types";
+import type { NormalizedSkill, SkillRiskAnalysis, SkillRiskLevel } from "./types.js";
 
 const HIGH_TOOL_RE = /\b(bash|shell|sh|zsh|fish|powershell|terminal|subprocess|exec|python|node|npm|pnpm|pip|uv|cargo|docker)\b/i;
 const NETWORK_RE = /\b(web|network|http|https|fetch|curl|wget|search|browser|url|rss)\b/i;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchPreviewObservation } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { AdaptiveQueryEvaluator } from "../src/modules/research/queryPlanning/adaptiveQueryEvaluator";
-import { researchQueryPolicy } from "../src/modules/research/queryPlanning/queryPolicy";
+import type { ResearchPreviewObservation } from "@agent-space/protocol";
+import { AdaptiveQueryEvaluator } from "../src/modules/research/queryPlanning/adaptiveQueryEvaluator.js";
+import { researchQueryPolicy } from "../src/modules/research/queryPlanning/queryPolicy.js";
 
 describe("AdaptiveQueryEvaluator", () => {
   const policy = researchQueryPolicy("openalex", 50);

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerTasksProjectIntegration } from "../src/modules/tasks/projectIntegration";
-import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration";
-import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry";
-import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry";
-import type { Queryable } from "../src/modules/routeUtils/common";
+import { registerTasksProjectIntegration } from "../src/modules/tasks/projectIntegration.js";
+import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration.js";
+import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 const identity = { spaceId: "space-1", userId: "user-1" };
 const projectId = "project-1";

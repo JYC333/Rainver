@@ -1,16 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  decryptModelProviderApiKeySecretRefV1,
-  decryptModelProviderOAuthSecretRefV1,
-  encryptModelProviderOAuthSecretRefV1,
-  MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES,
-  MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES,
-  MODEL_PROVIDER_API_KEY_NONCE_BYTES,
-  MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX,
-  MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX,
-  parseModelProviderApiKeySecretRefV1,
-  SecretRefCompatibilityError,
-} from "../src/modules/providers";
+import { decryptModelProviderApiKeySecretRefV1, decryptModelProviderOAuthSecretRefV1, encryptModelProviderOAuthSecretRefV1, MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES, MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES, MODEL_PROVIDER_API_KEY_NONCE_BYTES, MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX, MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX, parseModelProviderApiKeySecretRefV1, SecretRefCompatibilityError } from "../src/modules/providers/secretRefCrypto.js";
 
 const FIXTURE_MASTER_KEY = Buffer.from(
   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",

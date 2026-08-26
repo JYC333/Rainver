@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   backfillCanProceed,
   summarizeBackfillFailures,
-} from "../src/modules/projectResearch/backfillFailureDiagnostics";
+} from "../src/modules/projectResearch/backfillFailureDiagnostics.js";
 
 describe("Project Research backfill failure diagnostics", () => {
   it("presents provider retry evidence without copying query or endpoint data", () => {

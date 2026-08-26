@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
-import { InterestProfileService } from "../src/modules/interestProfile/service";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { InterestProfileService } from "../src/modules/interestProfile/service.js";
 import {
   PgInterestProfileRepository,
   NEW_TOPIC_OCCURRENCE_THRESHOLD,
   NEW_TOPIC_READ_THRESHOLD,
-} from "../src/modules/interestProfile/repository";
+} from "../src/modules/interestProfile/repository.js";
 
 // Real-Postgres coverage for the interest profile: coverage derives from what
 // the reader actually read, topic growth is controlled, the fact layer is
@@ -21,7 +21,7 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

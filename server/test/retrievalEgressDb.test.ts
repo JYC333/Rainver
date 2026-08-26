@@ -1,19 +1,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { RetrievalProjectionService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import {
   getOrCreateSpaceRetrievalSettings,
   readSpaceRetrievalSettings,
   updateSpaceRetrievalSettings,
-} from "../src/modules/retrieval/settings";
+} from "../src/modules/retrieval/settings.js";
 import {
   RetrievalEmbeddingBackfillService,
   type RetrievalEmbedder,
-} from "../src/modules/retrieval/embedding/service";
-import { EMBED_DIMENSIONS } from "../src/modules/retrieval/embedding/config";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+} from "../src/modules/retrieval/embedding/service.js";
+import { EMBED_DIMENSIONS } from "../src/modules/retrieval/embedding/config.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // W9 egress governance on real Postgres: the per-space switch round-trips through
 // the settings store, and when disabled the embedding backfill sends NOTHING to a
@@ -32,7 +32,7 @@ function markerEmbedder(): RetrievalEmbedder {
 }
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

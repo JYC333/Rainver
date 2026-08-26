@@ -1,5 +1,5 @@
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { assetAllowsUserScope, canReadAssetOwnerScope, type EvolvableAssetAccessRow } from "./assetAccess";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { assetAllowsUserScope, canReadAssetOwnerScope, type EvolvableAssetAccessRow } from "./assetAccess.js";
 
 export interface ResolveEvolvableAssetVersionInput {
   assetId?: string | null;

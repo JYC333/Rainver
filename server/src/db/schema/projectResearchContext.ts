@@ -13,9 +13,9 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { projects } from "./projects";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { projects } from "./projects.js";
+import { spaces } from "./spaces.js";
 
 /** Immutable semantic input shared by discovery, screening, and synthesis. */
 export const projectResearchContextVersions = pgTable("project_research_context_versions", {

@@ -7,28 +7,28 @@ import type {
   RetrievalBriefResponse,
   RetrievalObjectType,
   RetrievalSearchMode,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { dbPool, type Queryable } from "../routeUtils/common";
-import type { BriefCandidate, SynthesisResult } from "../retrieval";
-import type { RetrievalRegistry } from "../retrieval/registry";
-import { RetrievalSearchService, persistRetrievalBriefArtifact } from "../retrieval";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import type { RetrievalEgressPolicy } from "../retrieval/egress/egressPolicy";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { loadSourcePolicySnapshots, sourceEgressPoliciesForSnapshots } from "../retrieval/sourcePolicy";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
-import { memoryRetrievalRegistry } from "../memory/retrievalAdapter";
-import { projectRetrievalRegistry } from "../projects/retrievalAdapter";
-import { sourceRetrievalRegistry } from "../sources/retrievalAdapter";
-import { inquiryRetrievalRegistry } from "../inquiry/retrievalAdapter";
-import { canInitiateContextOpsScan } from "../contextOps/reviewPolicy";
-import { buildClaimTrajectory } from "../knowledge/claimReviewLoop";
-import { persistAskSpaceSessionArtifact } from "./sessionArtifact";
-import { aggregateGaps, buildFollowUps, collectProvenance, dedupeDomains } from "./aggregate";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { dbPool, type Queryable } from "../routeUtils/common.js";
+import type { BriefCandidate, SynthesisResult } from "../retrieval/index.js";
+import type { RetrievalRegistry } from "../retrieval/registry.js";
+import { RetrievalSearchService, persistRetrievalBriefArtifact } from "../retrieval/index.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import type { RetrievalEgressPolicy } from "../retrieval/egress/egressPolicy.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { loadSourcePolicySnapshots, sourceEgressPoliciesForSnapshots } from "../retrieval/sourcePolicy.js";
+import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
+import { memoryRetrievalRegistry } from "../memory/retrievalAdapter.js";
+import { projectRetrievalRegistry } from "../projects/retrievalAdapter.js";
+import { sourceRetrievalRegistry } from "../sources/retrievalAdapter.js";
+import { inquiryRetrievalRegistry } from "../inquiry/retrievalAdapter.js";
+import { canInitiateContextOpsScan } from "../contextOps/reviewPolicy.js";
+import { buildClaimTrajectory } from "../knowledge/claimReviewLoop.js";
+import { persistAskSpaceSessionArtifact } from "./sessionArtifact.js";
+import { aggregateGaps, buildFollowUps, collectProvenance, dedupeDomains } from "./aggregate.js";
 
 export interface AskSpaceInput {
   spaceId: string;

@@ -1,18 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import {
-  RetrievalProjectionService,
-  RetrievalSearchService,
-  type QueryEmbedder,
-} from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { type QueryEmbedder } from "../src/modules/retrieval/types.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import {
   RetrievalEmbeddingBackfillService,
   type RetrievalEmbedder,
-} from "../src/modules/retrieval/embedding/service";
-import { EMBED_DIMENSIONS } from "../src/modules/retrieval/embedding/config";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+} from "../src/modules/retrieval/embedding/service.js";
+import { EMBED_DIMENSIONS } from "../src/modules/retrieval/embedding/config.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Vector recall arm end-to-end on pgvector: a query that matches NOTHING
 // lexically still surfaces a semantically-near object via the embedding arm, and
@@ -49,7 +47,7 @@ function oneHot(slot: number, dim = EMBED_DIMENSIONS): number[] {
 }
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

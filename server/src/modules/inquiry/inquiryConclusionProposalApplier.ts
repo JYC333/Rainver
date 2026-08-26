@@ -1,6 +1,6 @@
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { HttpError, requiredString } from "../routeUtils/common";
-import { InquiryIterationService } from "./iterationService";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError, requiredString } from "../routeUtils/common.js";
+import { InquiryIterationService } from "./iterationService.js";
 
 /**
  * Materializes an agent-drafted `inquiry_conclusion` Proposal into an

@@ -9,10 +9,10 @@
  * This reader does not perform writes or return secret material.
  */
 
-import { getDbPool, type Pool } from "./db";
-import type { ServerConfig } from "../../config";
-import { loadProtocol } from "./protocolRuntime";
-import { defaultBaseUrlFor } from "./commands/helpers";
+import { getDbPool, type Pool } from "./db.js";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { defaultBaseUrlFor } from "./commands/helpers.js";
 
 export interface ProvidersDbPort {
   listProviders(spaceId: string, userId: string): Promise<unknown[]>;
@@ -123,7 +123,6 @@ class PgProvidersDbPort implements ProvidersDbPort {
   }
 
   private async selectClause(): Promise<{ table: string; columns: string }> {
-    const protocol = await loadProtocol();
     return {
       table: protocol.MODEL_PROVIDERS_TABLE,
       columns: protocol.MODEL_PROVIDERS_READ_COLUMNS.map((c) => `"${c}"`).join(", "),

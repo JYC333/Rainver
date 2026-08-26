@@ -15,8 +15,8 @@ import type {
   RunInputEnvelope,
   RunOutputDeclaration,
   RunOutputManifestItem,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { validateStructuredOutput } from "./structuredOutputValidation";
+} from "@agent-space/protocol";
+import { validateStructuredOutput } from "./structuredOutputValidation.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const MAX_OUTPUT_FILES = 128;

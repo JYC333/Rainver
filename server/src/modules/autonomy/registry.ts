@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import type { RunRecord } from "../runs/runRepositoryTypes";
+import type { Queryable } from "../routeUtils/common.js";
+import type { RunRecord } from "../runs/runRepositoryTypes.js";
 
 export type AutonomyCandidateKind = "periodic_digest" | "evolution_review";
 

@@ -4,7 +4,7 @@ import {
   redactEvidenceText,
   sanitizeErrorJson,
   sanitizeEvidenceJson,
-} from "../src/modules/runs/evidenceRedaction";
+} from "../src/modules/runs/evidenceRedaction.js";
 
 describe("run evidence redaction", () => {
   it("redacts secret-looking text without hiding ordinary evidence", () => {

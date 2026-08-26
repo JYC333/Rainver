@@ -2,7 +2,7 @@ import {
   HttpError,
   dateIso,
   numberValue,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import type {
   BoardColumnRow,
   BoardRow,
@@ -11,7 +11,7 @@ import type {
   TaskProposalRow,
   TaskRow,
   TaskRunListRow,
-} from "./taskRepositoryRows";
+} from "./taskRepositoryRows.js";
 
 export function boardOut(row: BoardRow) {
   return {

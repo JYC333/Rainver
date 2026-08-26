@@ -1,15 +1,15 @@
-import type { Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../memory/repository";
-import { HttpError } from "../routeUtils/common";
-import { canAccessProject } from "../memory/projectAccess";
-import type { ExecutionControlSnapshot } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { Pool } from "../../db/pool.js";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../memory/repository.js";
+import { HttpError } from "../routeUtils/common.js";
+import { canAccessProject } from "../memory/projectAccess.js";
+import type { ExecutionControlSnapshot } from "@agent-space/protocol";
 import {
   resolveExplicitReferences,
   resolveWorkContextScopeBindings,
-} from "../runtimeContext/workContextService";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "../runtimeContext/workContextService.js";
 
 interface PersonalGrantRow {
   id: string;
@@ -143,7 +143,7 @@ export class PgRuntimeContextAcquisitionRepository {
     );
     const snapshot = result.rows[0]?.snapshot_json;
     if (!snapshot || typeof snapshot !== "object") return null;
-    return (await loadProtocol()).ExecutionControlSnapshotSchema.parse(snapshot);
+    return protocol.ExecutionControlSnapshotSchema.parse(snapshot);
   }
 
   /**

@@ -7,8 +7,8 @@
  * definitions for the frontend.
  */
 
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const catalogModule: ServerModule = {
   name: "catalog",
@@ -23,4 +23,4 @@ export {
   type CatalogCapabilitySummary,
   type CatalogListBody,
   type CatalogSummaryBody,
-} from "./service";
+} from "./service.js";

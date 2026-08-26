@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
-import { HttpError } from "../routeUtils/common";
-import { normalizeAssetOwnerScopeForCreate } from "./assetAccess";
-import { loadProtocol } from "../providers/protocolRuntime";
+import * as protocol from "@agent-space/protocol";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError } from "../routeUtils/common.js";
+import { normalizeAssetOwnerScopeForCreate } from "./assetAccess.js";
 
 interface WorkflowSavePayload {
   asset_key: string;
@@ -18,7 +18,6 @@ export function registerWorkflowSaveProposalApplier(registry: ProposalApplierReg
 
 async function applyWorkflowSaveProposal(context: ProposalApplyContext): Promise<ProposalApplyResult> {
   const payload = context.proposal.payload_json as unknown as WorkflowSavePayload;
-  const protocol = await loadProtocol();
   const definition = protocol.WorkflowDefinitionSchema.parse(payload.content_json);
   const existing = await context.db.query<{ id: string }>(
     `SELECT id FROM evolvable_assets WHERE space_id = $1 AND asset_key = $2 LIMIT 1`,

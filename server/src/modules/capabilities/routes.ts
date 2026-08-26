@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   jsonBody,
   optionalString,
@@ -11,12 +12,11 @@ import {
   sendRouteError,
   HttpError,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegistry";
-import { PgCapabilitiesRepository } from "./repository";
-import { CapabilitiesService } from "./service";
-import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter";
+} from "../routeUtils/common.js";
+import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegistry.js";
+import { PgCapabilitiesRepository } from "./repository.js";
+import { CapabilitiesService } from "./service.js";
+import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter.js";
 
 type CapabilitiesRepositoryFactory = (context: ModuleContext) => PgCapabilitiesRepository;
 type CapabilitiesIdentityOverride =
@@ -129,7 +129,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const result = await service(context).listSkillLibraryIndex(identity);
       return reply.send(protocol.SkillLibraryIndexResponseSchema.parse(result));
     } catch (error) {
@@ -141,7 +140,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const overlay = await service(context).getSkillLocalOverlay(
         identity,
         params(request).skillPackageId ?? "",
@@ -158,7 +156,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.SkillLocalOverlayUpsertRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) {
         throw new HttpError(422, parsed.error.issues[0]?.message ?? "invalid skill overlay request");

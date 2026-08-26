@@ -19,15 +19,12 @@
  *   See .agent/architecture/OFFICIAL_OPTIONAL_MODULES.md and ADR 0006.
  */
 
-import { createRequire } from "node:module";
-import { join } from "node:path";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
+import type { ServerConfig } from "../../config.js";
+import * as protocol from "@agent-space/protocol";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 export const SERVER_SERVICE_NAME = "server";
-
-const PROTOCOL_PACKAGE = "@agent-space/protocol";
 
 export interface HealthBody {
   status: "ok" | "error";
@@ -55,22 +52,13 @@ export async function healthBody(config: ServerConfig): Promise<HealthBody> {
 }
 
 /**
- * Detect whether the shared protocol package is resolvable, *without executing*
- * it (the package is ESM/TS source; we only resolve its location). Safe in both
- * dev (vitest) and the compiled CJS runtime — the anchor falls back to the
- * working directory when `__filename` is not defined.
+ * Detect whether the shared protocol package is present.
  */
 export function isProtocolPackageDetected(): boolean {
-  try {
-    const anchor =
-      typeof __filename !== "undefined"
-        ? __filename
-        : join(process.cwd(), "package.json");
-    createRequire(anchor).resolve(PROTOCOL_PACKAGE);
-    return true;
-  } catch {
-    return false;
-  }
+  // The server imports the protocol package statically, so a running server
+  // has it by construction; this only guards against a build that shipped
+  // without the package's exports (an empty namespace).
+  return Object.keys(protocol).length > 0;
 }
 
 export interface FeaturesBody {

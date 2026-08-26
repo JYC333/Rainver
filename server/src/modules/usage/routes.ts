@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   boolQuery,
   HttpError,
@@ -9,9 +9,9 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { requireInstanceAdmin } from "../routeUtils/access";
-import { UsageService, type UsageQueryInput } from "./service";
+} from "../routeUtils/common.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
+import { UsageService, type UsageQueryInput } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => UsageService.fromConfig(context.config);

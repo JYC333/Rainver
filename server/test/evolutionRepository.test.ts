@@ -1,24 +1,30 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { useTestDatabase } from "./support/testDatabase";
-import * as poolModule from "../src/db/pool";
-import { runBuiltInSeeds } from "../src/db/seeds";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { evolutionModule } from "../src/modules/evolution";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
+import { useTestDatabase } from "./support/testDatabase.js";
+import * as poolModule from "../src/db/pool.js";
+import { runBuiltInSeeds } from "../src/db/seeds.js";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { evolutionModule } from "../src/modules/evolution/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import {
   EVOLUTION_PLAN_REVIEW_SCHEMA,
-} from "../src/modules/evolution/prompt";
-import { EvolutionRepository } from "../src/modules/evolution/repository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+} from "../src/modules/evolution/prompt.js";
+import { EvolutionRepository } from "../src/modules/evolution/repository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

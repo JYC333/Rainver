@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { getDbPool } from "../../db/pool";
-import { assertProjectReadable } from "./access";
+import type { ServerConfig } from "../../config.js";
+import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { assertProjectReadable } from "./access.js";
 import {
   projectAttentionRegistry,
   sortAttentionItems,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
-} from "./attentionRegistry";
+} from "./attentionRegistry.js";
 
 interface UserStateRow {
   source_type: string;

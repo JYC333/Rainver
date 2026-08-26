@@ -43,3 +43,16 @@ export function getDbPool(databaseUrl: string): Pool {
   }
   return pool;
 }
+
+/**
+ * Ends and forgets the cached pool for `databaseUrl`, if any. Tests drop
+ * their per-file database in teardown, and `DROP DATABASE` waits on any
+ * connection a service opened through `getDbPool` — forever, when files
+ * share a worker.
+ */
+export async function closeDbPool(databaseUrl: string): Promise<void> {
+  const pool = pools.get(databaseUrl);
+  if (!pool) return;
+  pools.delete(databaseUrl);
+  await pool.end();
+}

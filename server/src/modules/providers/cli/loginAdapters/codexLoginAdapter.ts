@@ -1,5 +1,5 @@
-import type { LoginEvent, LoginOutputParser } from "../loginEngine";
-import type { CliLoginAdapter } from "./types";
+import type { LoginEvent, LoginOutputParser } from "../loginEngine.js";
+import type { CliLoginAdapter } from "./types.js";
 
 const CODEX_DEVICE_AUTH_URL_RE = /https:\/\/auth\.openai\.com\/codex\/device\b/;
 const DEVICE_CODE_RE = /\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/;

@@ -1,9 +1,9 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { PgPlanRepository } from "./repository";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { PgPlanRepository } from "./repository.js";
 
 /** `task.plan.propose` (action authority consolidation plan, P1.5). */
 export function registerPlansSystemActionExecutors(

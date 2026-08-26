@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext, ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes as registerLearningRoutes } from "./routes";
-import { registerLearningProjectIntegration } from "./projectIntegration";
+import type { ModuleContext, ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes as registerLearningRoutes } from "./routes.js";
+import { registerLearningProjectIntegration } from "./projectIntegration.js";
 
 function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerLearningProjectIntegration();
@@ -10,4 +10,4 @@ function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
 
 export const learningModule: ServerModule = { name: "learning", registerRoutes };
 
-export { LearningService } from "./service";
+export { LearningService } from "./service.js";

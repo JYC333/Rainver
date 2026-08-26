@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 import {
   PgSourcePostProcessingRepository,
   SOURCE_POST_PROCESSING_TASK_TYPE,
   normalizeActions,
   normalizeInputConfig,
   normalizeTriggerConfig,
-} from "../src/modules/sources/postProcessing/repository";
-import { withQueryableTransaction } from "../src/modules/routeUtils/common";
-import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows";
-import type { ServerConfig } from "../src/config";
-import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator";
+} from "../src/modules/sources/postProcessing/repository.js";
+import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
+import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
+import type { ServerConfig } from "../src/config.js";
+import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -24,7 +24,7 @@ const CONNECTOR = "33333333-3333-4333-8333-333333333333";
 const CONNECTION = "44444444-4444-4444-8444-444444444444";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

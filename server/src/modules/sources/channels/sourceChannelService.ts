@@ -1,15 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../../config";
-import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../../routeUtils/common";
-import { normalizeSourceConnectionCreateGovernance } from "../sourceConsent";
-import { SourceProviderCatalogService, type ResolvedSourceProviderConnector } from "../catalog/sourceProviderCatalogService";
-import { upsertSourceChannelScanTask } from "../sourceConnectionScheduler";
-import { computeNextRunAtFromScheduleRule, type SourceScheduleRule } from "../sourceScheduleInput";
-import { insertProposalRow } from "../../proposals/reviewPackets";
-import { PgProposalApplyService } from "../../proposals/applyService";
-import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
-import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler";
+import type { ServerConfig } from "../../../config.js";
+import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../../routeUtils/common.js";
+import { normalizeSourceConnectionCreateGovernance } from "../sourceConsent.js";
+import { SourceProviderCatalogService, type ResolvedSourceProviderConnector } from "../catalog/sourceProviderCatalogService.js";
+import { upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
+import { computeNextRunAtFromScheduleRule, type SourceScheduleRule } from "../sourceScheduleInput.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
+import { PgProposalApplyService } from "../../proposals/applyService.js";
+import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
+import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol";
+import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler.js";
 
 interface SourceChannelProposalActor {
   agentId?: string | null;

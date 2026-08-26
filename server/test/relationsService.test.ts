@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { RelationsService } from "../src/modules/relations/service";
-import { RelationsRepository, type RelationSourceLinkRow } from "../src/modules/relations/repository";
+import { RelationsService } from "../src/modules/relations/service.js";
+import { RelationsRepository, type RelationSourceLinkRow } from "../src/modules/relations/repository.js";
 
 const NOW = "2026-07-08T00:00:00.000Z";
 

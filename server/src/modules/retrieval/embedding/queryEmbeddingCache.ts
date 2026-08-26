@@ -1,4 +1,4 @@
-import { QUERY_EMBED_CACHE_MAX, QUERY_EMBED_CACHE_TTL_MS } from "./config";
+import { QUERY_EMBED_CACHE_MAX, QUERY_EMBED_CACHE_TTL_MS } from "./config.js";
 
 interface CacheEntry {
   vector: number[];

@@ -1,38 +1,38 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { PoolClient } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
-import { roomRunReadAccessSql } from "../access/contentAccessSql";
+import type { PoolClient } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import {
   enforceProposalApply,
   type EnforceResult,
-} from "../policy/service";
-import { ProposalRiskLevelError } from "../policy/gateway";
+} from "../policy/service.js";
+import { ProposalRiskLevelError } from "../policy/gateway.js";
 import {
   createDefaultProposalApplierRegistry,
   type ProposalApplierContributor,
   type ProposalApplierRegistry,
-} from "./applierRegistry";
+} from "./applierRegistry.js";
 import {
   PgProposalRepository,
-} from "./repository";
-import { PgSnapshotStore } from "../projectFolders/snapshotStore";
-import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations";
-import { PgProjectFolderRepository } from "../projectFolders/repository";
-import { validatePath } from "../projectFolders/pathPolicy";
-import { HttpError } from "../routeUtils/common";
+} from "./repository.js";
+import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
+import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
+import { PgProjectFolderRepository } from "../projectFolders/repository.js";
+import { validatePath } from "../projectFolders/pathPolicy.js";
+import { HttpError } from "../routeUtils/common.js";
 import type {
   ProposalAcceptOut,
   ProposalAcceptResultType,
   ProposalApprovalOut,
   ProposalOut,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
-import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
+} from "@agent-space/protocol";
+import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
 
 /**
  * The accept response is a union discriminated on `result_type`, and the
@@ -46,7 +46,6 @@ async function acceptOut(
   proposal: ProposalOut,
   result: { result_type: ProposalAcceptResultType; result: Record<string, unknown> },
 ): Promise<ProposalAcceptOut> {
-  const protocol = await loadProtocol();
   return protocol.ProposalAcceptOutSchema.parse({
     proposal,
     result_type: result.result_type,

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import type { AgentSpacePlugin } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
-import { getOfficialPlugin } from "./registry";
-import { pluginRepository, type PluginInstallRow } from "./repository";
+import type { AgentSpacePlugin } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
+import { getOfficialPlugin } from "./registry.js";
+import { pluginRepository, type PluginInstallRow } from "./repository.js";
 
 export interface InstallPluginOptions {
   actorUserId: string | null;

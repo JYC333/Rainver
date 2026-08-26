@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   SOURCE_CAPTURE_POLICIES,
   SOURCE_RETENTION_POLICIES,
-} from "../sources/capturePolicy";
+} from "../sources/capturePolicy.js";
 
 // Base for every proposal payload: at minimum a literal proposal_type.
 // All schemas use .passthrough() so unknown optional fields from agents are tolerated.

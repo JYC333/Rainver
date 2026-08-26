@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { ProjectSourceProposalService } from "../src/modules/projects/projectSourceProposalService";
+import { loadConfig } from "../src/config.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { ProjectSourceProposalService } from "../src/modules/projects/projectSourceProposalService.js";
 
 const identity = { spaceId: "space-1", userId: "user-1" };
 

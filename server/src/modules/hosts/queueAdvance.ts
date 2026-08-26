@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { withDbTransaction } from "../routeUtils/common";
-import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository";
-import { PgHostThreadMessageRepository } from "./threadMessageRepository";
-import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { isTerminalRunStatus } from "../runs/orchestrationResults";
-import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access";
-import { assertBudgetSourcesAvailable, RunBudgetExceededError } from "../runs/budgetEnforcement";
-import { budgetSourcesFromPolicy, createRunContractSnapshot, type RunBudgetSource } from "../runs/contractSnapshot";
-import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
+import type { Pool } from "../../db/pool.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { withDbTransaction } from "../routeUtils/common.js";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
+import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
+import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
+import { assertBudgetSourcesAvailable, RunBudgetExceededError } from "../runs/budgetEnforcement.js";
+import { budgetSourcesFromPolicy, createRunContractSnapshot, type RunBudgetSource } from "../runs/contractSnapshot.js";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import {
   settleTaskAfterQueuedMessageWithdrawal,
   withdrawQueuedTaskMessages,
-} from "../tasks/taskRunStatusProjection";
+} from "../tasks/taskRunStatusProjection.js";
 
 export const HOST_THREAD_QUEUE_LOCK_PREFIX = "host_thread_queue:";
 

@@ -1,6 +1,6 @@
-import { HttpError, intQuery } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import type { HomeSummaryOut } from "./frontendSupportTypes";
+import { HttpError, intQuery } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import type { HomeSummaryOut } from "./frontendSupportTypes.js";
 
 export const ACTIVE_RUN_STATUSES = ["queued", "running", "waiting_for_review"];
 export const DONE_TASK_STATUSES = ["done", "completed", "cancelled", "archived"];

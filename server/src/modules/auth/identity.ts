@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyRequest } from "fastify";
-import type { ServerConfig } from "../../config";
-import type { AuthenticatedIdentity } from "../../gateway/requestContext";
-import { getDbPool, type Pool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { seedSpaceDefaults } from "../spaces/spaceSeeds";
+import type { ServerConfig } from "../../config.js";
+import type { AuthenticatedIdentity } from "../../gateway/requestContext.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { seedSpaceDefaults } from "../spaces/spaceSeeds.js";
 
 const SESSION_COOKIE = "session_id";
 export const API_KEYS_NOT_IMPLEMENTED =

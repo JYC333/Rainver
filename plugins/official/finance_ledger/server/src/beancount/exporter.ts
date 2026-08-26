@@ -1,13 +1,13 @@
-import { CostSpec } from "../domain/position";
+import { CostSpec } from "../domain/position.js";
 import type {
   BalanceEntry,
   EntryMetadata,
   LedgerEntry,
   PostingEntry,
   TransactionEntry,
-} from "./entries";
-import { isDatedEntry } from "./entries";
-import { sortEntries } from "./sort";
+} from "./entries.js";
+import { isDatedEntry } from "./entries.js";
+import { sortEntries } from "./sort.js";
 
 export class BeancountExporter {
   export(entries: readonly LedgerEntry[], options: Record<string, string> = {}): string {

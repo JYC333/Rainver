@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ServerConfig } from "../src/config";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator";
+import type { ServerConfig } from "../src/config.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
 
 const identity = { spaceId: "space", userId: "user" };
 

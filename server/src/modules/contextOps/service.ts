@@ -8,22 +8,22 @@ import type {
   ContextOpsSourceWarningDetail,
   ContextOpsSummary,
   RetrievalObjectType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { dbPool, type Queryable } from "../routeUtils/common";
-import type { RetrievalRegistry } from "../retrieval/registry";
-import type { RevalidatedObject } from "../retrieval/types";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { dbPool, type Queryable } from "../routeUtils/common.js";
+import type { RetrievalRegistry } from "../retrieval/registry.js";
+import type { RevalidatedObject } from "../retrieval/types.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityFilterSql,
-} from "../access/contentAccessSql";
+} from "../access/contentAccessSql.js";
 import {
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromJson,
   sourcePolicyAllowsRead,
-} from "../retrieval/sourcePolicy";
+} from "../retrieval/sourcePolicy.js";
 
 export interface ContextOpsSummaryInput {
   spaceId: string;

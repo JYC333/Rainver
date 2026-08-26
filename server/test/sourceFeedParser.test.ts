@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseFeed } from "../src/modules/sources/feedParser";
-import { computeNextCheckAt } from "../src/modules/sources/sourceScanCadence";
+import { parseFeed } from "../src/modules/sources/feedParser.js";
+import { computeNextCheckAt } from "../src/modules/sources/sourceScanCadence.js";
 
 describe("source feed parser", () => {
   it("parses RSS items into normalized feed entries", () => {

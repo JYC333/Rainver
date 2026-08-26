@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ExtractionProfileRegistry,
   createDefaultExtractionProfileRegistry,
-} from "../src/modules/extractionProfiles/registry";
+} from "../src/modules/extractionProfiles/registry.js";
 
 describe("ExtractionProfileRegistry", () => {
   it("registers the academic module profile with its entity type", () => {

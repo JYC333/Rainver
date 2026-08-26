@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService";
-import { withNoteWrites } from "../src/modules/knowledge/noteWriter";
-import { blockIds } from "../src/modules/knowledge/noteBlockIds";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService.js";
+import { withNoteWrites } from "../src/modules/knowledge/noteWriter.js";
+import { blockIds } from "../src/modules/knowledge/noteBlockIds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * The shared note writer, asserted through the three things that were wrong
@@ -26,7 +26,13 @@ const OUTSIDER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

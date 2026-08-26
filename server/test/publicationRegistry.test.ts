@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry";
-import { PUBLICATION_ADAPTERS, publicationAdapter } from "../src/modules/publications/publicationRegistry";
+import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry.js";
+import { PUBLICATION_ADAPTERS, publicationAdapter } from "../src/modules/publications/publicationRegistry.js";
 
 describe("publication adapter registry", () => {
   it("has exactly one adapter for every publishable content type", () => {

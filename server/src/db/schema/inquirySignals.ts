@@ -1,12 +1,12 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, doublePrecision, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { projectCorpusItems } from "./projectCorpus";
-import { inquiryIterations, inquiryThreads } from "./inquiry";
-import { experimentInterpretations } from "./experiments";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { projectCorpusItems } from "./projectCorpus.js";
+import { inquiryIterations, inquiryThreads } from "./inquiry.js";
+import { experimentInterpretations } from "./experiments.js";
 
 // Signals, Candidates, Delta, and Review (plan section 10). Four levels:
 // Raw Detection (not modeled — producers classify directly into a Signal) ->

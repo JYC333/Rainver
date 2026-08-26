@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { loadProtocol } from "../providers/protocolRuntime";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   jsonBody,
@@ -8,10 +8,10 @@ import {
   requiredString,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { WorkContextService } from "./workContextService";
-import { createProductionRuntimeContextPlanningService } from "./productionAcquisition";
-import { RuntimeContextContinuityService } from "./continuity/service";
+} from "../routeUtils/common.js";
+import { WorkContextService } from "./workContextService.js";
+import { createProductionRuntimeContextPlanningService } from "./productionAcquisition.js";
+import { RuntimeContextContinuityService } from "./continuity/service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const workContexts = () => new WorkContextService(dbPool(context.config));
@@ -25,7 +25,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         requiredString(params(request).scopeId, "scope_id"),
       );
       if (!active) return reply.send(null);
-      const protocol = await loadProtocol();
       return reply.send(protocol.WorkContextSetupSchema.parse(active));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -37,7 +36,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const created = await workContexts().create(identity, jsonBody(request));
-      const protocol = await loadProtocol();
       return reply.code(201).send(protocol.WorkContextSetupSchema.parse(created));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -48,7 +46,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const parsed = protocol.TurnContextRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) return reply.code(422).send({ error: "Invalid Turn Context Request" });
       const envelope = await createProductionRuntimeContextPlanningService(dbPool(context.config), context.config).preview({
@@ -68,7 +65,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const scopeId = requiredString(params(request).scopeId, "scope_id");
       const active = await workContexts().getActive(identity, scopeId);
       if (!active) return reply.code(404).send({ detail: "Work Context is not readable" });
-      const protocol = await loadProtocol();
       const parsed = protocol.SemanticCheckpointCorrectionRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) return reply.code(422).send({ detail: "Invalid checkpoint correction" });
       const correctionId = await new RuntimeContextContinuityService(dbPool(context.config))

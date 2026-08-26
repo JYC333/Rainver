@@ -1,9 +1,9 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-import { registerAutomationsProjectIntegration } from "./projectIntegration";
-import { automationTargetHandlerRegistry } from "./targetRegistry";
-import { registerAutomationOwnedTargetHandlers } from "./targetHandlers";
-import { loadAutomationTargetDefinitions } from "./targetDefinitions";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+import { registerAutomationsProjectIntegration } from "./projectIntegration.js";
+import { automationTargetHandlerRegistry } from "./targetRegistry.js";
+import { registerAutomationOwnedTargetHandlers } from "./targetHandlers.js";
+import { loadAutomationTargetDefinitions } from "./targetDefinitions.js";
 
 function register(app: Parameters<typeof registerRoutes>[0], context: Parameters<typeof registerRoutes>[1]): void {
   registerAutomationOwnedTargetHandlers();

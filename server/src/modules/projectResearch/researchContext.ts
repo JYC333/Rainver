@@ -1,4 +1,4 @@
-import { objectValue } from "../routeUtils/common";
+import { objectValue } from "../routeUtils/common.js";
 
 export const RESEARCH_CRITERION_MAX_LENGTH = 200;
 const RESEARCH_CONTEXT_MAX_ITEMS = 10;

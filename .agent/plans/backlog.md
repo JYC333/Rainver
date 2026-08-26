@@ -328,6 +328,37 @@ resume machinery this policy does not have, and would change the product
 surface (a Run can sit "waiting for permission" instead of running to
 completion or failing). Not scoped into any current plan.
 
+### Custom Source handler isolation is application-level, and ESM would not change that
+
+The Custom Source runner spawns each handler as a plain `node` child process
+and relies on a generated CommonJS bootstrap that monkey-patches `net`, `tls`,
+`http(s)`, `dgram`, `fetch`, `child_process`, `worker_threads`, and the common
+`fs` entrypoints before `require`-ing the handler. The runner's own header says
+what that is: defense in depth, not container, network-namespace, or OS-level
+isolation — a native addon, `process.binding`, or any unpatched API reaches
+outside it.
+
+Decided 2026-08-26, when the server moved to ESM: the bootstrap and the
+`handler.cjs` artifact contract stay CommonJS on purpose. Porting them to ESM
+would cost a sandbox rewrite (`module.register()` loader hooks,
+`syncBuiltinESMExports()`, a handler version migration) and leave the
+protection surface exactly where it is, because live bindings and async
+`import()` make the patching approach harder, not stronger.
+
+What would actually raise the bar, in order of cost:
+
+- [ ] Spawn handlers under Node's permission model:
+  `--permission --allow-fs-read=<sandbox> --allow-fs-write=<sandbox>` with no
+  `--allow-child-process`, `--allow-worker`, or `--allow-addons`. Enforced at
+  the runtime API boundary rather than by patching; a few lines in `spawn`,
+  no change to stored handlers. Does not cover the network.
+- [ ] For the network, run handler processes inside the existing Docker sandbox
+  image with networking disabled, at the price of a container start per run.
+
+Constraint: keep the honesty boundary — do not describe the runner as
+OS-sandboxed until one of the above is in place. Do the ESM port, if ever,
+only as part of such a rewrite, never on its own.
+
 ## Completion and retirement
 
 Remove an item once it is implemented and recorded in current-state

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { PluginMigration } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { DIARY_PLUGIN_ID } from "./manifest";
+import type { PluginMigration } from "@agent-space/protocol";
+import { DIARY_PLUGIN_ID } from "./manifest.js";
 
 const SQL_FILE_RE = /^(\d{4}_.+)\.sql$/;
 
@@ -33,9 +33,9 @@ function loadDiaryMigrations(): readonly PluginMigration[] {
 function resolveMigrationDir(): string {
   const candidates = [
     // Compiled package artifact: <package>/server/schema.js -> <package>/migrations
-    resolve(__dirname, "..", "migrations"),
+    resolve(import.meta.dirname, "..", "migrations"),
     // Source package: <package>/server/src/schema.ts -> <package>/migrations
-    resolve(__dirname, "..", "..", "migrations"),
+    resolve(import.meta.dirname, "..", "..", "migrations"),
   ];
 
   for (const candidate of candidates) {

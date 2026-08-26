@@ -5,71 +5,71 @@ import type {
   RunInputEnvelope,
   RuntimeSemanticEvent,
   InvocationDelivery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   CliCredentialBroker,
   type CredentialGrant,
-} from "../providers/cli/credentialBroker";
-import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease";
+} from "../providers/cli/credentialBroker.js";
+import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
 import {
   RuntimeToolError,
   RuntimeToolRegistry,
   type ResolvedRuntimeTool,
   type RuntimeToolResolverPort,
-} from "../runtimeTools";
+} from "../runtimeTools/index.js";
 import {
   ensureRuntimeSubagentsDisabled,
   getLocalCliRuntimeAdapterSpec,
   type LocalCliRuntimeAdapterSpec,
-} from "../runtimeAdapters";
-import type { RunRecord } from "./repository";
+} from "../runtimeAdapters/index.js";
+import type { RunRecord } from "./repository.js";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
-} from "./evidenceRedaction";
+} from "./evidenceRedaction.js";
 import {
   CliRenderError,
   renderCliCommand,
   type RenderedCliCommand,
-} from "./cliCommandRendering";
+} from "./cliCommandRendering.js";
 import {
   type CliCommandExecutor,
   type CliExecutionResult,
   type CliProcessRegistry,
   type CliStdioController,
-} from "./localCliExecution";
-import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client";
+} from "./localCliExecution.js";
+import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client.js";
 import {
   buildRuntimeProviderBinding,
   cleanupRuntimeProviderBinding,
   RuntimeProviderBindingError,
   type RuntimeProviderBinding,
   type RuntimeProviderResolverPort,
-} from "./runtimeProviderBinding";
+} from "./runtimeProviderBinding.js";
 import {
   normalizeVendorEvents,
   terminalRuntimeEvents,
-} from "./runtimeEventNormalization";
-import { cliRunToolIdentities } from "./cliToolTransport";
-import { buildSubprocessEnv } from "./cliSubprocessEnv";
+} from "./runtimeEventNormalization.js";
+import { cliRunToolIdentities } from "./cliToolTransport.js";
+import { buildSubprocessEnv } from "./cliSubprocessEnv.js";
 import {
   envForNetworkProfile,
   resolveNetworkProfileRepository,
-} from "../networkProfiles";
-import { createCliConversationController } from "./cliConversationProtocol";
-import { type CliRuntimeMeasurement } from "./cliRuntimeMeasurement";
-import { managedAdapterRequest } from "../runtimeContext";
-import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts";
+} from "../networkProfiles/index.js";
+import { createCliConversationController } from "./cliConversationProtocol.js";
+import { type CliRuntimeMeasurement } from "./cliRuntimeMeasurement.js";
+import { managedAdapterRequest } from "../runtimeContext/index.js";
+import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts.js";
 
-export { buildSubprocessEnv } from "./cliSubprocessEnv";
-export { renderCliCommand } from "./cliCommandRendering";
+export { buildSubprocessEnv } from "./cliSubprocessEnv.js";
+export { renderCliCommand } from "./cliCommandRendering.js";
 export {
   LocalCliProcessRegistry,
   type CliCommandExecutor,
   type CliExecutionResult,
   type CliProcessRegistry,
-} from "./localCliExecution";
+} from "./localCliExecution.js";
 
 export type VendorCliAdapterType = "claude_code" | "codex_cli" | "opencode";
 export type ExecutorMode = "worktree" | "docker";

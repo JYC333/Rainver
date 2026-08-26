@@ -1,7 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/modules/memory/repository";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/modules/memory/repository.js";
 
 // Real-PostgreSQL integration tests for the server memory read model. The
 // route/unit suites use fakes, so they cannot catch the defects that only
@@ -14,7 +15,7 @@ import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/module
 
 let repo: PgMemoryReadRepository | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
@@ -23,42 +24,6 @@ beforeAll(async () => {
 
 const SPACE = "space-1";
 const USER = "user-1";
-
-async function insertMemory(over: Record<string, unknown>): Promise<void> {
-  const cols: Record<string, unknown> = {
-    id: over.id,
-    space_id: SPACE,
-    scope_type: "user",
-    memory_type: "fact",
-    content: "memory content",
-    status: "active",
-    access_count: 0,
-    visibility: "private",
-    access_level: "full",
-    sensitivity_level: "normal",
-    confidence: 1,
-    importance: 0.5,
-    version: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    ...over,
-  };
-  const names = Object.keys(cols);
-  const placeholders = names.map((n, i) =>
-    n === "tags" ? `$${i + 1}::jsonb` : `$${i + 1}`,
-  );
-  const values = names.map((n) =>
-    n === "tags"
-      ? cols[n] === undefined
-        ? null
-        : JSON.stringify(cols[n])
-      : cols[n],
-  );
-  await db.pool.query(
-    `INSERT INTO memory_entries (${names.join(", ")}) VALUES (${placeholders.join(", ")})`,
-    values,
-  );
-}
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -99,10 +64,10 @@ describe("PgMemoryReadRepository against real Postgres", () => {
     if (!db.available || !repo) return;
     // Readable: own private, space_shared. Hidden: another user's private and
     // soft-deleted rows.
-    await insertMemory({ id: "m-own", owner_user_id: USER, importance: 0.9 });
-    await insertMemory({ id: "m-shared", owner_user_id: "other", visibility: "space_shared", importance: 0.8 });
-    await insertMemory({ id: "m-private-other", owner_user_id: "other", visibility: "private", importance: 0.7 });
-    await insertMemory({ id: "m-deleted", owner_user_id: USER, deleted_at: new Date().toISOString() });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-own", owner_user_id: USER, importance: 0.9 });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-shared", owner_user_id: "other", visibility: "space_shared", importance: 0.8 });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-private-other", owner_user_id: "other", visibility: "private", importance: 0.7 });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-deleted", owner_user_id: USER, deleted_at: new Date().toISOString() });
 
     const page = await repo.list(SPACE, USER, { limit: 50, offset: 0 });
     expect(page.items.map((m) => m.id).sort()).toEqual(["m-own", "m-shared"]);
@@ -117,7 +82,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("redacts summary access content for a non-owner but not the owner", async () => {
     if (!db.available || !repo) return;
-    await insertMemory({
+    await insertMemoryEntry(db.pool, SPACE, {
       id: "m-sum",
       owner_user_id: "other",
       visibility: "space_shared",
@@ -133,7 +98,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("get returns null across users/spaces and parses jsonb tags", async () => {
     if (!db.available || !repo) return;
-    await insertMemory({
+    await insertMemoryEntry(db.pool, SPACE, {
       id: "m-1",
       owner_user_id: USER,
       tags: ["a", "b"],
@@ -148,9 +113,9 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("searches active rows by title/content ILIKE with visibility applied", async () => {
     if (!db.available || !repo) return;
-    await insertMemory({ id: "m-hit", owner_user_id: USER, content: "the server migration plan" });
-    await insertMemory({ id: "m-miss", owner_user_id: USER, content: "unrelated" });
-    await insertMemory({ id: "m-hidden", owner_user_id: "other", visibility: "private", content: "server secret" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-hit", owner_user_id: USER, content: "the server migration plan" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-miss", owner_user_id: USER, content: "unrelated" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-hidden", owner_user_id: "other", visibility: "private", content: "server secret" });
 
     const rows = await repo.search(SPACE, USER, { query: "server", limit: 10 });
     expect(rows.map((m) => m.id).sort()).toEqual(["m-hit"]);
@@ -158,7 +123,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("a cross-person get writes one explicit_read trace and bumps the read counters", async () => {
     if (!db.available || !repo || !db.pool) return;
-    await insertMemory({ id: "m-1", owner_user_id: "other", visibility: "space_shared" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-1", owner_user_id: "other", visibility: "space_shared" });
 
     await repo.get(SPACE, USER, "m-1");
 
@@ -185,7 +150,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("does not log when get is not visible to the viewer", async () => {
     if (!db.available || !repo || !db.pool) return;
-    await insertMemory({ id: "m-priv", owner_user_id: "other", visibility: "private" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-priv", owner_user_id: "other", visibility: "private" });
 
     expect(await repo.get(SPACE, USER, "m-priv")).toBeNull();
     expect(await accessLogs("m-priv")).toHaveLength(0);
@@ -194,9 +159,9 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
   it("search writes a search_hit trace per returned row; list logs nothing", async () => {
     if (!db.available || !repo || !db.pool) return;
-    await insertMemory({ id: "m-a", owner_user_id: "other", visibility: "space_shared", content: "server alpha" });
-    await insertMemory({ id: "m-b", owner_user_id: "other", visibility: "space_shared", content: "server beta" });
-    await insertMemory({ id: "m-hidden", owner_user_id: "other", visibility: "private", content: "server secret" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-a", owner_user_id: "other", visibility: "space_shared", content: "server alpha" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-b", owner_user_id: "other", visibility: "space_shared", content: "server beta" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-hidden", owner_user_id: "other", visibility: "private", content: "server secret" });
 
     const rows = await repo.search(SPACE, USER, { query: "server", limit: 10 });
     expect(rows.map((m) => m.id).sort()).toEqual(["m-a", "m-b"]);
@@ -223,7 +188,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ('proj-1', $1, $2, 'proj-1', 'active', now(), now())",
       [SPACE, USER],
     );
-    await insertMemory({ id: "m-1", owner_user_id: USER, scope_type: "project", project_id: "proj-1" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-1", owner_user_id: USER, scope_type: "project", project_id: "proj-1" });
     // Valid project filter returns rows.
     const ok = await repo.list(SPACE, USER, { limit: 50, offset: 0, projectId: "proj-1" });
     expect(ok.items).toHaveLength(1);
@@ -242,8 +207,8 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ('proj-x', $1, 'other', 'proj-x', 'active', now(), now())",
       [SPACE],
     );
-    await insertMemory({ id: "m-proj", owner_user_id: USER, scope_type: "project", project_id: "proj-x", content: "project note" });
-    await insertMemory({ id: "m-free", owner_user_id: USER, content: "free note" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-proj", owner_user_id: USER, scope_type: "project", project_id: "proj-x", content: "project note" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-free", owner_user_id: USER, content: "free note" });
 
     // Non-member of proj-x: the project memory is hidden everywhere; the
     // project-free memory is still visible.
@@ -274,7 +239,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
     );
     // The schema itself refuses a memory that points at a project in another
     // Space (composite project/space FK), so the read gate never sees one.
-    await expect(insertMemory({
+    await expect(insertMemoryEntry(db.pool, SPACE, {
       id: "m-cross-project",
       owner_user_id: USER,
       scope_type: "project",
@@ -298,7 +263,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
        VALUES ('pm-deleted', $1, 'proj-deleted', $2, 'member', 'active', now(), now())`,
       [SPACE, USER],
     );
-    await insertMemory({
+    await insertMemoryEntry(db.pool, SPACE, {
       id: "m-deleted-project",
       owner_user_id: USER,
       scope_type: "project",

@@ -1,21 +1,21 @@
-import type { Pool } from "../../../db/pool";
-import { getDbPool } from "../../../db/pool";
-import type { ServerConfig } from "../../../config";
-import { HttpError, withDbTransaction, optionalString } from "../../routeUtils/common";
-import type { SpaceUserIdentity } from "../../routeUtils/common";
+import type { Pool } from "../../../db/pool.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { ServerConfig } from "../../../config.js";
+import { HttpError, withDbTransaction, optionalString } from "../../routeUtils/common.js";
+import type { SpaceUserIdentity } from "../../routeUtils/common.js";
 import {
   JobDeferredError,
   type JobHandlerRegistry,
   type JobEnvelopeForHandler,
   type JobHandlerResult,
-} from "../../jobs/handlerRegistry";
-import { RoomService } from "../../rooms/service";
-import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository";
-import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository";
-import { ProjectResearchQuestionRefineService } from "../questionRefineService";
-import { AdaptiveQueryOrchestrator } from "../../research/queryPlanning/adaptiveQueryOrchestrator";
-import { ResearchMonitorMaterializer } from "../../research/discovery/monitorMaterializer";
-import { ProjectResearchOrchestrator } from "../orchestrator";
+} from "../../jobs/handlerRegistry.js";
+import { RoomService } from "../../rooms/service.js";
+import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
+import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository.js";
+import { ProjectResearchQuestionRefineService } from "../questionRefineService.js";
+import { AdaptiveQueryOrchestrator } from "../../research/queryPlanning/adaptiveQueryOrchestrator.js";
+import { ResearchMonitorMaterializer } from "../../research/discovery/monitorMaterializer.js";
+import { ProjectResearchOrchestrator } from "../orchestrator.js";
 
 export const RESEARCH_PIPELINE_START_JOB = "research_pipeline_start";
 

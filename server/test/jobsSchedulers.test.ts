@@ -1,41 +1,41 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import {
   DuplicateJobHandlerError,
   JobDeferredError,
   JobHandlerRegistry,
   UnknownJobTypeError,
-} from "../src/modules/jobs/handlerRegistry";
-import { JobWorker } from "../src/modules/jobs/worker";
-import { PgJobQueueRepository, type JobRecord } from "../src/modules/jobs/repository";
-import { jobEventToOut, jobNotFoundForSpace, jobToOut } from "../src/modules/jobs/routes";
-import { SchedulerRegistry, startSchedulerRegistry } from "../src/modules/scheduler/registry";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
-import { AutomationService } from "../src/modules/automations/service";
-import type { AutomationRow } from "../src/modules/automations/repository";
-import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget";
-import { registerContextOpsReviewCycleAutomationTarget } from "../src/modules/contextOps/automationTarget";
+} from "../src/modules/jobs/handlerRegistry.js";
+import { JobWorker } from "../src/modules/jobs/worker.js";
+import { PgJobQueueRepository, type JobRecord } from "../src/modules/jobs/repository.js";
+import { jobEventToOut, jobNotFoundForSpace, jobToOut } from "../src/modules/jobs/routes.js";
+import { SchedulerRegistry, startSchedulerRegistry } from "../src/modules/scheduler/registry.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
+import { AutomationService } from "../src/modules/automations/service.js";
+import type { AutomationRow } from "../src/modules/automations/repository.js";
+import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget.js";
+import { registerContextOpsReviewCycleAutomationTarget } from "../src/modules/contextOps/automationTarget.js";
 import {
   isValidTimezone,
   PgDailyReportSettingsRepository,
   type DailyReportSettingRow,
-} from "../src/modules/dailyReports/repository";
-import { buildDailyReportJobPayload } from "../src/modules/dailyReports/scheduler";
-import { loadConfig } from "../src/config";
-import { enforce } from "../src/modules/policy";
+} from "../src/modules/dailyReports/repository.js";
+import { buildDailyReportJobPayload } from "../src/modules/dailyReports/scheduler.js";
+import { loadConfig } from "../src/config.js";
+import { enforce } from "../src/modules/policy/index.js";
 
 const maintenanceScanMock = vi.hoisted(() => vi.fn());
 const dbPoolMock = vi.hoisted(() => ({ current: null as unknown }));
 
-vi.mock("../src/db/pool", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/db/pool")>();
+vi.mock("../src/db/pool.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/db/pool.js")>();
   return {
     ...actual,
     getDbPool: vi.fn((databaseUrl: string) => dbPoolMock.current ?? actual.getDbPool(databaseUrl)),
   };
 });
 
-vi.mock("../src/modules/retrieval/maintenance/service", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/retrieval/maintenance/service")>();
+vi.mock("../src/modules/retrieval/maintenance/service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/retrieval/maintenance/service.js")>();
   return {
     ...actual,
     RetrievalMaintenanceService: vi.fn().mockImplementation(() => ({
@@ -44,16 +44,16 @@ vi.mock("../src/modules/retrieval/maintenance/service", async (importOriginal) =
   };
 });
 
-vi.mock("../src/modules/policy", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/policy")>();
+vi.mock("../src/modules/policy/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/policy/index.js")>();
   return {
     ...actual,
     enforce: vi.fn(),
   };
 });
 
-vi.mock("../src/modules/policy/actionRegistry", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/policy/actionRegistry")>();
+vi.mock("../src/modules/policy/actionRegistry.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/policy/actionRegistry.js")>();
   const action = (
     name: string,
     resourceType: string,
@@ -82,6 +82,12 @@ vi.mock("../src/modules/policy/actionRegistry", async (importOriginal) => {
       ]),
     ),
   };
+});
+
+// A fake clock left installed by a failing test would stall every file
+// that runs after this one in the same worker.
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("JobHandlerRegistry", () => {

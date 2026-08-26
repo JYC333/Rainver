@@ -1,16 +1,17 @@
 import { join } from "node:path";
+import { seedServerHost } from "./support/domainSeeds.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { loadConfig } from "../src/config";
-import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository";
-import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox";
-import { PgHostRepository } from "../src/modules/hosts/repository";
-import type { RunRecord } from "../src/modules/runs/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { loadConfig } from "../src/config.js";
+import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
+import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -21,7 +22,7 @@ const OTHER_PROJECT = "55555555-5555-4555-8555-555555555555";
 const HOST = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 
-const db = useTestDatabase(__filename, { max: 4 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -35,16 +36,7 @@ beforeEach(async () => {
      VALUES ($1, 'Owner', 'active', now(), now())`,
     [USER],
   );
-  await db.pool.query(
-    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
-     VALUES ($1, NULL, 'Test server', 'server', now(), now())`,
-    [HOST],
-  );
-  await db.pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', now(), now())`,
-    [HOST],
-  );
+  await seedServerHost(db.pool, { id: HOST });
   for (const spaceId of [SPACE, OTHER_SPACE]) {
     await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   jsonBody,
@@ -8,13 +8,13 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import {
   isContentAccessLevel,
   isContentVisibility,
   type ContentAccessLevel,
-} from "../access/contentAccessTypes";
-import { ContentAccessService, type ContentAccessUpdate } from "./service";
+} from "../access/contentAccessTypes.js";
+import { ContentAccessService, type ContentAccessUpdate } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => ContentAccessService.fromConfig(context.config);

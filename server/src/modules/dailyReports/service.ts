@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { completeProviderText } from "../providers/invocation/invocation";
-import type { Queryable } from "../routeUtils/common";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { completeProviderText } from "../providers/invocation/invocation.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
   computeInitialNextRunAt,
   localDayUtcBounds,
   PgDailyReportSettingsRepository,
-} from "./repository";
+} from "./repository.js";
 
 export interface DailyReportResult {
   run_id: string;

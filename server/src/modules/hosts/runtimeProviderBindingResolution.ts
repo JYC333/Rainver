@@ -1,6 +1,6 @@
-import { HttpError, type Queryable } from "../routeUtils/common";
-import { adapterProviderRequirement } from "../runs/runtimeProviderBinding";
-import { PgHostRuntimeProviderBindingRepository } from "./runtimeProviderBindingRepository";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { adapterProviderRequirement } from "../runs/runtimeProviderBinding.js";
+import { PgHostRuntimeProviderBindingRepository } from "./runtimeProviderBindingRepository.js";
 
 /**
  * The ModelProvider a remote dispatch will run against, resolved and validated

@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
+import { loadConfig } from "../src/config.js";
 import {
   buildArxivQueryUrl,
   parseArxivFeed,
   parseArxivReference,
-} from "../src/modules/sources/connectors/arxiv";
+} from "../src/modules/sources/connectors/arxiv.js";
 import {
   __setArxivThrottleForTests,
   acquireArxivRequestSlot,
-} from "../src/modules/sources/connectors/arxivThrottle";
-import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { HttpError } from "../src/modules/routeUtils/common";
-import { simplePdfBytes } from "./fixtures/simplePdf";
-import { handleSourceRetrievalTestSql } from "./helpers/sourceRetrievalTestSql";
+} from "../src/modules/sources/connectors/arxivThrottle.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
+import { simplePdfBytes } from "./fixtures/simplePdf.js";
+import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
 
 function config() {
   return loadConfig({

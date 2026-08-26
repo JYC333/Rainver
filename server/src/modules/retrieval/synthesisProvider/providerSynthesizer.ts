@@ -1,12 +1,12 @@
-import type { BriefCandidate, SynthesisResult, Synthesizer } from "..";
-import { getDbPool } from "../../../db/pool";
-import { completeProviderText } from "../../providers/invocation/invocation";
-import type { ProviderCommandStore } from "../../providers/commands/store";
-import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy";
-import { writePolicyAudit } from "../../policy/auditWriter";
-import { resolveRetrievalSynthesisSystemPrompt } from "../promptRegistry";
-import { RETRIEVAL_SYNTHESIS_TASK } from "./config";
-import { buildSynthesisPrompt, parseSynthesis, type SynthesisDoc } from "./prompt";
+import type { BriefCandidate, SynthesisResult, Synthesizer } from "../index.js";
+import { getDbPool } from "../../../db/pool.js";
+import { completeProviderText } from "../../providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy.js";
+import { writePolicyAudit } from "../../policy/auditWriter.js";
+import { resolveRetrievalSynthesisSystemPrompt } from "../promptRegistry.js";
+import { RETRIEVAL_SYNTHESIS_TASK } from "./config.js";
+import { buildSynthesisPrompt, parseSynthesis, type SynthesisDoc } from "./prompt.js";
 
 const TASK_POLICY_REQUIRED_PROVIDER_ID = "__retrieval_synthesis_task_policy_required__";
 

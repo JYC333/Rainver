@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { insertNoteCollection } from "./support/knowledgeFixtures.js";
 import type { FastifyInstance } from "fastify";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { withTransaction } from "../src/db/tx";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { withTransaction } from "../src/db/tx.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * Multi-placement (U5). `note_collection_items` is unique on
@@ -25,7 +26,13 @@ const OTHER_USER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 let app: FastifyInstance | undefined;
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available || !app) return;
@@ -56,17 +63,6 @@ const identity = { spaceId: SPACE, userId: USER };
 
 interface Placement { collection_id: string; sort_order: number }
 
-async function makeFolder(name: string): Promise<string> {
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  await db.pool.query(
-    `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
-     VALUES ($1,$2,NULL,$3,'normal',0,false,false,$4,$4)`,
-    [id, SPACE, name, now],
-  );
-  return id;
-}
-
 function placements(note: unknown): Placement[] {
   return (note as { placements: Placement[] }).placements;
 }
@@ -79,8 +75,8 @@ describe("note placements (real Postgres)", () => {
   it("reports every folder a note is placed in", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
     const note = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
 
     await repository.addNotePlacement(identity, note.id, second);
@@ -93,8 +89,8 @@ describe("note placements (real Postgres)", () => {
   it("reorders one placement without disturbing the note's other placement", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
     const shared = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
     const other = await repository.createNote(identity, { title: "Other", collection_id: first }) as { id: string };
     await repository.addNotePlacement(identity, shared.id, second);
@@ -120,9 +116,9 @@ describe("note placements (real Postgres)", () => {
   it("moves only the addressed placement when a note is dragged between folders", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
-    const third = await makeFolder("Third");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
+    const third = await insertNoteCollection(db.pool, { space: SPACE, name: "Third" });
     const note = await repository.createNote(identity, { title: "Shared", collection_id: first }) as { id: string };
     await repository.addNotePlacement(identity, note.id, second);
 
@@ -139,8 +135,8 @@ describe("note placements (real Postgres)", () => {
   it("refuses a reorder that names a folder the note is not placed in", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const elsewhere = await makeFolder("Elsewhere");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const elsewhere = await insertNoteCollection(db.pool, { space: SPACE, name: "Elsewhere" });
     const note = await repository.createNote(identity, { title: "Only here", collection_id: first }) as { id: string };
 
     await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
@@ -155,7 +151,7 @@ describe("note placements (real Postgres)", () => {
   it("rejects placing a note twice in the same folder", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const folder = await makeFolder("Folder");
+    const folder = await insertNoteCollection(db.pool, { space: SPACE, name: "Folder" });
     const note = await repository.createNote(identity, { title: "Note", collection_id: folder }) as { id: string };
 
     await expect(repository.addNotePlacement(identity, note.id, folder))
@@ -165,8 +161,8 @@ describe("note placements (real Postgres)", () => {
   it("removes a placement but refuses to remove the last one", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
     const note = await repository.createNote(identity, { title: "Note", collection_id: first }) as { id: string };
     await repository.addNotePlacement(identity, note.id, second);
 
@@ -183,8 +179,8 @@ describe("note placements (real Postgres)", () => {
   it("carries both placement actions through the public routes", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
     const note = await repository.createNote(identity, { title: "Note", collection_id: first }) as { id: string };
 
     const added = await app.inject({
@@ -211,8 +207,8 @@ describe("note placements (real Postgres)", () => {
   it("refuses to reorder a placement of a note the caller cannot read", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    const first = await makeFolder("First");
-    const second = await makeFolder("Second");
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
     const mine = await repository.createNote(identity, { title: "Private", collection_id: first }) as { id: string };
     await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [mine.id]);
 

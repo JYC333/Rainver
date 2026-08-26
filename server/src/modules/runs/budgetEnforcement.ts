@@ -3,8 +3,8 @@ import {
   resolveBudgetSources,
   type RunBudgetSource,
   type RunContractSource,
-} from "./contractSnapshot";
-import type { Queryable, RunRecord } from "./runRepositoryTypes";
+} from "./contractSnapshot.js";
+import type { Queryable, RunRecord } from "./runRepositoryTypes.js";
 
 export class RunBudgetExceededError extends Error {
   readonly statusCode = 409;

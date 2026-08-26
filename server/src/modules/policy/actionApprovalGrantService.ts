@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, optionalString, requiredString } from "../routeUtils/common";
-import { loadActionRegistry } from "./actionRegistry";
-import { enforce } from "./service";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, optionalString, requiredString } from "../routeUtils/common.js";
+import { loadActionRegistry } from "./actionRegistry.js";
+import { enforce } from "./service.js";
 
 export class ActionApprovalGrantService {
   constructor(private readonly db: Queryable) {}

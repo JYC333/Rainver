@@ -1,11 +1,11 @@
-import type { PoolClient } from "../../db/pool";
-import { lockActiveProjectForMutation } from "../projects/access";
-import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement";
+import type { PoolClient } from "../../db/pool.js";
+import { lockActiveProjectForMutation } from "../projects/access.js";
+import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import {
   contractRouteHints,
   type RunBudgetSource,
-} from "../runs/contractSnapshot";
-import type { AutomationRow } from "./repository";
+} from "../runs/contractSnapshot.js";
+import type { AutomationRow } from "./repository.js";
 
 const AUTOMATION_SCHEDULE_HANDLED = Symbol("automation_schedule_handled");
 const VALID_RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);

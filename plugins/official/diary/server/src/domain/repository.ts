@@ -1,4 +1,4 @@
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { Queryable } from "@agent-space/protocol";
 
 export interface DiaryEntryRow {
   id: string;

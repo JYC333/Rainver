@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
 
 export interface GraphViewStateRecord {
   scope_key: string;

@@ -2,28 +2,28 @@ import type {
   SourcePolicyEnvelope,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
+} from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
 import {
   HttpError,
   optionalString,
   requiredString,
   type Pool,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository";
-import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
-import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch";
-import { validateCustomSourceHandlerOutput } from "../customSources/customSourceContractValidator";
-import { cleanupSandbox, effectiveCustomSourceLimits } from "../customSources/customSourceRunner";
-import { sha256 } from "../sourceRepositoryMappers";
-import { runSourceRecipe } from "./recipeInterpreter";
+} from "../../routeUtils/common.js";
+import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository.js";
+import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
+import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
+import { validateCustomSourceHandlerOutput } from "../customSources/customSourceContractValidator.js";
+import { cleanupSandbox, effectiveCustomSourceLimits } from "../customSources/customSourceRunner.js";
+import { sha256 } from "../sourceRepositoryMappers.js";
+import { runSourceRecipe } from "./recipeInterpreter.js";
 import {
   getSourceRecipeVersion,
   recipeVersionOut,
   recordSourceRecipeDryRunOutcome,
-} from "./recipeVersionStore";
+} from "./recipeVersionStore.js";
 
 /**
  * Bounded, side-effect-free dry-run of a draft Source recipe version.
@@ -57,7 +57,6 @@ export class SourceRecipeDryRunService {
       throw new HttpError(409, `Recipe version must be draft or test_failed to dry-run (was ${versionRow.status})`);
     }
 
-    const protocol = await loadProtocol();
     const recipeParse = protocol.SourceRecipeDefinitionSchema.safeParse(versionRow.recipe_json);
     if (!recipeParse.success) {
       throw new HttpError(422, "Stored recipe definition no longer passes schema validation");

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters";
-import type { Queryable } from "../routeUtils/common";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
+import { BUILTIN_RUNTIME_ADAPTER_SPECS, getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
 
 export const CONFORMANCE_SUITE_VERSION = "runtime_conformance.v1";
 export const CONFORMANCE_CHECKS = [

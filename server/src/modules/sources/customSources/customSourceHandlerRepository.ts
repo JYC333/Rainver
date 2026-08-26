@@ -1,9 +1,9 @@
 import type {
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourceSpacePolicyUpdate,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { isSpaceOwnerOrAdmin } from "../../access/roles";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
 import {
   HttpError,
   countFromRow,
@@ -11,16 +11,16 @@ import {
   page,
   type Queryable,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
+} from "../../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
   defineScopedSetting,
   settingsRecord,
   type ScopedSettingsRead,
-} from "../../settings";
-import { SOURCE_CAPTURE_POLICY_SET } from "../capturePolicy";
-import type { CustomSourceRunnerSettings } from "./customSourceRunner";
+} from "../../settings/index.js";
+import { SOURCE_CAPTURE_POLICY_SET } from "../capturePolicy.js";
+import type { CustomSourceRunnerSettings } from "./customSourceRunner.js";
 
 export const HANDLER_VERSION_COLUMNS = `id, space_id, source_connection_id, version_number, language, entrypoint, handler_artifact_id, manifest_json, input_schema_json, output_schema_json, policy_envelope_json, requested_capabilities_json, checksum, status, created_by_user_id, created_by_run_id, proposal_id, test_result_json, created_at, activated_at, superseded_at`;
 export const HANDLER_RUN_COLUMNS = `id, space_id, source_connection_id, handler_version_id, extraction_job_id, status, input_artifact_id, output_artifact_id, logs_artifact_id, failure_class, failure_detail_json, validation_result_json, resource_usage_json, created_at, started_at, completed_at`;

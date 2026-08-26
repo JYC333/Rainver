@@ -7,9 +7,9 @@ import {
   isNarrowableFailure,
   SourceFetchFailure,
   BACKFILL_FETCH_MAX_TIMEOUT_MS,
-} from "../src/modules/sources/sourceConnectionFetch";
-import { fetchBackfillPageWithNarrowing, pageSizeLadder, PAGE_SIZE_FLOOR } from "../src/modules/sources/sourceBackfillPageFetch";
-import type { SourceConnectorHandler } from "../src/modules/sources/catalog/sourceConnectorRegistry";
+} from "../src/modules/sources/sourceConnectionFetch.js";
+import { fetchBackfillPageWithNarrowing, pageSizeLadder, PAGE_SIZE_FLOOR } from "../src/modules/sources/sourceBackfillPageFetch.js";
+import type { SourceConnectorHandler } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
 
 const handler = { prepareRequest: undefined } as unknown as SourceConnectorHandler;
 const provider = { providerKey: "arxiv", providerDisplayName: "arXiv", connectorKey: "arxiv_api" };

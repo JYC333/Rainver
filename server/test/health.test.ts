@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../src/server";
-import { loadConfig } from "../src/config";
-import { __setHealthDatabaseForTests } from "../src/modules/system/service";
+import { buildServer } from "../src/server.js";
+import { loadConfig } from "../src/config.js";
+import { __setHealthDatabaseForTests } from "../src/modules/system/service.js";
 
 let app: FastifyInstance;
 

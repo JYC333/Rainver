@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
@@ -13,12 +13,12 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgActivityRepository, summaryInputFromBody } from "./repository";
+} from "../routeUtils/common.js";
+import { PgActivityRepository, summaryInputFromBody } from "./repository.js";
 import {
   applyContentCreationContext,
   resolveContentCreationContext,
-} from "../access/creationContext";
+} from "../access/creationContext.js";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 

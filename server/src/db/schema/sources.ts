@@ -1,14 +1,14 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { artifacts } from "./artifacts";
-import { proposals } from "./proposals";
-import { projects } from "./projects";
-import { credentials } from "./providers";
-import { sourceProviderConnectors } from "./sourceCatalog";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { artifacts } from "./artifacts.js";
+import { proposals } from "./proposals.js";
+import { projects } from "./projects.js";
+import { credentials } from "./providers.js";
+import { sourceProviderConnectors } from "./sourceCatalog.js";
 
 export const extractionJobs = pgTable("extraction_jobs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

@@ -7,15 +7,15 @@
  */
 
 import { resolve } from "node:path";
-import { loadConfig } from "../config";
-import { getDbPool } from "./pool";
-import { migrate, status } from "./migrator";
+import { loadConfig } from "../config.js";
+import { getDbPool } from "./pool.js";
+import { migrate, status } from "./migrator.js";
 
 function migrationsDir(): string {
   const override = process.env.SERVER_MIGRATIONS_DIR?.trim();
   if (override) return resolve(override);
   // dist/db/migrateCli.js -> server/migrations
-  return resolve(__dirname, "..", "..", "migrations");
+  return resolve(import.meta.dirname, "..", "..", "migrations");
 }
 
 async function main(): Promise<void> {

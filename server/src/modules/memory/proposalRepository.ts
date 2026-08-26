@@ -1,23 +1,21 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { loadActionRegistry } from "../policy/actionRegistry";
-import { enforce } from "../policy/service";
-import { proposalToOut } from "../proposals/repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { canReadMemory, type MemoryAuthFields } from "./memoryReadAuth";
-import { canAccessProject } from "./projectAccess";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { enforce } from "../policy/service.js";
+import { proposalToOut } from "../proposals/repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { canReadMemory, type MemoryAuthFields } from "./memoryReadAuth.js";
+import { canAccessProject } from "./projectAccess.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 
 import type {
   MemoryProposalArchiveCommand,
   MemoryProposalCreateCommand,
   MemoryProposalUpdateCommand,
   ProposalOut,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { PolicyCheckRequest } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+} from "@agent-space/protocol";
+import type { PolicyCheckRequest } from "@agent-space/protocol";
 
 export interface QueryResult<Row> {
   rows: Row[];

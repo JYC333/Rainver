@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { ProjectCorpusRepository, syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository";
-import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { ProjectCorpusRepository, syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository.js";
+import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for Academic Research project corpus behavior:
 // Project Corpus DTOs carry joined academic paper metadata, a human's
@@ -23,7 +23,7 @@ const AGENT = "66666666-6666-4666-8666-666666666666";
 const PP_RUN = "77777777-7777-4777-8777-777777777777";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -101,19 +101,6 @@ const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 async function makeSharedSpace(): Promise<void> {
   await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
-}
-
-async function addSpaceMember(userId: string): Promise<void> {
-  const now = new Date().toISOString();
-  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`, [
-    userId,
-    now,
-  ]);
-  await db.pool.query(
-    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'member','active',$4,$4)`,
-    [randomUUID(), SPACE, userId, now],
-  );
 }
 
 async function seedPaperCorpusItem(): Promise<{ objectId: string; sourceItemId: string; corpusItemId: string }> {
@@ -463,7 +450,7 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
   it("does not expose project corpus to a same-space non-project member", async () => {
     if (!db.available) return;
     await makeSharedSpace();
-    await addSpaceMember(SAME_SPACE_MEMBER);
+    await seedSpaceMember(db.pool, { space: SPACE, user: SAME_SPACE_MEMBER });
     await seedPaperCorpusItem();
 
     await expect(
@@ -474,7 +461,7 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
   it("does not infer project provenance from unrelated or deleted SourceItems sharing a Reference", async () => {
     if (!db.available) return;
     await makeSharedSpace();
-    await addSpaceMember(SAME_SPACE_MEMBER);
+    await seedSpaceMember(db.pool, { space: SPACE, user: SAME_SPACE_MEMBER });
     const { objectId, sourceItemId } = await seedPaperCorpusItem();
     const unrelatedSourceItemId = randomUUID();
     const now = new Date().toISOString();
@@ -504,7 +491,7 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
   it("rejects manually adding corpus targets that the writer cannot read", async () => {
     if (!db.available) return;
     await makeSharedSpace();
-    await addSpaceMember(SAME_SPACE_MEMBER);
+    await seedSpaceMember(db.pool, { space: SPACE, user: SAME_SPACE_MEMBER });
     const now = new Date().toISOString();
 
     const privateObjectId = randomUUID();

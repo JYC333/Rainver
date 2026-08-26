@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import {
   HttpError,
   dateIso,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import type {
   EvidenceLinkRow,
   EvidenceRow,
   ExtractionJobRow,
   ProjectSourceBindingRow,
   SourceItemRow,
-} from "./sourceRepositoryRows";
+} from "./sourceRepositoryRows.js";
 
 export function itemOut(row: SourceItemRow) {
   const summaryOnly = row.effective_access_level === "summary";

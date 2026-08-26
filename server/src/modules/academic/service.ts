@@ -1,9 +1,9 @@
-import type { ServerConfig } from "../../config";
-import { dateIso, dbPool, HttpError, page, requiredString, optionalString, numberValue, withDbTransaction, type SpaceUserIdentity } from "../routeUtils/common";
-import { AcademicRepository, type AcademicAuthorRow, type AcademicCitationRow, type AcademicPaperRow } from "./repository";
-import { contentOwnerFromDb } from "../access/contentAccessQuery";
-import { PgKnowledgeRepository } from "../knowledge/repository";
-import { canonicalAcademicIdentity } from "./identity";
+import type { ServerConfig } from "../../config.js";
+import { dateIso, dbPool, HttpError, page, requiredString, optionalString, numberValue, withDbTransaction, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { AcademicRepository, type AcademicAuthorRow, type AcademicCitationRow, type AcademicPaperRow } from "./repository.js";
+import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
+import { PgKnowledgeRepository } from "../knowledge/repository.js";
+import { canonicalAcademicIdentity } from "./identity.js";
 
 const PAPER_TYPES = new Set(["article", "preprint", "conference_paper", "book_chapter", "thesis", "report", "other"]);
 
@@ -74,7 +74,7 @@ export class AcademicService {
   }
 
   constructor(
-    private readonly pool: import("../../db/pool").Pool,
+    private readonly pool: import("../../db/pool.js").Pool,
     private readonly repository: AcademicRepository,
   ) {}
 

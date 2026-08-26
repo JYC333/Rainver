@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { contentReadSql } from "../access/contentAccessSql";
-import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import { assertLinkTypeAllowed } from "../ontology/validation";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { assertLinkTypeAllowed } from "../ontology/validation.js";
 
 export interface ResearchWorkflowRow {
   id: string;

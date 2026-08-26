@@ -1,20 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  __setNetworkRetryDelayForTests,
-  __setProviderHttpClientForTests,
-  completeProviderChat,
-  completeProviderEmbedding,
-  completeProviderRerank,
-  completeProviderText,
-  orderPoolMembers,
-  ProviderInvocationError,
-  type InvocationTarget,
-  type PoolOutcome,
-  type ProviderCommandStore,
-  type ProviderTaskChainEntry,
-} from "../src/modules/providers";
-import type { UsageObservation } from "../src/modules/usage";
-import { anthropicChatResponse, openAiChatResponse } from "./support/piAiHttp";
+import { __setNetworkRetryDelayForTests, __setProviderHttpClientForTests, completeProviderChat, completeProviderEmbedding, completeProviderRerank, completeProviderText, ProviderInvocationError } from "../src/modules/providers/invocation/invocation.js";
+import { orderPoolMembers, type InvocationTarget, type PoolOutcome, type ProviderCommandStore, type ProviderTaskChainEntry } from "../src/modules/providers/commands/store.js";
+import type { UsageObservation } from "../src/modules/usage/index.js";
+import { anthropicChatResponse, openAiChatResponse } from "./support/piAiHttp.js";
 
 // Network-error retries add a real delay between attempts (see
 // NETWORK_ERROR_RETRY_DELAY_MS in invocation.ts) — skip it here so tests

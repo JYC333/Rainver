@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PgSchedulerTaskStore } from "../src/modules/scheduler";
+import { PgSchedulerTaskStore } from "../src/modules/scheduler/taskStore.js";
 
 class FakeSchedulerTaskDb {
   row: Record<string, unknown> | null = null;

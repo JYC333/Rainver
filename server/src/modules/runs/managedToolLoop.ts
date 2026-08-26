@@ -18,10 +18,10 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { managedAgentLoop } from "./managedAgentLoopBinding";
-import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { managedAgentLoop } from "./managedAgentLoopBinding.js";
+import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort.js";
 
 /**
  * Four *model* turns. Deliberately unchanged while moving out of Retrieval,

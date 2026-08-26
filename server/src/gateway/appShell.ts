@@ -13,15 +13,15 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
-import type { ServerConfig } from "../config";
-import { registerErrorEnvelopeHandler } from "./errorEnvelope";
-import { buildLoggerOptions } from "./logging";
+import type { ServerConfig } from "../config.js";
+import { registerErrorEnvelopeHandler } from "./errorEnvelope.js";
+import { buildLoggerOptions } from "./logging.js";
 import {
   REQUEST_ID_HEADER,
   SERVER_MARKER_HEADER,
   SERVER_MARKER_VALUE,
   resolveRequestId,
-} from "./requestContext";
+} from "./requestContext.js";
 
 const SERVER_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
 

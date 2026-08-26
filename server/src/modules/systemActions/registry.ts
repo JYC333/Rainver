@@ -1,11 +1,10 @@
-import type { SystemActionDefinition, SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
+import type { SystemActionDefinition, SystemActionId } from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
 
 let cached: ReadonlyMap<SystemActionId, SystemActionDefinition> | null = null;
 
 export async function loadSystemActionRegistry(): Promise<ReadonlyMap<SystemActionId, SystemActionDefinition>> {
   if (cached) return cached;
-  const protocol = await loadProtocol();
   const policyActionIds = new Set(
     protocol.POLICY_ACTION_REGISTRY.map((definition) => definition.action),
   );

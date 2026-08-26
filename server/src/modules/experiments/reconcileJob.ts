@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { ExperimentRunService } from "./runService";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { ExperimentRunService } from "./runService.js";
 
 export function registerExperimentReconcileHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;

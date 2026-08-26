@@ -1,13 +1,13 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { policyDecisionRecords } from "./policy";
-import { rooms } from "./rooms";
-import { projectFolders } from "./projectFolders";
-import { messages, sessions } from "./sessions";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { policyDecisionRecords } from "./policy.js";
+import { rooms } from "./rooms.js";
+import { projectFolders } from "./projectFolders.js";
+import { messages, sessions } from "./sessions.js";
 
 export const agentRunGroups = pgTable("agent_run_groups", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

@@ -7,7 +7,7 @@
 import type {
   CanonicalMessage,
   MessageOut,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export interface ChatConversationWindowMessage {
   message_id: string | null;

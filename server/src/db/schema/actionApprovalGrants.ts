@@ -1,10 +1,10 @@
 import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { projects } from "./projects";
-import { spaces } from "./spaces";
-import { runs } from "./runs";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { projects } from "./projects.js";
+import { spaces } from "./spaces.js";
+import { runs } from "./runs.js";
 
 export const actionApprovalGrants = pgTable("action_approval_grants", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

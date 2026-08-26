@@ -1,4 +1,4 @@
-import { modelSpec } from "../providers/modelSpecs";
+import { modelSpec } from "../providers/modelSpecs.js";
 
 export interface ModelWindowSpec {
   model: string;

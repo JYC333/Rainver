@@ -1,4 +1,4 @@
-import type { SourceItemRow } from "../sourceRepositoryRows";
+import type { SourceItemRow } from "../sourceRepositoryRows.js";
 
 export const ARXIV_NEW_PAPERS_CONTENT_PROFILE = "arxiv_new_papers";
 

@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
+import { users } from "./auth.js";
 
 export const settings = pgTable("settings", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

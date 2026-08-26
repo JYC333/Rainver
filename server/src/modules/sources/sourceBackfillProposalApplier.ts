@@ -1,6 +1,6 @@
-import type { ProposalApplierRegistry } from "../proposals/applierRegistry";
-import { requiredString } from "../routeUtils/common";
-import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService";
+import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
+import { requiredString } from "../routeUtils/common.js";
+import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService.js";
 
 export function registerSourceBackfillProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("source_backfill_start", async ({ db, proposal }) => {

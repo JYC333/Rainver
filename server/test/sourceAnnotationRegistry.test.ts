@@ -6,14 +6,14 @@ import {
   getDomain,
   isKnownDomain,
   registerDomain,
-} from "../src/modules/sourceAnnotation/domainSkeleton";
+} from "../src/modules/sourceAnnotation/domainSkeleton.js";
 import {
   parseSourceAnnotationResult,
   sourceAnnotationOutputContract,
   normalizeTopicCandidates,
   SOURCE_ANNOTATION_SCHEMA_ID,
-} from "../src/modules/sourceAnnotation/resultParser";
-import { MAX_TOPIC_CANDIDATES } from "../src/modules/sourceAnnotation/vocabulary";
+} from "../src/modules/sourceAnnotation/resultParser.js";
+import { MAX_TOPIC_CANDIDATES } from "../src/modules/sourceAnnotation/vocabulary.js";
 
 // The domain skeleton is the reference frame serendipity gaps are computed
 // against, so what it guarantees is structural: it is coarse, it is stable, and

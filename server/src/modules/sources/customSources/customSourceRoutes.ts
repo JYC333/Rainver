@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../../gateway/routeRegistry";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../../gateway/routeRegistry.js";
 import {
   dbPool,
   jsonBody,
@@ -9,15 +10,14 @@ import {
   optionalString,
   resolveIdentity,
   sendRouteError,
-} from "../../routeUtils/common";
-import { requireInstanceAdmin } from "../../routeUtils/access";
-import { enforceSources } from "../enforceSources";
-import { PgCustomSourceHandlerRepository } from "./customSourceHandlerRepository";
-import { CustomSourceCreateFlowService } from "./customSourceCreateFlowService";
-import { CustomSourceRepairService } from "./customSourceRepairService";
-import { CustomSourceCredentialService } from "./customSourceCredentialService";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { applyContentCreationContext, resolveContentCreationContext } from "../../access/creationContext";
+} from "../../routeUtils/common.js";
+import { requireInstanceAdmin } from "../../routeUtils/access.js";
+import { enforceSources } from "../enforceSources.js";
+import { PgCustomSourceHandlerRepository } from "./customSourceHandlerRepository.js";
+import { CustomSourceCreateFlowService } from "./customSourceCreateFlowService.js";
+import { CustomSourceRepairService } from "./customSourceRepairService.js";
+import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
+import { applyContentCreationContext, resolveContentCreationContext } from "../../access/creationContext.js";
 
 /** Custom Source create-flow (Phase 5), repair/rollback (Phase 9), credentials (Phase 10), and read-model (Phase 2) routes, split out of routes.ts per its own size. */
 export function registerCustomSourceRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -123,7 +123,6 @@ export function registerCustomSourceRoutes(app: FastifyInstance, context: Module
     try {
       const gate = await enforceSources(context, identity, "source.custom.credential_create", "custom_source_credential");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const protocol = await loadProtocol();
       const payload = protocol.CustomSourceCredentialCreateSchema.parse(jsonBody(request));
       return reply.code(201).send(await customSourceCredentials().create(identity, payload));
     } catch (error) {
@@ -170,7 +169,6 @@ export function registerCustomSourceRoutes(app: FastifyInstance, context: Module
     if (!identity) return reply;
     if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
     try {
-      const protocol = await loadProtocol();
       const payload = protocol.CustomSourceInstanceRunnerSettingsUpdateSchema.parse(jsonBody(request));
       return reply.send(await customSourceRepository().updateInstanceRunnerSettings(identity, payload));
     } catch (error) {
@@ -187,7 +185,6 @@ export function registerCustomSourceRoutes(app: FastifyInstance, context: Module
     try {
       const gate = await enforceSources(context, identity, "source.custom.settings_update", "custom_source_settings");
       if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const protocol = await loadProtocol();
       const payload = protocol.CustomSourceSpacePolicyUpdateSchema.parse(jsonBody(request));
       return reply.send(await customSourceRepository().updateSpacePolicy(identity, payload));
     } catch (error) {

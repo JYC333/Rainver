@@ -1,17 +1,14 @@
-import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach } from "vitest";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { resetTables } from "./support/resetTables";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
+import { resetTables } from "./support/resetTables.js";
+import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 const {
   plugin: { financeLedgerPlugin },
   routes: { registerFinanceLedgerRoutes },
 } = loadFinanceLedgerRuntime();
 
-let container: TestPostgresDatabase | null = null;
-let pool: Pool | null = null;
 let app: FastifyInstance | null = null;
 
 const SPACE_A = "space-finance-routes-a";
@@ -27,54 +24,49 @@ const guardState = {
   userId: USER_1,
 };
 
+const db = useTestDatabase(import.meta.filename, { max: 10, empty: true });
+
 beforeAll(async () => {
-  container = await getTestPostgres(__filename, { empty: true });
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  if (!db.available) return;
   for (const migration of financeLedgerPlugin.migrations!) {
-    await pool.query(migration.sql);
+  await db.pool.query(migration.sql);
   }
 
   app = Fastify();
   const fakeCtx = {
-    pluginId: "finance_ledger",
-    fastify: app,
-    db: pool,
-    config: {},
-    isEnabled: async () => guardState.enabled,
-    http: {
-      resolveIdentity: async () => identity(),
-      pluginGuard: async (_request: FastifyRequest, reply: FastifyReply) => {
-        if (!guardState.enabled) {
-          reply.code(403).send({ detail: "plugin finance_ledger is disabled" });
-          return null;
-        }
-        return identity();
-      },
-      sendError: (reply: FastifyReply, err: unknown) => {
-        reply.code(500).send({ detail: err instanceof Error ? err.message : "error" });
-      },
-      parseJsonBody: (request: FastifyRequest) =>
-        (request.body ?? {}) as Record<string, unknown>,
+  pluginId: "finance_ledger",
+  fastify: app,
+  db: db.pool,
+  config: {},
+  isEnabled: async () => guardState.enabled,
+  http: {
+    resolveIdentity: async () => identity(),
+    pluginGuard: async (_request: FastifyRequest, reply: FastifyReply) => {
+      if (!guardState.enabled) {
+        reply.code(403).send({ detail: "plugin finance_ledger is disabled" });
+        return null;
+      }
+      return identity();
     },
-    jobs: { register: () => {}, enqueue: async () => ({ jobId: "" }) },
-    scheduler: { register: () => {} },
-    proposals: { register: () => {} },
+    sendError: (reply: FastifyReply, err: unknown) => {
+      reply.code(500).send({ detail: err instanceof Error ? err.message : "error" });
+    },
+    parseJsonBody: (request: FastifyRequest) =>
+      (request.body ?? {}) as Record<string, unknown>,
+  },
+  jobs: { register: () => {}, enqueue: async () => ({ jobId: "" }) },
+  scheduler: { register: () => {} },
+  proposals: { register: () => {} },
   };
-  registerFinanceLedgerRoutes(app, pool, fakeCtx);
+  registerFinanceLedgerRoutes(app, db.pool, fakeCtx);
   await app.ready();
-}, 60_000);
-
-afterAll(async () => {
-  await app?.close();
-  await pool?.end();
-  await container?.stop();
 });
 
 beforeEach(async () => {
   guardState.enabled = true;
   guardState.spaceId = SPACE_A;
   guardState.userId = USER_1;
-  await resetTables(pool!, ["finance_books"], { cascade: true });
+  await resetTables(db.pool, ["finance_books"], { cascade: true });
 });
 
 function identity() {

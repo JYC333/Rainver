@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import type { ServerConfig } from "../src/config";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository";
-import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry";
-import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import type { ServerConfig } from "../src/config.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository.js";
+import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
+import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for evaluation-run metadata and the
 // evolvable_asset_version_promote proposal applier: approval is
@@ -22,7 +22,7 @@ const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

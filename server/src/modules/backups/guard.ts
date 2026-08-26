@@ -1,4 +1,4 @@
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 
 export class BackupPolicyError extends Error {
   constructor(message: string) {

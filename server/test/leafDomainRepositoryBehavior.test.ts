@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PgActivityConsolidationRepository } from "../src/modules/activity/consolidationRepository";
-import { PgActivityRepository } from "../src/modules/activity/repository";
-import { PgSourcesRepository } from "../src/modules/sources/repository";
-import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import type { ServerConfig } from "../src/config";
-import type { SpaceUserIdentity, Queryable } from "../src/modules/routeUtils/common";
-import { handleSourceRetrievalTestSql } from "./helpers/sourceRetrievalTestSql";
+import { PgActivityConsolidationRepository } from "../src/modules/activity/consolidationRepository.js";
+import { PgActivityRepository } from "../src/modules/activity/repository.js";
+import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { ProjectSourceBindingService } from "../src/modules/projects/projectSourceBindingService.js";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import type { ServerConfig } from "../src/config.js";
+import type { SpaceUserIdentity, Queryable } from "../src/modules/routeUtils/common.js";
+import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
 
 function sourcesConfig(): ServerConfig {
   return {

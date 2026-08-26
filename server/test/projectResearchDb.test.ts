@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { ProjectResearchRepository } from "../src/modules/projectResearch/repository";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
-import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for the Academic Research project-scoped research
 // workflow/checkpoint/artifact-link/evidence-matrix/integrity API surface
@@ -26,7 +26,7 @@ const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 const CONFIG = loadConfig({});
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

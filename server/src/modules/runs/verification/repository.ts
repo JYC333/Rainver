@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, RunRecord } from "../runRepositoryTypes";
-import { redactEvidenceText, sanitizeEvidenceJson } from "../evidenceRedaction";
-import { contractRecord } from "../contractSnapshot";
+import type { Queryable, RunRecord } from "../runRepositoryTypes.js";
+import { redactEvidenceText, sanitizeEvidenceJson } from "../evidenceRedaction.js";
+import { contractRecord } from "../contractSnapshot.js";
 import type {
   ValidationRecipePlan,
   VerificationResultRecord,
-} from "./types";
+} from "./types.js";
 
 export interface VerificationPlanReader {
   getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan>;

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { policyModule } from "../src/modules/policy";
-import { loadConfig } from "../src/config";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { policyModule } from "../src/modules/policy/index.js";
+import { loadConfig } from "../src/config.js";
 
 let app: FastifyInstance;
 

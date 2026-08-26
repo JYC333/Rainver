@@ -1,11 +1,11 @@
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import type {
   CanonicalObject,
   RetrievalEdge,
   RetrievalObjectRef,
   RetrievalObjectType,
   RevalidatedObject,
-} from "./types";
+} from "./types.js";
 
 /**
  * A domain plugs into the generic zero-LLM retrieval engine by registering an

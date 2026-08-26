@@ -1,9 +1,9 @@
 import { stat } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../../../db/pool";
-import type { RunRecord } from "../repository";
+import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { RunRecord } from "../repository.js";
 import {
   VERIFICATION_ENGINE_VERSION,
   type ValidationRecipePlan,
@@ -14,11 +14,11 @@ import {
   type VerificationSummary,
   type VerifierType,
   type EvaluationVerificationResult,
-} from "./types";
-import { PgVerificationRepository, type VerificationPlanReader } from "./repository";
-import type { Queryable } from "../runRepositoryTypes";
-import { SandboxRunnerVerificationExecutor } from "../../sandboxRunner/client";
-import type { CliExecutionResult } from "../localCliExecution";
+} from "./types.js";
+import { PgVerificationRepository, type VerificationPlanReader } from "./repository.js";
+import type { Queryable } from "../runRepositoryTypes.js";
+import { SandboxRunnerVerificationExecutor } from "../../sandboxRunner/client.js";
+import type { CliExecutionResult } from "../localCliExecution.js";
 
 const MAX_COMMAND_TIMEOUT_SECONDS = 300;
 const KNOWN_VERIFIER_TYPES = new Set<string>([

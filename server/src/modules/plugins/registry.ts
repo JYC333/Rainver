@@ -1,6 +1,6 @@
-import type { OfficialPluginDescriptor } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { diaryDescriptor } from "./official/diary";
-import { financeLedgerDescriptor } from "./official/financeLedger";
+import type { OfficialPluginDescriptor } from "@agent-space/protocol";
+import { diaryDescriptor } from "./official/diary.js";
+import { financeLedgerDescriptor } from "./official/financeLedger.js";
 
 /**
  * Static in-memory registry of official optional modules bundled with this

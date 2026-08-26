@@ -3,8 +3,8 @@ import {
   ContextOpsPacketReviewError,
   assertCanReviewContextOpsPacket,
   canInitiateContextOpsScan,
-} from "../src/modules/contextOps/reviewPolicy";
-import type { Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/contextOps/reviewPolicy.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 function fakeDb(input: {
   mode: "private_only" | "admins" | "members";

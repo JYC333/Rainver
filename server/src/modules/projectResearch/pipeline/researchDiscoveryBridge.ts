@@ -1,7 +1,7 @@
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
-import { HttpError, objectValue } from "../../routeUtils/common";
-import { assertProjectWriter } from "../../projects/access";
-import type { ResearchScopeContext } from "../researchContext";
+import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError, objectValue } from "../../routeUtils/common.js";
+import { assertProjectWriter } from "../../projects/access.js";
+import type { ResearchScopeContext } from "../researchContext.js";
 
 interface MaterializedChannelRow {
   question_snapshot: string;

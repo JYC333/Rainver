@@ -1,4 +1,4 @@
-import { computeNextRunAtFromScheduleRule, parseSourceScheduleRule } from "./sourceScheduleInput";
+import { computeNextRunAtFromScheduleRule, parseSourceScheduleRule } from "./sourceScheduleInput.js";
 
 const INTERVAL_MS: Record<string, number> = {
   hourly: 60 * 60 * 1000,

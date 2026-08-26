@@ -1,5 +1,5 @@
-import type { Queryable } from "../routeUtils/common";
-import { linkEvidenceToBoundProjects, materializeProjectSourceItemLinks } from "./projectSourceRoutingService";
+import type { Queryable } from "../routeUtils/common.js";
+import { linkEvidenceToBoundProjects, materializeProjectSourceItemLinks } from "./projectSourceRoutingService.js";
 
 export interface ProjectSourceRoutingHook {
   routeMaterializedItem(db: Queryable, input: { spaceId: string; sourceItemId: string; bindingId?: string | null; archiveNonMatching?: boolean }): Promise<{ created: number; reactivated: number; archived: number }>;

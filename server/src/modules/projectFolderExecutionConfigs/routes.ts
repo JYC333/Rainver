@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dateIso,
@@ -13,8 +13,8 @@ import {
   sendRouteError,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter } from "../projects/access";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
 
 interface ProjectFolderExecutionConfigRow {
   id: string;

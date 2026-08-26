@@ -1,31 +1,31 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../../routeUtils/common";
-import { dateIso, HttpError, objectValue, optionalString, withQueryableTransaction } from "../../routeUtils/common";
-import { lockActiveProjectForMutation } from "../../projects/access";
-import { PgJobQueueRepository } from "../../jobs/repository";
-import { PgRunRepository } from "../../runs/repository";
-import { runOutputResult } from "../../runs/orchestrationResults";
-import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy";
-import { ProjectResearchArtifactService } from "../artifactService";
-import { ProjectResearchReportMaterializer } from "../reportMaterializer";
-import { assignReportReferenceIds } from "../reportReferenceNumbering";
+import type { Queryable } from "../../routeUtils/common.js";
+import { dateIso, HttpError, objectValue, optionalString, withQueryableTransaction } from "../../routeUtils/common.js";
+import { lockActiveProjectForMutation } from "../../projects/access.js";
+import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { PgRunRepository } from "../../runs/repository.js";
+import { runOutputResult } from "../../runs/orchestrationResults.js";
+import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy.js";
+import { ProjectResearchArtifactService } from "../artifactService.js";
+import { ProjectResearchReportMaterializer } from "../reportMaterializer.js";
+import { assignReportReferenceIds } from "../reportReferenceNumbering.js";
 import {
   validateResearchArtifacts,
   type ResearchArtifactRecord,
   type ResearchArtifactValidationFailure,
-} from "../artifactValidation";
-import { RESEARCH_SYNTHESIS_CRITIQUE_OUTPUT_CONTRACT, RESEARCH_SYNTHESIS_OUTPUT_CONTRACT } from "../outputSchemas";
-import { checkpointBlocks, recordInformationalIdeaReview } from "../researchCheckpointPolicy";
+} from "../artifactValidation.js";
+import { RESEARCH_SYNTHESIS_CRITIQUE_OUTPUT_CONTRACT, RESEARCH_SYNTHESIS_OUTPUT_CONTRACT } from "../outputSchemas.js";
+import { checkpointBlocks, recordInformationalIdeaReview } from "../researchCheckpointPolicy.js";
 import {
   PROJECT_RESEARCH_SYNTHESIS_CRITIQUE_PROMPT_KEY,
   PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY,
   resolveProjectResearchCritiquePrompt,
   resolveProjectResearchSynthesisPrompt,
-} from "../promptRegistry";
-import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection";
-import { researchStage, researchState, advanceOperation as advanceResearchOperation } from "../operationProjection";
-import { deriveStepStates } from "../operationProjection";
-import { setResearchOperationState } from "./operationProjectionWriter";
+} from "../promptRegistry.js";
+import type { ResearchOperationState, ResearchStage, ResearchMutationResult } from "../operationProjection.js";
+import { researchStage, researchState, advanceOperation as advanceResearchOperation } from "../operationProjection.js";
+import { deriveStepStates } from "../operationProjection.js";
+import { setResearchOperationState } from "./operationProjectionWriter.js";
 
 export const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.source_collect",

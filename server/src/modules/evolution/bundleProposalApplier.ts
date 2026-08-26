@@ -2,8 +2,8 @@ import type {
   ProposalApplyContext,
   ProposalApplierRegistry,
   ProposalApplyResult,
-} from "../proposals/applierRegistry";
-import { applyEvolutionBundleRollback } from "./bundleRepository";
+} from "../proposals/applierRegistry.js";
+import { applyEvolutionBundleRollback } from "./bundleRepository.js";
 
 interface EvolutionBundleRollbackPayload {
   proposal_type: "evolution_bundle_rollback";

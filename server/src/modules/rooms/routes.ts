@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   jsonBody,
   optionalString,
@@ -8,9 +9,8 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { RoomService } from "./service";
+} from "../routeUtils/common.js";
+import { RoomService } from "./service.js";
 
 type RoomServicePort = Pick<
   RoomService,
@@ -53,7 +53,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.CreateRoomRequestSchema.parse(jsonBody(request));
       const rawIdempotencyKey = request.headers["idempotency-key"];
       const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : null;
@@ -122,7 +121,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       return reply.code(201).send(await service(context).addAgent(
         identity,
         roomId(request),
@@ -137,7 +135,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const rawIdempotencyKey = request.headers["idempotency-key"];
       const idempotencyKey = typeof rawIdempotencyKey === "string" ? rawIdempotencyKey : null;
       return reply.code(201).send(await service(context).addAgentPreset(
@@ -181,7 +178,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       return reply.code(201).send(await service(context).inviteUser(
         identity,
         roomId(request),
@@ -196,7 +192,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       return reply.send(await service(context).decideInvitation(
         identity,
         roomId(request),
@@ -222,7 +217,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RoomOwnerTransferRequestSchema.parse(jsonBody(request));
       return reply.send(await service(context).transferOwner(identity, roomId(request), body.user_id));
     } catch (error) {
@@ -244,7 +238,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.CreateRoomConversationRequestSchema.parse(jsonBody(request));
       return reply.code(201).send(
         await service(context).createConversation(identity, roomId(request), body),
@@ -313,7 +306,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const identity = await resolveIdentity(context.config, request, reply);
       if (!identity) return reply;
       try {
-        const protocol = await loadProtocol();
         const body = protocol.SendRoomMessageRequestSchema.parse(jsonBody(request));
         return reply.code(201).send(
           await service(context).sendMessage(
@@ -335,7 +327,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const identity = await resolveIdentity(context.config, request, reply);
       if (!identity) return reply;
       try {
-        const protocol = await loadProtocol();
         const body = protocol.ContinueRoomAfterProposalRequestSchema.parse(jsonBody(request));
         return reply.code(201).send(
           await service(context).continueAfterProposal(

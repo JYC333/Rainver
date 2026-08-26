@@ -7,29 +7,29 @@ import type {
   RuntimeHostExecuteResponse,
   RunTriggerOrigin,
   InvocationDelivery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
 import {
   authorizeRuntimeHostDelivery,
   bindRuntimeHostDeliveryRequest,
   executeRuntimeHost,
   type RuntimeHostLogger,
-} from "../runtimeHost";
-import { getDbPool } from "../../db/pool";
-import { contractRecord } from "./contractSnapshot";
-import { assembleRunInputEnvelope } from "./runInputEnvelope";
-import type { RunRecord } from "./repository";
-import type { ManagedApiRetrievalToolDeps } from "./managedRetrievalTools";
-import type { AgentDelegationToolDeps } from "./managedAgentDelegationTools";
-import { ManagedAgentToolSurface } from "../systemActions/managedAgentToolSurface";
+} from "../runtimeHost/index.js";
+import { getDbPool } from "../../db/pool.js";
+import { contractRecord } from "./contractSnapshot.js";
+import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
+import type { RunRecord } from "./repository.js";
+import type { ManagedApiRetrievalToolDeps } from "./managedRetrievalTools.js";
+import type { AgentDelegationToolDeps } from "./managedAgentDelegationTools.js";
+import { ManagedAgentToolSurface } from "../systemActions/managedAgentToolSurface.js";
 import {
   redactEvidenceText,
   redactSecretPatterns,
   sanitizeEvidenceJson,
-} from "./evidenceRedaction";
-import { normalizeManagedModelEvents } from "./runtimeEventNormalization";
-import { managedAdapterRequest } from "../runtimeContext";
-import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts";
+} from "./evidenceRedaction.js";
+import { normalizeManagedModelEvents } from "./runtimeEventNormalization.js";
+import { managedAdapterRequest } from "../runtimeContext/index.js";
+import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts.js";
 
 export type ManagedApiAdapterType = "model_api" | "ts_agent_host";
 

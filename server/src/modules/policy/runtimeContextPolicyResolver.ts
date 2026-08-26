@@ -3,8 +3,8 @@ import type {
   RuntimeContextPolicyDocument,
   RuntimeContextPolicyVersion,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { HttpError } from "../routeUtils/common";
+} from "@agent-space/protocol";
+import { HttpError } from "../routeUtils/common.js";
 
 type Constraints = RuntimeContextPolicyDocument["constraints"];
 type Preferences = RuntimeContextPolicyDocument["preferences"];

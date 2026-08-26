@@ -163,8 +163,7 @@ declared interface must have an implementation, asserted by test.
 
 A client-facing copy in `packages/protocol` is the one sanctioned duplicate:
 the registry is server-side and holds SQL (table names, status columns, access
-predicates), and the protocol package is ESM against a CJS server, so a value
-import on a write path would mean a dynamic import per call. The copy is
+predicates), which the client-facing package must not import. The copy is
 allowed **only with a server-side test pinning it to the registry** —
 `NOTE_LINK_TARGET_TYPE_VALUES` and `NOTE_PROJECT_ROLE_VALUES` are the pattern.
 A copy without that test is a violation, not a shortcut: a hand-maintained list

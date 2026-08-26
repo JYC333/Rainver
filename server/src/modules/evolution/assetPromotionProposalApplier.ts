@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanWriteAssetOwnerScope,
   normalizeVersionScopeForWrite,
   type EvolvableAssetAccessRow,
-} from "./assetAccess";
-import { lockEvolutionAssets } from "./assetLocks";
+} from "./assetAccess.js";
+import { lockEvolutionAssets } from "./assetLocks.js";
 
 interface PromotePayload {
   asset_id: string;

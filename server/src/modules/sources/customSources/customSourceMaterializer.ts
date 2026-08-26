@@ -4,19 +4,19 @@ import { dirname, extname, join, resolve } from "node:path";
 import type {
   CustomSourceHandlerOutput,
   SourcePolicyEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
-import { inheritContentAccessGrants } from "../../access/contentAccessInheritance";
-import { sha256, sourceDomain } from "../sourceRepositoryMappers";
-import { projectSourceRoutingHook } from "../../projects/projectSourceRoutingRegistry";
-import { reindexSourceItemAndEvidenceForRetrieval } from "../retrievalIndexing";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { inheritContentAccessGrants } from "../../access/contentAccessInheritance.js";
+import { sha256, sourceDomain } from "../sourceRepositoryMappers.js";
+import { projectSourceRoutingHook } from "../../projects/projectSourceRoutingRegistry.js";
+import { reindexSourceItemAndEvidenceForRetrieval } from "../retrievalIndexing.js";
 import {
   validateCustomSourceHandlerOutput,
   type CustomSourceContractValidationResult,
-} from "./customSourceContractValidator";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner";
-import { upsertCanonicalEvidence } from "../evidenceIdentity";
+} from "./customSourceContractValidator.js";
+import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner.js";
+import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
 
 /**
  * Validates and materializes source implementation output (Level 2 recipes or

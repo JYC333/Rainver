@@ -1,5 +1,5 @@
-import type { Queryable, PluginJobHandler } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { diaryRepository } from "./domain/repository";
+import type { Queryable, PluginJobHandler } from "@agent-space/protocol";
+import { diaryRepository } from "./domain/repository.js";
 
 export const JOB_TYPE_DIARY_REFLECTION = "diary_reflection";
 

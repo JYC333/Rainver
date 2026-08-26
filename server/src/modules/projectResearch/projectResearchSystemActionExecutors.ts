@@ -1,11 +1,11 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { PgAgentGroupRepository } from "../agentGroups/repository";
-import { ResearchAcquisitionService } from "./pipeline/researchAcquisitionService";
-import { ResearchOperationCancelService } from "./researchOperationCancel";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { PgAgentGroupRepository } from "../agentGroups/repository.js";
+import { ResearchAcquisitionService } from "./pipeline/researchAcquisitionService.js";
+import { ResearchOperationCancelService } from "./researchOperationCancel.js";
 
 /**
  * `research.start_acquisition` (action authority consolidation plan, P1.3;

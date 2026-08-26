@@ -1,13 +1,13 @@
-import type { ContextOpsReviewMode, ContextOpsScanMode } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
+import type { ContextOpsReviewMode, ContextOpsScanMode } from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import {
   isKnownSpaceRole,
   isSpaceOwnerOrAdmin,
   type SpaceRole,
-} from "../access/roles";
+} from "../access/roles.js";
 
-export type { SpaceRole } from "../access/roles";
+export type { SpaceRole } from "../access/roles.js";
 
 export interface ContextOpsPacketReviewProposal {
   space_id: string;

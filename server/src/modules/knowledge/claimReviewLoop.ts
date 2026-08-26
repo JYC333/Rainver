@@ -5,16 +5,16 @@ import type {
   ClaimTrajectoryPoint,
   ClaimTrajectoryResponse,
   ClaimTrajectorySignal,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { CLAIM_COLUMNS, CLAIM_FROM, type ClaimRow } from "./knowledgeRepositoryRows";
-import type { Queryable } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
+} from "@agent-space/protocol";
+import { CLAIM_COLUMNS, CLAIM_FROM, type ClaimRow } from "./knowledgeRepositoryRows.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromMetadata,
   sourcePolicyAllowsRead,
-} from "../retrieval/sourcePolicy";
+} from "../retrieval/sourcePolicy.js";
 
 /**
  * Slice E backend: claim trajectory (advisory, read-only change-over-time

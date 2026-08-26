@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TASK_TIMEOUT_SECONDS,
   SchedulerRegistry,
-} from "../src/modules/scheduler/registry";
+} from "../src/modules/scheduler/registry.js";
 
 const silentLog = { warn: vi.fn(), error: vi.fn() };
 
@@ -13,6 +13,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   });
   return { promise, resolve };
 }
+
+// A fake clock left installed by a failing test would stall every file
+// that runs after this one in the same worker.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("SchedulerRegistry liveness", () => {
   it("defaults a task's reporting deadline and exposes it", () => {

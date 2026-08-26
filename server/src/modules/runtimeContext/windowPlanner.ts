@@ -3,14 +3,14 @@ import type {
   ContextWindowAllocations,
   ContextWindowDecision,
   ContextWindowPlan,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import {
   estimateModelTokens,
   resolveModelWindow,
   trimTextToModelTokens,
   type ModelWindowOverride,
-} from "../usage/modelCatalog";
-import { contextItemText } from "./itemNormalizer";
+} from "../usage/modelCatalog.js";
+import { contextItemText } from "./itemNormalizer.js";
 
 export class RuntimeContextPlanningError extends Error {
   constructor(

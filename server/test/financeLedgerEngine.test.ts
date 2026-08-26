@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
+import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 
 const {
   engine: { financeLedgerEngine },

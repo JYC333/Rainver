@@ -7,9 +7,9 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { accessibleProjectIds, assertProjectReadable, assertProjectWriter } from "../projects/access";
-import { contentReadSql } from "../access/contentAccessSql";
+} from "../routeUtils/common.js";
+import { accessibleProjectIds, assertProjectReadable, assertProjectWriter } from "../projects/access.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 
 const ITEM_KINDS = new Set(["card", "exercise"]);
 const REVIEW_OUTCOMES = new Set(["correct", "incorrect"]);

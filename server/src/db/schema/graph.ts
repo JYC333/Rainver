@@ -1,7 +1,7 @@
 import { pgTable, index, unique, check, foreignKey, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
 
 export const graphViewStates = pgTable("graph_view_states", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

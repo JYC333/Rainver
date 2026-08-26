@@ -1,22 +1,22 @@
-import { getDbPool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { PgAutomationRepository } from "../automations/repository";
+import { getDbPool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { PgAutomationRepository } from "../automations/repository.js";
 import {
   automationTargetHandlerRegistry,
   type AutomationTargetExecutionContext,
   type AutomationTargetPreflightContext,
-} from "../automations/targetRegistry";
+} from "../automations/targetRegistry.js";
 import {
   automationContract,
   lockAndCheckAutomationBudget,
   markAutomationScheduleHandled,
   recordValue,
-} from "../automations/targetSupport";
-import { HttpError } from "../routeUtils/common";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { PgRunRepository } from "../runs/repository";
-import { readSpaceRetrievalSettings } from "../retrieval/settings";
-import { runContextReviewCycle } from "./reviewCycle";
+} from "../automations/targetSupport.js";
+import { HttpError } from "../routeUtils/common.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
+import { runContextReviewCycle } from "./reviewCycle.js";
 
 const TARGET_TYPE = "context_ops_review_cycle";
 

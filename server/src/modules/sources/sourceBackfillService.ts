@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, objectValue, requiredString, withQueryableTransaction } from "../routeUtils/common";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import type { ProposalRow } from "../proposals/repository";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
-import { ProjectOperationService } from "../projects/projectOperationService";
-import { PgProposalApplyService } from "../proposals/applyService";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import type { ProposalRow } from "../proposals/repository.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { ProjectOperationService } from "../projects/projectOperationService.js";
+import { PgProposalApplyService } from "../proposals/applyService.js";
 import {
   assertSupportedStrategy,
   normalizeQuota,
@@ -16,7 +16,7 @@ import {
   type BackfillQuotaPolicy,
   type BackfillSegmentWindow,
   type BackfillStrategy,
-} from "./sourceBackfillStrategy";
+} from "./sourceBackfillStrategy.js";
 
 export interface BackfillPreview {
   strategy: BackfillStrategy;

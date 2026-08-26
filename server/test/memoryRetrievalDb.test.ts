@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import {
-  RetrievalProjectionService,
-  RetrievalSearchService,
-} from "../src/modules/retrieval";
-import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter.js";
 
 // Real-PostgreSQL round-trip for the Memory create-safety retrieval slice. The
 // focused memoryRetrieval.test.ts uses an in-memory fake, which cannot catch SQL
@@ -23,7 +21,7 @@ const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const MEM_A = "33333333-3333-4333-8333-333333333333";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

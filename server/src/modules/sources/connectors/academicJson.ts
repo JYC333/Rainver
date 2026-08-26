@@ -1,11 +1,11 @@
-import { HttpError, objectValue } from "../../routeUtils/common";
+import { HttpError, objectValue } from "../../routeUtils/common.js";
 import type {
   NormalizedSourceItem,
   RequestSpec,
   SourceConnectorCapabilities,
   SourceConnectorHandler,
-} from "../catalog/sourceConnectorRegistry";
-import { scanPublicationWindowStart } from "./monitoringWindow";
+} from "../catalog/sourceConnectorRegistry.js";
+import { scanPublicationWindowStart } from "./monitoringWindow.js";
 
 const OPENALEX_FIELDS = "id,doi,title,display_name,publication_date,authorships,primary_location,type,cited_by_count,referenced_works_count,ids,abstract_inverted_index";
 const S2_FIELDS = "paperId,externalIds,url,title,abstract,authors,publicationDate,year,venue,publicationTypes,citationCount,referenceCount,openAccessPdf";

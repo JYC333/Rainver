@@ -1,20 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeAuthRepository } from "./support/routeFakes.js";
 import type { FastifyInstance } from "fastify";
-import { loadConfig } from "../src/config";
-import { getDbPool } from "../src/db/pool";
-import {
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/proposalApplier";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import { PgProposalApplyService } from "../src/modules/proposals/applyService";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository";
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
+import { loadConfig } from "../src/config.js";
+import { getDbPool } from "../src/db/pool.js";
+import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/proposalApplier.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
-vi.mock("../src/db/pool", () => ({ getDbPool: vi.fn() }));
+vi.mock("../src/db/pool.js", () => ({ getDbPool: vi.fn() }));
 
 let app: FastifyInstance | undefined;
 
@@ -353,7 +351,7 @@ describe("object kind proposal applier", () => {
 
 describe("object kind proposal routes", () => {
   it("lets a space admin create an object kind proposal", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql, params) => {
       if (/INSERT INTO proposals/.test(sql)) {
         return {
@@ -395,7 +393,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("rejects unsafe object kind config before creating a proposal", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     let inserts = 0;
     mockPool((sql) => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
@@ -421,7 +419,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("rejects object kind keys that cannot project from the selected canonical domain", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     let inserts = 0;
     mockPool((sql) => {
       if (/INSERT INTO proposals/.test(sql)) inserts += 1;
@@ -446,7 +444,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("enforces strict active object kind field schema before creating knowledge proposals", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     let inserts = 0;
     mockPool((sql, params) => {
       if (/FROM space_object_profiles/.test(sql)) {
@@ -486,7 +484,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("lets admins propose activating a draft object kind", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql, params) => {
       if (/FROM space_object_profiles/.test(sql)) {
         return {
@@ -527,7 +525,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("rejects archived object kind targets before creating review work", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     let inserts = 0;
     mockPool((sql, params) => {
       if (/FROM space_object_profiles/.test(sql)) {
@@ -557,7 +555,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("exports object schema definitions without private object content or proposal history", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM space_object_profiles/.test(sql) && /status <> 'archived'/.test(sql)) {
         return {
@@ -608,7 +606,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("returns relation hints on object kind list responses", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     mockPool((sql) => {
       if (/FROM space_object_profile_relation_hints h/.test(sql)) {
         return {
@@ -645,7 +643,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("imports object schema manifests as draft object kind proposals", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     const insertedPayloads: Record<string, unknown>[] = [];
     mockPool((sql, params) => {
       if (/FROM space_object_profiles/.test(sql)) {
@@ -702,7 +700,7 @@ describe("object kind proposal routes", () => {
   });
 
   it("rejects object kind proposal creation for non-admin members", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     mockPool(() => undefined);
     app = buildModuleServer(config(), [knowledgeModule]);
 
@@ -778,33 +776,6 @@ function proposal(proposalType: string, payload: Record<string, unknown>): Apply
 
 function config() {
   return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" });
-}
-
-function auth(role: "owner" | "admin" | "reviewer" | "member" | "guest" = "admin"): AuthRepository {
-  return {
-    async resolveIdentity() {
-      return { ok: true, spaceId: "space-1", userId: "user-1" };
-    },
-    async getSpaceForUser() {
-      return {
-        id: "space-1",
-        name: "Team",
-        type: "team",
-        role,
-        oversight_mode: "none",
-        egress_notifications_enabled: true,
-        member_count: 1,
-        created_by_user_id: "owner-1",
-        created_at: "2026-06-18T00:00:00.000Z",
-        updated_at: "2026-06-18T00:00:00.000Z",
-      };
-    },
-    async getCurrentUser() { throw new Error("not used"); },
-    async getUserSpaces() { throw new Error("not used"); },
-    async logout() { throw new Error("not used"); },
-    async findOrCreateFromGoogle() { throw new Error("not used"); },
-    async createSession() { throw new Error("not used"); },
-  };
 }
 
 interface Handler {

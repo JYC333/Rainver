@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { ServerConfig } from "../../config";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ServerConfig } from "../../config.js";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   resolveIdentity,
   dbPool,
@@ -9,12 +9,12 @@ import {
   jsonBody,
   objectValue,
   withDbTransaction,
-} from "../routeUtils/common";
-import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access";
-import { pluginService } from "./service";
-import { getOfficialPlugin } from "./registry";
-import { installOfficialPlugin } from "./installer";
-import { BUILT_IN_PLUGINS } from "./builtInPlugins";
+} from "../routeUtils/common.js";
+import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access.js";
+import { pluginService } from "./service.js";
+import { getOfficialPlugin } from "./registry.js";
+import { installOfficialPlugin } from "./installer.js";
+import { BUILT_IN_PLUGINS } from "./builtInPlugins.js";
 
 function settingsObject(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined || value === null) return undefined;

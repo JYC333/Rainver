@@ -3,13 +3,13 @@ import type {
   ProposalApplierRegistry,
   ProposalApplyContext,
   ProposalApplyResult,
-} from "../proposals/applierRegistry";
-import { HttpError, objectValue, optionalObject, optionalString } from "../routeUtils/common";
+} from "../proposals/applierRegistry.js";
+import { HttpError, objectValue, optionalObject, optionalString } from "../routeUtils/common.js";
 import {
   approveSkillImportInTransaction,
   convertSkillPackageToCapabilityInTransaction,
-} from "./repository";
-import { getBuiltInCapabilityDefinition } from "./registry";
+} from "./repository.js";
+import { getBuiltInCapabilityDefinition } from "./registry.js";
 
 type JsonRecord = Record<string, unknown>;
 

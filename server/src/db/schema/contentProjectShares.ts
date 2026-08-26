@@ -7,10 +7,10 @@ import {
 	timestamp,
 	type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
-import { users } from "./auth";
-import { spaceMemberships, spaces } from "./spaces";
-import { projects } from "./projects";
-import { spaceObjects } from "./knowledge";
+import { users } from "./auth.js";
+import { spaceMemberships, spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { spaceObjects } from "./knowledge.js";
 
 /**
  * Additional Project scopes for a `space_objects` row (U8/U9).

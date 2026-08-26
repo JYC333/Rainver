@@ -17,13 +17,13 @@ import {
   type Decision,
   type PolicyDecision,
   type RiskLevel,
-} from "./decisions";
+} from "./decisions.js";
 import {
   requireActionDefinition,
   UnknownPolicyActionError,
   type PolicyActionDefinition,
-} from "./actionRegistry";
-import { allowsManagedCredentialUse } from "./managedExecutionPolicy";
+} from "./actionRegistry.js";
+import { allowsManagedCredentialUse } from "./managedExecutionPolicy.js";
 
 type Ctx = Record<string, unknown>;
 

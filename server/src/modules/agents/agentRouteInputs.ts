@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { HttpError } from "../routeUtils/common";
-import type { PgAgentRepository } from "./repository";
+import { HttpError } from "../routeUtils/common.js";
+import type { PgAgentRepository } from "./repository.js";
 
 export interface AgentConfigPatch {
   userId: string;

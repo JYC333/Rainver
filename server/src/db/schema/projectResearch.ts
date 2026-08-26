@@ -1,16 +1,16 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, boolean, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { artifacts } from "./artifacts";
-import { projects } from "./projects";
-import { spaces } from "./spaces";
-import { spaceObjects } from "./knowledge";
-import { claims } from "./knowledge";
-import { projectOperations } from "./projectOperations";
-import { inquiryThreads } from "./inquiry";
-import { projectResearchContextVersions } from "./projectResearchContext";
-import { sourceItems } from "./sources";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { artifacts } from "./artifacts.js";
+import { projects } from "./projects.js";
+import { spaces } from "./spaces.js";
+import { spaceObjects } from "./knowledge.js";
+import { claims } from "./knowledge.js";
+import { projectOperations } from "./projectOperations.js";
+import { inquiryThreads } from "./inquiry.js";
+import { projectResearchContextVersions } from "./projectResearchContext.js";
+import { sourceItems } from "./sources.js";
 
 // Project-owned Research workflow foundation. Runs/Artifacts/
 // Proposals keep their existing authority boundaries — these tables only

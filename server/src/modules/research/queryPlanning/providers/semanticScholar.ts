@@ -1,5 +1,5 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared";
+import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared.js";
 
 // Same plainQuery flattening as openalex — no boolean operators, so
 // expansions are just more required keywords and never broaden. See

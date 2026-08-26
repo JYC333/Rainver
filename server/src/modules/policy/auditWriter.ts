@@ -8,11 +8,9 @@
  * `sanitizePolicyMetadata`); this writer performs no further redaction.
  */
 
-import { getDbPool } from "../../db/pool";
+import { getDbPool } from "../../db/pool.js";
 
-import type { PolicyAuditEnvelope } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { PolicyAuditEnvelope } from "@agent-space/protocol";
 
 export class PolicyAuditPersistError extends Error {
   readonly action: string;

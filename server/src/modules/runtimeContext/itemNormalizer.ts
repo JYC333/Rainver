@@ -6,8 +6,8 @@ import type {
   RuntimeContextSemanticRole,
   RuntimeContextSensitivity,
   RuntimeContextTrust,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { estimateModelTokens } from "../usage/modelCatalog";
+} from "@agent-space/protocol";
+import { estimateModelTokens } from "../usage/modelCatalog.js";
 
 export interface ContextItemSource {
   sourceRef: { type: string; id: string; version?: string | null };

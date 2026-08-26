@@ -3,24 +3,23 @@ import type {
   RuntimeHostExecuteRequest,
   SystemActionDefinition,
   SystemActionId,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadConfig } from "../src/config";
-import type { RunRecord } from "../src/modules/runs/repository";
+} from "@agent-space/protocol";
+import { loadConfig } from "../src/config.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 
 const registryState = vi.hoisted(() => ({
   registry: new Map<SystemActionId, SystemActionDefinition>(),
 }));
 
-vi.mock("../src/modules/systemActions/registry", () => ({
+vi.mock("../src/modules/systemActions/registry.js", () => ({
   loadSystemActionRegistry: async () => registryState.registry,
 }));
 
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
-import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher";
+import * as protocol from "@agent-space/protocol";
+import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 
 describe("SystemActionDispatcher tool binding projection", () => {
   beforeEach(async () => {
-    const protocol = await loadProtocol();
     const research = protocol.SYSTEM_ACTION_REGISTRY.find(
       (definition) => definition.id === "research.start_acquisition",
     )!;

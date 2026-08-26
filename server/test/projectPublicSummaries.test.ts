@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const PROJECT = "22222222-2222-4222-8222-222222222222";

@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { InformationDigestService } from "../src/modules/informationDigest/service";
-import { PgInformationDigestRepository } from "../src/modules/informationDigest/repository";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common";
-import { reconcileInformationDigestAutomations } from "../src/modules/informationDigest/automationProvisioning";
-import { PgSerendipityRepository } from "../src/modules/informationDigest/serendipityRepository";
-import { SerendipityProbeService, type SerendipityProbeProvider } from "../src/modules/informationDigest/serendipityProbe";
-import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService";
-import { INTERESTING_COOLDOWN_DAYS, NEUTRAL_COOLDOWN_DAYS, SerendipityFeedbackService } from "../src/modules/informationDigest/feedbackService";
-import { InterestProfileService } from "../src/modules/interestProfile/service";
-import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks";
-import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { InformationDigestService } from "../src/modules/informationDigest/service.js";
+import { PgInformationDigestRepository } from "../src/modules/informationDigest/repository.js";
+import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
+import { reconcileInformationDigestAutomations } from "../src/modules/informationDigest/automationProvisioning.js";
+import { PgSerendipityRepository } from "../src/modules/informationDigest/serendipityRepository.js";
+import { SerendipityProbeService, type SerendipityProbeProvider } from "../src/modules/informationDigest/serendipityProbe.js";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
+import { INTERESTING_COOLDOWN_DAYS, NEUTRAL_COOLDOWN_DAYS, SerendipityFeedbackService } from "../src/modules/informationDigest/feedbackService.js";
+import { InterestProfileService } from "../src/modules/interestProfile/service.js";
+import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks.js";
+import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -30,7 +30,7 @@ const MANAGED_ASSISTANT_VERSION = "99999999-9999-4999-8999-999999999998";
 const DATE = new Date().toISOString().slice(0, 10);
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -599,7 +599,7 @@ describe("bounded serendipity probe", () => {
         return [{
           title: `${domainLabel} overview`,
           source_uri: `https://outside.example/${encodeURIComponent(domainLabel)}`,
-          excerpt: "Outside-db.pool material",
+          excerpt: "Outside-pool material",
         }];
       },
     };

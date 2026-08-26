@@ -1,15 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { proposalsModule } from "../src/modules/proposals";
-import { loadConfig } from "../src/config";
-import {
-  __setProposalIdentityForTests,
-  __setProposalServicesFactoryForTests,
-} from "../src/modules/proposals";
-import { ProposalApplyHttpError } from "../src/modules/proposals/applyService";
-import { UnknownProposalApplierError } from "../src/modules/proposals/applierRegistry";
-import type { ProposalOut, ProposalPage } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import { buildModuleServer } from "./support/moduleServer.js";
+import { proposalsModule } from "../src/modules/proposals/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setProposalIdentityForTests, __setProposalServicesFactoryForTests } from "../src/modules/proposals/routes.js";
+import { ProposalApplyHttpError } from "../src/modules/proposals/applyService.js";
+import { UnknownProposalApplierError } from "../src/modules/proposals/applierRegistry.js";
+import type { ProposalOut, ProposalPage } from "@agent-space/protocol";
 
 let app: FastifyInstance;
 

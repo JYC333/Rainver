@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { loadActionRegistry } from "../src/modules/policy/actionRegistry";
-import { computeDecision, type Registry } from "../src/modules/policy/gateway";
+import { loadActionRegistry } from "../src/modules/policy/actionRegistry.js";
+import { computeDecision, type Registry } from "../src/modules/policy/gateway.js";
 
 /**
  * Policy decision compatibility fixture.
@@ -12,7 +12,7 @@ import { computeDecision, type Registry } from "../src/modules/policy/gateway";
  * decision fields so policy refactors cannot silently drift.
  */
 
-const fixturePath = join(__dirname, "fixtures", "policy_decision_contract.json");
+const fixturePath = join(import.meta.dirname, "fixtures", "policy_decision_contract.json");
 
 interface ContractCase {
   request: Record<string, unknown>;

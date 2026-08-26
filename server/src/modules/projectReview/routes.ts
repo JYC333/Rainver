@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   jsonBody,
@@ -8,8 +8,8 @@ import {
   requiredString,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { ProjectReviewSessionService } from "./service";
+} from "../routeUtils/common.js";
+import { ProjectReviewSessionService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.post("/api/v1/projects/:projectId/review-sessions", async (request, reply) => {

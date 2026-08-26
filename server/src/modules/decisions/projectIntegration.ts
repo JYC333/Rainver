@@ -1,14 +1,14 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   projectEntitySummaryRegistry,
   type ProjectEntitySummary,
   type ProjectEntitySummaryAdapter,
-} from "../projects/overviewRegistry";
+} from "../projects/overviewRegistry.js";
 import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
-} from "../projects/attentionRegistry";
+} from "../projects/attentionRegistry.js";
 
 // Registers Decision into the Project Kernel's registries (ADR 0011 decision
 // 5), mirroring modules/inquiry/projectIntegration.ts: modules/projects

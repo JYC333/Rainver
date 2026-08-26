@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as Protocol from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { SystemActionDefinition } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type * as Protocol from "@agent-space/protocol";
+import type { SystemActionDefinition } from "@agent-space/protocol";
 
 type RegistryProtocolModule = Pick<
   typeof Protocol,
@@ -13,17 +13,22 @@ const protocolState = vi.hoisted(() => ({
   module: null as RegistryProtocolModule | null,
 }));
 
-vi.mock("../src/modules/providers/protocolRuntime", () => ({
-  loadProtocol: async () => {
-    if (!protocolState.module) throw new Error("Protocol test module was not initialized");
-    return protocolState.module;
-  },
-}));
+vi.mock("@agent-space/protocol", async (importOriginal) => {
+  const actual = await importOriginal<typeof Protocol>();
+  const live = <K extends keyof RegistryProtocolModule>(key: K) =>
+    (protocolState.module ?? (actual as unknown as RegistryProtocolModule))[key];
+  return {
+    ...actual,
+    get POLICY_ACTION_REGISTRY() { return live("POLICY_ACTION_REGISTRY"); },
+    get SYSTEM_ACTION_REGISTRY() { return live("SYSTEM_ACTION_REGISTRY"); },
+    get SystemActionDefinitionSchema() { return live("SystemActionDefinitionSchema"); },
+  };
+});
 
 import {
   loadSystemActionRegistry,
   resetSystemActionRegistryForTests,
-} from "../src/modules/systemActions/registry";
+} from "../src/modules/systemActions/registry.js";
 
 describe("system action registry loading", () => {
   let actualProtocol: typeof Protocol;

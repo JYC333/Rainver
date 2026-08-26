@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
@@ -12,11 +12,11 @@ import {
   optionalString,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgAgentRepository } from "../agents";
-import { agentTemplateSystemPromptKey, resolveAgentSystemPrompt, type ResolvedAgentSystemPrompt } from "../agents/promptRegistry";
-import { promptProvenanceOf } from "../prompts/provenance";
-import { resolveContentCreationContext } from "../access/creationContext";
+} from "../routeUtils/common.js";
+import { PgAgentRepository } from "../agents/index.js";
+import { agentTemplateSystemPromptKey, resolveAgentSystemPrompt, type ResolvedAgentSystemPrompt } from "../agents/promptRegistry.js";
+import { promptProvenanceOf } from "../prompts/provenance.js";
+import { resolveContentCreationContext } from "../access/creationContext.js";
 
 interface TemplateSpec {
   id: string;

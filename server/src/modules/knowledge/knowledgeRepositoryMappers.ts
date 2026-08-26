@@ -4,7 +4,7 @@ import {
   objectValue,
   optionalObject,
   stringArray,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 import type {
   ClaimRow,
   ClaimSourceRow,
@@ -13,9 +13,9 @@ import type {
   NoteRow,
   ObjectRelationRow,
   SourceRow,
-} from "./knowledgeRepositoryRows";
-import { isKnowledgeRetrievalProjectedRelation } from "./retrievalObjectTypes";
-import { isContentOwner } from "../access/contentAccessPolicy";
+} from "./knowledgeRepositoryRows.js";
+import { isKnowledgeRetrievalProjectedRelation } from "./retrievalObjectTypes.js";
+import { isContentOwner } from "../access/contentAccessPolicy.js";
 
 export function knowledgeSummaryOut(row: KnowledgeItemRow): Record<string, unknown> {
   return {

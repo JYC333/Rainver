@@ -1,6 +1,6 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import type { ResolvedNodeInputs } from "../execution/nodeInputResolver";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import type { ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
 
 export interface ActionNodeContext {
   db: Queryable;

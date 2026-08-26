@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Per-Host, per-adapter default model backend. See `server/src/db/schema/hostRuntimeProviderBindings.ts` for why

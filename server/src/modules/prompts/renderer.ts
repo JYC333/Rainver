@@ -1,4 +1,4 @@
-import type { PromptMessage } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { PromptMessage } from "@agent-space/protocol";
 
 // The only rendering engine prompt manifests declare today (content.rendering.engine
 // is always "plain" — see the M0 inventory). `{variable_name}` placeholders are

@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { assertProjectWriter } from "../projects/access";
-import { RetrievalProjectionService } from "../retrieval";
-import { knowledgeRetrievalRegistry } from "./retrievalAdapter";
-import { blockIds, withBlockIds } from "./noteBlockIds";
-import { normalizePmText, type NoteOp } from "./noteDocument";
-import { projectOwningCollection } from "./noteProjectFolders";
-import { shareSpaceObjectWithProject } from "./spaceObjectProjectShares";
-import { assertNoteProjectRole } from "./noteProjectRoles";
+import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
+import { blockIds, withBlockIds } from "./noteBlockIds.js";
+import { normalizePmText, type NoteOp } from "./noteDocument.js";
+import { projectOwningCollection } from "./noteProjectFolders.js";
+import { shareSpaceObjectWithProject } from "./spaceObjectProjectShares.js";
+import { assertNoteProjectRole } from "./noteProjectRoles.js";
 import {
   applyNoteOpsWithConflictFallback,
   insertInitialNoteRevision,
@@ -18,7 +18,7 @@ import {
   type NoteContentRow,
   type NoteRevisionSource,
   type NoteWriteResult,
-} from "./noteRevisionService";
+} from "./noteRevisionService.js";
 
 /**
  * The one way to create or change a note.

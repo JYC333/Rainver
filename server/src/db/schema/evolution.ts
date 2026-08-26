@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { proposals } from "./proposals";
-import { capabilityVersions } from "./capabilities";
-import { users } from "./auth";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
+import { capabilityVersions } from "./capabilities.js";
+import { users } from "./auth.js";
 
 export const evolutionBundles = pgTable("evolution_bundles", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

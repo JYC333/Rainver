@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import { withDbTransaction, serializeCalls } from "../routeUtils/common";
+import type { Pool } from "../../db/pool.js";
+import { withDbTransaction, serializeCalls } from "../routeUtils/common.js";
 
 const LOCK_PREFIX = "host_thread_events:";
 

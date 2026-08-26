@@ -9,7 +9,7 @@ import type {
   UsageDetails,
   UsageAttribution,
   UsageObservation,
-} from "./types";
+} from "./types.js";
 
 export const USAGE_NORMALIZATION_VERSION = 1;
 

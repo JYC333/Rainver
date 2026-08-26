@@ -1,5 +1,5 @@
-import type { SystemActionActorType, SystemActionDefinition, SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadSystemActionRegistry } from "./registry";
+import type { SystemActionActorType, SystemActionDefinition, SystemActionId } from "@agent-space/protocol";
+import { loadSystemActionRegistry } from "./registry.js";
 
 export interface SystemActionActor {
   type: SystemActionActorType;

@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import type { PtyFactory, PtyHandle } from "../providers/cli/loginEngine";
-import { LocalCliProcessRegistry } from "../runs/localCliExecution";
-import { SandboxRunnerCliCommandExecutor } from "./client";
+import type { ServerConfig } from "../../config.js";
+import type { PtyFactory, PtyHandle } from "../providers/cli/loginEngine.js";
+import { LocalCliProcessRegistry } from "../runs/localCliExecution.js";
+import { SandboxRunnerCliCommandExecutor } from "./client.js";
 
 export class SandboxRunnerPtyFactory implements PtyFactory {
   constructor(

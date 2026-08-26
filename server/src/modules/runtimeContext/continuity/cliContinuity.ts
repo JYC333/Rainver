@@ -2,11 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   ContextItem,
   ExecutionControlSnapshot,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../../routeUtils/common";
-import { contextItemText, normalizeContextItem } from "../itemNormalizer";
-import { estimateModelTokens } from "../../usage/modelCatalog";
+} from "@agent-space/protocol";
+import type { Queryable } from "../../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
+import { contextItemText, normalizeContextItem } from "../itemNormalizer.js";
+import { estimateModelTokens } from "../../usage/modelCatalog.js";
 
 const MAX_CLI_DELTA_TOKENS = 6_000;
 

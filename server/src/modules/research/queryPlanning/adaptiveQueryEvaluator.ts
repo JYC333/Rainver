@@ -1,5 +1,5 @@
-import type { ResearchPreviewObservation, ResearchQueryDecision } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ResearchQueryPolicy } from "./queryPolicy";
+import type { ResearchPreviewObservation, ResearchQueryDecision } from "@agent-space/protocol";
+import type { ResearchQueryPolicy } from "./queryPolicy.js";
 
 export interface AdaptiveQueryEvaluation {
   decision: ResearchQueryDecision;

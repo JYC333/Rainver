@@ -1,19 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { catalogModule } from "../src/modules/catalog";
-import { capabilitiesModule } from "../src/modules/capabilities";
-import { loadConfig } from "../src/config";
-import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import {
-  __setCapabilitiesIdentityForTests,
-  __setCapabilitiesRepositoryFactoryForTests,
-  __setCapabilitiesSkillFetcherForTests,
-} from "../src/modules/capabilities";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { catalogModule } from "../src/modules/catalog/index.js";
+import { capabilitiesModule } from "../src/modules/capabilities/index.js";
+import { loadConfig } from "../src/config.js";
+import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { __setCapabilitiesIdentityForTests, __setCapabilitiesRepositoryFactoryForTests, __setCapabilitiesSkillFetcherForTests } from "../src/modules/capabilities/routes.js";
 import type {
   CapabilityDefinition,
   SkillImportPreview,
-} from "../src/modules/capabilities";
+} from "../src/modules/capabilities/index.js";
 
 let app: FastifyInstance | undefined;
 

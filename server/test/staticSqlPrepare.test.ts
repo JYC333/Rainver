@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 // Every static SQL string in server/src is PREPAREd against a migrated
 // database. PREPARE parses, resolves names, and deduces parameter types
@@ -116,7 +116,7 @@ function collectStaticStatements(): StaticStatement[] {
 }
 
 
-const db = useTestDatabase(__filename, { max: 1 });
+const db = useTestDatabase(import.meta.filename, { max: 1 });
 
 describe("static SQL", () => {
   it("parses, resolves, and types every statement against the migrated schema", async () => {

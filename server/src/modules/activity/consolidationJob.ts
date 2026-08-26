@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { PgActivityConsolidationRepository } from "./consolidationRepository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { PgActivityConsolidationRepository } from "./consolidationRepository.js";
 
 export function registerMemoryConsolidationHandler(
   registry: JobHandlerRegistry,

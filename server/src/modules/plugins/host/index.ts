@@ -19,12 +19,12 @@ import type { FastifyInstance } from "fastify";
 import type {
   AgentSpacePlugin,
   PluginActivationResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { JobHandlerRegistry } from "../../jobs/handlerRegistry";
-import type { ScheduledTask } from "../../scheduler/registry";
-import type { ProposalApplierRegistry } from "../../proposals/applierRegistry";
-import type { ServerConfig } from "../../../config";
-import { PluginHostContextImpl, type PluginContributions } from "./context";
+} from "@agent-space/protocol";
+import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
+import type { ScheduledTask } from "../../scheduler/registry.js";
+import type { ProposalApplierRegistry } from "../../proposals/applierRegistry.js";
+import type { ServerConfig } from "../../../config.js";
+import { PluginHostContextImpl, type PluginContributions } from "./context.js";
 
 export class PluginHost {
   private readonly _plugins: readonly AgentSpacePlugin[];

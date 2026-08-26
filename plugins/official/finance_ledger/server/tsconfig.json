@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "node16",
-    "moduleResolution": "node16",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "lib": ["ES2022"],
     "types": ["node"],
     "typeRoots": ["../../../../server/node_modules/@types"],
@@ -21,7 +21,7 @@
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "@agent-space/protocol": ["../../../../packages/protocol/dist/index.d.ts"],
-      "fastify": ["../../../../server/node_modules/fastify"]
+      "fastify": ["../../../../server/node_modules/fastify/fastify.d.ts"]
     }
   },
   "include": ["src"]

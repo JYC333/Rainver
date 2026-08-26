@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../src/modules/policy/auditWriter", () => ({
+vi.mock("../src/modules/policy/auditWriter.js", () => ({
   writePolicyAudit: vi.fn(async () => undefined),
 }));
 
@@ -9,16 +9,16 @@ import {
   rerankWindowSize,
   DEFAULT_RERANK_CONFIG,
   type RerankScore,
-} from "../src/modules/retrieval/reranker";
-import type { ScoredCandidate } from "../src/modules/retrieval/types";
-import { buildRerankPrompt, parseRerankScores } from "../src/modules/retrieval/rerankProvider/prompt";
-import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker";
-import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store";
-import type { RerankCandidate } from "../src/modules/retrieval";
-import { writePolicyAudit } from "../src/modules/policy/auditWriter";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
-import { piAiHttpClient } from "./support/piAiHttp";
+} from "../src/modules/retrieval/reranker.js";
+import type { ScoredCandidate } from "../src/modules/retrieval/types.js";
+import { buildRerankPrompt, parseRerankScores } from "../src/modules/retrieval/rerankProvider/prompt.js";
+import { ProviderReranker } from "../src/modules/retrieval/rerankProvider/providerReranker.js";
+import { __setProviderHttpClientForTests as setRawProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import type { RerankCandidate } from "../src/modules/retrieval/index.js";
+import { writePolicyAudit } from "../src/modules/policy/auditWriter.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
+import { piAiHttpClient } from "./support/piAiHttp.js";
 
 function __setProviderHttpClientForTests(client: Parameters<typeof setRawProviderHttpClientForTests>[0]): void {
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);

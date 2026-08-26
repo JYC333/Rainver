@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable, RunRecord } from "../src/modules/runs/repository";
+import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { Queryable, RunRecord } from "../src/modules/runs/repository.js";
 import {
   PgVerificationEngine,
   buildVerificationDeclarations,
   hasDeclaredVerificationChecks,
   summarizeVerificationResults,
-} from "../src/modules/runs/verification";
+} from "../src/modules/runs/verification/index.js";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

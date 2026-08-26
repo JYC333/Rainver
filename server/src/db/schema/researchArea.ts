@@ -1,9 +1,9 @@
 import { boolean, check, foreignKey, index, integer, jsonb, pgTable, text, timestamp, unique, varchar, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { projects } from "./projects";
-import { runs } from "./runs";
-import { sourceItems } from "./sources";
-import { spaceObjects } from "./knowledge";
+import { projects } from "./projects.js";
+import { runs } from "./runs.js";
+import { sourceItems } from "./sources.js";
+import { spaceObjects } from "./knowledge.js";
 
 export const researchIntegrityAlerts = pgTable("research_integrity_alerts", {
   id: varchar({ length: 36 }).primaryKey().notNull(), spaceId: varchar("space_id", { length: 36 }).notNull(),

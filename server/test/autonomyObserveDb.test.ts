@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, inject, it } from "vitest";
-import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry";
-import { AutonomyService } from "../src/modules/autonomy/service";
-import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry.js";
+import { AutonomyService } from "../src/modules/autonomy/service.js";
+import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -19,7 +19,7 @@ const describeWithPostgres = describe.skipIf(
   !sharedPostgres.available || !sharedPostgres.adminUri || !sharedPostgres.templateDatabase || !sharedPostgres.runId,
 );
 
-const db = useTestDatabase(__filename, { max: 5 });
+const db = useTestDatabase(import.meta.filename, { max: 5 });
 
 beforeEach(async () => {
   if (!db.pool) return;

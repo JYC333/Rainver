@@ -1,18 +1,18 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createQuestionThreadScope, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import { loadConfig } from "../src/config";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
-import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration";
-import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults";
-import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService";
-import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
+import { createQuestionThreadScope, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig } from "../src/config.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
+import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for reconcileOperation's synthesis stage. The
 // synthesis run's terminal state is normally projected by a one-shot hook in
@@ -35,7 +35,7 @@ const CONFIG = loadConfig({});
 
 let threadScope: Array<{ thread_id: string; version: number; kind: "question"; statement: string }> = [];
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

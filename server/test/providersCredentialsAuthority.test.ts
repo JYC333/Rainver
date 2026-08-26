@@ -3,16 +3,13 @@ import type { FastifyInstance } from "fastify";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildModuleServer } from "./support/moduleServer";
-import { providersModule } from "../src/modules/providers";
-import { loadConfig } from "../src/config";
-import {
-  __setProviderCommandStoreForTests,
-  __setProviderHttpClientForTests,
-  type ProviderCommandStore,
-} from "../src/modules/providers";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { providersModule } from "../src/modules/providers/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setProviderCommandStoreForTests, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 
 let app: FastifyInstance;
 let tempHome: string | undefined;

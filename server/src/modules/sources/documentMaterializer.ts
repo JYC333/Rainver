@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
 import type {
   ExtractionProfileMaterializationInput,
   ExtractionProfileMaterializationResult,
-} from "../extractionProfiles/registry";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
+} from "../extractionProfiles/registry.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 interface DocumentSourceItem {
   id: string;

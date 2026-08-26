@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rejectLegacyResearchRuntimeFields } from "../src/modules/projectResearch/inputValidation";
+import { rejectLegacyResearchRuntimeFields } from "../src/modules/projectResearch/inputValidation.js";
 
 describe("Project Research execution input", () => {
   it("accepts a selected managed provider when the model is left for provider default resolution", () => {

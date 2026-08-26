@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createManagedSubscriptionLoginSession,
   parseManagedSubscriptionType,
-} from "../src/modules/providers/subscriptionOAuth";
+} from "../src/modules/providers/subscriptionOAuth.js";
 
 describe("managed subscription OAuth interaction", () => {
   it("selects Codex device-code login without exposing a generic prompt", async () => {

@@ -12,9 +12,9 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { artifacts } from "./artifacts";
-import { spaces } from "./spaces";
+import { users } from "./auth.js";
+import { artifacts } from "./artifacts.js";
+import { spaces } from "./spaces.js";
 
 export const crossSpaceRetrievalSessions = pgTable("cross_space_retrieval_sessions", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

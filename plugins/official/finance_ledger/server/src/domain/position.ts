@@ -1,5 +1,5 @@
-import { Amount, assertCommoditySymbol } from "./amount";
-import { decimalEquals, type DecimalValue, parseDecimal } from "./decimal";
+import { Amount, assertCommoditySymbol } from "./amount.js";
+import { decimalEquals, type DecimalValue, parseDecimal } from "./decimal.js";
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 

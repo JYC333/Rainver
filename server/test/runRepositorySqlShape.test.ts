@@ -4,7 +4,7 @@ import {
   type Queryable,
   type QueryResult,
   type RunRecord,
-} from "../src/modules/runs/repository";
+} from "../src/modules/runs/repository.js";
 
 class RunCreateSqlShapeDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

@@ -1,5 +1,5 @@
-import { nextBackfillRetryAt } from "../src/modules/sources/sourceBackfillRetry";
-import { describe,expect,it,vi } from "vitest";import { SourceBackfillPlanningService } from "../src/modules/sources/sourceBackfillService";import type { Queryable } from "../src/modules/routeUtils/common";
+import { nextBackfillRetryAt } from "../src/modules/sources/sourceBackfillRetry.js";
+import { describe,expect,it,vi } from "vitest";import { SourceBackfillPlanningService } from "../src/modules/sources/sourceBackfillService.js";import type { Queryable } from "../src/modules/routeUtils/common.js";
 const identity={spaceId:"space-1",userId:"user-1"};
 const allowed=(sql:string)=>sql.includes("effective_access_level")?{rows:[{effective_access_level:"full"}],rowCount:1}:sql.includes("SELECT c.connector_key")?{rows:[{connector_key:"arxiv_api"}],rowCount:1}:{rows:[{one:1}],rowCount:1};
 describe("SourceBackfillPlanningService",()=>{

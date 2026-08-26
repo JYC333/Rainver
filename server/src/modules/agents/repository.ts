@@ -1,32 +1,32 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
-import { HttpError } from "../routeUtils/common";
-import { RuntimeToolRegistry } from "../runtimeTools";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
+import { HttpError } from "../routeUtils/common.js";
+import { RuntimeToolRegistry } from "../runtimeTools/index.js";
 import {
   isCliRuntimeTool,
   resolveRuntimeToolVersionForSpace,
-} from "../runtimeTools/policies";
+} from "../runtimeTools/policies.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
   defineScopedSetting,
   settingsRecord,
   type ScopedSettingsRead,
-} from "../settings";
+} from "../settings/index.js";
 import {
   BUILTIN_RUNTIME_ADAPTER_SPECS,
   type RuntimeAdapterType,
-} from "../runtimeAdapters/specs";
-import type { PromptProvenance } from "../prompts/provenance";
+} from "../runtimeAdapters/specs.js";
+import type { PromptProvenance } from "../prompts/provenance.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityParamFilterSql,
-} from "../access/contentAccessSql";
-import { isContentVisibility } from "../access/contentAccessTypes";
-import { contentOwnerFromDb } from "../access/contentAccessQuery";
+} from "../access/contentAccessSql.js";
+import { isContentVisibility } from "../access/contentAccessTypes.js";
+import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
 import {
   DEFAULT_MEMORY_POLICY,
   defaultModelConfigFor,
@@ -37,8 +37,8 @@ import {
   recordValue,
   stringOrNull,
   stringValue,
-} from "./agentRepositoryHelpers";
-import { stableJsonStringify } from "../evolution/hash";
+} from "./agentRepositoryHelpers.js";
+import { stableJsonStringify } from "../evolution/hash.js";
 
 interface QueryResult<Row> {
   rows: Row[];

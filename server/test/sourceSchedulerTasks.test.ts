@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config";
-import { buildSourceSchedulerTasks } from "../src/modules/scheduler/sourceTasks";
-import type { PgJobQueueRepository } from "../src/modules/jobs/repository";
+import { loadConfig } from "../src/config.js";
+import { buildSourceSchedulerTasks } from "../src/modules/scheduler/sourceTasks.js";
+import type { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 
 const config = loadConfig({
   SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",

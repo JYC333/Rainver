@@ -1,8 +1,8 @@
 import { foreignKey, index, pgTable, timestamp, unique, varchar, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
-import { rooms } from "./rooms";
-import { sessions } from "./sessions";
-import { spaces } from "./spaces";
-import { users } from "./auth";
+import { rooms } from "./rooms.js";
+import { sessions } from "./sessions.js";
+import { spaces } from "./spaces.js";
+import { users } from "./auth.js";
 
 export const roomCreationIdempotencies = pgTable("room_creation_idempotencies", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

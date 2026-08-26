@@ -11,10 +11,19 @@ import { join } from "node:path";
  * values a runtime really offers (`1m`, `default`). Only the runtime knows,
  * and ACP exists to ask it.
  */
+/** One choice as the runtime describes it, not as we would guess. */
+export interface AcpOption {
+  value: string;
+  /** The runtime's own display name — `Fable` for `claude-fable-5[1m]`. */
+  name: string | null;
+  /** What it resolves to, which is the only way to know what `default` means. */
+  description: string | null;
+}
+
 export interface AcpRuntimeOptions {
-  models: string[];
+  models: AcpOption[];
   currentModel: string | null;
-  efforts: string[];
+  efforts: AcpOption[];
   currentEffort: string | null;
 }
 
@@ -27,11 +36,17 @@ interface ConfigOption {
   options?: unknown;
 }
 
-function optionValues(option: ConfigOption | undefined): string[] {
+function optionValues(option: ConfigOption | undefined): AcpOption[] {
   if (!option || !Array.isArray(option.options)) return [];
   return option.options.flatMap((entry) => {
-    const value = (entry as { value?: unknown } | null)?.value;
-    return typeof value === "string" && value ? [value] : [];
+    const record = entry as { value?: unknown; name?: unknown; description?: unknown } | null;
+    const value = record?.value;
+    if (typeof value !== "string" || !value) return [];
+    return [{
+      value,
+      name: stringOrNull(record?.name),
+      description: stringOrNull(record?.description),
+    }];
   });
 }
 

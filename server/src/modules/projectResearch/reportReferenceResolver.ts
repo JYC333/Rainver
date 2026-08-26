@@ -1,6 +1,6 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { contentReadSql } from "../access/contentAccessSql";
-import { evidenceProvenanceReadableClause } from "../sources/sourceItemAccess";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { evidenceProvenanceReadableClause } from "../sources/sourceItemAccess.js";
 
 export interface ResolvedResearchReferenceExcerpt { id: string; title?: string }
 export interface ResolvedResearchReference { id: string; availability: "available" | "unavailable"; title?: string; authors?: string[]; year?: number | null; library_path?: string; academic_path?: string; external_url?: string; excerpts?: ResolvedResearchReferenceExcerpt[] }

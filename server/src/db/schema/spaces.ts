@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, integer, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
+import { users } from "./auth.js";
 
 export const spaces = pgTable("spaces", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

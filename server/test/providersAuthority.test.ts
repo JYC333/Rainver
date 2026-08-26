@@ -6,19 +6,15 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { systemModule } from "../src/modules/system";
-import { providersModule } from "../src/modules/providers";
-import { loadConfig } from "../src/config";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { systemModule } from "../src/modules/system/index.js";
+import { providersModule } from "../src/modules/providers/index.js";
+import { loadConfig } from "../src/config.js";
 import {
   __setProvidersDbPortForTests,
   type ProvidersDbPort,
-} from "../src/modules/providers/dbReader";
-import {
-  __setAuthIdentityForTests,
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
+} from "../src/modules/providers/dbReader.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 
 let app: FastifyInstance;
 

@@ -11,13 +11,13 @@ import type {
   SourceRecipePaginateStep,
   SourceRecipeStep,
   SourceRecipeStepTrace,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { redactSecretPatterns } from "../../runs/evidenceRedaction";
+} from "@agent-space/protocol";
+import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 import {
   fetchAllowedOriginResponse,
   truncateToByteLimit,
   type CustomSourceFetchCredential,
-} from "../customSources/customSourceEndpointFetch";
+} from "../customSources/customSourceEndpointFetch.js";
 import {
   bodyOnly,
   buildListItems,
@@ -26,10 +26,10 @@ import {
   resolveUrl,
   stripTags,
   type CustomSourcePipelineItem,
-} from "../customSources/customSourceHtmlExtract";
-import { parseFeed, type ParsedFeedItem } from "../feedParser";
-import { sha256 } from "../sourceRepositoryMappers";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "../customSources/customSourceRunner";
+} from "../customSources/customSourceHtmlExtract.js";
+import { parseFeed, type ParsedFeedItem } from "../feedParser.js";
+import { sha256 } from "../sourceRepositoryMappers.js";
+import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "../customSources/customSourceRunner.js";
 
 /**
  * Level 2 Source recipe interpreter: executes a `source.recipe.v1` definition

@@ -3463,6 +3463,13 @@ export interface ProjectFolderScanCandidate {
 
 // --- ADR 0016: multi-host control center -----------------------------------
 
+/** One choice as the runtime describes it: its own name, and what it means. */
+export interface RuntimeOptionChoice {
+  value: string
+  name?: string | null
+  description?: string | null
+}
+
 export interface HostCapabilities {
   runtimes?: string[]
   versions?: Record<string, string>
@@ -3480,9 +3487,9 @@ export interface HostCapabilities {
    * that are part of the name.
    */
   options?: Record<string, {
-    models?: string[]
+    models?: RuntimeOptionChoice[]
     current_model?: string | null
-    efforts?: string[]
+    efforts?: RuntimeOptionChoice[]
     current_effort?: string | null
   }>
 }

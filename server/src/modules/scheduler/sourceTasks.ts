@@ -13,24 +13,24 @@
  * pipeline, where reclaim-then-enqueue-then-run is the intended order.
  */
 
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { ScheduledTask } from "./registry";
-import type { PgJobQueueRepository } from "../jobs/repository";
-import { SourceExtractionWorker } from "../sources/extractionWorker";
-import { enqueueDueSourceChannelScans } from "../sources/scanSchedule";
-import { enqueueDueSourcePostProcessingRules } from "../sources/postProcessing/scheduler";
-import { enqueuePendingSourceAnnotationWork } from "../sourceAnnotation/scheduler";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { ScheduledTask } from "./registry.js";
+import type { PgJobQueueRepository } from "../jobs/repository.js";
+import { SourceExtractionWorker } from "../sources/extractionWorker.js";
+import { enqueueDueSourceChannelScans } from "../sources/scanSchedule.js";
+import { enqueueDueSourcePostProcessingRules } from "../sources/postProcessing/scheduler.js";
+import { enqueuePendingSourceAnnotationWork } from "../sourceAnnotation/scheduler.js";
 import {
   enqueueDueCustomSourceHandlerRuns,
   reclaimStuckCustomSourceHandlerRuns,
-} from "../sources/customSources/customSourceScanSchedule";
-import { runPendingCustomSourceHandlerRuns } from "../sources/customSources/customSourceScanWorker";
+} from "../sources/customSources/customSourceScanSchedule.js";
+import { runPendingCustomSourceHandlerRuns } from "../sources/customSources/customSourceScanWorker.js";
 import {
   enqueueDueSourceRecipeScans,
   runPendingSourceRecipeScans,
-} from "../sources/sourceRecipes/recipeScanWorker";
-import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService";
+} from "../sources/sourceRecipes/recipeScanWorker.js";
+import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService.js";
 
 export interface SourceTaskLogger {
   info(message: string): void;

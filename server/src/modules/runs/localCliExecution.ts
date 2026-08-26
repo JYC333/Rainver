@@ -1,4 +1,4 @@
-import type { CanonicalUsage } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { CanonicalUsage } from "@agent-space/protocol";
 
 export interface CliExecutionResult {
   returncode: number;

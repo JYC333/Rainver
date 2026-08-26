@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
 import {
   HttpError,
   objectValue,
@@ -15,8 +16,8 @@ import {
   type Pool,
   type Queryable,
   type SpaceUserIdentity,
-} from "../../routeUtils/common";
-import { SourceChannelService } from "../channels/sourceChannelService";
+} from "../../routeUtils/common.js";
+import { SourceChannelService } from "../channels/sourceChannelService.js";
 import {
   HANDLER_RUN_COLUMNS,
   HANDLER_VERSION_COLUMNS,
@@ -25,29 +26,28 @@ import {
   handlerVersionOut,
   type HandlerRunRow,
   type HandlerVersionRow,
-} from "./customSourceHandlerRepository";
-import { sha256 } from "../sourceRepositoryMappers";
-import { cleanupSandbox, effectiveCustomSourceLimits, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner";
-import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch";
-import { executeCustomSourceHandler } from "./customSourceHandlerExecution";
-import { validateCustomSourceHandlerOutput } from "./customSourceContractValidator";
+} from "./customSourceHandlerRepository.js";
+import { sha256 } from "../sourceRepositoryMappers.js";
+import { cleanupSandbox, effectiveCustomSourceLimits, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner.js";
+import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch.js";
+import { executeCustomSourceHandler } from "./customSourceHandlerExecution.js";
+import { validateCustomSourceHandlerOutput } from "./customSourceContractValidator.js";
 import {
   CUSTOM_SOURCE_HANDLER_ENTRYPOINT,
   generateCustomSourceHandlerSource,
-} from "./customSourceHandlerTemplate";
-import { insertProposalRow } from "../../proposals/reviewPackets";
-import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler";
-import { resolveRequestedSourceSchedule } from "../sourceScheduleInput";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { CUSTOM_SOURCE_PIPELINE_HANDLER_ENTRYPOINT } from "./customSourcePipelineInterpreter";
-import { CustomSourceCredentialService } from "./customSourceCredentialService";
+} from "./customSourceHandlerTemplate.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
+import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
+import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
+import { CUSTOM_SOURCE_PIPELINE_HANDLER_ENTRYPOINT } from "./customSourcePipelineInterpreter.js";
+import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
 import {
   parseSourceCapturePolicy,
   parseSourceRetentionPolicy,
   SOURCE_CAPTURE_POLICY_RANK,
   type SourceCapturePolicy,
   type SourceRetentionPolicy,
-} from "../capturePolicy";
+} from "../capturePolicy.js";
 
 /**
  * Phase 5 create-flow: draft -> generate -> test -> activate. Owns every
@@ -149,7 +149,6 @@ export class CustomSourceCreateFlowService {
     };
 
     if (generationMode === "pipeline") {
-      const protocol = await loadProtocol();
       const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(body.pipeline);
       if (!parsedPipeline.success) {
         throw new HttpError(422, "generation_mode 'pipeline' requires a valid pipeline definition in body.pipeline");

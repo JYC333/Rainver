@@ -1,10 +1,10 @@
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import {
   isChineseTitle,
   type ConversationContinuationRegistry,
-} from "../proposals/continuationRegistry";
-import { HttpError } from "../routeUtils/common";
-import { ProjectKernelService } from "./kernelService";
+} from "../proposals/continuationRegistry.js";
+import { HttpError } from "../routeUtils/common.js";
+import { ProjectKernelService } from "./kernelService.js";
 
 /** Publishes a new immutable Project Brief under the accepting owner's identity. */
 export function registerProjectDefinitionProposalAppliers(registry: ProposalApplierRegistry): void {

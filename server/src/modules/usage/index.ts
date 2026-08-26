@@ -1,25 +1,25 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const usageModule: ServerModule = {
   name: "usage",
   registerRoutes,
 };
 
-export { normalizeUsageObservation, normalizeUsageDetails } from "./normalizer";
+export { normalizeUsageObservation, normalizeUsageDetails } from "./normalizer.js";
 export {
   estimateModelTokens,
   resolveModelWindow,
   trimTextToModelTokens,
   type ModelWindowOverride,
   type ModelWindowSpec,
-} from "./modelCatalog";
+} from "./modelCatalog.js";
 export {
   PgUsageRepository,
   usageRepositoryFromPool,
   type UsageQueryFilters,
   type UsageRunSummaryRecord,
-} from "./repository";
+} from "./repository.js";
 export {
   UsageService,
   recordAttributedUsageObservation,
@@ -28,9 +28,9 @@ export {
   usageServiceFromConfig,
   type UsageIdentity,
   type UsageQueryInput,
-} from "./service";
+} from "./service.js";
 export type {
   NormalizedUsageObservation,
   UsageAttribution,
   UsageObservation,
-} from "./types";
+} from "./types.js";

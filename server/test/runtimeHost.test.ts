@@ -1,19 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { systemModule } from "../src/modules/system";
-import { loadConfig } from "../src/config";
-import {
-  __setNetworkRetryDelayForTests,
-  __setProviderCommandStoreForTests,
-  __setProviderHttpClientForTests as setRawProviderHttpClientForTests,
-  type ProviderCommandStore,
-  type ProviderHttpClient,
-} from "../src/modules/providers";
-import { __setRuntimeHostDeliveryAuthorizerForTests, executeRuntimeHost, runtimeHostModule } from "../src/modules/runtimeHost";
-import type { UsageObservation } from "../src/modules/usage";
-import { resolveTestUsageAttribution } from "./support/usageAttribution";
-import { openAiChatResponse, piAiHttpClient } from "./support/piAiHttp";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { systemModule } from "../src/modules/system/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setNetworkRetryDelayForTests, __setProviderHttpClientForTests as setRawProviderHttpClientForTests, type ProviderHttpClient } from "../src/modules/providers/invocation/invocation.js";
+import { __setProviderCommandStoreForTests, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { __setRuntimeHostDeliveryAuthorizerForTests } from "../src/modules/runtimeHost/routes.js";
+import { executeRuntimeHost } from "../src/modules/runtimeHost/service.js";
+import { runtimeHostModule } from "../src/modules/runtimeHost/index.js";
+import type { UsageObservation } from "../src/modules/usage/index.js";
+import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
+import { openAiChatResponse, piAiHttpClient } from "./support/piAiHttp.js";
 
 function __setProviderHttpClientForTests(client: ProviderHttpClient | null): void {
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
@@ -30,6 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  __setRuntimeHostDeliveryAuthorizerForTests(null);
   __setProviderCommandStoreForTests(null);
   __setProviderHttpClientForTests(null);
   __setNetworkRetryDelayForTests(null);

@@ -2,19 +2,19 @@ import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ServerConfig } from "../../config";
-import { HttpError, dateIso, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarget } from "../sources/sourceConsent";
-import type { SourceItemRow } from "../sources/sourceRepositoryRows";
-import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { contentReadSql } from "../access/contentAccessSql";
-import { contentDecisionFromDb } from "../access/contentAccessQuery";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { canAccessProject } from "../memory/projectAccess";
-import { parseStructuredReaderContent, type ReaderPmDoc } from "../sources/contentParsing";
-import { upsertCanonicalEvidence } from "../sources/evidenceIdentity";
+import type { ServerConfig } from "../../config.js";
+import { HttpError, dateIso, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
+import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
+import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { canAccessProject } from "../memory/projectAccess.js";
+import { parseStructuredReaderContent, type ReaderPmDoc } from "../sources/contentParsing.js";
+import { upsertCanonicalEvidence } from "../sources/evidenceIdentity.js";
 
 /**
  * Normalizes raw plainText into the canonical form used by the Tiptap reader:

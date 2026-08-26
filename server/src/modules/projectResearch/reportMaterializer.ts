@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { buildResearchReportReaderProjection } from "./reportProjection";
-import { assignReportReferenceIds } from "./reportReferenceNumbering";
-import { ProjectResearchAreaService } from "./areaService";
+import type { Queryable } from "../routeUtils/common.js";
+import { buildResearchReportReaderProjection } from "./reportProjection.js";
+import { assignReportReferenceIds } from "./reportReferenceNumbering.js";
+import { ProjectResearchAreaService } from "./areaService.js";
 
 export interface MaterializeResearchReportInput {
   spaceId: string; projectId: string; workflowId: string; operationId: string; synthesisRunId: string;

@@ -6,7 +6,7 @@ import {
   describeConfig,
   loadConfig,
   loadConfigSnapshot,
-} from "../src/config";
+} from "../src/config.js";
 
 describe("loadConfig", () => {
   it("applies documented defaults from an empty env", () => {

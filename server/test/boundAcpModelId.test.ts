@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { boundAcpModelId } from "../src/modules/runs/remoteProviderBinding";
-import { codexModelCatalog } from "../src/modules/runs/codexProviderConfig";
-import { openCodeModelId } from "../src/modules/runs/opencodeProviderConfig";
+import { boundAcpModelId } from "../src/modules/runs/remoteProviderBinding.js";
+import { codexModelCatalog } from "../src/modules/runs/codexProviderConfig.js";
+import { openCodeModelId } from "../src/modules/runs/opencodeProviderConfig.js";
 
 // Which model a bound remote run asks its runtime for over ACP. Nothing
 // threaded a model into a remote run before, so the identifier spaces could

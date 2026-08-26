@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadConfig, type ServerConfig } from "../src/config";
-import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService";
-import { CustomSourceCredentialService } from "../src/modules/sources/customSources/customSourceCredentialService";
-import { HttpError } from "../src/modules/routeUtils/common";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
+import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
+import { CustomSourceCredentialService } from "../src/modules/sources/customSources/customSourceCredentialService.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres integration tests for Phase 10 (Custom Source credentials).
 // Skips gracefully when Docker is unavailable.
@@ -22,7 +23,7 @@ let createFlow: CustomSourceCreateFlowService | undefined;
 let credentialService: CustomSourceCredentialService | undefined;
 let artifactStorageRoot: string | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -49,9 +50,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-const FIXTURE_HTML = `<html><body>
-  <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-</body></html>`;
+const FIXTURE_HTML = ONE_ARTICLE_HTML;
 
 describe("CustomSourceCredentialService", () => {
   it("rejects credential creation from a non-admin member", async () => {

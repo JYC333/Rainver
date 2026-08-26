@@ -1,14 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  __setProviderHttpClientForTests,
-  completeProviderChat,
-  type InvocationTarget,
-  type PoolOutcome,
-  type ProviderCommandStore,
-  ProviderInvocationError,
-} from "../src/modules/providers";
-import type { UsageObservation } from "../src/modules/usage";
-import { openAiChatResponse } from "./support/piAiHttp";
+import { __setProviderHttpClientForTests, completeProviderChat, ProviderInvocationError } from "../src/modules/providers/invocation/invocation.js";
+import { type InvocationTarget, type PoolOutcome, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import type { UsageObservation } from "../src/modules/usage/index.js";
+import { openAiChatResponse } from "./support/piAiHttp.js";
 
 // pi-ai expresses structured output as a constrained tool. Providers without
 // strict-tool support can still return text, which the agent-space scavenger

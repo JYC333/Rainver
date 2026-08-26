@@ -1,20 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { sessionsModule } from "../src/modules/sessions";
-import { loadConfig } from "../src/config";
-import {
-  __setSessionIdentityForTests,
-  __setSessionServicesFactoryForTests,
-} from "../src/modules/sessions";
-import type { PgSessionRepository } from "../src/modules/sessions/repository";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { sessionsModule } from "../src/modules/sessions/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setSessionIdentityForTests, __setSessionServicesFactoryForTests } from "../src/modules/sessions/routes.js";
+import type { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import type {
   MessageOut,
   SessionOut,
   SessionPage,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext";
-import { HttpError } from "../src/modules/routeUtils/common";
+} from "@agent-space/protocol";
+import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
 
 let app: FastifyInstance;
 

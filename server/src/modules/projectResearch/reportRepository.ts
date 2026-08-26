@@ -1,7 +1,7 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, dateIso, objectValue } from "../routeUtils/common";
-import { assertProjectReadable } from "../projects/access";
-import { resolveResearchReportReferences } from "./reportReferenceResolver";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, objectValue } from "../routeUtils/common.js";
+import { assertProjectReadable } from "../projects/access.js";
+import { resolveResearchReportReferences } from "./reportReferenceResolver.js";
 
 interface ReportListRow {
   id: string; project_id: string; workflow_id: string; operation_id: string; synthesis_run_id: string;

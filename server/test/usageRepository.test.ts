@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common";
-import { normalizeUsageObservation } from "../src/modules/usage/normalizer";
+import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
+import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 import {
   PgUsageRepository,
   type UsageEventRecord,
   type UsageQueryFilters,
-} from "../src/modules/usage/repository";
+} from "../src/modules/usage/repository.js";
 
 class RecordingDb implements Queryable {
   readonly calls: Array<{ sql: string; params?: readonly unknown[] }> = [];

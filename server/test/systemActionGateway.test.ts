@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SystemActionDefinition, SystemActionId, SystemActionPolicyResource } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { SystemActionGateway } from "../src/modules/systemActions/gateway";
-import { resolveDeclaredResourceId } from "../src/modules/systemActions/systemActionDispatcher";
-import { loadProtocol } from "../src/modules/providers/protocolRuntime";
-import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance";
-import type { RunRecord } from "../src/modules/runs/repository";
+import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@agent-space/protocol";
+import type { SystemActionDefinition, SystemActionId, SystemActionPolicyResource } from "@agent-space/protocol";
+import { SystemActionGateway } from "../src/modules/systemActions/gateway.js";
+import { resolveDeclaredResourceId } from "../src/modules/systemActions/systemActionDispatcher.js";
+import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
 
 const context = {
   actor: { type: "agent" as const, space_id: "space-1", agent_id: "agent-1", run_id: "run-1" },
@@ -74,7 +74,6 @@ describe("SystemActionGateway", () => {
   });
 
   it("derives tool-call JSON schemas for the Room Inquiry proposal actions from the Zod that validates them", async () => {
-    const { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } = await loadProtocol();
     const definitionFor = (id: string): SystemActionDefinition => {
       const found = SYSTEM_ACTION_REGISTRY.find((definition) => definition.id === id);
       if (!found) throw new Error(`Missing system action definition: ${id}`);
@@ -146,7 +145,6 @@ describe("SystemActionGateway", () => {
     // the body is Source Channel creation parameters. Only `provider_key` is
     // required; the old hand-written schema and the pre-fix Zod disagreed with
     // each other and both disagreed with the service (D5).
-    const { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } = await loadProtocol();
     const definition = SYSTEM_ACTION_REGISTRY.find((candidate) => candidate.id === "source.channel.propose_activation");
     if (!definition) throw new Error("Missing system action definition: source.channel.propose_activation");
     const schema = systemActionInputJsonSchema(definition);

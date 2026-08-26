@@ -1,4 +1,4 @@
-import { domainStatusSources } from "../modules/ontology/entities";
+import { domainStatusSources } from "../modules/ontology/entities.js";
 /**
  * Domain status for a `space_objects` row.
  *

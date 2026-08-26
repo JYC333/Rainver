@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { captureModule } from "../src/modules/capture";
-import { loadConfig } from "../src/config";
-import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth";
-import { __setCaptureServiceFactoryForTests } from "../src/modules/capture/routes";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { captureModule } from "../src/modules/capture/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
+import { __setCaptureServiceFactoryForTests } from "../src/modules/capture/routes.js";
 
 /**
  * The route contract for the primary capture gesture.

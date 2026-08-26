@@ -1,5 +1,5 @@
 import { Client, type Pool, type PoolClient } from "pg";
-import type { Queryable } from "../modules/routeUtils/common";
+import type { Queryable } from "../modules/routeUtils/common.js";
 
 export async function withDedicatedSessionAdvisoryLock<T>(
   db: Queryable,

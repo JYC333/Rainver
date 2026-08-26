@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
-import type { ServerConfig } from "../../config";
+import type { ServerConfig } from "../../config.js";
 
 export const ALLOWED_DEPLOYER_JOB_TYPES = new Set([
   "rebuild_agent_space",

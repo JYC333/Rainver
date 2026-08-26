@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { structuredOutputFromText, type ProviderStructuredOutput } from "../src/modules/providers/invocation/invocation";
-import { RESEARCH_SYNTHESIS_OUTPUT_CONTRACT } from "../src/modules/projectResearch/outputSchemas";
+import { structuredOutputFromText, type ProviderStructuredOutput } from "../src/modules/providers/invocation/invocation.js";
+import { RESEARCH_SYNTHESIS_OUTPUT_CONTRACT } from "../src/modules/projectResearch/outputSchemas.js";
 
 // Reasoning models wrap the contractual JSON in combinable transport noise:
 // a <think> envelope, a markdown fence, and/or surrounding prose. Extraction

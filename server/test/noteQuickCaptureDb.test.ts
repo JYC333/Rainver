@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { PgKnowledgeRepository } from "../src/modules/knowledge/repository";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 
 /**
  * S5 quick capture (U11). Two shapes, and the reason there are two:
@@ -22,7 +22,7 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 let projectId = "";
 
-const db = useTestDatabase(__filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 beforeEach(async () => {
   if (!db.available) return;

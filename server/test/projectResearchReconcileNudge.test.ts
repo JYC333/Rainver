@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { loadConfig } from "../src/config";
-import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { loadConfig } from "../src/config.js";
+import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 
 const CONFIG = loadConfig({});
 

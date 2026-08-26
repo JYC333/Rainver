@@ -2,8 +2,8 @@ import {
   dateIso,
   objectValue,
   stringArray,
-} from "../routeUtils/common";
-import type { EvolutionStrategyAssetRow } from "./types";
+} from "../routeUtils/common.js";
+import type { EvolutionStrategyAssetRow } from "./types.js";
 
 export function strategyAssetToOut(row: EvolutionStrategyAssetRow): Record<string, unknown> {
   return {

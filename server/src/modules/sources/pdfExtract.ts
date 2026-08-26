@@ -1,5 +1,5 @@
 import { extractText, getDocumentProxy } from "unpdf";
-import type { ReaderPmDoc, ReaderPmNode, StructuredReaderContent } from "./contentParsing";
+import type { ReaderPmDoc, ReaderPmNode, StructuredReaderContent } from "./contentParsing.js";
 
 export async function extractPdfReaderContent(
   bytes: Uint8Array,

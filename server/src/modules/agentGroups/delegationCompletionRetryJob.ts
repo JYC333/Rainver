@@ -1,10 +1,10 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { JobDeferredError, type JobHandlerRegistry, type JobHandlerResult } from "../jobs/handlerRegistry";
-import { withDbTransaction } from "../routeUtils/common";
-import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository";
-import { RoomService } from "../rooms/service";
-import { PgAgentGroupRepository } from "./repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { JobDeferredError, type JobHandlerRegistry, type JobHandlerResult } from "../jobs/handlerRegistry.js";
+import { withDbTransaction } from "../routeUtils/common.js";
+import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
+import { RoomService } from "../rooms/service.js";
+import { PgAgentGroupRepository } from "./repository.js";
 
 export const ROOM_DELEGATION_COMPLETION_RETRY_JOB = "room_delegation_completion_retry";
 const TURN_BUSY_RETRY_DELAY_MS = 8_000;

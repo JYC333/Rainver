@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ConversationContinuationRegistry } from "../src/modules/proposals/continuationRegistry";
-import { registerResearchAcquisitionContinuation } from "../src/modules/projectResearch/researchAcquisitionContinuation";
+import { ConversationContinuationRegistry } from "../src/modules/proposals/continuationRegistry.js";
+import { registerResearchAcquisitionContinuation } from "../src/modules/projectResearch/researchAcquisitionContinuation.js";
 
 // Pure-unit coverage for the continuation handlers behind
 // `research.start_acquisition` (room-advancement-reliability-plan Phase 4).

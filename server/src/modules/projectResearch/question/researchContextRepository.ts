@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
+import * as protocol from "@agent-space/protocol";
 import type {
   ResearchContext,
   ResearchContextVersion,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../../providers/protocolRuntime";
+} from "@agent-space/protocol";
 import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
   withQueryableTransaction,
-} from "../../routeUtils/common";
+} from "../../routeUtils/common.js";
 
 interface ContextVersionRow {
   id: string;
@@ -30,7 +30,6 @@ export class ResearchContextRepository {
     contextInput: ResearchContext,
     metadata: { assessment?: Record<string, unknown>; provenance?: Record<string, unknown> } = {},
   ): Promise<ResearchContextVersion> {
-    const protocol = await loadProtocol();
     const context = protocol.ResearchContextSchema.parse(contextInput);
     return withQueryableTransaction(this.db, async (db) => {
       const project = await db.query<{ id: string }>(
@@ -88,7 +87,6 @@ export class ResearchContextRepository {
       [contextVersionId, spaceId, projectId],
     );
     if (!result.rows[0]) return null;
-    const protocol = await loadProtocol();
     return mapContextVersion(result.rows[0], protocol.ResearchContextSchema.parse);
   }
 
@@ -106,7 +104,6 @@ export class ResearchContextRepository {
         ORDER BY created_at DESC, version DESC`,
       [spaceId, projectId, threadId],
     );
-    const protocol = await loadProtocol();
     return result.rows.map(row => mapContextVersion(row, protocol.ResearchContextSchema.parse));
   }
 }

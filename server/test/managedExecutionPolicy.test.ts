@@ -5,7 +5,7 @@ import {
   credentialPolicyMetadata,
   isManagedFailFastRun,
   managedExecutionPolicyFromContract,
-} from "../src/modules/policy/managedExecutionPolicy";
+} from "../src/modules/policy/managedExecutionPolicy.js";
 
 describe("managed execution policy", () => {
   it("round-trips a server-managed policy through the run contract", () => {

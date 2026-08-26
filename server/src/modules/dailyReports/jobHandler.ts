@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry } from "../jobs/handlerRegistry";
-import { DailyCaptureReportService } from "./service";
-import { PgDailyReportSettingsRepository } from "./repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
+import { DailyCaptureReportService } from "./service.js";
+import { PgDailyReportSettingsRepository } from "./repository.js";
 
 export function registerDailyCaptureReportHandler(
   registry: JobHandlerRegistry,

@@ -1,11 +1,11 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { contentResourceDefinition } from "./contentAccessRegistry";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { contentResourceDefinition } from "./contentAccessRegistry.js";
 import {
   contentAccessLevelSql,
   contentAccessSql,
   contentOwnerFilterSql,
-} from "./contentAccessSql";
-import { isContentAccessLevel, type ContentAccessDecision } from "./contentAccessTypes";
+} from "./contentAccessSql.js";
+import { isContentAccessLevel, type ContentAccessDecision } from "./contentAccessTypes.js";
 
 export async function contentDecisionFromDb(
   db: Queryable,

@@ -1,4 +1,4 @@
-import type { Queryable } from "../../routeUtils/common";
+import type { Queryable } from "../../routeUtils/common.js";
 import {
   applyResearchStatePatch,
   researchStage,
@@ -7,7 +7,7 @@ import {
   refreshOperation,
   type ResearchOperationState,
   type ResearchStepOverride,
-} from "../operationProjection";
+} from "../operationProjection.js";
 
 export interface ResearchOperationProjection {
   id: string;

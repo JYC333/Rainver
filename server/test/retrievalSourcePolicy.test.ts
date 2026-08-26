@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import {
-  loadSourcePolicySnapshots,
-  sourceConnectionIdsFromMetadata,
-  sourceConnectionIdsFromSourceRefs,
-  sourcePolicyAllowsRead,
-} from "../src/modules/retrieval";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { loadSourcePolicySnapshots, sourceConnectionIdsFromMetadata, sourceConnectionIdsFromSourceRefs, sourcePolicyAllowsRead } from "../src/modules/retrieval/sourcePolicy.js";
 
 const SPACE = "space-1";
 const SOURCE = "source-1";

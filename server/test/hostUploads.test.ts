@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgHostRepository } from "../src/modules/hosts/repository";
-import { PgArtifactRepository } from "../src/modules/artifacts/repository";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 
 // Real-Postgres coverage for the ADR 0016 D7 upload path: a remote host may
 // only upload diff/output artifacts for a Run bound to its own Folder, and
@@ -20,7 +20,7 @@ const AGENT_VERSION = "77777777-7777-4777-8777-777777777777";
 const RUN_A = "88888888-8888-4888-8888-888888888888";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

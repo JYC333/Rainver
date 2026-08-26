@@ -3,8 +3,8 @@ import {
   dateIso,
   optionalString,
   stringArray,
-} from "../routeUtils/common";
-import { shouldRedactMemoryContent } from "../memory/memoryReadAuth";
+} from "../routeUtils/common.js";
+import { shouldRedactMemoryContent } from "../memory/memoryReadAuth.js";
 
 export const PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION = "project_public_summary.prompt.v1";
 export const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";

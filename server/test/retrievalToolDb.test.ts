@@ -1,11 +1,12 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { RetrievalProjectionService, RetrievalSearchService } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
-import { RetrievalToolService } from "../src/modules/retrieval/tool/service";
-import { enforceRetrievalToolCallPolicy } from "../src/modules/retrieval/tool/policy";
-import { insertKnowledgeItem } from "./support/knowledgeFixtures";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
+import { enforceRetrievalToolCallPolicy } from "../src/modules/retrieval/tool/policy.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // W10 agent-space-controlled retrieval tool surface. A managed run calls retrieval
 // through RetrievalToolService, which forces the viewer to the run's INSTRUCTING
@@ -25,7 +26,7 @@ const RUN = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 let dbUrl = "";
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;

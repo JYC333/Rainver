@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import { HttpError } from "../../routeUtils/common";
+import { HttpError } from "../../routeUtils/common.js";
 
 /**
  * arXiv-specific helpers: API query URL building, Atom response parsing, and

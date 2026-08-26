@@ -1,5 +1,5 @@
-import { Amount } from "./amount";
-import { Position } from "./position";
+import { Amount } from "./amount.js";
+import { Position } from "./position.js";
 
 const CURRENCY_ORDER = new Map<string, number>([
   ["USD", 0],

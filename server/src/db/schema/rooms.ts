@@ -11,11 +11,11 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { users } from "./auth";
-import { projects } from "./projects";
-import { projectFolders } from "./projectFolders";
-import { spaces } from "./spaces";
+import { agents } from "./agents.js";
+import { users } from "./auth.js";
+import { projects } from "./projects.js";
+import { projectFolders } from "./projectFolders.js";
+import { spaces } from "./spaces.js";
 
 export const rooms = pgTable("rooms", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

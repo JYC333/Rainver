@@ -1,6 +1,6 @@
-import { registeredEntities } from "../ontology/entities";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
+import { registeredEntities } from "../ontology/entities.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 
 const SOURCE_SNAPSHOT_ACCESS = contentResourceDefinition("source_snapshot")!;
 const SOURCE_ITEM_ACCESS = contentResourceDefinition("source_item")!;

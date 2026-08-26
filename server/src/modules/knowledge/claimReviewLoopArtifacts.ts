@@ -1,8 +1,6 @@
-import type { ClaimContradictionReport } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
-import type { Queryable } from "../routeUtils/common";
+import type { ClaimContradictionReport } from "@agent-space/protocol";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 /**
  * Owner-private (or `space_ops`) artifact for a contradiction-discovery scan.

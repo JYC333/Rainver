@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { objectValue } from "../routeUtils/common";
-import { pmBlockText } from "./noteDocument";
+import { objectValue } from "../routeUtils/common.js";
+import { pmBlockText } from "./noteDocument.js";
 
 type PmNode = Record<string, unknown>;
 

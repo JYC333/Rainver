@@ -1,8 +1,8 @@
-import { contentReadSql } from "../access/contentAccessSql";
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { assertLinkTypeAllowed } from "../ontology/validation";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
+import type { Pool } from "../../db/pool.js";
 import {
   HttpError,
   dateIso,
@@ -11,9 +11,9 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { PgTaskRepository } from "../tasks/repository";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { PgTaskRepository } from "../tasks/repository.js";
 
 const CASE_STATUSES = new Set(["open", "decided", "archived"]);
 

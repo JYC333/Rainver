@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common";
+import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts.js";
+import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
 
 describe("operational failure alerts", () => {
   it("upserts a private Activity Inbox pointer for a scoped failure", async () => {

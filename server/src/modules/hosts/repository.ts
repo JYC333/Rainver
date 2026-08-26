@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { Queryable } from "../routeUtils/common";
-import { PgMachineRepository } from "./machineRepository";
-import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { PgMachineRepository } from "./machineRepository.js";
+import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 
 /**
  * ADR 0016: an execution host is the server host (exactly one row, seeded,

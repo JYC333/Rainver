@@ -1,7 +1,7 @@
-import type { WorkflowDefinition, WorkflowNode, WorkflowNodeInputBinding } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
-import { sha256Json } from "../evolution/hash";
-import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot";
+import type { WorkflowDefinition, WorkflowNode, WorkflowNodeInputBinding } from "@agent-space/protocol";
+import * as protocol from "@agent-space/protocol";
+import { sha256Json } from "../evolution/hash.js";
+import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot.js";
 
 export const PLAN_GRAPH_VERSION = "plan_graph.v1" as const;
 export const PLAN_GRAPH_LIMITS = {
@@ -60,7 +60,6 @@ export interface PlanAtomicityEvaluation {
 }
 
 export async function materializePlanGraph(input: unknown): Promise<MaterializedPlanGraph> {
-  const protocol = await loadProtocol();
   const definition = protocol.WorkflowDefinitionSchema.parse(unwrapStoredGraph(input));
   if (definition.nodes.length > PLAN_GRAPH_LIMITS.maxNodes) {
     throw new PlanGraphError(`Plan contains more than ${PLAN_GRAPH_LIMITS.maxNodes} nodes`, "plan_size_exceeded");

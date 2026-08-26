@@ -7,7 +7,7 @@ import {
   type ContentAccessLevel,
   type ContentAccessResource,
   type OversightMode,
-} from "./contentAccessTypes";
+} from "./contentAccessTypes.js";
 
 /**
  * Canonical effective-level rule (see the oversight/grant-upgrade plan):

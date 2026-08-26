@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common";
-import { ProjectOperationService } from "../projects/projectOperationService";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
+import { ProjectOperationService } from "../projects/projectOperationService.js";
 
 /**
  * Durable Project Research operation projection and persistence helpers.

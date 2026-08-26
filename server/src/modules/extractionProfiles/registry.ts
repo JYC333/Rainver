@@ -1,6 +1,6 @@
-import { registerAcademicExtractionProfiles } from "../academic/extractionProfile";
-import { registerDocumentExtractionProfiles } from "../sources/documentExtractionProfile";
-import type { Queryable } from "../routeUtils/common";
+import { registerAcademicExtractionProfiles } from "../academic/extractionProfile.js";
+import { registerDocumentExtractionProfiles } from "../sources/documentExtractionProfile.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 export interface ExtractionProfileMaterializationInput {
   spaceId: string;

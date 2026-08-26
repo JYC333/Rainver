@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { classifyIntent, rankingConfigForIntent } from "../src/modules/retrieval/intent";
-import { DEFAULT_RANKING_SIGNALS } from "../src/modules/retrieval/ranking";
+import { classifyIntent, rankingConfigForIntent } from "../src/modules/retrieval/intent.js";
+import { DEFAULT_RANKING_SIGNALS } from "../src/modules/retrieval/ranking.js";
 
 // Deterministic, query-only intent classification. No DB / no provider — intent
 // only selects access-neutral ranking knobs, so these guard the routing rules

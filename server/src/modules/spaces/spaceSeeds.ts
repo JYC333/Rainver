@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool";
+import type { PoolClient } from "../../db/pool.js";
 
 const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
   ["Inbox", "inbox", 0, true],

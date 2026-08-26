@@ -1,6 +1,6 @@
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
-import { ProjectResearchOrchestrator } from "../orchestrator";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { ProjectResearchOrchestrator } from "../orchestrator.js";
 
 /**
  * Public command boundary for the adaptive research pipeline.

@@ -1,11 +1,11 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { runVisibility } from "../runs/runInputEnvelope";
-import { InquiryThreadProposalService } from "./inquiryThreadProposalService";
-import { InquiryConclusionProposalService } from "./inquiryConclusionProposalService";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { runVisibility } from "../runs/runInputEnvelope.js";
+import { InquiryThreadProposalService } from "./inquiryThreadProposalService.js";
+import { InquiryConclusionProposalService } from "./inquiryConclusionProposalService.js";
 
 /**
  * `inquiry.propose_thread` and `inquiry.record_conclusion` (action authority

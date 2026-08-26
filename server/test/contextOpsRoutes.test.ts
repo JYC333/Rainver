@@ -1,22 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { contextOpsModule } from "../src/modules/contextOps";
-import { loadConfig } from "../src/config";
-import {
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { contextOpsModule } from "../src/modules/contextOps/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 
 const reviewCycleMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 
-vi.mock("../src/modules/contextOps/reviewCycle", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/contextOps/reviewCycle")>();
+vi.mock("../src/modules/contextOps/reviewCycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/modules/contextOps/reviewCycle.js")>();
   return {
     ...actual,
     runContextReviewCycle: reviewCycleMock,

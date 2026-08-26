@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { PgJobQueueRepository } from "../jobs/repository";
-import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository.js";
 
 /**
  * Queues annotation work for spaces that have pending rows nobody is coming

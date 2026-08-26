@@ -1,5 +1,5 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import type { ProjectPrimaryMode } from "./primaryMode";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import type { ProjectPrimaryMode } from "./primaryMode.js";
 
 export interface ModeOverviewProjection {
   mode: ProjectPrimaryMode;

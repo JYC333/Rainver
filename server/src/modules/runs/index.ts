@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const runsModule: ServerModule = {
   name: "runs",
@@ -10,4 +10,4 @@ export {
   __setRunsCommandServicesFactoryForTests,
   __setRunsIdentityForTests,
   __setRunsReadResponseForTests,
-} from "./routes";
+} from "./routes.js";

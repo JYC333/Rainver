@@ -1,8 +1,8 @@
-import { PgJobQueueRepository } from "../jobs/repository";
-import { RetrievalProjectionService } from "../retrieval";
-import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job";
-import type { Queryable } from "../routeUtils/common";
-import { sourceRetrievalRegistry } from "./retrievalAdapter";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { RetrievalProjectionService } from "../retrieval/index.js";
+import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { sourceRetrievalRegistry } from "./retrievalAdapter.js";
 
 export async function reindexSourceItemAndEvidenceForRetrieval(
   db: Queryable,

@@ -1,18 +1,18 @@
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../../../db/pool";
-import type { JobEnvelopeForHandler, JobHandlerRegistry } from "../../jobs/handlerRegistry";
-import type { JobHandlerResult } from "../../jobs/handlerRegistry";
-import { SourcePostProcessingService } from "./service";
-import { ProjectResearchPipelineService } from "../../projectResearch";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { JobEnvelopeForHandler, JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
+import type { JobHandlerResult } from "../../jobs/handlerRegistry.js";
+import { SourcePostProcessingService } from "./service.js";
+import { ProjectResearchPipelineService } from "../../projectResearch/index.js";
 import {
   isRetryableSourcePostProcessingFailure,
   sourcePostProcessingFailureCode,
-} from "./recoveryService";
+} from "./recoveryService.js";
 import {
   PgSourcePostProcessingRepository,
   SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
   type SourcePostProcessingTriggerType,
-} from "./repository";
+} from "./repository.js";
 
 export function registerSourcePostProcessingHandler(
   registry: JobHandlerRegistry,

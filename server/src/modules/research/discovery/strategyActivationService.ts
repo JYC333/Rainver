@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
-import { assertProjectWriter } from "../../projects/access";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { assertProjectWriter } from "../../projects/access.js";
 
 export type ResearchStrategyActivationReason = "initial" | "monitoring_feedback" | "rollback" | "manual";
 

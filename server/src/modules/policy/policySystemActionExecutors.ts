@@ -1,9 +1,9 @@
-import type { RuntimeHostExecuteResponse, SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { AuthorizationRequestService } from "./authorizationRequestService";
+import type { RuntimeHostExecuteResponse, SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { AuthorizationRequestService } from "./authorizationRequestService.js";
 
 /** `authorization.request` (action authority consolidation plan, P1.5). */
 export function registerPolicySystemActionExecutors(

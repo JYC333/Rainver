@@ -1,6 +1,6 @@
-import { HttpError } from "../routeUtils/common";
-import { cardSourceTypes, contextIncludableItemTypes, entityDefinition } from "./entities";
-import { linkTypeDefinition } from "./linkTypes";
+import { HttpError } from "../routeUtils/common.js";
+import { cardSourceTypes, contextIncludableItemTypes, entityDefinition } from "./entities.js";
+import { linkTypeDefinition } from "./linkTypes.js";
 
 /**
  * Registry-backed validation for the closed sets that used to be database

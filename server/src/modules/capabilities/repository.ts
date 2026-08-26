@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
 import {
   HttpError,
   countFromRow,
@@ -13,10 +13,10 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { proposalToOut } from "../proposals/repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { getBuiltInCapabilityDefinition } from "./registry";
+} from "../routeUtils/common.js";
+import { proposalToOut } from "../proposals/repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { getBuiltInCapabilityDefinition } from "./registry.js";
 import type {
   CapabilityDefinition,
   CapabilityRuntimeBinding,
@@ -25,7 +25,7 @@ import type {
   SkillPackage,
   SkillPackageFilePreview,
   SkillRiskLevel,
-} from "./types";
+} from "./types.js";
 import type {
   ProposalOut,
   SkillLibraryIndexResponse,
@@ -33,7 +33,7 @@ import type {
   SkillLocalOverlayConfig,
   SkillLocalOverlayScope,
   SkillLocalOverlayStatus,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 interface SkillPackageRow {
   id: string;

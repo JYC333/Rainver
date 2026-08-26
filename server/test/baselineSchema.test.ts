@@ -7,9 +7,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 // was failing them on contention rather than on anything being wrong.
 vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { loadMigrations, migrate } from "../src/db/migrator";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadMigrations, migrate } from "../src/db/migrator.js";
 
 // Empty-DB migration test. Applies the single runtime baseline to a fresh
 // Postgres via the server migration runner and asserts the resulting schema
@@ -55,7 +55,7 @@ const REPRESENTATIVE_TABLES = [
 ];
 
 
-const db = useTestDatabase(__filename, { empty: true });
+const db = useTestDatabase(import.meta.filename, { empty: true });
 
 beforeAll(async () => {
   if (!db.available) return;

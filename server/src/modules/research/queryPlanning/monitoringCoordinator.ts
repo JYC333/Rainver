@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../../config";
-import { insertProposalRow } from "../../proposals/reviewPackets";
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common";
-import { AdaptiveQueryOrchestrator } from "./adaptiveQueryOrchestrator";
+import type { ServerConfig } from "../../../config.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
+import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { AdaptiveQueryOrchestrator } from "./adaptiveQueryOrchestrator.js";
 import {
   DEFAULT_RESEARCH_MONITORING_FEEDBACK_POLICY,
   evaluateResearchMonitoringFeedback,
   type ResearchQueryPerformanceObservation,
-} from "./monitoringFeedback";
-import { ResearchQueryRepository } from "./repository";
+} from "./monitoringFeedback.js";
+import { ResearchQueryRepository } from "./repository.js";
 
 interface ObservationRow {
   new_candidate_count: number;

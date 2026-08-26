@@ -1,11 +1,11 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, doublePrecision, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { spaceObjects } from "./knowledge";
-import { inquiryThreads } from "./inquiry";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { spaceObjects } from "./knowledge.js";
+import { inquiryThreads } from "./inquiry.js";
 
 // Experiment Domain. Replaces the earlier, narrower
 // `project_experiment_campaigns`/`_runs`/`_provenance` model: a code/prompt

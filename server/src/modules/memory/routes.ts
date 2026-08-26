@@ -1,63 +1,61 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import * as protocol from "@agent-space/protocol";
 import type {
   MemoryMaintenanceScanRequest,
   RetrievalBriefRequest,
   RetrievalCreateSafetyRequest,
   RetrievalFeedbackRequest,
   RetrievalSearchRequest,
-} from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import type { ServerConfig } from "../../config";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { getDbPool } from "../../db/pool";
-import { introspectIdentity } from "../auth/identity";
-import { PgActivityConsolidationRepository } from "../activity/consolidationRepository";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { getDbPool } from "../../db/pool.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { PgActivityConsolidationRepository } from "../activity/consolidationRepository.js";
 import {
   RetrievalFeedbackService,
   RetrievalProjectionService,
   RetrievalSearchService,
   persistRetrievalBriefArtifact,
-} from "../retrieval";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings";
-import { canInitiateContextOpsScan, canReviewSpaceOpsPackets } from "../contextOps/reviewPolicy";
-import { withDbTransaction } from "../routeUtils/common";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { memoryRetrievalRegistry } from "./retrievalAdapter";
-import { MemoryMaintenanceService } from "./maintenance";
+} from "../retrieval/index.js";
+import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
+import { canInitiateContextOpsScan, canReviewSpaceOpsPackets } from "../contextOps/reviewPolicy.js";
+import { withDbTransaction } from "../routeUtils/common.js";
+import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
+import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
+import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
+import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
+import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
+import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { memoryRetrievalRegistry } from "./retrievalAdapter.js";
+import { MemoryMaintenanceService } from "./maintenance.js";
 import {
   createMemoryMaintenanceProposalPacket,
   persistMemoryMaintenanceReportArtifact,
-} from "./maintenanceArtifacts";
+} from "./maintenanceArtifacts.js";
 import {
   createMemoryMaintenanceJob,
   getMemoryMaintenanceJob,
   runMemoryMaintenanceJobOnce,
-} from "./maintenanceJobs";
+} from "./maintenanceJobs.js";
 import {
   MemoryReadValidationError,
   PgMemoryReadRepository,
-} from "./repository";
+} from "./repository.js";
 import {
   MemoryProposalForbiddenError,
   MemoryProposalNotFoundError,
   MemoryProposalPolicyError,
   MemoryProposalValidationError,
   PgMemoryProposalRepository,
-} from "./proposalRepository";
+} from "./proposalRepository.js";
 import {
   applyContentCreationContext,
   resolveContentCreationContext,
-} from "../access/creationContext";
+} from "../access/creationContext.js";
 
 /**
  * server memory model.
@@ -164,7 +162,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.MemorySearchRequestSchema.parse(jsonBody(request));
       // Memory search is strictly identity-scoped: space_id and user_id come
       // only from the authenticated identity, never from the request body
@@ -195,7 +192,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RetrievalCreateSafetyRequestSchema.parse(
         jsonBody(request),
       ) as RetrievalCreateSafetyRequest;
@@ -240,7 +236,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RetrievalSearchRequestSchema.parse(
         jsonBody(request),
       ) as RetrievalSearchRequest;
@@ -307,7 +302,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RetrievalBriefRequestSchema.parse(
         jsonBody(request),
       ) as RetrievalBriefRequest;
@@ -408,7 +402,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.RetrievalFeedbackRequestSchema.parse(
         jsonBody(request),
       ) as RetrievalFeedbackRequest;
@@ -455,7 +448,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.MemoryMaintenanceScanRequestSchema.parse(
         jsonBody(request),
       ) as MemoryMaintenanceScanRequest;
@@ -553,7 +545,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const body = protocol.MemoryMaintenanceJobCreateRequestSchema.parse(jsonBody(request));
       if (body.create_packet && !body.persist_report) {
         return reply.code(422).send({ detail: "create_packet requires persist_report" });
@@ -587,7 +578,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const pool = getDbPool(context.config.databaseUrl);
       const includeSpaceOps = await canReviewSpaceOpsPackets(pool, identity.spaceId, identity.userId);
       const job = await getMemoryMaintenanceJob(pool, {
@@ -610,7 +600,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
     }
     try {
-      const protocol = await loadProtocol();
       const pool = getDbPool(context.config.databaseUrl);
       const canScan = await canInitiateContextOpsScan(pool, identity.spaceId, identity.userId);
       if (!canScan) {
@@ -679,7 +668,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         requestSpaceId: identity.spaceId,
         projectId: optionalString(body.project_id),
       });
-      const protocol = await loadProtocol();
       const command = protocol.MemoryProposalCreateCommandSchema.parse({
         ...applyContentCreationContext(body, creation),
         operation: "create",
@@ -701,7 +689,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
     try {
-      const protocol = await loadProtocol();
       const command = protocol.MemoryProposalUpdateCommandSchema.parse({
         ...jsonBody(request),
         operation: "update",
@@ -724,7 +711,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
     try {
-      const protocol = await loadProtocol();
       const command = protocol.MemoryProposalArchiveCommandSchema.parse({
         operation: "archive",
         target_memory_id: memoryId,

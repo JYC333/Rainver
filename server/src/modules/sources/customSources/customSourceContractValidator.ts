@@ -1,10 +1,10 @@
 import { lstat, realpath } from "node:fs/promises";
+import * as protocol from "@agent-space/protocol";
 import { resolve } from "node:path";
 import type {
   CustomSourceHandlerOutput,
   CustomSourcePolicyLimits,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../../providers/protocolRuntime";
+} from "@agent-space/protocol";
 
 /**
  * Validates untrusted Custom Source handler output (`output.json`) against
@@ -57,7 +57,6 @@ function originAllowed(sourceUri: string, allowedNetworkOrigins: string[]): bool
 export async function validateCustomSourceHandlerOutput(
   input: CustomSourceContractValidationInput,
 ): Promise<CustomSourceContractValidationResult> {
-  const protocol = await loadProtocol();
   const parsed = protocol.CustomSourceHandlerOutputSchema.safeParse(input.raw);
   if (!parsed.success) {
     return {

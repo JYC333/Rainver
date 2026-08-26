@@ -1,26 +1,24 @@
 import { randomUUID } from "node:crypto";
+import { TWO_ARTICLE_HTML, customSourcePolicyEnvelope } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { loadConfig, type ServerConfig } from "../src/config";
+import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
 import {
   CustomSourceCreateFlowService,
   evaluateCustomSourceActivation,
-} from "../src/modules/sources/customSources/customSourceCreateFlowService";
-import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService";
-import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/recipeDryRunService";
-import { SourceRecipePipelineBridgeService } from "../src/modules/sources/sourceRecipes/pipelineBridgeService";
-import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel";
-import { HttpError } from "../src/modules/routeUtils/common";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import { PgProposalApplyService } from "../src/modules/proposals/applyService";
+} from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
+import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService.js";
+import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/recipeDryRunService.js";
+import { SourceRecipePipelineBridgeService } from "../src/modules/sources/sourceRecipes/pipelineBridgeService.js";
+import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
+import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
 // Real-Postgres + real-child-process integration tests for the Custom Source
 // create flow (draft -> generate -> test -> activate/approval), matching the
@@ -36,7 +34,7 @@ let config: ServerConfig | undefined;
 let service: CustomSourceCreateFlowService | undefined;
 let artifactStorageRoot: string | undefined;
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -60,10 +58,7 @@ afterEach(async () => {
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
-const FIXTURE_HTML = `<html><body>
-  <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-  <div class="article"><a href="/a2">Second Title</a><p>Second excerpt text.</p></div>
-</body></html>`;
+const FIXTURE_HTML = TWO_ARTICLE_HTML;
 
 async function createDraftConnection(overrides: Record<string, unknown> = {}) {
   const channel = await service!.createDraft(IDENTITY, {
@@ -726,26 +721,10 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
 });
 
 describe("evaluateCustomSourceActivation", () => {
-  const baseEnvelope: CustomSourcePolicyEnvelope = {
+  const baseEnvelope = customSourcePolicyEnvelope({
     allowed_network_origins: ["https://example.com"],
-    capture_policy: "extract_text",
-    retention_policy: "full_text",
-    credential_ref: null,
-    language: "typescript_node" as const,
-    browser_automation_enabled: false,
-    shell_enabled: false,
-    dependency_installation_enabled: false,
-    log_redaction_enabled: true,
-    limits: {
-      timeout_ms: 5000,
-      max_download_bytes: 1000,
-      max_output_bytes: 1000,
-      max_files: 1,
-      max_items: 10,
-      max_evidence_items: 10,
-      log_max_bytes: 1000,
-    },
-  };
+    limits: { timeout_ms: 5000, max_download_bytes: 1000, max_output_bytes: 1000, max_files: 1, max_items: 10, max_evidence_items: 10, log_max_bytes: 1000 },
+  });
 
   it("flags a new origin not present in the previously active version's envelope", () => {
     const result = evaluateCustomSourceActivation(

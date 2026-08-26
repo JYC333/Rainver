@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { RetrievalProjectionService } from "../src/modules/retrieval";
-import { RetrievalFeedbackService, RetrievalSearchService } from "../src/modules/retrieval";
-import { normalizeAlias, retrievalFeedbackQueryHash } from "../src/modules/retrieval";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import type { RetrievalObjectType } from "../src/modules/retrieval";
-import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { RetrievalFeedbackService } from "../src/modules/retrieval/feedback.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { normalizeAlias } from "../src/modules/retrieval/normalize.js";
+import { retrievalFeedbackQueryHash } from "../src/modules/retrieval/feedback.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import type { RetrievalObjectType } from "../src/modules/retrieval/index.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 
 const SPACE_A = "11111111-1111-4111-8111-111111111111";
 const SPACE_B = "22222222-2222-4222-8222-222222222222";

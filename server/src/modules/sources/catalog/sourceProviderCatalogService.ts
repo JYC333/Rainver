@@ -1,5 +1,5 @@
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common";
-import { sourceProviderSetupSchema } from "./sourceProviderSetup";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { sourceProviderSetupSchema } from "./sourceProviderSetup.js";
 
 export interface SourceProviderCatalogRow {
   id: string;

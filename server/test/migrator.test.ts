@@ -2,15 +2,15 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { migrate, status, loadMigrations } from "../src/db/migrator";
-import { withTransaction } from "../src/db/tx";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { migrate, status, loadMigrations } from "../src/db/migrator.js";
+import { withTransaction } from "../src/db/tx.js";
 
 // Real-Postgres tests for the server migration runner. Skips gracefully when Docker
 // is unavailable so `pnpm test` still runs everywhere.
 
 
-const db = useTestDatabase(__filename, { max: 5, empty: true });
+const db = useTestDatabase(import.meta.filename, { max: 5, empty: true });
 
 let dir: string;
 beforeEach(() => {

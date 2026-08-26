@@ -1,13 +1,13 @@
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common";
-import { insertProposalRow } from "../../proposals/reviewPackets";
+import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import {
   HANDLER_VERSION_COLUMNS,
   PgCustomSourceHandlerRepository,
   handlerVersionOut,
   type HandlerVersionRow,
-} from "./customSourceHandlerRepository";
+} from "./customSourceHandlerRepository.js";
 import {
   CustomSourceCreateFlowService,
   activateCustomSourceHandlerVersion,
@@ -16,7 +16,7 @@ import {
   customSourceProposalRisk,
   customSourceProposalTypeForEnvelope,
   evaluateCustomSourceActivation,
-} from "./customSourceCreateFlowService";
+} from "./customSourceCreateFlowService.js";
 
 interface RepairableConnection {
   id: string;

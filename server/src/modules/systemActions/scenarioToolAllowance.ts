@@ -1,4 +1,4 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { SystemActionId } from "@agent-space/protocol";
 
 /**
  * Scenario tool allowances.

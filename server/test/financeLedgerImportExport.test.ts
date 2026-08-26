@@ -1,8 +1,7 @@
-import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
-import { Pool } from "pg";
-import { getTestPostgres, type TestPostgresDatabase } from "./support/sharedPostgres";
-import { resetTables } from "./support/resetTables";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime";
+import { describe, expect, it, beforeAll, beforeEach } from "vitest";
+import { resetTables } from "./support/resetTables.js";
+import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 const {
   plugin: { financeLedgerPlugin },
@@ -16,8 +15,6 @@ const {
   },
 } = loadFinanceLedgerRuntime();
 
-let container: TestPostgresDatabase | null = null;
-let pool: Pool | null = null;
 
 const SPACE_A = "space-finance-import-a";
 const SPACE_B = "space-finance-import-b";
@@ -57,25 +54,21 @@ pushtag #import2026
 poptag #import2026
 `;
 
-beforeAll(async () => {
-  container = await getTestPostgres(__filename, { empty: true });
-  pool = new Pool({ connectionString: container.getConnectionUri() });
-  for (const migration of financeLedgerPlugin.migrations!) {
-    await pool.query(migration.sql);
-  }
-}, 60_000);
+const db = useTestDatabase(import.meta.filename, { max: 10, empty: true });
 
-afterAll(async () => {
-  await pool?.end();
-  await container?.stop();
+beforeAll(async () => {
+  if (!db.available) return;
+  for (const migration of financeLedgerPlugin.migrations!) {
+  await db.pool.query(migration.sql);
+  }
 });
 
 beforeEach(async () => {
-  await resetTables(pool!, ["finance_books"], { cascade: true });
+  await resetTables(db.pool, ["finance_books"], { cascade: true });
 });
 
 async function createBook(spaceId = SPACE_A) {
-  return financeLedgerService.createFinanceBook(pool!, spaceId, USER_1, {
+  return financeLedgerService.createFinanceBook(db.pool, spaceId, USER_1, {
     name: "Household",
     baseCurrency: "USD",
   });
@@ -85,7 +78,7 @@ describe("finance ledger Beancount import", () => {
   it("persists the full directive stream as proposed by default", async () => {
     const book = await createBook();
     const result = await financeLedgerService.importBeancount(
-      pool!,
+      db.pool,
       SPACE_A,
       book.id,
       USER_1,
@@ -99,11 +92,11 @@ describe("finance ledger Beancount import", () => {
     // event + query + document + custom = 15 dated directives
     expect(result.createdDirectives).toBe(15);
 
-    const directives = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id);
+    const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
     expect(directives).toHaveLength(15);
     expect(new Set(directives.map((d) => d["status"]))).toEqual(new Set(["proposed"]));
 
-    const configRows = await pool!.query(
+    const configRows = await db.pool.query(
       `SELECT
          (SELECT count(*) FROM finance_includes WHERE book_id = $1) AS includes,
          (SELECT count(*) FROM finance_plugin_directives WHERE book_id = $1) AS plugins,
@@ -123,24 +116,24 @@ describe("finance ledger Beancount import", () => {
 
   it("deduplicates identical imports by content hash", async () => {
     const book = await createBook();
-    const first = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const first = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
-    const second = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const second = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
 
     expect(second.deduplicated).toBe(true);
     expect(second.importSourceId).toBe(first.importSourceId);
     expect(second.createdDirectives).toBe(0);
-    const directives = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id);
+    const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
     expect(directives).toHaveLength(15);
   });
 
   it("refuses to post-directly an import with validation errors", async () => {
     const book = await createBook();
     await expect(
-      financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+      financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
         text: `
 2026-01-01 open Assets:Cash USD
 2026-01-01 open Expenses:Misc USD
@@ -155,7 +148,7 @@ describe("finance ledger Beancount import", () => {
 
   it("records structured errors for unknown account references and skips them", async () => {
     const book = await createBook();
-    const result = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const result = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: `
 2026-01-01 open Assets:Cash USD
 2026-01-02 note Assets:Nonexistent "orphan"
@@ -165,7 +158,7 @@ describe("finance ledger Beancount import", () => {
     expect(result.errors).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: "unknown_account" })]),
     );
-    const directives = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id);
+    const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
     expect(directives.map((d) => d["directive_type"])).toEqual(["open"]);
   });
 });
@@ -173,12 +166,12 @@ describe("finance ledger Beancount import", () => {
 describe("finance ledger Beancount export", () => {
   it("exports every stored core directive after posting and records finance_exports", async () => {
     const book = await createBook();
-    const imported = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
-    await financeLedgerService.postImportBatch(pool!, SPACE_A, book.id, imported.importSourceId!);
+    await financeLedgerService.postImportBatch(db.pool, SPACE_A, book.id, imported.importSourceId!);
 
-    const result = await financeLedgerService.exportBeancount(pool!, SPACE_A, book.id, USER_1);
+    const result = await financeLedgerService.exportBeancount(db.pool, SPACE_A, book.id, USER_1);
 
     expect(result.content).toContain('option "title" "Household Book"');
     expect(result.content).toContain('option "operating_currency" "USD"');
@@ -201,7 +194,7 @@ describe("finance ledger Beancount export", () => {
     expect(result.content).toContain('2026-01-06 custom "budget" "food" 100.00 USD');
     expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
-    const exportRows = await pool!.query(
+    const exportRows = await db.pool.query(
       `SELECT status, content_hash, validation_summary_json FROM finance_exports WHERE book_id = $1`,
       [book.id],
     );
@@ -212,11 +205,11 @@ describe("finance ledger Beancount export", () => {
 
   it("excludes non-posted directives from export", async () => {
     const book = await createBook();
-    await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
 
-    const result = await financeLedgerService.exportBeancount(pool!, SPACE_A, book.id, USER_1);
+    const result = await financeLedgerService.exportBeancount(db.pool, SPACE_A, book.id, USER_1);
 
     // Structural rows (accounts/commodities/options) export; proposed
     // transactions and other directives do not.
@@ -227,11 +220,11 @@ describe("finance ledger Beancount export", () => {
 
   it("roundtrips export output through the parser without errors", async () => {
     const book = await createBook();
-    const imported = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
-    await financeLedgerService.postImportBatch(pool!, SPACE_A, book.id, imported.importSourceId!);
-    const exported = await financeLedgerService.exportBeancount(pool!, SPACE_A, book.id, USER_1);
+    await financeLedgerService.postImportBatch(db.pool, SPACE_A, book.id, imported.importSourceId!);
+    const exported = await financeLedgerService.exportBeancount(db.pool, SPACE_A, book.id, USER_1);
 
     const reparsed = financeLedgerEngine.loadFromText(exported.content, "roundtrip.beancount");
     expect(reparsed.errors).toEqual([]);
@@ -270,14 +263,14 @@ describe("finance ledger proposal appliers", () => {
         user_id: USER_1,
         payload,
       },
-      db: pool!,
+      db: db.pool,
       config: null,
     };
   }
 
   it("posts a valid directive through finance_ledger.post_directive", async () => {
     const book = await createBook();
-    const imported = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: `
 2026-01-01 open Assets:Cash USD
 2026-01-01 open Expenses:Misc USD
@@ -286,7 +279,7 @@ describe("finance ledger proposal appliers", () => {
   Expenses:Misc  3.00 USD
 `,
     });
-    const transactions = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const transactions = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       directiveType: "transaction",
     });
 
@@ -297,7 +290,7 @@ describe("finance ledger proposal appliers", () => {
       }),
     );
 
-    const posted = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const posted = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       directiveType: "transaction",
       status: "posted",
     });
@@ -308,19 +301,19 @@ describe("finance ledger proposal appliers", () => {
   it("rejects posting an invalid directive and leaves status unchanged", async () => {
     const book = await createBook();
     // Bypass import validation by inserting an unbalanced draft directly.
-    const commodity = await financeLedgerService.createCommodity(pool!, SPACE_A, book.id, {
+    const commodity = await financeLedgerService.createCommodity(db.pool, SPACE_A, book.id, {
       symbol: "USD",
       commodityType: "currency",
     });
-    const cash = await financeLedgerService.openAccount(pool!, SPACE_A, book.id, {
+    const cash = await financeLedgerService.openAccount(db.pool, SPACE_A, book.id, {
       name: "Assets:Cash",
       openedAt: "2026-01-01",
     });
-    const misc = await financeLedgerService.openAccount(pool!, SPACE_A, book.id, {
+    const misc = await financeLedgerService.openAccount(db.pool, SPACE_A, book.id, {
       name: "Expenses:Misc",
       openedAt: "2026-01-01",
     });
-    const draft = await financeLedgerService.createTransactionDraft(pool!, SPACE_A, book.id, USER_1, {
+    const draft = await financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {
       date: "2026-01-02",
       narration: "Unbalanced",
       postings: [
@@ -338,7 +331,7 @@ describe("finance ledger proposal appliers", () => {
       ),
     ).rejects.toThrow("does not balance");
 
-    const stillDraft = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const stillDraft = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "draft",
     });
     expect(stillDraft.map((d) => d["id"])).toContain(draft.id);
@@ -346,7 +339,7 @@ describe("finance ledger proposal appliers", () => {
 
   it("fails closed on cross-space payloads", async () => {
     const book = await createBook();
-    const imported = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: "2026-01-01 open Assets:Cash USD\n",
     });
 
@@ -360,7 +353,7 @@ describe("finance ledger proposal appliers", () => {
     ).resolves.toBeUndefined();
 
     // The batch resolves but posts nothing because the book is scoped to space A.
-    const posted = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const posted = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "posted",
     });
     expect(posted).toHaveLength(0);
@@ -368,7 +361,7 @@ describe("finance ledger proposal appliers", () => {
 
   it("posts a full import batch through finance_ledger.post_import_batch", async () => {
     const book = await createBook();
-    const imported = await financeLedgerService.importBeancount(pool!, SPACE_A, book.id, USER_1, {
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
       text: FULL_FIXTURE,
     });
 
@@ -379,11 +372,11 @@ describe("finance ledger proposal appliers", () => {
       }),
     );
 
-    const pending = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const pending = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "proposed",
     });
     expect(pending).toHaveLength(0);
-    const posted = await financeLedgerService.listDirectives(pool!, SPACE_A, book.id, {
+    const posted = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "posted",
     });
     expect(posted).toHaveLength(15);

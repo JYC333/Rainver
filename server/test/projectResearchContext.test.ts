@@ -5,7 +5,7 @@ import {
   relevanceCriteriaFromScope,
   relevanceProfileFromResearchContext,
   researchScopeFromRefinement,
-} from "../src/modules/projectResearch/researchContext";
+} from "../src/modules/projectResearch/researchContext.js";
 
 describe("Project Research shared refinement context", () => {
   it("maps refinement scope and sub-questions into bounded screening criteria", () => {

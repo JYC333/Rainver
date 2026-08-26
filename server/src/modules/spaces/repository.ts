@@ -1,18 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool, type Pool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
 import {
   getOrCreateSpaceRetrievalSettings,
   updateSpaceRetrievalSettings,
   type SpaceRetrievalSettingsOut,
-} from "../retrieval/settings";
+} from "../retrieval/settings.js";
 import type {
   SpaceRetrievalSettingsUpdate,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { seedSpaceDefaults } from "./spaceSeeds";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "@agent-space/protocol";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { seedSpaceDefaults } from "./spaceSeeds.js";
 
 export interface SpaceCreateInput {
   name: string;
@@ -190,7 +190,6 @@ export class PgSpaceRepository implements SpaceRepository {
     }
     let oversightMode = "none";
     if (input.oversight_mode !== undefined) {
-      const protocol = await loadProtocol();
       if (!protocol.isSpaceOversightMode(input.oversight_mode)) {
         return { statusCode: 422, detail: "Invalid oversight_mode" };
       }

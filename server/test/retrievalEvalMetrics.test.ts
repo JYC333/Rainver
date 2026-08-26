@@ -4,7 +4,7 @@ import {
   precisionAtK,
   recallAtK,
   reciprocalRank,
-} from "./support/retrievalEval";
+} from "./support/retrievalEval.js";
 
 // Pure metric math for the retrieval eval harness. No DB / no provider — these
 // guard the scoring functions the benches rely on (recall / precision / MRR / nDCG),

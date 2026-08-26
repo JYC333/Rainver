@@ -1,5 +1,5 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
 
 export const agentsModule: ServerModule = {
   name: "agents",
@@ -9,5 +9,5 @@ export const agentsModule: ServerModule = {
 export {
   __setAgentChatIdentityForTests,
   __setAgentChatServicesFactoryForTests,
-} from "./routes";
-export { PgAgentRepository } from "./repository";
+} from "./routes.js";
+export { PgAgentRepository } from "./repository.js";

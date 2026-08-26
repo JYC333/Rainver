@@ -1,11 +1,11 @@
-import type { SystemActionId } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { SystemActionExecutor } from "../systemActions/gateway";
-import type { RunRecord } from "../runs/repository";
-import { runVisibility } from "../runs/runInputEnvelope";
-import { ProjectSourceProposalService } from "./projectSourceProposalService";
-import { ProjectDefinitionProposalService } from "./projectDefinitionProposalService";
+import type { SystemActionId } from "@agent-space/protocol";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { SystemActionExecutor } from "../systemActions/gateway.js";
+import type { RunRecord } from "../runs/repository.js";
+import { runVisibility } from "../runs/runInputEnvelope.js";
+import { ProjectSourceProposalService } from "./projectSourceProposalService.js";
+import { ProjectDefinitionProposalService } from "./projectDefinitionProposalService.js";
 
 /**
  * `project.source.propose_bind` and `project.propose_definition` (action

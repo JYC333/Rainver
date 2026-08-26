@@ -3,7 +3,7 @@ import type {
   ResearchPreviewObservation,
   ResearchPreviewSample,
   ResearchSemanticQuery,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export interface ResearchPreviewCandidate {
   sampleId: string;

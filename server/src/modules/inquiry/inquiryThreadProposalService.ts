@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { assertProjectWriter } from "../projects/access";
-import { insertProposalRow } from "../proposals/reviewPackets";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { assertProjectWriter } from "../projects/access.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 import {
   HttpError,
   optionalString,
@@ -10,7 +10,7 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 
 export interface InquiryThreadProposalActor {
   agentId?: string | null;

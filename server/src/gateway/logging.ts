@@ -9,7 +9,7 @@
  */
 
 import type { FastifyServerOptions } from "fastify";
-import type { ServerConfig } from "../config";
+import type { ServerConfig } from "../config.js";
 
 /** Header paths that must never appear in logs. */
 export const LOG_REDACT_PATHS = [

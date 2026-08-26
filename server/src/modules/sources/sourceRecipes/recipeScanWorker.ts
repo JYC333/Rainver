@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../../config";
-import type { Queryable } from "../../routeUtils/common";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository";
-import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService";
-import { CustomSourceMaterializationService } from "../customSources/customSourceMaterializer";
-import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter";
-import { enqueueItemsForAnnotation } from "../../sourceAnnotation";
-import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch";
-import { cleanupSandbox } from "../customSources/customSourceRunner";
-import { computeNextCheckAt } from "../sourceScanCadence";
+import * as protocol from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
+import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository.js";
+import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
+import { CustomSourceMaterializationService } from "../customSources/customSourceMaterializer.js";
+import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js";
+import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
+import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
+import { cleanupSandbox } from "../customSources/customSourceRunner.js";
+import { computeNextCheckAt } from "../sourceScanCadence.js";
 import {
   getSourceChannelScanTask,
   listDueSourceChannelScanTasks,
   upsertSourceChannelScanTask,
-} from "../sourceConnectionScheduler";
-import { runSourceRecipe } from "./recipeInterpreter";
+} from "../sourceConnectionScheduler.js";
+import { runSourceRecipe } from "./recipeInterpreter.js";
 
 /**
  * Live scan path for Level 2 recipe sources. Mirrors the built-in
@@ -185,7 +185,6 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
     const versionRow = versionResult.rows[0];
     if (!versionRow) throw new Error(`Recipe version ${recipeVersionId} not found`);
 
-    const protocol = await loadProtocol();
     const recipe = protocol.SourceRecipeDefinitionSchema.parse(versionRow.recipe_json);
     const envelope = protocol.SourcePolicyEnvelopeSchema.parse(versionRow.policy_envelope_json);
     const settings = await new PgCustomSourceHandlerRepository(db, config).getRunnerSettingsForSpace(job.space_id);

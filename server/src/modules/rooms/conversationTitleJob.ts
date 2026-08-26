@@ -1,10 +1,10 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry.js";
 import {
   ROOM_CONVERSATION_TITLE_JOB,
   RoomConversationTitleService,
-} from "./conversationTitleService";
+} from "./conversationTitleService.js";
 
 export function registerRoomConversationTitleHandler(
   registry: JobHandlerRegistry,

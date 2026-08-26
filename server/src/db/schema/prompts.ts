@@ -1,9 +1,9 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { proposals } from "./proposals";
-import { evolvableAssets, evolvableAssetVersions } from "./evolvableAssets";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { proposals } from "./proposals.js";
+import { evolvableAssets, evolvableAssetVersions } from "./evolvableAssets.js";
 
 const SCOPE_TYPES = sql`ARRAY[('system'::character varying)::text, ('space'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text]`;
 

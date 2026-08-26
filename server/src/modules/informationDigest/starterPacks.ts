@@ -1,7 +1,7 @@
-import type { Queryable } from "../routeUtils/common";
-import { InterestProfileService } from "../interestProfile/service";
-import { topicKeyFor } from "../interestProfile/topicKey";
-import { PgSerendipityRepository } from "./serendipityRepository";
+import type { Queryable } from "../routeUtils/common.js";
+import { InterestProfileService } from "../interestProfile/service.js";
+import { topicKeyFor } from "../interestProfile/topicKey.js";
+import { PgSerendipityRepository } from "./serendipityRepository.js";
 
 export const INTEREST_STARTER_PACKS = [
   { key: "technology", label: "Technology", topics: [

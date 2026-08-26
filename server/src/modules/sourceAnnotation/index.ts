@@ -21,7 +21,7 @@ export {
   registerDomain,
   type DomainDefinition,
   type DomainGroup,
-} from "./domainSkeleton";
+} from "./domainSkeleton.js";
 
 export {
   ANNOTATION_DEPTHS,
@@ -30,21 +30,21 @@ export {
   isAnnotationGenre,
   type AnnotationDepth,
   type AnnotationGenre,
-} from "./vocabulary";
+} from "./vocabulary.js";
 
 export {
   PgSourceAnnotationRepository,
   SOURCE_ANNOTATION_JOB_TYPE,
   type SourceAnnotationRow,
   type SourceAnnotationStatus,
-} from "./repository";
+} from "./repository.js";
 
-export { enqueueItemsForAnnotation } from "./eventEmitter";
-export { registerSourceAnnotationHandler } from "./job";
-export { enqueuePendingSourceAnnotationWork } from "./scheduler";
-export { SourceAnnotationService, type AnnotationSweepResult } from "./service";
+export { enqueueItemsForAnnotation } from "./eventEmitter.js";
+export { registerSourceAnnotationHandler } from "./job.js";
+export { enqueuePendingSourceAnnotationWork } from "./scheduler.js";
+export { SourceAnnotationService, type AnnotationSweepResult } from "./service.js";
 export {
   SOURCE_ANNOTATION_SCHEMA_ID,
   parseSourceAnnotationResult,
   sourceAnnotationOutputContract,
-} from "./resultParser";
+} from "./resultParser.js";

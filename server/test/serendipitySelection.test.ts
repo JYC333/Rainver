@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { StandbyCandidate } from "../src/modules/informationDigest/serendipityRepository";
-import { selectSerendipity } from "../src/modules/informationDigest/serendipitySelection";
+import type { StandbyCandidate } from "../src/modules/informationDigest/serendipityRepository.js";
+import { selectSerendipity } from "../src/modules/informationDigest/serendipitySelection.js";
 
 function candidate(input: Partial<StandbyCandidate> & Pick<StandbyCandidate, "pool_id" | "source_item_id" | "target_domain_key">): StandbyCandidate {
   return {

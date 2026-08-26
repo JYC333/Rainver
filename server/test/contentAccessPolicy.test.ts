@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { decideContentAccess } from "../src/modules/access/contentAccessPolicy";
+import { decideContentAccess } from "../src/modules/access/contentAccessPolicy.js";
 import type {
   ContentAccessContext,
   ContentAccessDecision,
   ContentAccessGrant,
   ContentAccessResource,
   OversightMode,
-} from "../src/modules/access/contentAccessTypes";
+} from "../src/modules/access/contentAccessTypes.js";
 
 const OWNER = "owner-1";
 const MEMBER = "member-1";

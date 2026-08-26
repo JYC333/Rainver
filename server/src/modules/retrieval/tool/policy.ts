@@ -1,8 +1,6 @@
-import type { RetrievalObjectType, RetrievalSearchMode } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
-import { loadActionRegistry } from "../../policy/actionRegistry";
-import { enforce } from "../../policy/service";
+import type { RetrievalObjectType, RetrievalSearchMode } from "@agent-space/protocol";
+import { loadActionRegistry } from "../../policy/actionRegistry.js";
+import { enforce } from "../../policy/service.js";
 
 export type RetrievalToolPolicyAction =
   | "retrieval.search"

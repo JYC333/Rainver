@@ -1,19 +1,19 @@
 import { resolve } from "node:path";
+import * as protocol from "@agent-space/protocol";
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { ServerConfig } from "../../../config";
-import { HttpError, type Queryable } from "../../routeUtils/common";
-import { loadProtocol } from "../../providers/protocolRuntime";
-import type { CustomSourceFetchCredential } from "./customSourceEndpointFetch";
-import type { HandlerVersionRow } from "./customSourceHandlerRepository";
-import { runCustomSourcePipeline } from "./customSourcePipelineInterpreter";
+} from "@agent-space/protocol";
+import type { ServerConfig } from "../../../config.js";
+import { HttpError, type Queryable } from "../../routeUtils/common.js";
+import type { CustomSourceFetchCredential } from "./customSourceEndpointFetch.js";
+import type { HandlerVersionRow } from "./customSourceHandlerRepository.js";
+import { runCustomSourcePipeline } from "./customSourcePipelineInterpreter.js";
 import {
   CustomSourceRunner,
   type CustomSourceRunnerResult,
   type CustomSourceRunnerSettings,
-} from "./customSourceRunner";
+} from "./customSourceRunner.js";
 
 /**
  * Single dispatch point for "execute this (non-blocked) handler version,"
@@ -41,7 +41,6 @@ export async function executeCustomSourceHandler(
   },
 ): Promise<CustomSourceRunnerResult> {
   if (args.policyEnvelope.language === "declarative_pipeline_v1") {
-    const protocol = await loadProtocol();
     const manifest = (args.version.manifest_json ?? {}) as { pipeline?: unknown };
     const parsed = protocol.CustomSourcePipelineDefinitionSchema.safeParse(manifest.pipeline);
     if (!parsed.success) throw new HttpError(422, "Handler version has no valid pipeline definition");

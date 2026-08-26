@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { withQueryableTransaction } from "../src/modules/routeUtils/common";
+import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 
 describe("withQueryableTransaction", () => {
   it("joins an existing PostgreSQL transaction client", async () => {

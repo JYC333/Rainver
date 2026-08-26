@@ -8,11 +8,11 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { contentReadSql } from "../access/contentAccessSql";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import type { PinnedSourceRef } from "./outbox";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import type { PinnedSourceRef } from "./outbox.js";
 
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
 const DECISIONS = new Set(["promote", "dismiss", "defer"]);

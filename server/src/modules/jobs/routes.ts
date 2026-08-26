@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   optionalString,
@@ -8,10 +8,10 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { PgJobQueueRepository } from "./repository";
-import type { JobEventRecord, JobRecord } from "./repository";
-import { buildJobHandlerRegistry } from "./workerRuntime";
+} from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "./repository.js";
+import type { JobEventRecord, JobRecord } from "./repository.js";
+import { buildJobHandlerRegistry } from "./workerRuntime.js";
 
 export interface JobOut {
   id: string;

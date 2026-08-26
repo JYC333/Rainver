@@ -1,9 +1,9 @@
-import { resolveContentCreationContext } from "../access/creationContext";
-import { PgActivityRepository } from "../activity/repository";
-import { PgKnowledgeRepository } from "../knowledge/repository";
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common";
-import { getDbPool, type Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
+import { resolveContentCreationContext } from "../access/creationContext.js";
+import { PgActivityRepository } from "../activity/repository.js";
+import { PgKnowledgeRepository } from "../knowledge/repository.js";
+import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
 
 export type CaptureDestination =
   | "object_marginalia"

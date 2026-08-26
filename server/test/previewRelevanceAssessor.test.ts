@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchContext, ResearchSemanticQuery } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { PreviewRelevanceAssessor } from "../src/modules/research/discovery/previewRelevanceAssessor";
+import type { ResearchContext, ResearchSemanticQuery } from "@agent-space/protocol";
+import { PreviewRelevanceAssessor } from "../src/modules/research/discovery/previewRelevanceAssessor.js";
 
 describe("PreviewRelevanceAssessor", () => {
   it("labels bounded metadata samples and computes conservative relevance/diversity metrics", () => {

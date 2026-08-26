@@ -1,8 +1,8 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { request as undiciRequest } from "undici";
-import type { ServerConfig } from "../../config";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { resolveRequestId } from "../../gateway/requestContext";
+import type { ServerConfig } from "../../config.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { resolveRequestId } from "../../gateway/requestContext.js";
 
 const SUPPORTED_EVENT_TYPES = new Set(["proposal.pending"]);
 

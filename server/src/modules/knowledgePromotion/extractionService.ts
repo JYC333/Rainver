@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   HttpError,
   objectValue,
   optionalString,
   requiredString,
   withQueryableTransaction,
-} from "../routeUtils/common";
-import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { contentReadSql } from "../access/contentAccessSql";
-import { PgRunRepository } from "../runs/repository";
-import { runOutputResult } from "../runs/orchestrationResults";
-import { PgJobQueueRepository } from "../jobs/repository";
+} from "../routeUtils/common.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
 

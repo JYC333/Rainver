@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Queryable } from "../src/modules/routeUtils/common";
-import { sourceRetrievalAdapter } from "../src/modules/sources/retrievalAdapter";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { sourceRetrievalAdapter } from "../src/modules/sources/retrievalAdapter.js";
 
 class SourceRetrievalDb implements Queryable {
   calls: Array<{ sql: string; params: readonly unknown[] }> = [];

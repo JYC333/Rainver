@@ -1,8 +1,8 @@
-import type { ServerConfig } from "../../../config";
-import { getDbPool } from "../../../db/pool";
-import type { JobHandlerRegistry } from "../../jobs/handlerRegistry";
-import { ManagedSemanticCheckpointProvider } from "./semanticExtractor";
-import { RuntimeContextContinuityService } from "./service";
+import type { ServerConfig } from "../../../config.js";
+import { getDbPool } from "../../../db/pool.js";
+import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
+import { ManagedSemanticCheckpointProvider } from "./semanticExtractor.js";
+import { RuntimeContextContinuityService } from "./service.js";
 
 export const RUNTIME_CONTEXT_CHECKPOINT_JOB = "runtime_context_checkpoint";
 

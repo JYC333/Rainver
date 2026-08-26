@@ -7,7 +7,7 @@ import {
   researchState,
   type ResearchOperationState,
   type ResearchStage,
-} from "../src/modules/projectResearch/operationProjection";
+} from "../src/modules/projectResearch/operationProjection.js";
 
 function state(current_stage: ResearchStage, stage_state: ResearchOperationState["stage_state"] = "running"): ResearchOperationState {
   return {

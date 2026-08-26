@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const repoRoot = join(__dirname, "..", "..");
+const repoRoot = join(import.meta.dirname, "..", "..");
 
 function script(name: string): string {
   return readFileSync(join(repoRoot, "ops", "scripts", "system", name), "utf8");

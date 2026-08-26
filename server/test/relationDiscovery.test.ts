@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   runRelationDiscoveryScan,
   type RelationDiscoveryLlmExtractor,
-} from "../src/modules/knowledge/relationDiscovery";
+} from "../src/modules/knowledge/relationDiscovery.js";
 import {
   RELATION_DISCOVERY_PACKET_PROPOSAL_TYPE,
   registerRelationDiscoveryProposalAppliers,
-} from "../src/modules/knowledge/relationDiscoveryArtifacts";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/knowledge/relationDiscoveryArtifacts.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 
 interface ItemRow {
   id: string;

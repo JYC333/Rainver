@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "../sourceAnnotation/repository";
+import type { Queryable } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "../sourceAnnotation/repository.js";
 
 export interface ExternalDiscoverySample {
   title: string;

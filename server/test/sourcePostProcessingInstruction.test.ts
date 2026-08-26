@@ -3,14 +3,14 @@ import {
   buildRetrievalContextQuery,
   renderInstruction,
   type SourcePostProcessingRetrievalContextSnapshot,
-} from "../src/modules/sources/postProcessing/instruction";
-import { parsePostProcessingResult } from "../src/modules/sources/postProcessing/resultParser";
+} from "../src/modules/sources/postProcessing/instruction.js";
+import { parsePostProcessingResult } from "../src/modules/sources/postProcessing/resultParser.js";
 import {
   normalizeActions,
   normalizeInputConfig,
   normalizeTriggerConfig,
-} from "../src/modules/sources/postProcessing/repository";
-import type { EvidenceRow, SourceItemRow, SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows";
+} from "../src/modules/sources/postProcessing/repository.js";
+import type { EvidenceRow, SourceItemRow, SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
 
 function makeConnection(overrides: Partial<SourceConnectionRow> = {}): SourceConnectionRow {
   return {

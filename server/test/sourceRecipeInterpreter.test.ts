@@ -1,56 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TWO_ARTICLE_HTML, runnerSettings, sourcePolicyEnvelope } from "./support/customSourceFixtures.js";
 import { rm } from "node:fs/promises";
 import type {
   CustomSourcePipelineDefinition,
-  SourcePolicyEnvelope,
   SourceRecipeDefinition,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 import {
   recipeFromPipelineDefinition,
   runSourceRecipe,
   type SourceRecipeRunInput,
-} from "../src/modules/sources/sourceRecipes/recipeInterpreter";
-import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator";
-import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner";
+} from "../src/modules/sources/sourceRecipes/recipeInterpreter.js";
+import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
+import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
 
 const ORIGIN = "https://sources.example";
 
-function policyEnvelope(overrides: Partial<SourcePolicyEnvelope> = {}): SourcePolicyEnvelope {
-  return {
-    allowed_network_origins: [ORIGIN],
-    capture_policy: "extract_text",
-    retention_policy: "full_text",
-    credential_ref: null,
-    log_redaction_enabled: true,
-    limits: {
-      timeout_ms: 5000,
-      max_download_bytes: 1_000_000,
-      max_output_bytes: 1_000_000,
-      max_files: 5,
-      max_items: 20,
-      max_evidence_items: 20,
-      log_max_bytes: 65536,
-    },
-    ...overrides,
-  };
-}
+const policyEnvelope = (overrides: Parameters<typeof sourcePolicyEnvelope>[0] = {}) =>
+  sourcePolicyEnvelope({ allowed_network_origins: [ORIGIN], ...overrides });
 
-function instanceSettings(overrides: Partial<CustomSourceRunnerSettings> = {}): CustomSourceRunnerSettings {
-  return {
-    runner_enabled: true,
-    allowed_languages: ["declarative_pipeline_v1"],
-    network_hard_deny_rules: [],
-    timeout_ms_max: 30_000,
-    output_bytes_max: 1_048_576,
-    download_bytes_max: 5_242_880,
-    log_bytes_max: 65_536,
-    max_files: 50,
-    browser_automation_available: false,
-    shell_available: false,
-    dependency_installation_available: false,
-    ...overrides,
-  };
-}
+const instanceSettings = (overrides: Partial<CustomSourceRunnerSettings> = {}) =>
+  runnerSettings({ allowed_languages: ["declarative_pipeline_v1"], ...overrides });
 
 function runInput(
   recipe: SourceRecipeDefinition,
@@ -69,10 +38,7 @@ function runInput(
   };
 }
 
-const LIST_HTML = `<html><body>
-  <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-  <div class="article"><a href="/a2">Second Title</a><p>Second excerpt text.</p></div>
-</body></html>`;
+const LIST_HTML = TWO_ARTICLE_HTML;
 
 const RSS_XML = `<?xml version="1.0"?>
 <rss version="2.0"><channel><title>Feed</title>

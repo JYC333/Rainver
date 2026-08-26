@@ -139,7 +139,7 @@ export interface ProposalContextForTest {
 }
 
 export function loadFinanceLedgerRuntime(): FinanceLedgerRuntime {
-  const requireRuntime = createRequire(__filename);
+  const requireRuntime = createRequire(import.meta.filename);
   return {
     decimal: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/decimal.js") as FinanceLedgerRuntime["decimal"],
     amount: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/amount.js") as FinanceLedgerRuntime["amount"],

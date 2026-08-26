@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { introspectIdentity } from "../auth/identity";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { PgSessionRepository } from "./repository";
-import { dbPool, sendRouteError } from "../routeUtils/common";
-import { resolveContentCreationContext } from "../access/creationContext";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { introspectIdentity } from "../auth/identity.js";
+import { PgSessionRepository } from "./repository.js";
+import { dbPool, sendRouteError } from "../routeUtils/common.js";
+import { resolveContentCreationContext } from "../access/creationContext.js";
 
 interface SessionServices {
   repository: Pick<
@@ -126,7 +126,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const sessionId = params(request).sessionId ?? "";
     const body = jsonBody(request);
-    const protocol = await loadProtocol();
     const parsed = protocol.MessageCreateRequestSchema.safeParse(body);
     if (!parsed.success) {
       return reply.code(422).send({ detail: "content is required and no other fields are accepted" });

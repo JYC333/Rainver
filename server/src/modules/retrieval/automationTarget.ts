@@ -1,27 +1,27 @@
-import { getDbPool } from "../../db/pool";
-import { withTransaction } from "../../db/tx";
+import { getDbPool } from "../../db/pool.js";
+import { withTransaction } from "../../db/tx.js";
 import {
   automationTargetHandlerRegistry,
   type AutomationTargetExecutionContext,
   type AutomationTargetPreflightContext,
-} from "../automations/targetRegistry";
+} from "../automations/targetRegistry.js";
 import {
   automationContract,
   lockAndCheckAutomationBudget,
   markAutomationScheduleHandled,
   recordValue,
-} from "../automations/targetSupport";
-import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter";
-import { HttpError } from "../routeUtils/common";
-import { canonicalRunOutput } from "../runs/orchestrationResults";
-import { PgRunRepository } from "../runs/repository";
-import { PgAutomationRepository } from "../automations/repository";
+} from "../automations/targetSupport.js";
+import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
+import { HttpError } from "../routeUtils/common.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { PgAutomationRepository } from "../automations/repository.js";
 import {
   createRetrievalMaintenanceProposalPacket,
   persistRetrievalMaintenanceReportArtifact,
-} from "./maintenance/artifacts";
-import { RetrievalMaintenanceService } from "./maintenance/service";
-import { readSpaceRetrievalSettings } from "./settings";
+} from "./maintenance/artifacts.js";
+import { RetrievalMaintenanceService } from "./maintenance/service.js";
+import { readSpaceRetrievalSettings } from "./settings.js";
 
 const TARGET_TYPE = "knowledge_retrieval_maintenance";
 

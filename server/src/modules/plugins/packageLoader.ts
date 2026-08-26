@@ -1,9 +1,7 @@
-import { createRequire } from "node:module";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { AgentSpacePlugin } from "@agent-space/protocol" with { "resolution-mode": "import" };
-
-const requirePlugin = createRequire(__filename);
+import { pathToFileURL } from "node:url";
+import type { AgentSpacePlugin } from "@agent-space/protocol";
 
 interface OfficialPluginPackageManifest {
   id: string;
@@ -29,10 +27,10 @@ export function defaultOfficialPluginArtifactRoot(): string {
   return resolve(process.env.SERVER_OFFICIAL_PLUGINS_DIR ?? resolve(process.cwd(), "dist", "official-plugins"));
 }
 
-export function loadOfficialPluginPackages(
+export async function loadOfficialPluginPackages(
   root = defaultOfficialPluginArtifactRoot(),
   options: LoadOfficialPluginPackagesOptions = {},
-): readonly AgentSpacePlugin[] {
+): Promise<readonly AgentSpacePlugin[]> {
   if (!existsSync(root)) {
     throw new Error(
       `Official plugin artifacts not found at ${root}. Run server build:official-plugins first.`,
@@ -49,17 +47,19 @@ export function loadOfficialPluginPackages(
     ? new Set(options.allowedPluginIds)
     : null;
 
-  return packages.flatMap((packageRoot) => {
+  const plugins: AgentSpacePlugin[] = [];
+  for (const packageRoot of packages) {
     const manifest = parseManifest(packageRoot);
-    if (allowedPluginIds && !allowedPluginIds.has(manifest.id)) return [];
-    return [loadOfficialPluginPackage(packageRoot, manifest)];
-  });
+    if (allowedPluginIds && !allowedPluginIds.has(manifest.id)) continue;
+    plugins.push(await loadOfficialPluginPackage(packageRoot, manifest));
+  }
+  return plugins;
 }
 
-function loadOfficialPluginPackage(
+async function loadOfficialPluginPackage(
   packageRoot: string,
   manifest = parseManifest(packageRoot),
-): AgentSpacePlugin {
+): Promise<AgentSpacePlugin> {
   const modulePath = resolve(packageRoot, manifest.server.main);
   if (!existsSync(modulePath)) {
     throw new Error(
@@ -67,7 +67,7 @@ function loadOfficialPluginPackage(
     );
   }
 
-  const mod = requirePlugin(modulePath) as Record<string, unknown>;
+  const mod = (await import(pathToFileURL(modulePath).href)) as Record<string, unknown>;
   const plugin = resolvePluginExport(mod, manifest.id);
   if (!plugin) {
     throw new Error(

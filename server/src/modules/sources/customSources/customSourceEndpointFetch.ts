@@ -1,6 +1,6 @@
-import type { SourcePolicyEnvelope } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { HttpError } from "../../routeUtils/common";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner";
+import type { SourcePolicyEnvelope } from "@agent-space/protocol";
+import { HttpError } from "../../routeUtils/common.js";
+import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner.js";
 
 /**
  * Shared by the create-flow test path and the scan worker's live path — both

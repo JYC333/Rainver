@@ -1,9 +1,9 @@
-import type { Queryable } from "../routeUtils/common";
-import { withQueryableTransaction } from "../routeUtils/common";
-import { PgRunRepository } from "../runs/repository";
-import { OperationalAlertService } from "../notifications/operationalAlerts";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
-import { reconcileAutonomyRun } from "./finalizationReconciler";
+import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { OperationalAlertService } from "../notifications/operationalAlerts.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
+import { reconcileAutonomyRun } from "./finalizationReconciler.js";
 
 export class AutonomyRecoveryService {
   constructor(private readonly db: Queryable) {}

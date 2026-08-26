@@ -4,9 +4,9 @@ import {
   CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
   createClaimCandidatePacketFromArtifacts,
   registerClaimCandidatePacketProposalAppliers,
-} from "../src/modules/knowledge/claimCandidatePackets";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
+} from "../src/modules/knowledge/claimCandidatePackets.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 
 interface ArtifactRow {
   id: string;

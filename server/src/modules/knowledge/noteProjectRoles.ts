@@ -1,4 +1,4 @@
-import { HttpError } from "../routeUtils/common";
+import { HttpError } from "../routeUtils/common.js";
 
 /**
  * The system-reserved roles a Note can play in its Project's notebook (N2).
@@ -25,9 +25,8 @@ import { HttpError } from "../routeUtils/common";
  *
  * Mirrors `NOTE_PROJECT_ROLE_VALUES` in the protocol package, which is the
  * shared vocabulary the web client reads. The server keeps its own const
- * because `assertNoteProjectRole` runs synchronously on the note write path
- * and the server is CJS while the protocol package is ESM — importing a
- * protocol *value* here would mean a dynamic import per call. The pair is
+ * because the write-path rule lives here, with the SQL that enforces it, and
+ * the protocol package must stay a contract without behaviour. The pair is
  * cross-checked by `test/noteProjectRoleGuard.test.ts`, the same arrangement
  * the link-type registry uses, so a divergence fails rather than drifts.
  */

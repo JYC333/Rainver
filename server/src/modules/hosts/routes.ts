@@ -1,33 +1,33 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import websocketPlugin from "@fastify/websocket";
-import type { ModuleContext } from "../../gateway/routeRegistry";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity";
-import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository";
-import { PgProjectFolderRepository } from "../projectFolders/repository";
-import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations";
-import { HttpError, withDbTransaction } from "../routeUtils/common";
-import type { Pool } from "../../db/pool";
-import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository";
-import { PgHostThreadMessageRepository } from "./threadMessageRepository";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
+import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
+import { PgProjectFolderRepository } from "../projectFolders/repository.js";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
+import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import type { Pool } from "../../db/pool.js";
+import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
+import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 import {
   PgHostRuntimeProviderBindingRepository,
   type HostRuntimeProviderBinding,
-} from "./runtimeProviderBindingRepository";
-import { assertProviderUsable } from "./runtimeProviderBindingResolution";
-import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress";
-import { resolveProvidersDbPort } from "../providers/dbReader";
-import { providerProxyLeases } from "../providers/proxy/lease";
-import { advanceThreadQueue, HOST_THREAD_QUEUE_LOCK_PREFIX } from "./queueAdvance";
-import { assertProjectWriter, assertProjectReadable } from "../projects/access";
-import { getDbPool } from "../../db/pool";
-import { PgHostThreadEventRepository } from "./threadEventRepository";
-import { commandServices } from "../runs/routes";
-import { isHardTerminalRunStatus } from "../runs/orchestrationResults";
-import { listRuntimeAdapterSpecs } from "../runtimeAdapters";
-import { settleTaskAfterQueuedMessageWithdrawal } from "../tasks/taskRunStatusProjection";
+} from "./runtimeProviderBindingRepository.js";
+import { assertProviderUsable } from "./runtimeProviderBindingResolution.js";
+import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress.js";
+import { resolveProvidersDbPort } from "../providers/dbReader.js";
+import { providerProxyLeases } from "../providers/proxy/lease.js";
+import { advanceThreadQueue, HOST_THREAD_QUEUE_LOCK_PREFIX } from "./queueAdvance.js";
+import { assertProjectWriter, assertProjectReadable } from "../projects/access.js";
+import { getDbPool } from "../../db/pool.js";
+import { PgHostThreadEventRepository } from "./threadEventRepository.js";
+import { commandServices } from "../runs/routes.js";
+import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
+import { listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
+import { settleTaskAfterQueuedMessageWithdrawal } from "../tasks/taskRunStatusProjection.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);

@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry";
-import { RoomConversationSummaryService, ROOM_CONVERSATION_SUMMARY_JOB } from "./conversationSummaryService";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry.js";
+import { RoomConversationSummaryService, ROOM_CONVERSATION_SUMMARY_JOB } from "./conversationSummaryService.js";
 
 export function registerRoomConversationSummaryHandler(
   registry: JobHandlerRegistry,

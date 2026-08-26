@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 
 export async function insertKnowledgeItem(
@@ -58,3 +59,16 @@ export async function insertKnowledgeItem(
     ],
   );
 }
+
+/** A top-level normal note collection; returns its id. */
+export async function insertNoteCollection(pool: Pool, input: { space: string; name: string }): Promise<string> {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  await pool.query(
+    `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+     VALUES ($1,$2,NULL,$3,'normal',0,false,false,$4,$4)`,
+    [id, input.space, input.name, now],
+  );
+  return id;
+}
+

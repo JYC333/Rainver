@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common";
-import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore";
-import { assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access";
-import { computeNextRunAt } from "./schedule";
+import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore.js";
+import { assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
+import { computeNextRunAt } from "./schedule.js";
 
 export interface AutomationRow {
   id: string;

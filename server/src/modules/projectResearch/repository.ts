@@ -8,15 +8,15 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access";
-import { ProjectCorpusRepository } from "../projects/corpusRepository";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
-import { PgUsageRepository, type UsageRunSummaryRecord } from "../usage/repository";
-import { availableProjectDomainCriteria, loadProjectScreeningCriteria } from "./screeningCriteria";
-import { researchWorkflowProjection } from "./workflowOntology";
+} from "../routeUtils/common.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { PgUsageRepository, type UsageRunSummaryRecord } from "../usage/repository.js";
+import { availableProjectDomainCriteria, loadProjectScreeningCriteria } from "./screeningCriteria.js";
+import { researchWorkflowProjection } from "./workflowOntology.js";
 
 const CHECKPOINT_TYPES = new Set(["screening_gate", "idea_review", "integrity_gate", "manuscript_gate", "review_gate", "other"]);
 const SCREENING_REVIEW_ITEM_LIMIT = 200;

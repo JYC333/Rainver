@@ -1,10 +1,10 @@
-import { SETTINGS_KEYS } from "../settings/keys";
-import type { Queryable } from "./runRepositoryTypes";
+import { SETTINGS_KEYS } from "../settings/keys.js";
+import type { Queryable } from "./runRepositoryTypes.js";
 import {
   contractRecord,
   resolveBudgetSources,
   type RunBudgetSource,
-} from "./contractSnapshot";
+} from "./contractSnapshot.js";
 
 export interface CanonicalBudgetAuthority {
   sources: RunBudgetSource[];

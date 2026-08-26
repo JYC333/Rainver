@@ -9,7 +9,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { QuotaResult } from "./usageProbe";
+import type { QuotaResult } from "./usageProbe.js";
 
 export interface ClaudeOAuthHttpClient {
   fetch(url: string, init: RequestInit): Promise<Response>;

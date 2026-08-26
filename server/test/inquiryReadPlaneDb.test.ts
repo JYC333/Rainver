@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { PgProjectRepository } from "../src/modules/projects/repository";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService";
-import { InquirySignalService } from "../src/modules/inquiry/signalService";
-import { InquiryGraphService } from "../src/modules/inquiry/graphService";
-import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
+import { InquiryGraphService } from "../src/modules/inquiry/graphService.js";
+import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter.js";
 
 // Real-Postgres coverage for the unified read plane: the Inquiry
 // retrieval adapter feeding `retrieval_objects`, and the Inquiry/Combined
@@ -18,7 +18,7 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUTSIDER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 let PROJECT: string;
 

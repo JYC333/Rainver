@@ -1,22 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
 import {
   ConversationBackendError,
   PgConversationBackendRepository,
-} from "../src/modules/sessions/conversationBackendRepository";
+} from "../src/modules/sessions/conversationBackendRepository.js";
 import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
-} from "../src/modules/sessions/conversationRuntimeSessionRepository";
-import { PgRouteDecisionRepository } from "../src/modules/routing/repository";
-import { PgRunRepository } from "../src/modules/runs/repository";
+} from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 
 let repository: PgConversationBackendRepository | undefined;
 const loggedInProfileIds = new Set<string>();
 
-const db = useTestDatabase(__filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;

@@ -1,4 +1,4 @@
-import { LocalCliProcessRegistry } from "./localCliExecution";
+import { LocalCliProcessRegistry } from "./localCliExecution.js";
 
 /**
  * Process-wide active-execution registry. CLI adapters register their Runner

@@ -3,10 +3,10 @@ import type {
   RetrievalCitation,
   RetrievalGapAnalysis,
   RetrievalObjectType,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { RetrievalEgressPolicy } from "./egress/egressPolicy";
-import { candidateKey } from "./searchInternals";
-import type { RevalidatedObject, ScoredCandidate } from "./types";
+} from "@agent-space/protocol";
+import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
+import { candidateKey } from "./searchInternals.js";
+import type { RevalidatedObject, ScoredCandidate } from "./types.js";
 
 /**
  * Context Brief synthesis (W6 of the context-layer roadmap).

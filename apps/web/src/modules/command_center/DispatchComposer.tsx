@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { Plus, Check, X } from 'lucide-react'
 import { hostsApi, projectsApi, providersApi, tasksApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostRuntimeAdapterOption, HostRuntimeProviderBinding } from '../../types/api'
+import type { Host, HostRuntimeAdapterOption, HostRuntimeProviderBinding, RuntimeOptionChoice } from '../../types/api'
 import { ProjectSelector } from '../../components/ProjectFolderSelectors'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -13,7 +13,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
 import { Card } from '../../components/ui/card'
 import { useRemoteWorkspaces, lastUsedWorkspaceId, rememberWorkspaceId } from './useRemoteWorkspaces'
-import { AMBIENT_BACKEND, INHERIT_BACKEND, eligibleProviders, providerModels } from './backendChoice'
+import { AMBIENT_BACKEND, INHERIT_BACKEND, eligibleProviders, providerModels, choiceLabel, findChoice } from './backendChoice'
 
 const HOST_LIST_REFRESH_INTERVAL_MS = 3_000
 
@@ -281,9 +281,13 @@ export default function DispatchComposer({
     }
   }, [runtimeOptions, selectedAdapter?.capability_probe, selected?.host?.capabilities_json])
 
+  const ambientModels = useMemo<RuntimeOptionChoice[]>(() => runtimeOptions?.models ?? [], [runtimeOptions])
   const ambientModel = ambient.model || null
+  // Named the same way the Model list names it: the bracketed variant suffix
+  // identifies the model to the runtime but is not what a person reads.
+  // Named as the runtime names it, so the backend row and the Model list agree.
   const ambientLabel = ambientModel
-    ? `This machine's login · ${ambient.effort ? `${ambientModel} · ${ambient.effort}` : ambientModel}`
+    ? `This machine's login · ${choiceLabel(findChoice(ambientModels, ambientModel) ?? { value: ambientModel })}${ambient.effort ? ` · ${ambient.effort}` : ''}`
     : "This machine's login"
 
   /** Names the default instead of merely promising one. */
@@ -312,12 +316,41 @@ export default function DispatchComposer({
   }, [backend, fixedThreadId, inheritedProvider, backendOptions])
 
   const modelOptions = useMemo(() => providerModels(modelProvider), [modelProvider])
+  /**
+   * Whether the model list to offer is the runtime's own rather than a
+   * provider's. True for an explicit "machine's login", and equally true when
+   * *inheriting* a host default that is itself the machine's login — the
+   * backend is the same either way, and requiring the user to restate it just
+   * to see a model list made the default look like it had none.
+   *
+   * `inheritedProvider` is undefined while the host's bindings load, so this
+   * waits rather than briefly offering the wrong list.
+   */
+  const runtimeIsTheBackend = backend === AMBIENT_BACKEND
+    || (backend === INHERIT_BACKEND && !fixedThreadId && inheritedProvider === null)
   // Only where the runtime exposes the setting at all: OpenCode has none, and
   // asking for one it never offered is rejected as invalid_params.
   // Offered only where the runtime said it has them: OpenCode exposes none,
   // and a runtime that could not be asked yields none rather than a guess.
-  const availableEfforts = useMemo<string[]>(() => runtimeOptions?.efforts ?? [], [runtimeOptions])
-  const ambientModels = useMemo<string[]>(() => runtimeOptions?.models ?? [], [runtimeOptions])
+  const availableEfforts = useMemo<RuntimeOptionChoice[]>(() => runtimeOptions?.efforts ?? [], [runtimeOptions])
+
+  /**
+   * Whichever backend is in force decides both lists, and what each is
+   * currently on. Selecting the current value rather than offering a synthetic
+   * "default" entry keeps one name for one thing: the list is what can be
+   * chosen, the selection is what is chosen.
+   */
+  const availableModels = useMemo<RuntimeOptionChoice[]>(
+    // A provider's catalogue is bare ids; a runtime names its own choices.
+    () => (runtimeIsTheBackend ? ambientModels : modelOptions.map(value => ({ value }))),
+    [runtimeIsTheBackend, ambientModels, modelOptions],
+  )
+  const currentModel = runtimeIsTheBackend
+    ? ambientModel ?? ''
+    : modelProvider?.default_model ?? ''
+  // Effort belongs to the runtime whichever backend answers, so its current
+  // value is the runtime's own.
+  const currentEffort = ambient.effort
 
   async function dispatch() {
     if (!selected || !effectiveAdapterType || !prompt.trim()) return
@@ -447,34 +480,18 @@ export default function DispatchComposer({
               ]}
             />
           </div>
-          {modelOptions.length > 0 && (
+          {/* One list per setting, showing every option the backend has and
+              selecting the one in force. An "as configured" entry alongside a
+              list the current value had been removed from said the same thing
+              twice and hid the real name behind a label. */}
+          {availableModels.length > 0 && (
             <div>
               <Label>Model</Label>
               <Select
                 ariaLabel="Model"
-                value={model}
+                value={model || currentModel}
                 onChange={setModel}
-                options={[
-                  { value: '', label: "Provider's default" },
-                  ...modelOptions.map(m => ({ value: m, label: m })),
-                ]}
-              />
-            </div>
-          )}
-          {backend === AMBIENT_BACKEND && ambientModels.length > 0 && (
-            <div>
-              <Label>Model</Label>
-              {/* The runtime's own catalogue, as it reported it — not typed in,
-                  and not guessed: these ids can carry brackets that are part of
-                  the name. */}
-              <Select
-                ariaLabel="Model"
-                value={model}
-                onChange={setModel}
-                options={[
-                  { value: '', label: ambientModel ? `As configured (${ambientModel})` : "The CLI's own" },
-                  ...ambientModels.filter(m => m !== ambientModel).map(m => ({ value: m, label: m })),
-                ]}
+                options={availableModels.map(choice => ({ value: choice.value, label: choiceLabel(choice) }))}
               />
             </div>
           )}
@@ -483,17 +500,9 @@ export default function DispatchComposer({
               <Label>Reasoning effort</Label>
               <Select
                 ariaLabel="Reasoning effort"
-                value={effort}
+                value={effort || currentEffort}
                 onChange={setEffort}
-                options={[
-                  {
-                    value: '',
-                    label: backend === AMBIENT_BACKEND && ambient.effort
-                      ? `As configured (${ambient.effort})`
-                      : "Runtime's default",
-                  },
-                  ...availableEfforts.map(level => ({ value: level, label: level })),
-                ]}
+                options={availableEfforts.map(choice => ({ value: choice.value, label: choiceLabel(choice) }))}
               />
             </div>
           )}

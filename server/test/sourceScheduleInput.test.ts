@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeNextRunAtFromScheduleRule,
   resolveRequestedSourceSchedule,
-} from "../src/modules/sources/sourceScheduleInput";
+} from "../src/modules/sources/sourceScheduleInput.js";
 
 describe("resolveRequestedSourceSchedule", () => {
   const now = new Date("2026-07-03T10:20:00.000Z");

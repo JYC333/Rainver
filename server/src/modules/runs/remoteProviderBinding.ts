@@ -1,17 +1,17 @@
-import type { ServerConfig } from "../../config";
-import type { Queryable } from "../routeUtils/common";
-import { resolveProvidersDbPort } from "../providers/dbReader";
+import type { ServerConfig } from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import {
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
-} from "../providers/proxy/lease";
-import { adapterProviderRequirement } from "./runtimeProviderBinding";
-import { resolveHostLeaseUrl } from "./hostProviderProxyAddress";
-import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig";
-import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig";
-import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProviderBindingRepository";
-import type { RunRecord } from "./repository";
-import type { VendorCliAdapterType } from "./vendorCliAdapter";
+} from "../providers/proxy/lease.js";
+import { adapterProviderRequirement } from "./runtimeProviderBinding.js";
+import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
+import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
+import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
+import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProviderBindingRepository.js";
+import type { RunRecord } from "./repository.js";
+import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
 
 /**
  * What the executing host is told. Deliberately runtime-agnostic: the daemon

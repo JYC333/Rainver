@@ -1,4 +1,4 @@
-import type { PromptResolveResult } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { PromptResolveResult } from "@agent-space/protocol";
 
 /**
  * The provenance shape runtime records (e.g. run_steps.metadata_json) should

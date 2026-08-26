@@ -1,5 +1,5 @@
-import type { Queryable } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { DirectiveStatus } from "./directives";
+import type { Queryable } from "@agent-space/protocol";
+import type { DirectiveStatus } from "./directives.js";
 
 export interface FinanceImportSourceRow {
   id: string;

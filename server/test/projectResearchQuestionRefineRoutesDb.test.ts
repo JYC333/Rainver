@@ -1,16 +1,16 @@
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { beforeAll, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config";
-import { buildModuleServer } from "./support/moduleServer";
-import { researchModule } from "../src/modules/research";
-import { projectResearchModule } from "../src/modules/projectResearch";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity";
-import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
-import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService";
-import { useTestDatabase } from "./support/testDatabase";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { researchModule } from "../src/modules/research/index.js";
+import { projectResearchModule } from "../src/modules/projectResearch/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -48,7 +48,14 @@ const invoke = vi.fn(async (_request: RefinementInvocation): Promise<RefinementR
 
 let app: FastifyInstance | undefined;
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
+
+// Files share a worker: an identity or invoker left in a module-level
+// seam would leak into whichever file runs next.
+afterAll(() => {
+  __setAuthIdentityForTests(null);
+  __setQuestionRefineInvokerForTests(null);
+});
 
 beforeAll(async () => {
   if (!db.available) return;

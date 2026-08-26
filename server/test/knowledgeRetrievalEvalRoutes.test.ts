@@ -1,17 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fakeAuthRepository } from "./support/routeFakes.js";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { loadConfig } from "../src/config";
-import {
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
-import { RETRIEVAL_CALIBRATION_DECISION_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/calibration";
-import { RETRIEVAL_EVAL_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/eval";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { RETRIEVAL_CALIBRATION_DECISION_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/calibration.js";
+import { RETRIEVAL_EVAL_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/eval.js";
 
-vi.mock("../src/db/pool", () => ({
+vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 
@@ -28,43 +26,6 @@ function config() {
   return loadConfig({
     SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
   });
-}
-
-function auth(role: "owner" | "admin" | "reviewer" | "member" | "guest" = "admin"): AuthRepository {
-  return {
-    async resolveIdentity() {
-      return { ok: true, spaceId: "space-1", userId: "user-1" };
-    },
-    async getSpaceForUser() {
-      return {
-        id: "space-1",
-        name: "Team",
-        type: "team",
-        role,
-        oversight_mode: "none",
-        egress_notifications_enabled: true,
-        member_count: 1,
-        created_by_user_id: "owner-1",
-        created_at: "2026-06-18T00:00:00.000Z",
-        updated_at: "2026-06-18T00:00:00.000Z",
-      };
-    },
-    async getCurrentUser() {
-      throw new Error("not used");
-    },
-    async getUserSpaces() {
-      throw new Error("not used");
-    },
-    async logout() {
-      throw new Error("not used");
-    },
-    async findOrCreateFromGoogle() {
-      throw new Error("not used");
-    },
-    async createSession() {
-      throw new Error("not used");
-    },
-  };
 }
 
 function settingsRow(
@@ -93,7 +54,7 @@ function settingsRow(
 
 describe("Knowledge retrieval eval report route", () => {
   it("persists an aggregate eval report as a private artifact", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -150,7 +111,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("persists retrieval calibration decisions as evidence-ref-only private artifacts", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const evidenceArtifactId = "11111111-1111-4111-8111-111111111111";
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
@@ -223,7 +184,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("does not allow space_ops calibration decisions to reference private evidence artifacts", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const privateEvidenceArtifactId = "11111111-1111-4111-8111-111111111111";
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
@@ -261,7 +222,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("rejects calibration adoption of cross-viewer semantic result caching", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -293,7 +254,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("rejects calibration adoption without evidence and eval delta", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -341,7 +302,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("generates an aggregate diagnostics report from private brief artifacts", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -445,7 +406,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("can create a private diagnostics review packet from aggregate diagnostics", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     const client = {
       async query(sql: string, params: readonly unknown[] = []) {
@@ -511,7 +472,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("rejects member diagnostics scans unless member scan initiation is enabled", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -535,7 +496,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("allows member private diagnostics scans when member scan initiation is enabled", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {
@@ -574,7 +535,7 @@ describe("Knowledge retrieval eval report route", () => {
   });
 
   it("rejects space_ops diagnostics packets when space-wide review is disabled", async () => {
-    __setAuthRepositoryForTests(auth());
+    __setAuthRepositoryForTests(fakeAuthRepository());
     const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
     vi.mocked(getDbPool).mockReturnValue({
       async query(sql: string, params: readonly unknown[] = []) {

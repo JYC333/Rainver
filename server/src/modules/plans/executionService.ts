@@ -1,5 +1,5 @@
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common";
-import { PgPlanRepository, type PlanExecuteInput } from "./repository";
+import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { PgPlanRepository, type PlanExecuteInput } from "./repository.js";
 
 /**
  * Plan execution boundary. Read/materialization queries remain in the Plan

@@ -1,19 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fakeAuthRepository, retrievalSettingsRow } from "./support/routeFakes.js";
 import type { FastifyInstance } from "fastify";
-import { getDbPool } from "../src/db/pool";
-import { buildModuleServer } from "./support/moduleServer";
-import { knowledgeModule } from "../src/modules/knowledge";
-import { loadConfig } from "../src/config";
-import {
-  __setAuthRepositoryForTests,
-  type AuthRepository,
-} from "../src/modules/auth";
+import { getDbPool } from "../src/db/pool.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { knowledgeModule } from "../src/modules/knowledge/index.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
 
 // HTTP route coverage for the Slice E/F review-loop endpoints: Context Ops scan
 // gating, response shape, and artifact/proposal persistence wiring. The DB pool
 // is mocked (the deeper SQL is covered by the *Db real-Postgres tests).
 
-vi.mock("../src/db/pool", () => ({ getDbPool: vi.fn() }));
+vi.mock("../src/db/pool.js", () => ({ getDbPool: vi.fn() }));
 
 let app: FastifyInstance | undefined;
 
@@ -26,54 +24,6 @@ afterEach(async () => {
 
 function config() {
   return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" });
-}
-
-function auth(role: "owner" | "admin" | "reviewer" | "member" | "guest" = "admin"): AuthRepository {
-  return {
-    async resolveIdentity() {
-      return { ok: true, spaceId: "space-1", userId: "user-1" };
-    },
-    async getSpaceForUser() {
-      return {
-        id: "space-1",
-        name: "Team",
-        type: "team",
-        role,
-        oversight_mode: "none",
-        egress_notifications_enabled: true,
-        member_count: 1,
-        created_by_user_id: "owner-1",
-        created_at: "2026-06-18T00:00:00.000Z",
-        updated_at: "2026-06-18T00:00:00.000Z",
-      };
-    },
-    async getCurrentUser() { throw new Error("not used"); },
-    async getUserSpaces() { throw new Error("not used"); },
-    async logout() { throw new Error("not used"); },
-    async findOrCreateFromGoogle() { throw new Error("not used"); },
-    async createSession() { throw new Error("not used"); },
-  };
-}
-
-function settingsRow() {
-  return {
-    settings_json: {
-      default_search_mode: "hybrid",
-      rerank_enabled: false,
-      query_rewrite_enabled: false,
-      query_rewrite_default: false,
-      use_query_cache: true,
-      include_trace: false,
-      external_egress_enabled: true,
-      retrieval_tool_mode: "off",
-      context_ops_review_mode: "private_only",
-      context_ops_scan_mode: "admins",
-      embedding_dimensions: 2560,
-      max_results_default: 10,
-    },
-    created_at: "2026-06-12T10:00:00.000Z",
-    updated_at: "2026-06-12T10:00:00.000Z",
-  };
 }
 
 interface Handler {
@@ -166,7 +116,7 @@ function claimRow(over: Record<string, unknown>) {
 
 describe("contradiction-scan route", () => {
   it("scans visible active claims and persists a report (admin)", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/c\.status = 'active'/.test(sql)) {
         return {
@@ -197,9 +147,9 @@ describe("contradiction-scan route", () => {
   });
 
   it("rejects a member without Context Ops scan access (403)", async () => {
-    __setAuthRepositoryForTests(auth("guest"));
+    __setAuthRepositoryForTests(fakeAuthRepository("guest"));
     mockPool((sql) => {
-      if (/FROM settings/.test(sql)) return { rows: [settingsRow()], rowCount: 1 };
+      if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "guest" }], rowCount: 1 };
       return undefined;
     });
@@ -215,9 +165,9 @@ describe("contradiction-scan route", () => {
   });
 
   it("rejects llm_judge_enabled until the provider adapter is wired", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
-      if (/FROM settings/.test(sql)) return { rows: [settingsRow()], rowCount: 1 };
+      if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "admin" }], rowCount: 1 };
       return undefined;
     });
@@ -237,7 +187,7 @@ describe("contradiction-scan route", () => {
 
 describe("claims trajectory route", () => {
   it("returns advisory trajectory signals for a subject (no scan gate)", async () => {
-    __setAuthRepositoryForTests(auth("member"));
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
     mockPool((sql) => {
       if (/c\.subject_object_id = \$3/.test(sql)) {
         return {
@@ -267,7 +217,7 @@ describe("claims trajectory route", () => {
 
 describe("relation discovery-scan route", () => {
   it("discovers a relation candidate and creates a packet (admin)", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM knowledge_items ki/.test(sql)) {
         return {
@@ -300,9 +250,9 @@ describe("relation discovery-scan route", () => {
   });
 
   it("rejects llm_extraction_enabled until the provider adapter is wired", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
-      if (/FROM settings/.test(sql)) return { rows: [settingsRow()], rowCount: 1 };
+      if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
       if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "admin" }], rowCount: 1 };
       return undefined;
     });

@@ -1,4 +1,4 @@
-import type { SourceRunSummaryDTO } from "@agent-space/protocol" with { "resolution-mode": "import" };
+import type { SourceRunSummaryDTO } from "@agent-space/protocol";
 import {
   HttpError,
   countFromRow,
@@ -6,7 +6,7 @@ import {
   page,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 
 interface SourceRunProjectionRow {
   id: string;

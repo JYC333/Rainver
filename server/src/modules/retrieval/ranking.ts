@@ -1,6 +1,6 @@
-import type { RetrievalObjectType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { normalizeTextForSearch } from "./normalize";
-import type { EvidenceKind, ScoredCandidate } from "./types";
+import type { RetrievalObjectType } from "@agent-space/protocol";
+import { normalizeTextForSearch } from "./normalize.js";
+import type { EvidenceKind, ScoredCandidate } from "./types.js";
 
 /**
  * Deterministic ranking signals applied after RRF fusion (Phase 2, step 7).

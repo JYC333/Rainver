@@ -1,5 +1,5 @@
 import { posix as pathPosix } from "node:path";
-import { HttpError } from "../routeUtils/common";
+import { HttpError } from "../routeUtils/common.js";
 
 export function stringArray(value: unknown): string[] {
   return Array.isArray(value)

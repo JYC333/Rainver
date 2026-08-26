@@ -3,7 +3,7 @@ import {
   buildRunContextTaintSummary,
   outputVisibilityForTaint,
   parseRunContextTaint,
-} from "../src/modules/runs/contextTaint";
+} from "../src/modules/runs/contextTaint.js";
 
 describe("run context taint", () => {
   it("records the narrowest visibility and distinct non-instructing owners", () => {

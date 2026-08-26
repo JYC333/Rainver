@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { ModuleContext } from "../../gateway/routeRegistry";
+import * as protocol from "@agent-space/protocol";
+import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   jsonBody,
@@ -9,14 +10,13 @@ import {
   query,
   resolveIdentity,
   sendRouteError,
-} from "../routeUtils/common";
-import { loadProtocol } from "../providers/protocolRuntime";
+} from "../routeUtils/common.js";
 import {
   AgentGroupRunService,
   type CreateAgentGroupInput,
   type SendAgentGroupMessageInput,
   type UpdateAgentGroupInput,
-} from "./service";
+} from "./service.js";
 
 type AgentGroupsServicePort = Pick<
   AgentGroupRunService,
@@ -49,7 +49,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.CreateAgentRunGroupRequestSchema.parse(jsonBody(request));
       const result = await service(context).createGroup(identity, body as CreateAgentGroupInput);
       return reply.code(201).send(result);
@@ -89,7 +88,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.UpdateAgentRunGroupRequestSchema.parse(jsonBody(request));
       return reply.send(
         await service(context).updateGroup(identity, {
@@ -106,7 +104,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const protocol = await loadProtocol();
       const body = protocol.SendAgentRunGroupMessageRequestSchema.parse(jsonBody(request));
       assertBodyGroupMatchesRoute(body.group_id, routeGroupId(request));
       const result = await service(context).sendUserMessage(

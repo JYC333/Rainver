@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { isContentAccessLevel } from "../access/contentAccessTypes";
-import { parseRunContextTaint } from "../runs/contextTaint";
-import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "./applierRegistry";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { isContentAccessLevel } from "../access/contentAccessTypes.js";
+import { parseRunContextTaint } from "../runs/contextTaint.js";
+import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "./applierRegistry.js";
 
 interface TaintedResourceRow {
   context_taint: unknown;

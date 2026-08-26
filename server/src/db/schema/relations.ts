@@ -1,11 +1,11 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, boolean, doublePrecision, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents";
-import { activityRecords } from "./activity";
-import { users } from "./auth";
-import { spaces } from "./spaces";
-import { spaceObjects, extractedEvidence } from "./knowledge";
-import { sourceItems } from "./sources";
+import { agents } from "./agents.js";
+import { activityRecords } from "./activity.js";
+import { users } from "./auth.js";
+import { spaces } from "./spaces.js";
+import { spaceObjects, extractedEvidence } from "./knowledge.js";
+import { sourceItems } from "./sources.js";
 
 // Relation Core MVP batch 1 (people, organizations, identities, affiliations,
 // notes, source links). Interactions/participants/important-dates and the

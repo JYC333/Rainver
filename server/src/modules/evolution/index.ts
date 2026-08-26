@@ -1,6 +1,6 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-import { registerEvolutionReviewAutonomyDiscoverer } from "./autonomyDiscoverer";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+import { registerEvolutionReviewAutonomyDiscoverer } from "./autonomyDiscoverer.js";
 
 export const evolutionModule: ServerModule = {
   name: "evolution",
@@ -13,16 +13,16 @@ export const evolutionModule: ServerModule = {
 export {
   __setEvolvableAssetRepositoryFactoryForTests,
   __setEvolvableAssetEvaluationRepositoryFactoryForTests,
-} from "./assetRoutes";
-export { EvolvableAssetRepository } from "./assetRepository";
-export { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository";
-export { resolveEvolvableAssetVersion } from "./assetResolutionService";
-export type { ResolveEvolvableAssetVersionInput, ResolvedEvolvableAssetVersion } from "./assetResolutionService";
-export { registerEvolvableAssetPromotionProposalApplier } from "./assetPromotionProposalApplier";
-export { EvolutionBundleRepository } from "./bundleRepository";
+} from "./assetRoutes.js";
+export { EvolvableAssetRepository } from "./assetRepository.js";
+export { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
+export { resolveEvolvableAssetVersion } from "./assetResolutionService.js";
+export type { ResolveEvolvableAssetVersionInput, ResolvedEvolvableAssetVersion } from "./assetResolutionService.js";
+export { registerEvolvableAssetPromotionProposalApplier } from "./assetPromotionProposalApplier.js";
+export { EvolutionBundleRepository } from "./bundleRepository.js";
 export {
   EvolutionSignalEmitter,
   SIGNAL_DEDUP_WINDOWS_SECONDS,
   buildRunFinalizationRules,
   proposalSignalType,
-} from "./signalEmitters";
+} from "./signalEmitters.js";

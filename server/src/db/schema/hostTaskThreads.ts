@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { workspaceLocations } from "./workspaceLocations";
+import { workspaceLocations } from "./workspaceLocations.js";
 
 /**
  * ADR 0016 D14: a task thread pins a run-file-lifecycle conversation to one

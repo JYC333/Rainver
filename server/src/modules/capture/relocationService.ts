@@ -1,12 +1,12 @@
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common";
-import { getDbPool, type Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { PgKnowledgeRepository } from "../knowledge/repository";
-import { noteBlocks, removeBlocks } from "../knowledge/noteBlockIds";
-import { withNoteWrites } from "../knowledge/noteWriter";
-import { contentReadSql } from "../access/contentAccessSql";
-import { resolveContentCreationContext } from "../access/creationContext";
-import { CaptureService, type CaptureDestination } from "./service";
+import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { PgKnowledgeRepository } from "../knowledge/repository.js";
+import { noteBlocks, removeBlocks } from "../knowledge/noteBlockIds.js";
+import { withNoteWrites } from "../knowledge/noteWriter.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { resolveContentCreationContext } from "../access/creationContext.js";
+import { CaptureService, type CaptureDestination } from "./service.js";
 import {
   assertRelocationMode,
   canMoveCapture,
@@ -16,7 +16,7 @@ import {
   type CaptureRow,
   type RelocationBlock,
   type RelocationMode,
-} from "./relocation";
+} from "./relocation.js";
 
 export interface RelocationPreview {
   activity_id: string;

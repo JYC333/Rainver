@@ -5,7 +5,7 @@ import type {
   RetrievalObjectType,
   RetrievalSearchMode,
   RetrievalSearchResult,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
+} from "@agent-space/protocol";
 
 export type {
   CreateSafety,

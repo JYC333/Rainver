@@ -1,12 +1,12 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import type { PgJobQueueRepository } from "../jobs/repository";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import type { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   isValidTimezone,
   localDateFromSlot,
   PgDailyReportSettingsRepository,
   type DailyReportSettingRow,
-} from "./repository";
+} from "./repository.js";
 
 export async function scanDailyReportsAndEnqueue(
   config: ServerConfig,

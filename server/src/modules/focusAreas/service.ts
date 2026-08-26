@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { contentReadSql } from "../access/contentAccessSql";
-import { assertProjectWriter } from "../projects/access";
+import type { ServerConfig } from "../../config.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { assertProjectWriter } from "../projects/access.js";
 import {
   dbPool,
   HttpError,
@@ -9,7 +9,7 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
+} from "../routeUtils/common.js";
 
 /**
  * Focus areas classify; they never gate. Nothing here touches the content read

@@ -13,18 +13,18 @@ import {
   toDbDate,
   type SpaceUserIdentity,
   type Queryable,
-} from "../routeUtils/common";
-import { proposalToOut } from "../proposals/repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { assertProjectReadable } from "../projects/access";
-import type { ProposalOut } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { assessActivityMemoryDuplicate } from "./memoryDedup";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { recordDetailRead } from "../contentAccess/audit";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { isContentVisibility } from "../access/contentAccessTypes";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
-import { enforceSourceDerivedImportTarget } from "../sources/sourceConsent";
+} from "../routeUtils/common.js";
+import { proposalToOut } from "../proposals/repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { assertProjectReadable } from "../projects/access.js";
+import type { ProposalOut } from "@agent-space/protocol";
+import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { recordDetailRead } from "../contentAccess/audit.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { isContentVisibility } from "../access/contentAccessTypes.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
 
 const ACTIVITY_SUMMARY_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const ACTIVITY_SUMMARY_SOURCE_ACCESS = contentResourceDefinition("source_item")!;

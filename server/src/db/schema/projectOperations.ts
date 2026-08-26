@@ -1,11 +1,11 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces";
-import { projects } from "./projects";
-import { users } from "./auth";
-import { runs } from "./runs";
-import { artifacts } from "./artifacts";
-import { workflowExecutions } from "./automations";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
+import { users } from "./auth.js";
+import { runs } from "./runs.js";
+import { artifacts } from "./artifacts.js";
+import { workflowExecutions } from "./automations.js";
 
 export const projectOperations = pgTable("project_operations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

@@ -2,9 +2,9 @@ import type {
   AskSpaceDomain,
   AskSpaceGapSummary,
   AskSpaceProvenanceItem,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import type { Queryable } from "../routeUtils/common";
-import { insertArtifactRow } from "../artifacts/reviewArtifactWriter";
+} from "@agent-space/protocol";
+import type { Queryable } from "../routeUtils/common.js";
+import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 
 export const ASK_SPACE_SESSION_ARTIFACT_TYPE = "ask_space_session";
 

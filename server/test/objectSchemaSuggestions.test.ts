@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { scanObjectSchemaSuggestions } from "../src/modules/ontology/objectSchemaSuggestions";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common";
+import { scanObjectSchemaSuggestions } from "../src/modules/ontology/objectSchemaSuggestions.js";
+import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 
 class FakeObjectSchemaSuggestionDb implements Queryable {
   async query<Row = Record<string, unknown>>(sql: string): Promise<QueryResult<Row>> {

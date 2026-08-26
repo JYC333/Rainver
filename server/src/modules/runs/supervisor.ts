@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { getDbPool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common";
-import { PgJobQueueRepository } from "../jobs/repository";
-import { PgRouteDecisionRepository } from "../routing/repository";
-import { EvolutionSignalEmitter } from "../evolution/signalEmitters";
-import { contractRecord } from "./contractSnapshot";
-import { isManagedFailFastRun } from "../policy/managedExecutionPolicy";
-import { PgRunRepository, type RunRecord } from "./repository";
-import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes";
-import { isRetryableRunErrorCode } from "./retryPolicy";
+import { getDbPool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { PgRouteDecisionRepository } from "../routing/repository.js";
+import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
+import { contractRecord } from "./contractSnapshot.js";
+import { isManagedFailFastRun } from "../policy/managedExecutionPolicy.js";
+import { PgRunRepository, type RunRecord } from "./repository.js";
+import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes.js";
+import { isRetryableRunErrorCode } from "./retryPolicy.js";
 
 export const DEFAULT_MAX_RUN_ATTEMPTS = 2;
 

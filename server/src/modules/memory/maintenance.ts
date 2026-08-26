@@ -1,16 +1,14 @@
-import type { MemoryMaintenanceFinding, MemoryMaintenanceReport } from "@agent-space/protocol" with {
-  "resolution-mode": "import",
-};
+import type { MemoryMaintenanceFinding, MemoryMaintenanceReport } from "@agent-space/protocol";
 import {
   canReadMemory,
   shouldRedactMemoryContent,
-} from "./memoryReadAuth";
-import { accessibleProjectIds } from "./projectAccess";
-import { MEMORY_COLUMNS, type MemoryRow, type Queryable } from "./repository";
-import { contentResourceDefinition } from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql";
-import { resolveOversightLevel } from "../access/oversightResolver";
-import { memorySensitivityReadSql } from "./memorySensitivitySql";
+} from "./memoryReadAuth.js";
+import { accessibleProjectIds } from "./projectAccess.js";
+import { MEMORY_COLUMNS, type MemoryRow, type Queryable } from "./repository.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { resolveOversightLevel } from "../access/oversightResolver.js";
+import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 

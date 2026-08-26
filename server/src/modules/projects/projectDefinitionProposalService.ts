@@ -1,7 +1,7 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { inheritContentAccessGrants } from "../access/contentAccessInheritance";
-import { insertProposalRow } from "../proposals/reviewPackets";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
 import {
   HttpError,
   optionalString,
@@ -9,9 +9,9 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectWriter } from "./access";
-import { ProjectKernelService } from "./kernelService";
+} from "../routeUtils/common.js";
+import { assertProjectWriter } from "./access.js";
+import { ProjectKernelService } from "./kernelService.js";
 
 export interface ProjectDefinitionProposalActor {
   agentId?: string | null;

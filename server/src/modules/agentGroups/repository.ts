@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   contentReadSql,
   projectReadAccessSql,
-} from "../access/contentAccessSql";
-import { canReadProject } from "../projects/access";
+} from "../access/contentAccessSql.js";
+import { canReadProject } from "../projects/access.js";
 
 export interface AgentRunGroupRecord {
   id: string;

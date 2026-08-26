@@ -1,18 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer";
-import { runsModule } from "../src/modules/runs";
-import { streamingModule } from "../src/modules/streaming";
-import { loadConfig } from "../src/config";
-import {
-  RUN_EVENT_APPENDED_TYPE,
-  __setStreamingRepositoryFactoryForTests,
-} from "../src/modules/streaming";
-import { __setAuthIdentityForTests } from "../src/modules/auth";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { streamingModule } from "../src/modules/streaming/index.js";
+import { loadConfig } from "../src/config.js";
+import { RUN_EVENT_APPENDED_TYPE, __setStreamingRepositoryFactoryForTests } from "../src/modules/streaming/service.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import {
   publishChatTextDelta,
   subscribeChatTextDeltas,
-} from "../src/modules/streaming/conversationDeltaBus";
+} from "../src/modules/streaming/conversationDeltaBus.js";
 
 let app: FastifyInstance;
 

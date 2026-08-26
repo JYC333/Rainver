@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { PromptAssetContent, PromptType } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadProtocol } from "../providers/protocolRuntime";
+import * as protocol from "@agent-space/protocol";
+import { PROMPT_TYPES, PromptAssetContentSchema } from "@agent-space/protocol";
+import type { PromptAssetContent, PromptType } from "@agent-space/protocol";
 import {
   assertAssetAllowsTargetScope,
   assertCanWriteAssetOwnerScope,
   canReadAssetOwnerScope,
   canViewScopedRef,
   normalizeVersionScopeForWrite,
-} from "../evolution/assetAccess";
-import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluationRepository";
-import { EvolvableAssetRepository } from "../evolution/assetRepository";
-import { HttpError, objectValue, optionalObject, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { sha256Json } from "./hash";
-import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer";
+} from "../evolution/assetAccess.js";
+import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluationRepository.js";
+import { EvolvableAssetRepository } from "../evolution/assetRepository.js";
+import { HttpError, objectValue, optionalObject, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { sha256Json } from "./hash.js";
+import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
 
 // Prompt assets are a prompt-specific view over the generic evolvable-asset
 // system (asset_type 'prompt_template'). Not every 'prompt_template' asset
@@ -45,7 +46,6 @@ export class PromptRepository {
     identity: SpaceUserIdentity,
     filters: { promptType?: string | null },
   ): Promise<Record<string, unknown>[]> {
-    const { PROMPT_TYPES } = await loadProtocol();
     const promptTypeFilter = optionalString(filters.promptType);
     if (promptTypeFilter && !isPromptType(PROMPT_TYPES, promptTypeFilter)) {
       throw new HttpError(422, "prompt_type is invalid");
@@ -242,7 +242,7 @@ export class PromptRepository {
     const found = await findPromptAssetForKey(this.db, identity, assetKey);
     if (!found) throw new HttpError(404, "Prompt asset not found");
     const row = (await this.assets.getAsset(identity, found.row.id)) as PromptAssetLookupRow;
-    const promptType = promptTypeOf(row, (await loadProtocol()).PROMPT_TYPES);
+    const promptType = promptTypeOf(row, protocol.PROMPT_TYPES);
     if (!promptType) throw new HttpError(404, "Prompt asset not found");
     return { row, promptType };
   }
@@ -258,7 +258,6 @@ export class PromptRepository {
   }
 
   private async validatedPromptContent(promptType: PromptType, value: unknown): Promise<PromptAssetContent> {
-    const { PromptAssetContentSchema } = await loadProtocol();
     const content = optionalObject(value);
     if (!content) throw new HttpError(422, "content_json is required");
     const parsed = PromptAssetContentSchema.safeParse(content);
@@ -454,7 +453,6 @@ export async function findPromptAssetForKey(
   identity: SpaceUserIdentity,
   assetKey: string,
 ): Promise<{ row: PromptAssetLookupRow; promptType: PromptType } | null> {
-  const { PROMPT_TYPES } = await loadProtocol();
   const result = await db.query<PromptAssetLookupRow>(
     `SELECT id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
             status, current_system_version_id, default_eval_suite_ref_json, metadata_json, created_at, updated_at

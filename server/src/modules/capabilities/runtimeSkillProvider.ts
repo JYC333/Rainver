@@ -1,14 +1,14 @@
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
-import { objectValue, optionalString, type Queryable } from "../routeUtils/common";
-import { getBuiltInCapabilityDefinition } from "./registry";
-import { renderClaudeSkill, renderCodexSkill, renderGenericPromptSkill } from "./runtimeRenderers";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { objectValue, optionalString, type Queryable } from "../routeUtils/common.js";
+import { getBuiltInCapabilityDefinition } from "./registry.js";
+import { renderClaudeSkill, renderCodexSkill, renderGenericPromptSkill } from "./runtimeRenderers.js";
 import type {
   CapabilityDefinition,
   NormalizedSkill,
   RuntimeRenderedSkill,
   SkillRiskLevel,
-} from "./types";
+} from "./types.js";
 
 export interface RuntimeSkillRunContext {
   space_id: string;

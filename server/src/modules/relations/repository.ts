@@ -1,11 +1,11 @@
-import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter";
-import { objectStatusScalarSql } from "../../db/objectStatusSql";
+import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
+import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool";
-import { countFromRow, HttpError, type Queryable } from "../routeUtils/common";
-import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql";
-import { contentOwnerFromDb } from "../access/contentAccessQuery";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess";
+import type { PoolClient } from "../../db/pool.js";
+import { countFromRow, HttpError, type Queryable } from "../routeUtils/common.js";
+import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
+import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 
 export interface RelationPersonRow {
   object_id: string;

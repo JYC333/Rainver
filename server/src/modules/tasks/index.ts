@@ -1,6 +1,6 @@
-import type { ServerModule } from "../../gateway/routeRegistry";
-import { registerRoutes } from "./routes";
-import { registerTasksProjectIntegration } from "./projectIntegration";
+import type { ServerModule } from "../../gateway/routeRegistry.js";
+import { registerRoutes } from "./routes.js";
+import { registerTasksProjectIntegration } from "./projectIntegration.js";
 
 function register(app: Parameters<typeof registerRoutes>[0], context: Parameters<typeof registerRoutes>[1]): void {
   registerTasksProjectIntegration();

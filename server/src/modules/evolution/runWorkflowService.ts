@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { WorkflowDefinition } from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common";
-import { HttpError, requiredString } from "../routeUtils/common";
-import { PgRunRepository, type RunRecord } from "../runs/repository";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { loadProtocol } from "../providers/protocolRuntime";
-import { sha256Json } from "./hash";
-import { normalizeAssetOwnerScopeForCreate } from "./assetAccess";
-import { redactSecretPatterns } from "../runs/evidenceRedaction";
+import * as protocol from "@agent-space/protocol";
+import type { WorkflowDefinition } from "@agent-space/protocol";
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, requiredString } from "../routeUtils/common.js";
+import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { sha256Json } from "./hash.js";
+import { normalizeAssetOwnerScopeForCreate } from "./assetAccess.js";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 const MAX_TEXT_LENGTH = 512;
@@ -141,7 +141,6 @@ export class RunWorkflowService {
       return riskRank(risk) > riskRank(current) ? risk : current;
     }, "low");
     const definition = await this.buildDefinition(run, sources, artifacts, verification, input, maxRisk);
-    const protocol = await loadProtocol();
     const parsed = protocol.WorkflowDefinitionSchema.parse(definition);
     return {
       run_id: run.id,

@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { resetTables } from "./support/resetTables";
-import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository";
-import { syncBuiltinPrompts } from "../src/modules/prompts/builtins";
-import { resolvePrompt } from "../src/modules/prompts/resolver";
-import { PromptRepository } from "../src/modules/prompts/repository";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import { resolvePrompt } from "../src/modules/prompts/resolver.js";
+import { PromptRepository } from "../src/modules/prompts/repository.js";
+import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for the built-in prompt sync + resolver: sync must
 // be idempotent, must never overwrite an existing immutable version, and
@@ -23,7 +23,7 @@ const OWNER = "3baaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-1111-4111-8111-555555555555";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;

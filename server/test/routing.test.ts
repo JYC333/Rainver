@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DeterministicRouteSelector, mergeRouteHints } from "../src/modules/routing/router";
-import { runtimeRequiredCapabilities } from "../src/modules/routing/repository";
-import type { RouteCandidate } from "../src/modules/routing/types";
+import { DeterministicRouteSelector, mergeRouteHints } from "../src/modules/routing/router.js";
+import { runtimeRequiredCapabilities } from "../src/modules/routing/repository.js";
+import type { RouteCandidate } from "../src/modules/routing/types.js";
 
 function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
   return {

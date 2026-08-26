@@ -1,15 +1,15 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ServerResponse } from "node:http";
-import type { ServerConfig } from "../../config";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext";
-import { resolveIdentity } from "../routeUtils/common";
-import { PgRunRepository, type RunEventPage } from "../runs/repository";
-import { runEventToOut } from "../runs/runReadModel";
+import type { ServerConfig } from "../../config.js";
+import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
+import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { resolveIdentity } from "../routeUtils/common.js";
+import { PgRunRepository, type RunEventPage } from "../runs/repository.js";
+import { runEventToOut } from "../runs/runReadModel.js";
 import {
   CHAT_TEXT_DELTA_TYPE,
   subscribeChatTextDeltas,
-} from "./conversationDeltaBus";
+} from "./conversationDeltaBus.js";
 
 /** Runtime string kept in lockstep with `EventType.RunEventAppended`. */
 export const RUN_EVENT_APPENDED_TYPE = "run.event_appended";

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository";
+import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository.js";
 import {
   buildRunFinalizationRules,
   EvolutionSignalEmitter,
   proposalSignalType,
-} from "../src/modules/evolution/signalEmitters";
+} from "../src/modules/evolution/signalEmitters.js";
 
 class FakeDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];

@@ -1,24 +1,24 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool";
-import type { ServerConfig } from "../../config";
+import type { Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
 import {
   contentResourceDefinition,
   type ContentResourceDefinition,
-} from "../access/contentAccessRegistry";
-import { contentAccessLevelSql, contentAccessSql } from "../access/contentAccessSql";
+} from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentAccessSql } from "../access/contentAccessSql.js";
 import {
   isContentAccessLevel,
   isContentVisibility,
   type ContentAccessDecision,
   type ContentAccessLevel,
   type ContentVisibility,
-} from "../access/contentAccessTypes";
-import { dbPool, HttpError, type Queryable, type SpaceUserIdentity, withDbTransaction } from "../routeUtils/common";
-import { isSpaceOwnerOrAdmin } from "../access/roles";
-import { parseRunContextTaint } from "../runs/contextTaint";
-import { insertProposalRow } from "../proposals/reviewPackets";
-import { ContentAccessAuditService } from "./audit";
-import { ContentDemotionService } from "./demotion";
+} from "../access/contentAccessTypes.js";
+import { dbPool, HttpError, type Queryable, type SpaceUserIdentity, withDbTransaction } from "../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { parseRunContextTaint } from "../runs/contextTaint.js";
+import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { ContentAccessAuditService } from "./audit.js";
+import { ContentDemotionService } from "./demotion.js";
 
 interface ResourcePolicyRow {
   id: string;

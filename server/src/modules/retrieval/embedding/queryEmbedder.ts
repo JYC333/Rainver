@@ -1,9 +1,9 @@
-import { completeProviderEmbedding } from "../../providers/invocation/invocation";
-import type { ProviderCommandStore } from "../../providers/commands/store";
-import type { QueryEmbedder } from "..";
-import type { RetrievalEgressPolicy } from "../egress/egressPolicy";
-import { DEFAULT_EMBED_DIMENSIONS, RETRIEVAL_EMBEDDING_TASK } from "./config";
-import { sharedQueryEmbeddingCache, type QueryEmbeddingCache } from "./queryEmbeddingCache";
+import { completeProviderEmbedding } from "../../providers/invocation/invocation.js";
+import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { QueryEmbedder } from "../index.js";
+import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
+import { DEFAULT_EMBED_DIMENSIONS, RETRIEVAL_EMBEDDING_TASK } from "./config.js";
+import { sharedQueryEmbeddingCache, type QueryEmbeddingCache } from "./queryEmbeddingCache.js";
 
 /**
  * Provider-backed query embedder for the vector recall arm. Routes through the

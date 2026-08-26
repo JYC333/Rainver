@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { ServerConfig } from "../../config";
-import { getDbPool } from "../../db/pool";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
 import {
   HttpError,
   optionalString,
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
-} from "../routeUtils/common";
-import { assertProjectReadable, assertProjectWriter } from "../projects/access";
-import { resolvePrompt } from "../prompts/resolver";
-import { resolveProviderCommandStore } from "../providers/commands/store";
-import { completeProviderMessages } from "../providers/invocation/invocation";
-import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities";
-import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService";
+} from "../routeUtils/common.js";
+import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
+import { resolvePrompt } from "../prompts/resolver.js";
+import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { completeProviderMessages } from "../providers/invocation/invocation.js";
+import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities.js";
+import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService.js";
 
 export const INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY = "inquiry.next_step_advice";
 

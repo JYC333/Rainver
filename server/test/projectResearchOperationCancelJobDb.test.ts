@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useTestDatabase } from "./support/testDatabase";
-import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds";
-import { resetTables } from "./support/resetTables";
-import * as poolModule from "../src/db/pool";
-import { loadConfig } from "../src/config";
-import { JobHandlerRegistry, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry";
-import { registerResearchOperationCancelHandler } from "../src/modules/projectResearch/pipeline/researchOperationCancelJob";
-import { insertResearchWorkflowFixture } from "./support/researchWorkflow";
-import { RESEARCH_OPERATION_CANCEL_JOB } from "../src/modules/projectResearch/researchOperationCancel";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds.js";
+import { resetTables } from "./support/resetTables.js";
+import * as poolModule from "../src/db/pool.js";
+import { loadConfig } from "../src/config.js";
+import { JobHandlerRegistry, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
+import { registerResearchOperationCancelHandler } from "../src/modules/projectResearch/pipeline/researchOperationCancelJob.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { RESEARCH_OPERATION_CANCEL_JOB } from "../src/modules/projectResearch/researchOperationCancel.js";
 
 // Real-Postgres coverage for the process half of the research cancel. The
 // service half only writes "cancelled" and enqueues; this handler is what
@@ -25,7 +25,7 @@ const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
 
 
-const db = useTestDatabase(__filename);
+const db = useTestDatabase(import.meta.filename);
 
 afterEach(() => {
   vi.restoreAllMocks();

@@ -4,11 +4,11 @@ import type {
   AgentSpacePlugin,
   PluginActivationResult,
   PluginHostContext,
-} from "@agent-space/protocol" with { "resolution-mode": "import" };
-import { loadConfig } from "../src/config";
-import { PluginHost } from "../src/modules/plugins/host";
-import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry";
-import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry";
+} from "@agent-space/protocol";
+import { loadConfig } from "../src/config.js";
+import { PluginHost } from "../src/modules/plugins/host/index.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 
 describe("PluginHost", () => {
   it("activates built-in plugins synchronously and exposes contributions", async () => {

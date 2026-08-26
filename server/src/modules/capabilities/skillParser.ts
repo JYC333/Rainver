@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
-import { HttpError, optionalString } from "../routeUtils/common";
-import type { NormalizedSkill } from "./types";
+import { HttpError, optionalString } from "../routeUtils/common.js";
+import type { NormalizedSkill } from "./types.js";
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
 
