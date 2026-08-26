@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import { graphLayoutModes } from './core/graphLayouts'
-import type { GraphProjectionLayoutMode } from '@agent-space/protocol'
+import type { GraphProjectionLayoutMode } from '@rainver/protocol'
 import type { GraphRendererMode } from './types'
 
 interface GraphToolbarProps {

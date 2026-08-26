@@ -1,4 +1,4 @@
-import type { Queryable } from "@agent-space/protocol";
+import type { Queryable } from "@rainver/protocol";
 import { Amount } from "../domain/amount.js";
 import { financeDirectiveRepository } from "../domain/directiveRepository.js";
 import type { FinancePostingRow } from "../domain/directives.js";

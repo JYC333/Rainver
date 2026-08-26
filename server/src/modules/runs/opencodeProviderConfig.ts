@@ -62,7 +62,7 @@ export async function writeOpenCodeProviderConfig(input: {
 }
 
 /** Not exported: `openCodeModelId` is how the rest of the server names it. */
-const OPENCODE_PROVIDER_ID = "agent_space_provider";
+const OPENCODE_PROVIDER_ID = "rainver_provider";
 
 /**
  * How OpenCode addresses a bound model: `<providerId>/<model>`, where the

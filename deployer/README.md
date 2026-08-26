@@ -1,4 +1,4 @@
-# agent-space Deployer
+# Rainver Deployer
 
 Privileged deployment supervisor. It runs separately from the main app and is operated
 manually; the current product API does not submit deployment jobs.
@@ -13,19 +13,19 @@ runtimes cannot bypass product approval boundaries.
 
 ```bash
 # Bring up the full stack (deployer starts automatically)
-cd /path/to/agent-space
+cd /path/to/rainver
 ops/scripts/start.sh
 ```
 
 The deployer container has Docker socket access. Its socket is
-`/tmp/agent-space-deployer.sock` inside that container and is not shared with the server.
+`/tmp/rainver-deployer.sock` inside that container and is not shared with the server.
 
 ## Allowed Job Types
 
 | Job Type              | Script                         | Effect                              |
 |-----------------------|--------------------------------|-------------------------------------|
-| `rebuild_agent_space` | `scripts/rebuild.sh`           | docker compose build + up -d        |
-| `restart_agent_space` | `scripts/restart.sh`           | docker compose restart              |
+| `rebuild_rainver` | `scripts/rebuild.sh`           | docker compose build + up -d        |
+| `restart_rainver` | `scripts/restart.sh`           | docker compose restart              |
 | `health_check`        | `scripts/health_check.sh`      | curl /health                        |
 
 ## Wire Protocol
@@ -35,7 +35,7 @@ Newline-delimited JSON over Unix socket. One request → one response.
 **Request:**
 ```json
 {"job_id": "01J...", "proposal_id": "...", "space_id": "personal",
- "requested_by_user_id": "default_user", "job_type": "rebuild_agent_space", "target": "local"}
+ "requested_by_user_id": "default_user", "job_type": "rebuild_rainver", "target": "local"}
 ```
 
 **Response:**
@@ -51,14 +51,14 @@ Useful for development or environments where Docker Compose is not running the d
 ```bash
 # Install Python deps (none beyond stdlib)
 # Create socket directory
-sudo mkdir -p /var/run/agent-space
+sudo mkdir -p /var/run/rainver
 
 # Run with defaults
-REPO_ROOT=/path/to/agent-space python deployer/deployer.py
+REPO_ROOT=/path/to/rainver python deployer/deployer.py
 
 # Or with a custom socket path
 DEPLOYER_SOCKET=/tmp/deployer.sock \
-REPO_ROOT=/path/to/agent-space \
+REPO_ROOT=/path/to/rainver \
     python deployer/deployer.py
 ```
 

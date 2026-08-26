@@ -177,7 +177,7 @@ export async function resolveManagedSubscriptionCredential(
     const row = selected.rows[0];
     if (!row) throw new ProviderCommandNotFoundError(`Managed subscription provider '${providerId}' not found`);
     const type = parseManagedSubscriptionType(row.provider_type);
-    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.agentSpaceHome);
+    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.rainverHome);
     let credential = decryptModelProviderOAuthSecretRefV1(row.secret_ref, masterKey);
     if (credential.expires <= Date.now() + 60_000) {
       const controller = new AbortController();
@@ -214,7 +214,7 @@ async function persistSubscription(
   quota: QuotaResult,
 ): Promise<Record<string, unknown>> {
   const definition = subscriptionDefinition(type);
-  const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.agentSpaceHome);
+  const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.rainverHome);
   const secretRef = encryptModelProviderOAuthSecretRefV1(credential, masterKey);
   const client = await pool.connect();
   let providerId = "";

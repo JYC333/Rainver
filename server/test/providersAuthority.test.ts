@@ -88,7 +88,7 @@ function denyingAuth(): AuthRepository {
 
 function providerRoutesConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/rainver",
   });
 }
 
@@ -145,7 +145,7 @@ describe("providers read authority", () => {
     expect(vendors.statusCode).toBe(200);
     expect(vendors.headers["x-upstream"]).toBeUndefined();
     // Bind the response to the published contract, not to a literal here.
-    const { ProviderVendorListResponseSchema } = await import("@agent-space/protocol");
+    const { ProviderVendorListResponseSchema } = await import("@rainver/protocol");
     const body = ProviderVendorListResponseSchema.parse(vendors.json());
     // The client reads these facts instead of keeping its own copy.
     expect(body).toContainEqual({

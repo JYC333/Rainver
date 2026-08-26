@@ -243,10 +243,10 @@ successful commit and never participate in the critical write outcome.
   PostgreSQL connection strings. The app rejects non-PostgreSQL URLs at startup.
 - **Local compose/env resolution** is shared by `ops/scripts/start.sh`, `ops/scripts/db/*.sh`,
   and `ops/scripts/system/*.sh` through `ops/scripts/lib/local-compose.sh`: mode validation,
-  `ASPACE_ROOT`, `$ASPACE_ROOT/<mode>`, `$MODE_ROOT/.env`, `AGENT_SPACE_MODE_ROOT`,
+  `RAINVER_ROOT`, `$RAINVER_ROOT/<mode>`, `$MODE_ROOT/.env`, `RAINVER_MODE_ROOT`,
   compose project/file, and `docker compose --env-file "$ENV_FILE"` are one path.
 - Local PostgreSQL containers have stable mode-specific names:
-  `agent-space-dev-postgres`, `agent-space-test-postgres`, and `agent-space-prod-postgres`.
+  `rainver-dev-postgres`, `rainver-test-postgres`, and `rainver-prod-postgres`.
 - Schema authoring is owned by Drizzle definitions under `server/src/db/schema/`.
   `server/drizzle/` stores the empty-database generated snapshot, and
   `server/migrations/` stores the runtime schema applied by the server
@@ -300,14 +300,14 @@ successful commit and never participate in the critical write outcome.
   start/stop ownership rule. They leave a pre-existing running database untouched.
 - **Pre-migration backup safety** (`ops/scripts/db/migrate.sh`): `--mode prod` requires a
   pre-migration `pg_dump -Fc` backup before server migrations run, written to
-  `$ASPACE_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump`. If that dump fails, migration
+  `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump`. If that dump fails, migration
   aborts before migrations touch the schema. Non-prod modes skip it for convenience; opt in with
   `PRE_MIGRATION_BACKUP=1` or `--pre-migration-backup`.
 - **Fresh-instance bootstrap** is server-owned: on an empty migrated DB it
   idempotently ensures the default personal space, default owner user + active
   membership, system memories, and default note collections — the usable initial state.
-- PostgreSQL data lives under `$ASPACE_ROOT/<mode>/db/postgres` (bind-mounted into the postgres container).
-- Database dumps live under `$ASPACE_ROOT/<mode>/db/dumps`.
+- PostgreSQL data lives under `$RAINVER_ROOT/<mode>/db/postgres` (bind-mounted into the postgres container).
+- Database dumps live under `$RAINVER_ROOT/<mode>/db/dumps`.
 - Local test mode reaches the server API through the frontend proxy at `localhost:3100/api/v1`; compose-internal web traffic uses `http://server:8010`.
 - Job queue uses `SELECT ... FOR UPDATE SKIP LOCKED` for safe concurrent claim. `jobs.scheduled_at`
   is NOT NULL with a server default, and DB CHECK constraints enforce the allowed `status` set,

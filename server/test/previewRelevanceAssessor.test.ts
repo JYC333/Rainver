@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchContext, ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchContext, ResearchSemanticQuery } from "@rainver/protocol";
 import { PreviewRelevanceAssessor } from "../src/modules/research/discovery/previewRelevanceAssessor.js";
 
 describe("PreviewRelevanceAssessor", () => {

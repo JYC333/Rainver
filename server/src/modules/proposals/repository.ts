@@ -1,7 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import type { ProposalOut, ProposalPage } from "@agent-space/protocol";
+import type { ProposalOut, ProposalPage } from "@rainver/protocol";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { isProvenanceSourceType } from "../ontology/entities.js";
 

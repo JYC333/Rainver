@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalObjectType } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import type { RetrievalRegistry } from "../registry.js";
 import {
@@ -13,7 +13,7 @@ import type { RevalidatedObject } from "../types.js";
  * Retrieval maintenance scan — the "context review cycle" review-candidate generator (W7).
  *
  * The maintenance loop dedups pages, fixes links, flags contradictions, etc.
- * agent-space implements the low-risk, derived-only half as a READ-ONLY scan
+ * rainver implements the low-risk, derived-only half as a READ-ONLY scan
  * over the retrieval projection that emits BATCHED review candidates. Hard rules
  * (invariant 6):
  *

@@ -27,7 +27,7 @@ export async function writeCodexProviderConfig(input: {
   }
   const codexDir = await materializeRunCodexHome(input.tempHome);
   const catalogDir = join(codexDir, "model-catalogs");
-  const catalogPath = join(catalogDir, "agent-space-provider.json");
+  const catalogPath = join(catalogDir, "rainver-provider.json");
   await mkdir(catalogDir, { recursive: true, mode: 0o700 });
   await writeFile(
     catalogPath,
@@ -85,10 +85,10 @@ export function renderCodexProviderToml(input: {
 }): string {
   return [
     `model = ${tomlString(input.model)}`,
-    `model_provider = "agent_space_provider"`,
+    `model_provider = "rainver_provider"`,
     `model_catalog_json = ${tomlString(input.catalogPath)}`,
     "",
-    `[model_providers.agent_space_provider]`,
+    `[model_providers.rainver_provider]`,
     `name = ${tomlString(input.providerName)}`,
     `base_url = ${tomlString(input.proxyBaseUrl)}`,
     `experimental_bearer_token = ${tomlString(input.leaseToken)}`,

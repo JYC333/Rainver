@@ -103,7 +103,7 @@ describe("RunMaterializationService", () => {
   it("derives Agent learning placement from the Run creation context", async () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -148,7 +148,7 @@ describe("RunMaterializationService", () => {
   it("fails closed when a Run claims taint but its summary is malformed", async () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -174,7 +174,7 @@ describe("RunMaterializationService", () => {
     const delegationCalls: unknown[] = [];
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
       }),
       db,
       {
@@ -247,7 +247,7 @@ describe("RunMaterializationService", () => {
   it("serializes structured artifact content objects for the text-backed artifact store", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const service = new RunMaterializationService(
       config,
@@ -304,7 +304,7 @@ describe("RunMaterializationService", () => {
   it("materializes structured runtime delegations through the agent group materializer", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const seen: unknown[] = [];
     const service = new RunMaterializationService(
@@ -371,15 +371,15 @@ describe("RunMaterializationService", () => {
   });
 
   it("materializes artifacts and supported proposals natively", async () => {
-    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-artifacts-"));
-    const sandboxRoot = await mkdtemp(join(tmpdir(), "aspace-sandbox-"));
+    const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-artifacts-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "rainver-sandbox-"));
     tempRoots.push(artifactRoot, sandboxRoot);
     await mkdir(join(sandboxRoot, "logs"), { recursive: true });
     await writeFile(join(sandboxRoot, "logs", "out.txt"), "file artifact", "utf8");
 
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
       ARTIFACT_STORAGE_ROOT: artifactRoot,
     });
     const service = new RunMaterializationService(
@@ -487,8 +487,8 @@ describe("RunMaterializationService", () => {
   });
 
   it("materializes Room conversation capture packets as pending proposals", async () => {
-    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-room-artifacts-"));
-    const exchangeRoot = await mkdtemp(join(tmpdir(), "aspace-room-exchange-"));
+    const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-room-artifacts-"));
+    const exchangeRoot = await mkdtemp(join(tmpdir(), "rainver-room-exchange-"));
     tempRoots.push(artifactRoot, exchangeRoot);
     await writeFile(
       join(exchangeRoot, "conversation_capture.json"),
@@ -504,7 +504,7 @@ describe("RunMaterializationService", () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
         ARTIFACT_STORAGE_ROOT: artifactRoot,
       }),
       db,
@@ -559,7 +559,7 @@ describe("RunMaterializationService", () => {
   it("clamps artifacts and proposals to a private Run", async () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -593,7 +593,7 @@ describe("RunMaterializationService", () => {
   it("preserves an explicitly private proposal from a shared Run", async () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -623,8 +623,8 @@ describe("RunMaterializationService", () => {
   });
 
   it("does not interpret undeclared exchange files as conversation captures", async () => {
-    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-room-artifacts-"));
-    const exchangeRoot = await mkdtemp(join(tmpdir(), "aspace-room-exchange-"));
+    const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-room-artifacts-"));
+    const exchangeRoot = await mkdtemp(join(tmpdir(), "rainver-room-exchange-"));
     tempRoots.push(artifactRoot, exchangeRoot);
     await writeFile(
       join(exchangeRoot, "conversation_capture.json"),
@@ -634,7 +634,7 @@ describe("RunMaterializationService", () => {
     const db = new FakeDb();
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
         ARTIFACT_STORAGE_ROOT: artifactRoot,
       }),
       db,
@@ -672,7 +672,7 @@ describe("RunMaterializationService", () => {
   it("keeps plain output_text as run display output instead of creating an artifact", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const service = new RunMaterializationService(
       config,
@@ -704,7 +704,7 @@ describe("RunMaterializationService", () => {
 
   it("rejects removed research proposal types instead of materializing them", async () => {
     const db = new FakeDb();
-    const config = loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space" });
+    const config = loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" });
     const service = new RunMaterializationService(config, db, undefined, async () => ({ status: "allow" }));
     const result = await service.materializeAdapterResult({
       run: run(),
@@ -724,7 +724,7 @@ describe("RunMaterializationService", () => {
   it("ignores a model-supplied project for Agent learning", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const service = new RunMaterializationService(
       config,
@@ -772,7 +772,7 @@ describe("RunMaterializationService", () => {
   it("keeps Memory and Knowledge run outputs as pending proposals, not active writes", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const service = new RunMaterializationService(
       config,
@@ -840,11 +840,11 @@ describe("RunMaterializationService", () => {
   });
 
   it("enforces artifact.persist before inserting artifacts", async () => {
-    const artifactRoot = await mkdtemp(join(tmpdir(), "aspace-artifacts-"));
+    const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-artifacts-"));
     tempRoots.push(artifactRoot);
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
       ARTIFACT_STORAGE_ROOT: artifactRoot,
     });
     const service = new RunMaterializationService(
@@ -889,7 +889,7 @@ describe("RunMaterializationService", () => {
   it("materializes claim/object packets only from structured proposal payloads", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const service = new RunMaterializationService(
       config,
@@ -967,7 +967,7 @@ describe("RunMaterializationService", () => {
   it("returns a finalization materialization item for terminal runs", async () => {
     const db = new FakeDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
     });
     const finalizer = {
       async finalize(runId: string, spaceId: string): Promise<RunFinalizationRecord> {

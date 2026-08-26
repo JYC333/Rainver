@@ -9,7 +9,7 @@ import type { ScheduledTaskStatus } from "../src/modules/scheduler/registry.js";
 import type { BackgroundServicesStatusSource } from "../src/modules/scheduler/runtimeStatus.js";
 
 const config = loadConfig({
-  SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+  SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
 });
 
 function task(overrides: Partial<ScheduledTaskStatus> = {}): ScheduledTaskStatus {

@@ -2,8 +2,8 @@ import type {
   SourcePolicyEnvelope,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-} from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+} from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import {
   HttpError,

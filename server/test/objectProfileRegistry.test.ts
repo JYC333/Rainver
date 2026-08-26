@@ -593,7 +593,7 @@ describe("object kind proposal routes", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.format).toBe("agent_space.object_schema.v1");
+    expect(body.format).toBe("rainver.object_schema.v1");
     expect(body.object_profiles).toEqual([
       expect.objectContaining({
         key: "decision",
@@ -673,7 +673,7 @@ describe("object kind proposal routes", () => {
       headers: { "content-type": "application/json" },
       payload: JSON.stringify({
         manifest: {
-          format: "agent_space.object_schema.v1",
+          format: "rainver.object_schema.v1",
           exported_at: "2026-06-27T00:00:00.000Z",
           object_schema_version: 1,
           object_profiles: [{
@@ -751,7 +751,7 @@ async function apply(db: ObjectProfileApplyFakeDb, p: ApplyProposal) {
   registerKnowledgeProposalAppliers(registry);
   return registry.apply({
     config: loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       SERVER_INTERNAL_TOKEN: "internal-token",
     }),
     db: db as never,
@@ -775,7 +775,7 @@ function proposal(proposalType: string, payload: Record<string, unknown>): Apply
 }
 
 function config() {
-  return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" });
+  return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" });
 }
 
 interface Handler {

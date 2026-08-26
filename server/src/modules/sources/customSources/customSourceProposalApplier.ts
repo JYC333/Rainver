@@ -1,4 +1,4 @@
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
+import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import type {
   ProposalApplierRegistry,
   ProposalApplyContext,

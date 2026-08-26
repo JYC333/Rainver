@@ -6,7 +6,7 @@ import type {
   RunInputEnvelope,
   RunOutputDeclaration,
   RunToolGrant,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { contractRecord } from "./contractSnapshot.js";
 import type { RunRecord } from "./repository.js";
 

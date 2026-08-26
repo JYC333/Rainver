@@ -37,7 +37,7 @@ describe("the model each installed CLI is configured to use", () => {
   });
 
   async function tempDir(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "agent-space-model-"));
+    const dir = await mkdtemp(join(tmpdir(), "rainver-model-"));
     dirs.push(dir);
     return dir;
   }
@@ -153,7 +153,7 @@ describe("what a runtime says it can be set to", () => {
     // Not installed, not logged in, or too slow — a probe that cannot answer
     // costs the option list, never the heartbeat carrying it.
     __clearRuntimeOptionsCache();
-    const home = await mkdtemp(join(tmpdir(), "agent-space-model-"));
+    const home = await mkdtemp(join(tmpdir(), "rainver-model-"));
     await writeFile(join(home, "config.toml"), 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n');
     process.env.CODEX_HOME = home;
     try {

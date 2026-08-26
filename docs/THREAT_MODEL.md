@@ -1,6 +1,6 @@
 # Threat Model
 
-Agent-space manages personal, family, and team data and allows agents to run tools
+Rainver manages personal, family, and team data and allows agents to run tools
 and generate code. This document enumerates threats and the architectural mitigations
 for each.
 

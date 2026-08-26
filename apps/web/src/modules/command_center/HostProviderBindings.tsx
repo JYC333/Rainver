@@ -77,7 +77,7 @@ export default function HostProviderBindings({
         <Label className="text-xs text-muted-foreground">Model backend</Label>
         <p className="text-xs text-muted-foreground">
           {installedProbes.length === 0
-            ? 'This host has not reported an installed runtime yet. Start the daemon (agent-space-host run) and wait for its next heartbeat.'
+            ? 'This host has not reported an installed runtime yet. Start the daemon (rainver-host run) and wait for its next heartbeat.'
             : `None of this host's runtimes (${installedProbes.join(', ')}) can be dispatched to remotely, so there is no backend to choose.`}
         </p>
       </div>

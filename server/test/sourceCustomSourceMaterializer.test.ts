@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import type { CustomSourceHandlerOutput, CustomSourcePolicyEnvelope } from "@agent-space/protocol";
+import type { CustomSourceHandlerOutput, CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import {
   applyCustomSourceRetentionPolicy,

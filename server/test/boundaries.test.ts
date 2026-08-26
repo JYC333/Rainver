@@ -8,11 +8,11 @@ const officialPluginsDir = join(import.meta.dirname, "..", "..", "plugins", "off
 
 /**
  * Bare module specifiers the server is allowed to import. Relative imports
- * (`./`, `../`), `node:` builtins, and `@agent-space/protocol` are allowed.
+ * (`./`, `../`), `node:` builtins, and `@rainver/protocol` are allowed.
  * Anything else (frontend, ORM packages, migration tooling, sandbox/deployer
  * internals, local-host) must not appear.
  */
-const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "zod", "@agent-space/protocol"]);
+const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "zod", "@rainver/protocol"]);
 
 /**
  * Packages allowed only from a specific file or directory. `pg` is the raw DB

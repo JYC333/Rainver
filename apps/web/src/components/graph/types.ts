@@ -3,7 +3,7 @@ import type {
   GraphProjectionEdge,
   GraphProjectionLayoutMode,
   GraphProjectionNode,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 
 export type GraphRendererMode = 'canvas' | 'webgl'
 export type GraphThemeMode = 'light' | 'dark'

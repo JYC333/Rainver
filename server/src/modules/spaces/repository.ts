@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -10,7 +10,7 @@ import {
 } from "../retrieval/settings.js";
 import type {
   SpaceRetrievalSettingsUpdate,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { seedSpaceDefaults } from "./spaceSeeds.js";
 

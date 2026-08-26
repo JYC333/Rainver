@@ -6,7 +6,7 @@ import { writeOpenCodeProviderConfig } from "../src/modules/runs/opencodeProvide
 
 describe("OpenCode provider configuration", () => {
   it("writes a run-scoped OpenAI-compatible provider without exposing the upstream key", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "agent-space-opencode-provider-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-opencode-provider-"));
     try {
       const config = await writeOpenCodeProviderConfig({
         sandboxCwd: sandbox,
@@ -17,8 +17,8 @@ describe("OpenCode provider configuration", () => {
         availableModels: ["gpt-research", "gpt-research-mini"],
       });
       const document = JSON.parse(await readFile(join(sandbox, "opencode.json"), "utf8")) as Record<string, any>;
-      expect(config.model).toBe("agent_space_provider/gpt-research");
-      expect(document.provider.agent_space_provider).toMatchObject({
+      expect(config.model).toBe("rainver_provider/gpt-research");
+      expect(document.provider.rainver_provider).toMatchObject({
         npm: "@ai-sdk/openai-compatible",
         options: {
           baseURL: "http://provider-proxy/openai/lease-1",

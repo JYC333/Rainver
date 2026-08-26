@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { AgentSpacePlugin } from "@agent-space/protocol";
+import type { RainverPlugin } from "@rainver/protocol";
 
 interface OfficialPluginPackageManifest {
   id: string;
@@ -30,7 +30,7 @@ export function defaultOfficialPluginArtifactRoot(): string {
 export async function loadOfficialPluginPackages(
   root = defaultOfficialPluginArtifactRoot(),
   options: LoadOfficialPluginPackagesOptions = {},
-): Promise<readonly AgentSpacePlugin[]> {
+): Promise<readonly RainverPlugin[]> {
   if (!existsSync(root)) {
     throw new Error(
       `Official plugin artifacts not found at ${root}. Run server build:official-plugins first.`,
@@ -47,7 +47,7 @@ export async function loadOfficialPluginPackages(
     ? new Set(options.allowedPluginIds)
     : null;
 
-  const plugins: AgentSpacePlugin[] = [];
+  const plugins: RainverPlugin[] = [];
   for (const packageRoot of packages) {
     const manifest = parseManifest(packageRoot);
     if (allowedPluginIds && !allowedPluginIds.has(manifest.id)) continue;
@@ -59,7 +59,7 @@ export async function loadOfficialPluginPackages(
 async function loadOfficialPluginPackage(
   packageRoot: string,
   manifest = parseManifest(packageRoot),
-): Promise<AgentSpacePlugin> {
+): Promise<RainverPlugin> {
   const modulePath = resolve(packageRoot, manifest.server.main);
   if (!existsSync(modulePath)) {
     throw new Error(
@@ -71,7 +71,7 @@ async function loadOfficialPluginPackage(
   const plugin = resolvePluginExport(mod, manifest.id);
   if (!plugin) {
     throw new Error(
-      `Official plugin ${manifest.id} did not export an AgentSpacePlugin runtime`,
+      `Official plugin ${manifest.id} did not export an RainverPlugin runtime`,
     );
   }
   if (plugin.id !== manifest.id) {
@@ -101,7 +101,7 @@ function parseManifest(packageRoot: string): OfficialPluginPackageManifest {
 function resolvePluginExport(
   mod: Record<string, unknown>,
   pluginId: string,
-): AgentSpacePlugin | null {
+): RainverPlugin | null {
   const exportName = `${toCamel(pluginId)}Plugin`;
   const candidates = [
     mod["default"],
@@ -109,18 +109,18 @@ function resolvePluginExport(
     mod[exportName],
   ];
   for (const candidate of candidates) {
-    if (isAgentSpacePlugin(candidate)) return candidate;
+    if (isRainverPlugin(candidate)) return candidate;
   }
   return null;
 }
 
-function isAgentSpacePlugin(value: unknown): value is AgentSpacePlugin {
+function isRainverPlugin(value: unknown): value is RainverPlugin {
   return (
     typeof value === "object" &&
     value !== null &&
-    typeof (value as AgentSpacePlugin).id === "string" &&
-    typeof (value as AgentSpacePlugin).version === "string" &&
-    typeof (value as AgentSpacePlugin).activate === "function"
+    typeof (value as RainverPlugin).id === "string" &&
+    typeof (value as RainverPlugin).version === "string" &&
+    typeof (value as RainverPlugin).activate === "function"
   );
 }
 

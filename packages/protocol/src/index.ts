@@ -1,5 +1,5 @@
 /**
- * @agent-space/protocol — shared, framework-free wire contracts.
+ * @rainver/protocol — shared, framework-free wire contracts.
  *
  * This is the single public entry point. It re-exports the protocol's
  * primitives, DTOs, command contracts and event contracts. It owns **schemas and

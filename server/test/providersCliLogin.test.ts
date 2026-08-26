@@ -69,7 +69,7 @@ function until(events: LoginEvent[], type: string, timeoutMs = 1_500): Promise<L
 
 describe("CLI login engine", () => {
   it("drives the PTY TUI: Enter until a URL, needs_input, code, /exit, then syncs credentials", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
     const home = join(tempDir, "home");
     const profileDir = join(tempDir, "profile");
     await mkdir(join(home, ".claude"), { recursive: true });
@@ -125,7 +125,7 @@ describe("CLI login engine", () => {
   });
 
   it("syncs and reports success when the credential file is written despite a non-zero exit", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
     const home = join(tempDir, "home");
     const profileDir = join(tempDir, "profile");
     await mkdir(join(home, ".claude"), { recursive: true });
@@ -162,7 +162,7 @@ describe("CLI login engine", () => {
   });
 
   it("completes as soon as the credential file appears, without the CLI exiting itself", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
     const home = join(tempDir, "home");
     const profileDir = join(tempDir, "profile");
     await mkdir(join(home, ".claude"), { recursive: true });
@@ -197,7 +197,7 @@ describe("CLI login engine", () => {
   });
 
   it("does not sync a stale credential file when login fails (non-zero exit)", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
     const home = join(tempDir, "home");
     const profileDir = join(tempDir, "profile");
     await mkdir(join(home, ".claude"), { recursive: true });
@@ -254,9 +254,9 @@ describe("CLI login engine", () => {
     expect(String(events[0].text)).toContain("not installed");
   });
 
-  it("runs the login under the aspace login HOME, not the host home", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
-    const loginHome = join(tempDir, "login-home"); // aspace-managed, passed by the broker
+  it("runs the login under the rainver login HOME, not the host home", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
+    const loginHome = join(tempDir, "login-home"); // rainver-managed, passed by the broker
     const profileDir = join(tempDir, "profile");
     // Host home that must stay untouched by the login.
     const hostHome = join(tempDir, "host-home");
@@ -294,10 +294,10 @@ describe("CLI login engine", () => {
       (e) => events.push(e),
       FAST,
       shResolver,
-      loginHome, // broker-supplied HOME under aspace
+      loginHome, // broker-supplied HOME under rainver
     );
 
-    // Credentials landed in the aspace login HOME and were synced to the profile…
+    // Credentials landed in the rainver login HOME and were synced to the profile…
     expect(await readFile(join(loginHome, ".local/share/opencode", "auth.json"), "utf8")).toBe("tok");
     expect(await readFile(join(profileDir, "auth.json"), "utf8")).toBe("tok");
     // …and the host home was never written to.
@@ -306,7 +306,7 @@ describe("CLI login engine", () => {
   });
 
   it("parses Codex device-auth from PTY output without asking for CLI input", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-login-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-login-"));
     const loginHome = join(tempDir, "login-home");
     const profileDir = join(tempDir, "profile");
     const previousOpenAiKey = process.env.OPENAI_API_KEY;
@@ -397,13 +397,13 @@ describe("docker grant host path translation", () => {
     __setMountinfoReaderForTests(
       () =>
         [
-          // Overlay root must never shadow the specific /aspace bind below.
+          // Overlay root must never shadow the specific /rainver bind below.
           "678 677 0:59 / / rw,relatime - overlay overlay rw,lowerdir=/x",
-          "1545 678 8:32 /home/me/.aspace/dev /aspace rw,relatime - ext4 /dev/sdc rw",
+          "1545 678 8:32 /home/me/.rainver-data/dev /rainver rw,relatime - ext4 /dev/sdc rw",
         ].join("\n") + "\n",
     );
-    expect(resolveHostPath("/aspace/secrets/cli-credentials/users/user-1/claude_code/profile-1")).toBe(
-      "/home/me/.aspace/dev/secrets/cli-credentials/users/user-1/claude_code/profile-1",
+    expect(resolveHostPath("/rainver/secrets/cli-credentials/users/user-1/claude_code/profile-1")).toBe(
+      "/home/me/.rainver-data/dev/secrets/cli-credentials/users/user-1/claude_code/profile-1",
     );
     // Paths outside any bind stay untranslated (overlay root has no host path).
     expect(resolveHostPath("/etc/passwd")).toBe("/etc/passwd");
@@ -415,6 +415,6 @@ describe("docker grant host path translation", () => {
     __setMountinfoReaderForTests(() => {
       throw new Error("no /proc here");
     });
-    expect(resolveHostPath("/aspace/secrets")).toBe("/aspace/secrets");
+    expect(resolveHostPath("/rainver/secrets")).toBe("/rainver/secrets");
   });
 });

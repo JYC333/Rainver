@@ -1,4 +1,4 @@
-import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { RunRecord } from "../repository.js";
 
 export const VERIFICATION_ENGINE_VERSION = "verification_engine.v1" as const;

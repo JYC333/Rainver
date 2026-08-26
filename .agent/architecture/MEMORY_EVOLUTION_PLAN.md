@@ -31,7 +31,7 @@ Track A starts with Knowledge-owned objects only:
 - `Note`
 - `Source`
 
-It uses agent-space-native mechanics for deterministic alias matching, normalized
+It uses rainver-native mechanics for deterministic alias matching, normalized
 text search, markdown/wikilink extraction, retrieval graph expansion, rank
 fusion, and evidence/create-safety contracts.
 

@@ -27,7 +27,7 @@ export class SandboxRunnerCliCommandExecutor implements CliCommandExecutor {
   constructor(
     private readonly config: Pick<ServerConfig,
       "sandboxRunnerHost" | "sandboxRunnerPort" | "sandboxRoot" | "workspaceRoot"
-      | "cliToolsRoot" | "agentSpaceHome" | "internalToken">,
+      | "cliToolsRoot" | "rainverHome" | "internalToken">,
     private readonly runtime: "claude_code" | "codex_cli" | "opencode",
   ) {}
 
@@ -56,7 +56,7 @@ export class SandboxRunnerVerificationExecutor {
   constructor(
     private readonly config: Pick<ServerConfig,
       "sandboxRunnerHost" | "sandboxRunnerPort" | "sandboxRoot" | "workspaceRoot"
-      | "cliToolsRoot" | "agentSpaceHome" | "internalToken">,
+      | "cliToolsRoot" | "rainverHome" | "internalToken">,
   ) {}
 
   async run(input: { runId: string; cwd: string; command: string[]; timeoutSeconds: number }): Promise<CliExecutionResult> {
@@ -98,7 +98,7 @@ export class SandboxRunnerVerificationExecutor {
 }
 
 function buildLaunchRequest(
-  config: Pick<ServerConfig, "sandboxRoot" | "workspaceRoot" | "cliToolsRoot" | "agentSpaceHome">,
+  config: Pick<ServerConfig, "sandboxRoot" | "workspaceRoot" | "cliToolsRoot" | "rainverHome">,
   runtime: SandboxLaunchRequest["runtime"],
   input: Parameters<CliCommandExecutor["runCommand"]>[0],
 ): SandboxLaunchRequest {
@@ -115,9 +115,9 @@ function buildLaunchRequest(
   }];
   if (readOnly) mounts.push(mountRef(readOnly.context_cwd, config, "/delivery", "read_only"));
   const home = input.env.HOME;
-  if (home) mounts.push(runtimeHomeMount(home, config.agentSpaceHome));
-  const exchangeInput = input.env.AGENT_SPACE_EXCHANGE_INPUT;
-  const exchangeOutput = input.env.AGENT_SPACE_EXCHANGE_OUTPUT;
+  if (home) mounts.push(runtimeHomeMount(home, config.rainverHome));
+  const exchangeInput = input.env.RAINVER_EXCHANGE_INPUT;
+  const exchangeOutput = input.env.RAINVER_EXCHANGE_OUTPUT;
   if (exchangeInput || exchangeOutput) {
     if (!exchangeInput || !exchangeOutput) throw new Error("Both Run Exchange channels are required.");
     mounts.push(mountRef(resolve(exchangeInput, ".."), config, "/run-exchange/input", "read_only"));
@@ -160,14 +160,14 @@ function mountRef(path: string, config: Pick<ServerConfig, "sandboxRoot" | "work
   catch { return { root: "workspaces", id: pathId(path, config.workspaceRoot, "workspace mount"), target, access }; }
 }
 
-function runtimeHomeMount(path: string, agentSpaceHome: string): SandboxMountRef {
-  const runRoot = resolve(agentSpaceHome, "cache", "runtime-homes");
+function runtimeHomeMount(path: string, rainverHome: string): SandboxMountRef {
+  const runRoot = resolve(rainverHome, "cache", "runtime-homes");
   try { return { root: "run_homes", id: pathId(path, runRoot, "run home"), target: "/home/sandbox", access: "read_write" }; }
   catch {
-    const conversationRoot = resolve(agentSpaceHome, "cache", "conversation-runtime-homes");
+    const conversationRoot = resolve(rainverHome, "cache", "conversation-runtime-homes");
     try { return { root: "conversation_homes", id: pathId(path, conversationRoot, "conversation home"), target: "/home/sandbox", access: "read_write" }; }
     catch {
-      const loginRoot = resolve(agentSpaceHome, "cache", "login-homes");
+      const loginRoot = resolve(rainverHome, "cache", "login-homes");
       return { root: "login_homes", id: pathId(path, loginRoot, "login home"), target: "/home/sandbox", access: "read_write" };
     }
   }
@@ -206,7 +206,7 @@ function typedEnvironment(env: Record<string, string>, exchange: boolean): Sandb
       default_opus_model: env.ANTHROPIC_DEFAULT_OPUS_MODEL, default_haiku_model: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
     }),
     proxy: compact({ http: env.HTTP_PROXY ?? env.http_proxy, https: env.HTTPS_PROXY ?? env.https_proxy, all: env.ALL_PROXY ?? env.all_proxy, no_proxy: env.NO_PROXY ?? env.no_proxy }),
-    tool_channel: env.AGENT_SPACE_MCP_URL && env.AGENT_SPACE_TOOL_TOKEN ? { url: env.AGENT_SPACE_MCP_URL, token: env.AGENT_SPACE_TOOL_TOKEN } : undefined,
+    tool_channel: env.RAINVER_MCP_URL && env.RAINVER_TOOL_TOKEN ? { url: env.RAINVER_MCP_URL, token: env.RAINVER_TOOL_TOKEN } : undefined,
     exchange,
   };
 }

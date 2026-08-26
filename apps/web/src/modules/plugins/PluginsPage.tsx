@@ -57,7 +57,7 @@ export default function PluginsPage() {
     setActions(prev => ({ ...prev, [id]: state }))
 
   const notifyShell = () =>
-    window.dispatchEvent(new CustomEvent('agent-space:plugin-state-changed'))
+    window.dispatchEvent(new CustomEvent('rainver:plugin-state-changed'))
 
   const handleInstall = async (pluginId: string) => {
     setAction(pluginId, 'loading')
@@ -99,7 +99,7 @@ export default function PluginsPage() {
     <div style={{ maxWidth: 720, margin: '32px auto', padding: '0 24px', fontFamily: 'inherit' }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Optional Modules</h1>
       <p style={{ color: '#666', marginBottom: 28, fontSize: 14 }}>
-        Official optional modules are developed by agent-space maintainers and can be
+        Official optional modules are developed by rainver maintainers and can be
         enabled or disabled per account. This is not a third-party plugin marketplace.
       </p>
 

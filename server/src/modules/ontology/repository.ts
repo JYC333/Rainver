@@ -473,7 +473,7 @@ export class PgOntologyRepository {
     }
     const versions = rows.rows.map((row) => numberValue(row.version) ?? 0);
     return {
-      format: "agent_space.object_schema.v1",
+      format: "rainver.object_schema.v1",
       exported_at: new Date().toISOString(),
       object_schema_version: versions.length > 0 ? Math.max(...versions) : 0,
       object_profiles: rows.rows.map((row) => objectProfileManifestOut(row, hintsByKind.get(row.id) ?? [])),
@@ -539,7 +539,7 @@ export class PgOntologyRepository {
   ): Promise<Record<string, unknown>> {
     const manifest = optionalObject(body.manifest);
     if (!manifest) throw new HttpError(422, "manifest is required");
-    if (optionalString(manifest.format) !== "agent_space.object_schema.v1") {
+    if (optionalString(manifest.format) !== "rainver.object_schema.v1") {
       throw new HttpError(422, "unsupported object_schema manifest format");
     }
     const rawKinds = Array.isArray(manifest.object_profiles) ? manifest.object_profiles : [];

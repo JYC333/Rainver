@@ -30,7 +30,7 @@ class FakeWriter:
 
 class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):
     def test_protocol_and_script_map_are_exactly_core_jobs(self) -> None:
-        expected = {"rebuild_agent_space", "restart_agent_space", "health_check"}
+        expected = {"rebuild_rainver", "restart_rainver", "health_check"}
         self.assertEqual(deployer.ALLOWED_JOB_TYPES, expected)
         self.assertEqual(set(deployer.JOB_SCRIPTS), expected)
 
@@ -58,7 +58,7 @@ class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(args=args):
                 response, run_script = await self.request({
                     "job_id": "job-2",
-                    "job_type": "rebuild_agent_space",
+                    "job_type": "rebuild_rainver",
                     "args": args,
                 })
                 self.assertEqual(response["status"], "failed")

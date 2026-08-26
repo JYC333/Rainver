@@ -59,8 +59,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png', 'icons/*.svg'],
       manifest: {
-        name: 'Agent Core',
-        short_name: 'AgentCore',
+        name: 'Rainver',
+        short_name: 'Rainver',
         description: 'Agent-first memory system',
         theme_color: '#0f1117',
         background_color: '#0f1117',

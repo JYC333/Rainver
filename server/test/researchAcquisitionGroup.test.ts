@@ -48,7 +48,7 @@ describe("researchAcquisitionPipelineDb", () => {
   beforeAll(async () => {
     if (!db.available) return;
     registerProjectResearchExecutionHandlers();
-    config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: "/tmp/agent-space-research-acquisition-pipeline-test" });
+    config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: "/tmp/rainver-research-acquisition-pipeline-test" });
   });
 
   beforeEach(async () => {

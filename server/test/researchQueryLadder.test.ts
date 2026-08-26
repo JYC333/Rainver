@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchSemanticQuery } from "@rainver/protocol";
 import { ResearchQueryLadderBuilder, type ResearchQueryLadderStep } from "../src/modules/research/queryPlanning/queryLadderBuilder.js";
 import { MAX_RESEARCH_QUERY_ATTEMPTS } from "../src/modules/research/queryPlanning/queryPolicy.js";
 

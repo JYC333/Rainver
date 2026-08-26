@@ -5,7 +5,7 @@ import type {
   RetrievalObjectType,
   RetrievalSearchMode,
   RetrievalSearchResult,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export type {
   CreateSafety,

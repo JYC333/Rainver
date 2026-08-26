@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 export interface ResearchArtifactRecord { id: string; artifact_type: string; content: string | null }

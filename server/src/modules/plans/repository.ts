@@ -15,7 +15,7 @@ import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, planNo
 import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerification.js";
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
+import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 
 export interface AgentPlanProposalInput {
   sourceTaskId: string;

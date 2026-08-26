@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunInputEnvelope } from "@agent-space/protocol";
+import type { RunInputEnvelope } from "@rainver/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
 import { contractRecord, createRunContractSnapshot } from "../src/modules/runs/contractSnapshot.js";

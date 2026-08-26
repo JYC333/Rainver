@@ -95,7 +95,7 @@ user session — the daemon has no session to present):
 - `DELETE /api/v1/hosts/me/workspaces/:folderId` — unregisters a Location
   (never touches the daemon's disk; the daemon owns that).
 - `POST /api/v1/hosts/me/runs/:runId/diff` / `.../outputs` — daemon uploads a
-  completed run's git diff and `AGENT_SPACE_OUTPUT_DIR` contents as read-only
+  completed run's git diff and `RAINVER_OUTPUT_DIR` contents as read-only
   artifacts (D7: never fed into code-patch proposal apply). Scoped by
   `runOwnedByHost` — a host can only upload for a Run bound to its own
   Location.
@@ -283,7 +283,7 @@ second set of generators on the daemon is what would silently drift — a catalo
 Codex never reads, an OpenCode provider block missing the `npm` field that
 makes it loadable at all — so the daemon stays a byte writer, consistent with
 its rule against becoming a vendor protocol translator. `files[].contents` may
-carry `{{AGENT_SPACE_RUN_PROFILE}}`, which the daemon replaces with the
+carry `{{RAINVER_RUN_PROFILE}}`, which the daemon replaces with the
 absolute profile path; Codex's config has to name its own catalog absolutely
 and only the executing machine knows where that is. Paths that escape the
 profile are refused — the daemon runs unsandboxed on a machine the user owns.
@@ -472,7 +472,7 @@ center work stream):
 
 - `GET /api/v1/hosts/threads?project_id=X` — every task thread across every
   remote workspace in a Project. Authenticated via `introspectIdentity`
-  (session + `X-Agent-Space-Id`, the standard space-scoped pattern every
+  (session + `X-Rainver-Space-Id`, the standard space-scoped pattern every
   other Project-owned read endpoint uses) rather than the bare
   `getCurrentUser` this module's other routes use, because a thread's
   visibility follows Project **read** access (`assertProjectReadable`), not
@@ -744,42 +744,42 @@ policy for a workspace the server itself provisions). The daemon runs the
 vendor CLI bare, auto-approving edits/commands in the workspace
 (trusted-host default — the user reviews the returned diff instead).
 
-## Host daemon (`packages/host-daemon`, binary `agent-space-host`)
+## Host daemon (`packages/host-daemon`, binary `rainver-host`)
 
 A deliberately thin bridge — no planner, no memory, no business logic (ADR
-0016 principle: "the daemon must not become a second Agent Space"). Config at
-`~/.agent-space-host/config.json` (override root via
-`AGENT_SPACE_HOST_CONFIG_DIR`), mode 0600, the **only** place a workspace's
+0016 principle: "the daemon must not become a second Rainver"). Config at
+`~/.rainver-host/config.json` (override root via
+`RAINVER_HOST_CONFIG_DIR`), mode 0600, the **only** place a workspace's
 real local path is ever written down.
 
-- `agent-space-host register --server <url> --code <pairing-code>` — exchanges
+- `rainver-host register --server <url> --code <pairing-code>` — exchanges
   the pairing code for a bearer token.
-- `agent-space-host workspace add <path> --project <project_id> [--name <name>]`
+- `rainver-host workspace add <path> --project <project_id> [--name <name>]`
   — registers a pre-existing local directory (no mkdir/clone/scan, unlike the
   server-host `create` flow). Requires an explicit `project_id` in phase 1 —
   no cross-space "my projects" picker exists yet.
-- `agent-space-host workspace list` / `workspace remove <id>`.
-- `agent-space-host run` — service mode: opens the WS connection, sends
+- `rainver-host workspace list` / `workspace remove <id>`.
+- `rainver-host run` — service mode: opens the WS connection, sends
   `hello`, including workspace status reports, then `heartbeat` every 15s;
   reconnects with exponential backoff
   (1s → 30s cap) on any disconnect. Handles `launch`/`terminate` frames
   (`src/execution.ts`): spawns the rendered argv in the local workspace path
   (resolved from the daemon's own `config.workspaces` map by
   `workspace_location_id` — the server never sees the real path), injects
-  `AGENT_SPACE_OUTPUT_DIR` as a per-run directory outside the workspace
+  `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace
   (phase-1 substitute for Run Exchange), streams stdout as `output` frames,
   and on exit uploads the workspace's git diff (`src/gitDiff.ts` — unified
   `git diff HEAD` with untracked files staged via intent-to-add so new file
   content shows up, reset immediately after so nothing is left staged) and
   the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
   binary deliverable is a known phase-1 gap) before sending `complete`.
-  **`AGENT_SPACE_OUTPUT_DIR` is no longer nudged via the prompt** (real-usage
+  **`RAINVER_OUTPUT_DIR` is no longer nudged via the prompt** (real-usage
   finding, 2026-08-22): every remote dispatch is workspace-bound, and the
   intent-to-add diff capture above already gives a brand-new file's full
   content, so `remoteHostCliAdapter.ts` stopped instructing the agent to
   write deliverables there — it was misdirecting ordinary workspace writes.
   The env var and upload path stay wired (dormant unless something writes
-  there unprompted); a real, structured "information for agent-space itself"
+  there unprompted); a real, structured "information for Rainver itself"
   channel — distinct from workspace file changes — is a deferred design
   question, not this fix (`tasks/deferred-register.md`).
   Termination uses `process.kill(-pid, signal)` against the whole process

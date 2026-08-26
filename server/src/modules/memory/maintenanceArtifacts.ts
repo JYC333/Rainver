@@ -1,4 +1,4 @@
-import type { MemoryMaintenanceReport } from "@agent-space/protocol";
+import type { MemoryMaintenanceReport } from "@rainver/protocol";
 import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import {

@@ -2,7 +2,7 @@
 
 _Last updated: 2026-07-03. See also ADR 0006._
 
-This document defines the official optional module framework for agent-space: a product-level control plane that lets maintainers ship optional features that can be enabled or disabled per space or per user, while keeping core `ServerModule` registration stable.
+This document defines the official optional module framework for rainver: a product-level control plane that lets maintainers ship optional features that can be enabled or disabled per space or per user, while keeping core `ServerModule` registration stable.
 
 ---
 
@@ -32,7 +32,7 @@ returns.
 A **product/module control-plane object**. Represented by `OfficialPluginDescriptor` (in `packages/protocol/src/plugins.ts`) and backed by `official_plugin_enablements` in the database.
 
 An Official Optional Module:
-- is developed by agent-space maintainers and bundled in the repository
+- is developed by Rainver maintainers and bundled in the repository
 - can be disabled by default and enabled per space or per user
 - may be backed by PluginHost routes, frontend modules, settings, jobs, schedulers, proposal types, and context providers
 - gates actual behavior (route responses, job handlers, proposal appliers, context contribution, scheduled tasks) via plugin guard checks at runtime, not by per-scope route mounting
@@ -81,7 +81,7 @@ package without introducing remote frontend bundle loading.
 ### Official optional modules install before they enable
 In the current implementation there is no remote package download. Built-in official plugin source is kept in this monorepo under `plugins/official/*`, compiled into package artifacts under `server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated by `PluginHost` at startup. The package lifecycle is still explicit: a plugin is catalog-visible first, then `POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and writes `plugin_installs`/`plugin_migrations`, and only then can `POST /api/v1/plugins/:id/enable` enable it for a user or space.
 
-This is a **Level 2** boundary: plugin source lives in the monorepo under `plugins/official/*`, but the package format (`plugin.json` manifest, compiled artifacts, installer-managed migrations) matches the shape required for downloaded official plugins. Install state and plugin schema are managed independently of the core baseline migration. The remaining Level 2 gap is remote package download and verification — the startup-load activation contract (`AgentSpacePlugin.activate(ctx)`) is already in place.
+This is a **Level 2** boundary: plugin source lives in the monorepo under `plugins/official/*`, but the package format (`plugin.json` manifest, compiled artifacts, installer-managed migrations) matches the shape required for downloaded official plugins. Install state and plugin schema are managed independently of the core baseline migration. The remaining Level 2 gap is remote package download and verification — the startup-load activation contract (`RainverPlugin.activate(ctx)`) is already in place.
 
 ### Dynamic package download/loading is the remaining Level 2 gap
 Remote download, manifest verification, and compatibility checking for official plugin packages are the next planned milestone. The startup-load contract and installer are already implemented; plugging in a remote source is the remaining step. This is distinct from third-party plugins, which require stricter sandboxing and are further out.

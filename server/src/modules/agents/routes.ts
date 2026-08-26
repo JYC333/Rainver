@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   MessageOut,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -717,7 +717,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       await Promise.allSettled(
         accepted.retiredRuntimeStateKeys.map((stateKey) =>
           removeConversationRuntimeState({
-            agent_space_home: context.config.agentSpaceHome,
+            rainver_home: context.config.rainverHome,
             sandbox_root: context.config.sandboxRoot,
             state_key: stateKey,
           })

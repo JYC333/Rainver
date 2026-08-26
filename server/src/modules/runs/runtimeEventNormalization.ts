@@ -1,7 +1,7 @@
 import type {
   CanonicalModelEvent,
   RuntimeSemanticEvent,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { redactEvidenceText } from "./evidenceRedaction.js";
 
 export function normalizeManagedModelEvents(

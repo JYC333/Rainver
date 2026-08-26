@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a separate credential archive containing only AGENT_SPACE_HOME/secrets.
+# Create a separate credential archive containing only RAINVER_HOME/secrets.
 # This archive is intentionally never created by BackupService or backup.sh.
 # Stop app writers first so CLI login state and the master key are copied consistently.
 #
@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 OUTPUT_DIR=""
 FORCE_RUNNING=false
 
@@ -57,7 +57,7 @@ install -d -m 700 "$OUTPUT_DIR"
 
 timestamp="$(date -u +%Y%m%d-%H%M%S)"
 archive="$OUTPUT_DIR/credentials-$timestamp.tar.gz"
-staging="$(mktemp -d -t aspace-credential-backup-XXXXXX)"
+staging="$(mktemp -d -t rainver-credential-backup-XXXXXX)"
 archive_tmp="$(mktemp "$OUTPUT_DIR/.credentials-$timestamp-XXXXXX.tmp")"
 chmod 600 "$archive_tmp"
 verify_staging=""
@@ -71,7 +71,7 @@ from datetime import datetime, timezone
 
 with open(sys.argv[1], "w", encoding="utf-8") as fh:
     json.dump({
-        "backup_format": "agent-space-credentials.v1",
+        "backup_format": "rainver-credentials.v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_root": sys.argv[2],
         "included_paths": ["secrets/"],
@@ -81,7 +81,7 @@ PY
 
 tar -czf "$archive_tmp" -C "$staging" .
 tar -tzf "$archive_tmp" >/dev/null
-verify_staging="$(mktemp -d -t aspace-credential-backup-verify-XXXXXX)"
+verify_staging="$(mktemp -d -t rainver-credential-backup-verify-XXXXXX)"
 python3 "$SCRIPT_DIR/safe_extract.py" "$archive_tmp" "$verify_staging" \
   secrets credential_backup_manifest.json
 rm -rf "$verify_staging"

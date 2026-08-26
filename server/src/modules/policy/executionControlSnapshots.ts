@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
 import type {
   ExecutionControlSnapshot,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { RunRecord } from "../runs/repository.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";

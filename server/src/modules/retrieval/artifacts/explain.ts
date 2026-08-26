@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { RetrievalExplainResponse } from "@agent-space/protocol";
+import type { RetrievalExplainResponse } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 

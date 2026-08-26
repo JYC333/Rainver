@@ -1,4 +1,4 @@
-import type { ClaimContradictionReport } from "@agent-space/protocol";
+import type { ClaimContradictionReport } from "@rainver/protocol";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import type { Queryable } from "../routeUtils/common.js";
 

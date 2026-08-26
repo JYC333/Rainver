@@ -1,4 +1,4 @@
-import type { SourceRecipeDefinition } from "@agent-space/protocol";
+import type { SourceRecipeDefinition } from "@rainver/protocol";
 
 /**
  * Deterministic Source planning rules for the conversation-first Create

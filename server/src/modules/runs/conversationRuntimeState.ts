@@ -61,11 +61,11 @@ async function ensureRealDirectoryChain(
 }
 
 async function stateRoots(input: {
-  agent_space_home: string;
+  rainver_home: string;
   sandbox_root: string;
 }): Promise<{ homes: string; sandboxes: string }> {
   const [homes, sandboxes] = await Promise.all([
-    ensureRealDirectoryChain(input.agent_space_home, [
+    ensureRealDirectoryChain(input.rainver_home, [
       "cache",
       "conversation-runtime-homes",
     ]),
@@ -75,7 +75,7 @@ async function stateRoots(input: {
 }
 
 export async function prepareConversationRuntimeState(input: {
-  agent_space_home: string;
+  rainver_home: string;
   sandbox_root: string;
   state_key: string;
   resume_requested: boolean;
@@ -108,7 +108,7 @@ export async function prepareConversationRuntimeState(input: {
 }
 
 export async function removeConversationRuntimeState(input: {
-  agent_space_home: string;
+  rainver_home: string;
   sandbox_root: string;
   state_key: string;
 }): Promise<void> {
@@ -121,7 +121,7 @@ export async function removeConversationRuntimeState(input: {
 }
 
 export async function sweepConversationRuntimeState(input: {
-  agent_space_home: string;
+  rainver_home: string;
   sandbox_root: string;
   protected_state_keys: ReadonlySet<string>;
   retention_ms?: number;

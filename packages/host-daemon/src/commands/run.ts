@@ -65,7 +65,7 @@ function isStringMap(value: unknown): boolean {
 }
 
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<never> {
-  const log = options.log ?? ((line: string) => console.log(`[agent-space-host] ${line}`));
+  const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
   const config = await requireConfig();
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
   // A run outlives a single WebSocket connection (§5 — "an interrupted

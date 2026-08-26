@@ -277,7 +277,7 @@ describe("runtime skill renderers", () => {
     ]);
     expect(rendered[0]!.files[0]!.content).toContain("Treat this file as generated adapter content");
     expect(rendered[1]!.files.map((file) => file.path)).toContain(
-      ".agent-space/generated-skills/codex/research-brief-synthesize/agents/openai.yaml",
+      ".rainver/generated-skills/codex/research-brief-synthesize/agents/openai.yaml",
     );
     expect(rendered[2]!.prompt_block).toContain(`Capability ID: ${capability.id}`);
     expect(renderAllRuntimeSkills({ capability, profile: { z: 1, a: 2 } })).toEqual(rendered);

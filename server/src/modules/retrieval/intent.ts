@@ -4,7 +4,7 @@ import { DEFAULT_RANKING_SIGNALS, type RankingSignalConfig } from "./ranking.js"
 /**
  * Deterministic, query-only intent classification (W3 of the context-layer
  * roadmap). the context-and-retrieval design routes a query into entity / temporal / event / general and
- * applies per-type ranking knobs; agent-space mirrors that with a rule-based
+ * applies per-type ranking knobs; rainver mirrors that with a rule-based
  * classifier (no LLM) whose only input is the query STRING — so it has no access
  * surface and is fully testable.
  *

@@ -5,7 +5,7 @@ import type {
   ResearchProviderKey,
   ResearchQueryDecision,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../src/config.js";
 import { AdaptiveQueryOrchestrator, errorClass } from "../src/modules/research/queryPlanning/adaptiveQueryOrchestrator.js";
 import type {

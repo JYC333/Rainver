@@ -3,7 +3,7 @@ import type {
   OfficialPluginEffectiveState,
   OfficialPluginListItem,
   OfficialPluginEffectiveMap,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { getOfficialPlugin, listOfficialPlugins } from "./registry.js";
 import {

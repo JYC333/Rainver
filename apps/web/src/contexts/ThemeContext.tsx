@@ -10,7 +10,7 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
-const STORAGE_KEY = 'agent-space:theme'
+const STORAGE_KEY = 'rainver:theme'
 
 function applyTheme(t: Theme) {
   if (t === 'light') {

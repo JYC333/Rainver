@@ -100,7 +100,7 @@ Adds a product-level control plane **above** (not replacing) the `ServerModule`/
 #### What is added
 
 **Shared types** (`packages/protocol/src/plugins.ts`)
-`OfficialPluginDescriptor`, `OfficialPluginEffectiveState`, `OfficialPluginListItem`, `AgentSpacePlugin`, `PluginHostContext`, enable/disable/settings-patch request types.
+`OfficialPluginDescriptor`, `OfficialPluginEffectiveState`, `OfficialPluginListItem`, `RainverPlugin`, `PluginHostContext`, enable/disable/settings-patch request types.
 
 **Database tables** (`server/migrations/0001_baseline.sql`)
 - `official_plugin_enablements` — one row per (plugin_id, space_id) for space-scoped modules or (plugin_id, user_id) for user-scoped modules; stores `enabled`, `visible`, `settings_json`
@@ -117,7 +117,7 @@ Adds a product-level control plane **above** (not replacing) the `ServerModule`/
 
 **PluginHost and built-in plugin runtime** (`server/src/modules/plugins/host/`, `plugins/official/`)
 - `PluginHost` activates built-in official plugins synchronously after `SERVER_MODULES` and before the API catch-all
-- Each plugin implements `AgentSpacePlugin.activate(ctx: PluginHostContext)` — synchronously registers routes, job handlers, scheduler tasks, and proposal appliers, then returns `{ activated: true }`
+- Each plugin implements `RainverPlugin.activate(ctx: PluginHostContext)` — synchronously registers routes, job handlers, scheduler tasks, and proposal appliers, then returns `{ activated: true }`
 - Plugin source lives under `plugins/official/<plugin_id>/`; compiled into `server/dist/official-plugins/<plugin_id>/` and loaded by `packageLoader.ts` via the `plugin.json` manifest
 - Host wraps job handlers and proposal appliers with enablement gating; scheduler tasks fan out to enabled scopes internally; routes use `ctx.http.pluginGuard()`
 
@@ -205,7 +205,7 @@ Rejected. Capabilities are agent skill descriptors, not product feature packages
 Rejected. Dynamic route registration based on DB state at startup introduces a startup DB dependency in the gateway layer and makes the module graph hard to reason about. Plugin guards at the route handler level are safer and simpler; always-mounted plugin routes are the explicit design.
 
 **Alt C: Full plugin package system with download/install at Level 1**
-Deferred. The package format (`plugin.json`, installer-managed migrations) and startup-load contract (`AgentSpacePlugin.activate(ctx)`) are now implemented. Remote download/verification is the remaining Level 2 gap.
+Deferred. The package format (`plugin.json`, installer-managed migrations) and startup-load contract (`RainverPlugin.activate(ctx)`) are now implemented. Remote download/verification is the remaining Level 2 gap.
 
 ---
 

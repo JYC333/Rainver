@@ -1,5 +1,5 @@
-import type { WorkflowDefinition, WorkflowNode, WorkflowNodeInputBinding } from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+import type { WorkflowDefinition, WorkflowNode, WorkflowNodeInputBinding } from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 import { sha256Json } from "../evolution/hash.js";
 import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot.js";
 

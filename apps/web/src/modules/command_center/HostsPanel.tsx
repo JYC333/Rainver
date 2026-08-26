@@ -102,7 +102,7 @@ export default function HostsPanel() {
         <div>
           <h2 className="text-sm font-semibold">Register a new machine</h2>
           <p className="text-xs text-muted-foreground">
-            Generate a pairing code, then run <code className="font-mono">agent-space-host register --server &lt;url&gt; --code &lt;code&gt;</code> on that machine.
+            Generate a pairing code, then run <code className="font-mono">rainver-host register --server &lt;url&gt; --code &lt;code&gt;</code> on that machine.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">

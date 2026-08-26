@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 async function tempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "agent-space-binding-"));
+  const dir = await mkdtemp(join(tmpdir(), "rainver-binding-"));
   dirs.push(dir);
   return dir;
 }
@@ -79,7 +79,7 @@ describe("materializing a provider binding", () => {
         profile_env: { HOME: ".", CODEX_HOME: ".codex" },
         files: [
           { relative_path: ".codex/config.toml", contents: 'model = "MiniMax-M2"\n' },
-          { relative_path: ".codex/model-catalogs/agent-space-provider.json", contents: '{"models":[]}' },
+          { relative_path: ".codex/model-catalogs/rainver-provider.json", contents: '{"models":[]}' },
         ],
       }),
       root,
@@ -90,7 +90,7 @@ describe("materializing a provider binding", () => {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("lease-token");
     await expect(readFile(join(root, ".codex", "config.toml"), "utf8")).resolves.toContain("MiniMax-M2");
     // Nested paths are created, not assumed.
-    await expect(readFile(join(root, ".codex", "model-catalogs", "agent-space-provider.json"), "utf8")).resolves.toBe('{"models":[]}');
+    await expect(readFile(join(root, ".codex", "model-catalogs", "rainver-provider.json"), "utf8")).resolves.toBe('{"models":[]}');
   });
 
   it("escapes a substituted profile path for the file it lands in", async () => {
@@ -100,8 +100,8 @@ describe("materializing a provider binding", () => {
     await materializeProviderBinding(
       frame({
         files: [
-          { relative_path: "config.toml", contents: 'catalog = "{{AGENT_SPACE_RUN_PROFILE}}/x.json"', escape: "toml_basic_string" },
-          { relative_path: "plain.txt", contents: "{{AGENT_SPACE_RUN_PROFILE}}/x.json" },
+          { relative_path: "config.toml", contents: 'catalog = "{{RAINVER_RUN_PROFILE}}/x.json"', escape: "toml_basic_string" },
+          { relative_path: "plain.txt", contents: "{{RAINVER_RUN_PROFILE}}/x.json" },
         ],
       }),
       root,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ConversationBackendBinding,
   ConversationBackendOption,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
   isProviderEligibleForUser,

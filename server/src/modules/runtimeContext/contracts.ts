@@ -6,7 +6,7 @@ import type {
   RuntimeContextEventIngress,
   RuntimeContextEnvelope,
   TurnContextRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export interface RuntimeContextPreviewInput {
   identity: {

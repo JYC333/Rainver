@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { AutomationTargetType } from "@agent-space/protocol";
+import type { AutomationTargetType } from "@rainver/protocol";
 import {
   automationTargetHandlerRegistry,
   requireAutomationTargetHandler,

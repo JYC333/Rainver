@@ -4,7 +4,7 @@ import type {
   MemoryMaintenanceJobCreateRequest,
   MemoryMaintenanceJobRunResponse,
   MemoryMaintenanceScanRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "./repository.js";
 import { PgMemoryReadRepository } from "./repository.js";
 import { MemoryMaintenanceService } from "./maintenance.js";

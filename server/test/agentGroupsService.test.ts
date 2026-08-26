@@ -389,7 +389,7 @@ describe("AgentGroupRunService", () => {
   it("creates rooms without creating an initial run, job, or message", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -414,7 +414,7 @@ describe("AgentGroupRunService", () => {
   it("snapshots member capabilities when creating a room", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -442,7 +442,7 @@ describe("AgentGroupRunService", () => {
   it("returns an empty trace for rooms before the first message", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -463,7 +463,7 @@ describe("AgentGroupRunService", () => {
   it("updates room title and goal after creation", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -486,7 +486,7 @@ describe("AgentGroupRunService", () => {
   it("creates the root run from the first user room message", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -531,7 +531,7 @@ describe("AgentGroupRunService", () => {
   it("does not set a run instruction when the room has no goal", async () => {
     const db = new AgentGroupServiceDb(null, "");
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -552,7 +552,7 @@ describe("AgentGroupRunService", () => {
   it("creates and enqueues a default manager run for user room messages", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -594,7 +594,7 @@ describe("AgentGroupRunService", () => {
   it("routes a user room message to an explicit recipient agent", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -639,7 +639,7 @@ describe("AgentGroupRunService", () => {
   it("routes one user room message to multiple explicit recipient agents", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -683,7 +683,7 @@ describe("AgentGroupRunService", () => {
   it("routes segmented user instructions with separate prompts per recipient segment", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -717,7 +717,7 @@ describe("AgentGroupRunService", () => {
   it("routes a trailing manager segment as a normal direct recipient run", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -781,7 +781,7 @@ describe("AgentGroupRunService", () => {
   it("routes agent coordination mode only to the manager", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 
@@ -814,7 +814,7 @@ describe("AgentGroupRunService", () => {
   it("rejects explicit recipients outside the room", async () => {
     const db = new AgentGroupServiceDb();
     const service = new AgentGroupRunService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       new FakePool(db) as never,
     );
 

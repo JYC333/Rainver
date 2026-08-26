@@ -1,4 +1,4 @@
-import type { RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { RetrievalEvalReportRequest } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 

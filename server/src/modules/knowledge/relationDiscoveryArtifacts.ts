@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RelationDiscoveryReport } from "@agent-space/protocol";
+import type { RelationDiscoveryReport } from "@rainver/protocol";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import {

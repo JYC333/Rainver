@@ -158,10 +158,10 @@ function fakeStore(): ProviderCommandStore {
 }
 
 async function authorityConfig() {
-  tempHome = await mkdtemp(join(tmpdir(), "aspace-server-"));
+  tempHome = await mkdtemp(join(tmpdir(), "rainver-server-"));
   return loadConfig({
     SERVER_INTERNAL_TOKEN: "internal-token",
-    AGENT_SPACE_HOME: tempHome,
+    RAINVER_HOME: tempHome,
   });
 }
 
@@ -328,7 +328,7 @@ describe("providers and credentials server authority", () => {
       url: "/internal/providers-credentials/credentials/runtime/resolve",
       headers: {
         "content-type": "application/json",
-        "x-agent-space-internal-token": "internal-token",
+        "x-rainver-internal-token": "internal-token",
       },
       payload: JSON.stringify({
         kind: "model_provider_api_key",
@@ -348,7 +348,7 @@ describe("providers and credentials server authority", () => {
       url: "/internal/providers-credentials/credentials/runtime/resolve",
       headers: {
         "content-type": "application/json",
-        "x-agent-space-internal-token": "internal-token",
+        "x-rainver-internal-token": "internal-token",
       },
       payload: JSON.stringify({
         kind: "credential_api_key",

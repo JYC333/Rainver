@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ContextWindowPlan } from "@agent-space/protocol";
+import type { ContextWindowPlan } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 
 export class ContextWindowReconciliationRepository {

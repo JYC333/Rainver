@@ -5,7 +5,7 @@ import {
   PgSnapshotStore,
   type SnapshotFile,
 } from "./snapshotStore.js";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import type { RuntimeHostExecuteRequest } from "@rainver/protocol";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 interface DeliveryAuthorizationRow {

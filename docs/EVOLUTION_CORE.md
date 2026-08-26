@@ -2,7 +2,7 @@
 
 ## Goal
 
-Agent-space keeps improvement loops inside the product boundary. The evolution
+Rainver keeps improvement loops inside the product boundary. The evolution
 core records improvement targets, typed trigger signals, selected strategies,
 reviewable plan artifacts, selector decisions, and validated experiences without
 delegating the core lifecycle to an external optimizer.
@@ -71,7 +71,7 @@ policy, files, or runtime skill bindings, and route durable changes through an
 existing `ProposalApplierRegistry` type plus review.
 
 The user prompt carries the target, selected `EvolutionStrategy`, selector
-decision, evidence signals, and an `agent-space.evolution_plan_review.v1`
+decision, evidence signals, and an `rainver.evolution_plan_review.v1`
 output schema. It asks for a JSON-only review plan with risk assessment,
 evidence summary, proposed steps, validation checks, proposal boundary, and
 candidate experience lessons. The prompt includes the allowed

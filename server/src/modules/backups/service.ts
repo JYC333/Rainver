@@ -63,7 +63,7 @@ export class BackupService {
       );
     }
     const backupRoot = resolve(this.config.backupRoot);
-    const dataRoot = resolve(this.config.agentSpaceHome);
+    const dataRoot = resolve(this.config.rainverHome);
     await prepareBackupRoot(backupRoot);
 
     const releaseLock = await acquireLock(join(backupRoot, ".backup.lock"));
@@ -76,13 +76,13 @@ export class BackupService {
         counter += 1;
       }
 
-      const staging = await mkdtemp(join(tmpdir(), "aspace-backup-staging-"));
+      const staging = await mkdtemp(join(tmpdir(), "rainver-backup-staging-"));
       const temporaryArchivePath = `${archivePath}.tmp-${process.pid}`;
       try {
         const { included, excluded, warnings } = await this.stage(dataRoot, staging);
         const versionMetadata = await this.versionMetadata();
         const manifest: BackupManifest = {
-          backup_format: "agent-space-backup.v1",
+          backup_format: "rainver-backup.v1",
           kind,
           created_at: new Date().toISOString(),
           source_root: dataRoot,
@@ -173,10 +173,10 @@ export class BackupService {
 
     const dbDir = join(staging, "db");
     await mkdir(dbDir, { recursive: true });
-    const dumpPath = join(dbDir, "agent_space.dump");
+    const dumpPath = join(dbDir, "rainver.dump");
     try {
       await pgDump(this.config.backupDatabaseUrl!, dumpPath);
-      included.push("db/agent_space.dump (pg_dump_custom)");
+      included.push("db/rainver.dump (pg_dump_custom)");
     } catch (error) {
       throw new BackupError(
         `pg_dump failed; backup aborted: ${error instanceof Error ? error.message : String(error)}`,

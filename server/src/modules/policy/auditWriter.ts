@@ -10,7 +10,7 @@
 
 import { getDbPool } from "../../db/pool.js";
 
-import type { PolicyAuditEnvelope } from "@agent-space/protocol";
+import type { PolicyAuditEnvelope } from "@rainver/protocol";
 
 export class PolicyAuditPersistError extends Error {
   readonly action: string;

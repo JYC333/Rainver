@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   ExecutionControlSnapshot,
   InvocationDelivery,
   RuntimeContextEnvelope,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { contextItemText } from "./itemNormalizer.js";
 
 export const MANAGED_RENDERER_VERSION = "managed-semantic.v1";

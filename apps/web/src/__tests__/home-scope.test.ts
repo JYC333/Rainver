@@ -18,7 +18,7 @@ describe('Home aggregate is not filtered by the active space', () => {
     expect(url).toContain('/me/summary')
     expect(url).not.toContain('space_id')
     expect(url).not.toContain('user_id')
-    expect((init.headers as Record<string, string>)['X-Agent-Space-Id']).toBeUndefined()
+    expect((init.headers as Record<string, string>)['X-Rainver-Space-Id']).toBeUndefined()
   })
 
   it('homeApi.summary (Space Today) sends explicit space context', async () => {
@@ -27,6 +27,6 @@ describe('Home aggregate is not filtered by the active space', () => {
     const [url, init] = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]
     expect(url).toContain('/home/summary')
     expect(url).not.toContain('space_id')
-    expect((init.headers as Record<string, string>)['X-Agent-Space-Id']).toBe('space-team')
+    expect((init.headers as Record<string, string>)['X-Rainver-Space-Id']).toBe('space-team')
   })
 })

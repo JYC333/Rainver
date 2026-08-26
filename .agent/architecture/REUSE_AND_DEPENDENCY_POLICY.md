@@ -12,7 +12,7 @@ that comes before all of them and does not restate their contents.
 
 ## The Principle
 
-> The code agent-space maintains long-term should mostly be what a generic
+> The code Rainver maintains long-term should mostly be what a generic
 > implementation cannot replace: domain semantics, authority, governance,
 > policy, data model, and product behaviour.
 >
@@ -98,7 +98,7 @@ grows technical debt is not reuse.
 
 ---
 
-## 3. What Agent-Space Owns
+## 3. What Rainver Owns
 
 **Own it. Do not outsource, and do not let a dependency take it over:**
 
@@ -151,7 +151,7 @@ Evaluate at least:
 - ecosystem adoption
 - dependency and transitive-dependency cost
 - operational and bundle/runtime cost
-- whether it fits agent-space's authority boundary (§3)
+- whether it fits Rainver's authority boundary (§3)
 - **whether adopting it actually deletes meaningful maintenance burden**
 
 GitHub stars are not evidence. A popular unmaintained package is worse than a
@@ -215,7 +215,7 @@ what is installed.
 
 | Concern | Canonical mechanism | State | Where to look |
 |---|---|---|---|
-| Vendor coding-CLI conversation protocol | **Agent Client Protocol (ACP)** via the official `@agentclientprotocol/sdk` (server dependency, confined to `cliConversationProtocol.ts`); the server is the ACP client, the daemon relays bytes and parses nothing | **Current** for all three implemented CLI runtimes (claude, codex, opencode — all `protocol: "acp"`). Agent Space owns JSON-RPC framing (envelope, request ids) and the request/response lifecycle (`initialize`/`session/new`/`session/resume`/`session/set_config_option`/`session/prompt`/`session/update`) as a hand-rolled phase dispatcher — by design, not gap: no SDK hook reproduces its tested start()-independent, phase-named anomaly handling (D6, twice-corrected during the retired execution-topology plan's P0 — git history). The SDK's contribution is the ACP schema/method vocabulary itself: wire shapes are checked against SDK-exported types (e.g. `PermissionOption`) rather than trusted by convention; it is not doing runtime schema validation and its higher-level client API (`client()`, `connectWith()`, `ClientContext`, `ActiveSession`) is unused. Agent Space also keeps canonical event normalization, permission decision (`runPermissionPolicy.ts`), Run/thread ownership, and usage/audit. `gemini_cli` is `implementation_status: "planned"` and speaks no protocol yet. | `server/src/modules/runs/cliConversationProtocol.ts`, `server/src/modules/runs/runPermissionPolicy.ts`, `server/src/modules/runtimeAdapters/specs.ts` |
+| Vendor coding-CLI conversation protocol | **Agent Client Protocol (ACP)** via the official `@agentclientprotocol/sdk` (server dependency, confined to `cliConversationProtocol.ts`); the server is the ACP client, the daemon relays bytes and parses nothing | **Current** for all three implemented CLI runtimes (claude, codex, opencode — all `protocol: "acp"`). Rainver owns JSON-RPC framing (envelope, request ids) and the request/response lifecycle (`initialize`/`session/new`/`session/resume`/`session/set_config_option`/`session/prompt`/`session/update`) as a hand-rolled phase dispatcher — by design, not gap: no SDK hook reproduces its tested start()-independent, phase-named anomaly handling (D6, twice-corrected during the retired execution-topology plan's P0 — git history). The SDK's contribution is the ACP schema/method vocabulary itself: wire shapes are checked against SDK-exported types (e.g. `PermissionOption`) rather than trusted by convention; it is not doing runtime schema validation and its higher-level client API (`client()`, `connectWith()`, `ClientContext`, `ActiveSession`) is unused. Rainver also keeps canonical event normalization, permission decision (`runPermissionPolicy.ts`), Run/thread ownership, and usage/audit. `gemini_cli` is `implementation_status: "planned"` and speaks no protocol yet. | `server/src/modules/runs/cliConversationProtocol.ts`, `server/src/modules/runs/runPermissionPolicy.ts`, `server/src/modules/runtimeAdapters/specs.ts` |
 | ACP adapters for vendors without native ACP | pinned npm packages spawned as executables by the host daemon | Current; exactly two (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`). If a vendor ships native ACP, delete the dependency. **Do not write a protocol adapter.** | `packages/host-daemon/package.json` |
 | Host daemon ↔ control plane transport | native global `WebSocket` (Node 24) + duplex stdin frames | Current; the daemon has no runtime dependency other than the two ACP adapters — keep it that way. | `packages/host-daemon/src/commands/run.ts`, `packages/host-daemon/src/execution.ts` |
 
@@ -338,7 +338,7 @@ that the next agent can see the decision was made, not that a document exists.
 
 Building it ourselves is correct when any of these hold:
 
-- It is agent-space domain semantics, authority, or governance (§3).
+- It is Rainver domain semantics, authority, or governance (§3).
 - A third-party solution would take over authority we must keep — policy,
   approval, credential handling, Space isolation, provenance.
 - The license is incompatible.

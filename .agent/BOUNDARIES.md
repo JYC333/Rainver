@@ -227,7 +227,7 @@ unsupported runtime feature may exist only in the private execution sandbox;
 real Project Folder files such as `CLAUDE.md` and `AGENTS.md` are never runtime
 context outputs or sources of truth.
 
-**B15** — Formal agent runs (automated, tracked, sandbox-enforced) must go through agent-space managed mode. IDE plugin usage is assist/manual mode — it is not tracked the same way.
+**B15** — Formal agent runs (automated, tracked, sandbox-enforced) must go through Rainver managed mode. IDE plugin usage is assist/manual mode — it is not tracked the same way.
 
 **B16** — Windows desktop is not a full runtime. The agent loop runs in Linux/WSL/server. A desktop app, if built later, is only a launcher/control panel. See [0005](decisions/0005-desktop-runtime.md).
 
@@ -253,7 +253,7 @@ context outputs or sources of truth.
 
 **B21A** — Open Skill imports are untrusted external packages whose approved,
 immutable snapshot remains the source of truth for that package's procedural
-content. Agent-space may fetch, inventory, hash, risk-scan, review, bind, pin,
+content. Rainver may fetch, inventory, hash, risk-scan, review, bind, pin,
 and deliver package files, but it must not canonically re-represent their
 instructions, execute scripts, install dependencies, load server/plugin code,
 write active memory, or auto-enable a capability. Vendor declarations of tools,
@@ -262,7 +262,7 @@ callable or execution authority.
 
 **B21B** — Runtime skill files for Claude Code, Codex, `model_api`, and future
 runtimes are generated adapter artifacts, not a second content authority.
-Agent-space owns package provenance and snapshot identity, trust and policy,
+Rainver owns package provenance and snapshot identity, trust and policy,
 scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
 Context Delivery authorization, and audit. The current normalized conversion,
 CapabilityDefinition, profile, binding, and rendering paths are transitional
@@ -402,7 +402,7 @@ that makes it reachable remotely.
 
 **B-R2** — `Run.mode` includes `live` (real execution, persists changes) and `dry_run` (preview, no persistent changes, artifacts not saved).
 
-**B-R3** — Artifact export is explicit: every artifact has `path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact paths point to persistent storage (`~/.aspace/artifacts/`), not sandbox working directories.
+**B-R3** — Artifact export is explicit: every artifact has `path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact paths point to persistent storage (`~/.rainver-data/artifacts/`), not sandbox working directories.
 
 **B-R4** — `Proposal` has explicit temporal fields: `created_at`, `decided_at`, `deadline` (soft, optional), and computed `expired` (true when deadline passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
 
@@ -440,9 +440,9 @@ execution-engine data rather than a capability grouping.
 
 ## Runtime Adapter Boundaries
 
-**B38** — The agent-space core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals, assistant chat) must work without any coding-agent runtime installed.
+**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals, assistant chat) must work without any coding-agent runtime installed.
 
-**B39** — No vendor CLI or external runtime is the source of truth for memory, policy, permissions, or audit records. These always live in the agent-space database regardless of which runtime adapter is active.
+**B39** — No vendor CLI or external runtime is the source of truth for memory, policy, permissions, or audit records. These always live in the Rainver database regardless of which runtime adapter is active.
 
 **B40** — An enterprise or commercial deployment must be able to disable any runtime adapter (for example `claude_code`) without breaking the rest of the system. Adapter availability is checked at run time via runtime-generic status/detection; unavailability must be surfaced as a clear error, not a silent fallback to unsandboxed execution.
 
@@ -450,7 +450,7 @@ execution-engine data rather than a capability grouping.
 
 ## CLI Credential Boundaries
 
-**B45** — CLI credential profiles are owned by agent-space. Sandboxes never receive the full server container HOME or the full `instance/secrets/` directory.
+**B45** — CLI credential profiles are owned by rainver. Sandboxes never receive the full server container HOME or the full `instance/secrets/` directory.
 
 **B46** — Every CLI credential grant or denial is audited in `cli_credential_events`. Manual and automation CLI runs require an explicit CredentialBroker profile. Runs with no profile configured fail before adapter invocation and record `credential_source="none"` with `fallback_reason="no_profile_configured"`.
 
@@ -501,13 +501,13 @@ completion pair.
 
 **B41** — The main app container does not directly restart or rebuild itself. The current product deployment routes are fail-closed (`POST /api/v1/deployments/jobs` returns 501), and no production server service submits deployer jobs. The only current deployment triggers are explicit operator execution of the allowlisted scripts or an operator-controlled client inside the privileged deployer container.
 
-**B42** — The deployer Unix socket is never exposed on TCP and remains private to the privileged deployer container. It must not be placed in `AGENT_SPACE_HOME`, mounted into the server container, or made reachable from an agent runtime or sandbox. Filesystem permissions are defense in depth, not an approval mechanism.
+**B42** — The deployer Unix socket is never exposed on TCP and remains private to the privileged deployer container. It must not be placed in `RAINVER_HOME`, mounted into the server container, or made reachable from an agent runtime or sandbox. Filesystem permissions are defense in depth, not an approval mechanism.
 
-**B43** — The deployer accepts exactly `rebuild_agent_space`, `restart_agent_space`, and `health_check`; these jobs accept no request arguments. It never accepts arbitrary commands, request-to-environment overrides, self-evolution jobs, code-patch jobs, capability jobs, or caller-selected script paths. The deployer protocol does not validate proposal state. A future product deployment trigger must therefore verify a human-approved proposal in the server authority before submitting one of these jobs and must add durable audit coverage in the same change.
+**B43** — The deployer accepts exactly `rebuild_rainver`, `restart_rainver`, and `health_check`; these jobs accept no request arguments. It never accepts arbitrary commands, request-to-environment overrides, self-evolution jobs, code-patch jobs, capability jobs, or caller-selected script paths. The deployer protocol does not validate proposal state. A future product deployment trigger must therefore verify a human-approved proposal in the server authority before submitting one of these jobs and must add durable audit coverage in the same change.
 
 **B44** — The deployer container's Docker socket plus read-write repository mount is host-equivalent authority. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The CLI sandbox executor is a separate run path with a fixed image, fixed resource policy, deny-by-default network, and allowlisted mounts; it is never routed through the deployer protocol.
 
-**B44A** — An agent-space instance must never be directly exposed to the public internet. The current frontend has no production TLS termination, rate limiting, or general CSRF-token hardening. Any move toward internet exposure must first implement and review those controls and update the security boundary documentation.
+**B44A** — An Rainver instance must never be directly exposed to the public internet. The current frontend has no production TLS termination, rate limiting, or general CSRF-token hardening. Any move toward internet exposure must first implement and review those controls and update the security boundary documentation.
 
 ---
 

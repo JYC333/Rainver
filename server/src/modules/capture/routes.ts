@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { jsonBody, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { CaptureService } from "./service.js";

@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import type {
   CustomSourceHandlerInput,
   CustomSourcePipelineDefinition,
-  } from "@agent-space/protocol";
+  } from "@rainver/protocol";
 import { runCustomSourcePipeline } from "../src/modules/sources/customSources/customSourcePipelineInterpreter.js";
 import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
 

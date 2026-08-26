@@ -11,7 +11,7 @@ carry forward unchanged. See History at the end of this document.
 
 ## Context
 
-Agent-space added Project-owned domains — Inquiry Thread (questions and
+Rainver added Project-owned domains — Inquiry Thread (questions and
 hypotheses with a confirmed position), Experiment, and Decision Case — plus a
 versioned Workflow Template that runs the existing Auto Research pipeline.
 Two questions had to be settled: where these domains' data and relationships

@@ -16,7 +16,7 @@ import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope.js";
 import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
-import type { InvocationDelivery } from "@agent-space/protocol";
+import type { InvocationDelivery } from "@rainver/protocol";
 import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts.js";
 
 const tmpPaths: string[] = [];
@@ -29,7 +29,7 @@ afterEach(async () => {
 
 function config() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }
@@ -127,7 +127,7 @@ class TempCodexBroker extends FakeBroker {
     profileId?: string | null,
   ) {
     this.grants.push({ runId, spaceId, runtime, executorMode, profileId });
-    const root = await mkdtemp(join(tmpdir(), "aspace-runtime-home-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runtime-home-"));
     tmpPaths.push(root);
     this.tempHome = join(root, "home");
     this.profileDir = join(root, "profile");
@@ -174,7 +174,7 @@ class FakeExecutor implements CliCommandExecutor {
       workspace_cwd: string;
       context_cwd: string;
       sandbox_root: string;
-      agent_space_home: string;
+      rainver_home: string;
       cli_tools_root: string;
       readable_paths: string[];
       writable_paths: string[];
@@ -343,7 +343,7 @@ class FakeTools implements RuntimeToolResolverPort {
 
 describe("executeVendorCliAdapter", () => {
   it("materializes OpenCode auth at its nested HOME path without shared session state", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-opencode-home-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-opencode-home-"));
     tmpPaths.push(root);
     const source = join(root, "profile");
     const home = join(root, "run-home");
@@ -367,7 +367,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("rejects a vendor-created symlink in a persistent credential HOME", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-opencode-home-link-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-opencode-home-link-"));
     tmpPaths.push(root);
     const source = join(root, "profile");
     const home = join(root, "conversation-home");
@@ -390,7 +390,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("runs codex_cli with credential grant, safe env, and no vendor instruction file", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -456,7 +456,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("renders scoped CLI bootstrap before the current user item without a vendor context file", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-delivery-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-delivery-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
     const capturedEvents: Array<{ type: string; metadata_json?: unknown }> = [];
@@ -552,7 +552,7 @@ describe("executeVendorCliAdapter", () => {
       params: { prompt: Array<{ text: string }> };
     }>;
     expect(turns).toHaveLength(2);
-    expect(turns[0]?.params.prompt[0]?.text).toContain("[Agent Space context bootstrap — ordinary context message]");
+    expect(turns[0]?.params.prompt[0]?.text).toContain("[Rainver context bootstrap — ordinary context message]");
     expect(turns[0]?.params.prompt[0]?.text).toContain("Validated checkpoint and canonical tail.");
     expect(turns[0]?.params.prompt[0]?.text).not.toContain("Continue the task.");
     expect(turns[1]?.params.prompt[0]?.text).toBe("Continue the task.");
@@ -564,7 +564,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("does not leak Claude ACP bootstrap tool events into the current turn", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-delivery-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-delivery-"));
     tmpPaths.push(sandbox);
     const sessionId = "session-1";
     const executor = new FakeExecutor();
@@ -655,7 +655,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("stages context outside a read-only Project Folder and passes one write-scoped HOME", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-cli-read-only-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-cli-read-only-"));
     tmpPaths.push(root);
     const workspace = join(root, "workspaces", "project");
     const contextCwd = join(root, "sandboxes", "read-only-context", "run-1");
@@ -685,9 +685,9 @@ describe("executeVendorCliAdapter", () => {
     };
     const executor = new FakeExecutor();
     const readOnlyConfig = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       SERVER_INTERNAL_TOKEN: "internal-token",
-      AGENT_SPACE_HOME: root,
+      RAINVER_HOME: root,
       SANDBOX_ROOT: join(root, "sandboxes"),
       WORKSPACE_ROOT: join(root, "workspaces"),
     });
@@ -718,7 +718,7 @@ describe("executeVendorCliAdapter", () => {
         workspace_cwd: workspace,
         context_cwd: contextCwd,
         sandbox_root: join(root, "sandboxes"),
-        agent_space_home: root,
+        rainver_home: root,
         cli_tools_root: readOnlyConfig.cliToolsRoot,
         readable_paths: [],
         writable_paths: [runtimeHome],
@@ -728,7 +728,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("runs an ephemeral (no-workspace) CLI in the prepared working dir", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-eph-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-eph-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -754,7 +754,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("writes run-scoped Codex provider config for an OpenAI-compatible provider", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-codex-provider-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-codex-provider-"));
     tmpPaths.push(sandbox);
     const broker = new TempCodexBroker();
     const executor = new FakeExecutor();
@@ -816,9 +816,9 @@ describe("executeVendorCliAdapter", () => {
     const configToml = await readFile(join(codexDir, "config.toml"), "utf8");
     expect(executor.calls[0].command).toEqual([process.execPath]);
     expect(configToml).toContain('model = "MiniMax-M3"');
-    expect(configToml).toContain('model_provider = "agent_space_provider"');
+    expect(configToml).toContain('model_provider = "rainver_provider"');
     expect(configToml).toContain(
-      `model_catalog_json = "${join(codexDir, "model-catalogs", "agent-space-provider.json")}"`,
+      `model_catalog_json = "${join(codexDir, "model-catalogs", "rainver-provider.json")}"`,
     );
     expect(configToml).toContain('base_url = "http://127.0.0.1:49152/openai/');
     expect(configToml).toContain('wire_api = "responses"');
@@ -827,7 +827,7 @@ describe("executeVendorCliAdapter", () => {
     await expect(readFile(join(codexDir, "auth.json"), "utf8")).resolves.toContain("login-state");
     await expect(readFile(join(codexDir, "sessions", "shared.jsonl"), "utf8")).rejects.toThrow();
     const catalog = JSON.parse(
-      await readFile(join(codexDir, "model-catalogs", "agent-space-provider.json"), "utf8"),
+      await readFile(join(codexDir, "model-catalogs", "rainver-provider.json"), "utf8"),
     ) as {
       models: Array<{
         slug: string;
@@ -861,7 +861,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("injects Claude-compatible provider env only for a configured claude_code provider", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-claude-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-claude-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
     const leases = new ProviderProxyLeaseRegistry();
@@ -924,7 +924,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("fails closed when a selected Claude provider has no compatible URL", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-claude-missing-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-claude-missing-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
 
@@ -967,7 +967,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("fails closed when a selected Codex provider has no OpenAI-compatible URL", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-codex-missing-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-codex-missing-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
 
@@ -1032,7 +1032,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("records precise Claude subscription usage and live quota from the run stream", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-claude-usage-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-claude-usage-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1099,7 +1099,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("renders claude_code model and permission-bypass args only when policy allows", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1138,7 +1138,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("normalizes a concrete Claude model to the ACP family option", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-model-normalize-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-model-normalize-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
     executor.sessionModelOptions = [{
@@ -1168,7 +1168,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("renders Claude's explicit resume command for a bound conversation session", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-resume-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-resume-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1209,7 +1209,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("classifies a missing resumed Claude session for replay retry", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-stale-resume-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-stale-resume-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
     executor.result = {
@@ -1246,7 +1246,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("clears the stale requested session id when the ACP resume handshake itself is rejected", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-claude-resume-rejected-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-resume-rejected-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
     executor.simulateResumeRejection = true;
@@ -1279,7 +1279,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("configures and revokes a short-lived MCP identity for granted CLI tools", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-tools-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-tools-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1304,19 +1304,19 @@ describe("executeVendorCliAdapter", () => {
       { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
     );
     expect(result.success).toBe(true);
-    expect(executor.calls[0].env.AGENT_SPACE_MCP_URL)
+    expect(executor.calls[0].env.RAINVER_MCP_URL)
       .toBe("http://server:8010/internal/runs/run-1/mcp");
-    expect(executor.calls[0].env.AGENT_SPACE_TOOL_TOKEN).toBeTruthy();
+    expect(executor.calls[0].env.RAINVER_TOOL_TOKEN).toBeTruthy();
     expect(executor.calls[0].command).toContain("--mcp-config");
     const configPath = executor.calls[0].command[
       executor.calls[0].command.indexOf("--mcp-config") + 1
     ]!;
     const mcpConfig = JSON.parse(await readFile(configPath, "utf8")) as {
-      mcpServers: { "agent-space": { url: string; headers: { Authorization: string } } };
+      mcpServers: { "rainver": { url: string; headers: { Authorization: string } } };
     };
-    expect(mcpConfig.mcpServers["agent-space"].url).toBe(executor.calls[0].env.AGENT_SPACE_MCP_URL);
-    expect(mcpConfig.mcpServers["agent-space"].headers.Authorization)
-      .toBe(`Bearer ${executor.calls[0].env.AGENT_SPACE_TOOL_TOKEN}`);
+    expect(mcpConfig.mcpServers["rainver"].url).toBe(executor.calls[0].env.RAINVER_MCP_URL);
+    expect(mcpConfig.mcpServers["rainver"].headers.Authorization)
+      .toBe(`Bearer ${executor.calls[0].env.RAINVER_TOOL_TOKEN}`);
   });
 
   it("fails closed when the credential profile is missing", async () => {
@@ -1359,7 +1359,7 @@ describe("executeVendorCliAdapter", () => {
       error_code: "file_access_adapter_requires_worktree_policy",
     });
 
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-docker-") );
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-docker-") );
     tmpPaths.push(sandbox);
     const result = await executeVendorCliAdapter(
       config(),
@@ -1372,7 +1372,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("runs OpenCode with a sandbox config that denies Task and locks tools", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-opencode-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-opencode-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1412,10 +1412,10 @@ describe("executeVendorCliAdapter", () => {
     expect(broker.cleanups).toEqual(["run-1"]);
     const configJson = JSON.parse(await readFile(join(sandbox, "opencode.json"), "utf8")) as Record<string, unknown>;
     expect(configJson).toMatchObject({
-      default_agent: "agent-space-locked",
+      default_agent: "rainver-locked",
       subagent_depth: 0,
       agent: {
-        "agent-space-locked": {
+        "rainver-locked": {
           mode: "primary",
           permission: {
             task: { "*": "deny" },
@@ -1429,7 +1429,7 @@ describe("executeVendorCliAdapter", () => {
   });
 
   it("maps nonzero and timeout results to CLI adapter failures", async () => {
-    const sandbox = await mkdtemp(join(tmpdir(), "aspace-cli-failure-"));
+    const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-failure-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
     const executor = new FakeExecutor();
@@ -1481,7 +1481,7 @@ describe("executeVendorCliAdapter", () => {
 
 describe("buildSubprocessEnv", () => {
   it("keeps only safe ambient variables and broker injected HOME", () => {
-    process.env.ASPACE_SHOULD_NOT_LEAK = "secret";
+    process.env.RAINVER_SHOULD_NOT_LEAK = "secret";
     process.env.LC_TEST_VALUE = "ok";
 
     const env = buildSubprocessEnv({
@@ -1500,8 +1500,8 @@ describe("buildSubprocessEnv", () => {
       HTTPS_PROXY: "http://127.0.0.1:7890",
       HTTP_PROXY: "http://127.0.0.1:7890",
       NO_PROXY: "localhost,127.0.0.1,::1",
-      AGENT_SPACE_EXCHANGE_INPUT: "/tmp/exchange/input/run_input.json",
-      AGENT_SPACE_EXCHANGE_OUTPUT: "/tmp/exchange/output",
+      RAINVER_EXCHANGE_INPUT: "/tmp/exchange/input/run_input.json",
+      RAINVER_EXCHANGE_OUTPUT: "/tmp/exchange/output",
     });
 
     expect(env.HOME).toBe("/tmp/home");
@@ -1512,15 +1512,15 @@ describe("buildSubprocessEnv", () => {
     expect(env.HTTPS_PROXY).toBe("http://127.0.0.1:7890");
     expect(env.HTTP_PROXY).toBe("http://127.0.0.1:7890");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1,::1");
-    expect(env.AGENT_SPACE_EXCHANGE_INPUT).toBe("/tmp/exchange/input/run_input.json");
-    expect(env.AGENT_SPACE_EXCHANGE_OUTPUT).toBe("/tmp/exchange/output");
+    expect(env.RAINVER_EXCHANGE_INPUT).toBe("/tmp/exchange/input/run_input.json");
+    expect(env.RAINVER_EXCHANGE_OUTPUT).toBe("/tmp/exchange/output");
     expect(env.GEMINI_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.LC_TEST_VALUE).toBe("ok");
-    expect(env.ASPACE_SHOULD_NOT_LEAK).toBeUndefined();
+    expect(env.RAINVER_SHOULD_NOT_LEAK).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
 
-    delete process.env.ASPACE_SHOULD_NOT_LEAK;
+    delete process.env.RAINVER_SHOULD_NOT_LEAK;
     delete process.env.LC_TEST_VALUE;
   });
 });

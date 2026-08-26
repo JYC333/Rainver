@@ -42,7 +42,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
 
 function runsConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }
@@ -129,7 +129,7 @@ describe("runs command routes", () => {
     const missingIds = await app.inject({
       method: "POST",
       url: "/internal/runs/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: { run_id: "run-1" },
     });
     expect(missingIds.statusCode).toBe(422);
@@ -137,7 +137,7 @@ describe("runs command routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runs/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: { run_id: "run-1", space_id: "space-1", worker_id: "chat-worker" },
     });
     expect(res.statusCode).toBe(200);

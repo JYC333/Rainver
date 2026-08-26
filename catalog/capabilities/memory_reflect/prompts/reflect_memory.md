@@ -10,7 +10,7 @@ Your task is to analyze a conversation and extract information that is worth sto
 - **semantic** — factual knowledge about the user or their world ("I am a software engineer", "My company is Acme Corp")
 - **episodic** — what happened in a session ("User completed onboarding", "User defined first project goals")
 - **procedural** — how to do something ("My deployment process is X")
-- **project** — project-specific facts ("Project agent-space uses FastAPI")
+- **project** — project-specific facts ("Project Rainver uses FastAPI")
 
 ## Output Format
 

@@ -1,8 +1,8 @@
 # Product and Boundaries
 
-## What Agent-Space Is
+## What Rainver Is
 
-Agent-Space is a **server-authoritative Agent Workbench for individuals, households, and
+Rainver is a **server-authoritative Agent Workbench for individuals, households, and
 small teams**. It carries substantial daily work—research, writing, knowledge synthesis,
 projects, recurring workflows, automation, and code work—through auditable human-agent
 collaboration. It captures inputs, runs agents, produces reviewable artifacts and proposals,
@@ -57,7 +57,7 @@ capture / trigger
   and Space grant. Managed chat protocol and capability profile are resolved by
   the server vendor registry and executed through pi-ai; which pi-ai catalog
   describes a vendor's models is the adapter's own fact, not the registry's.
-  Configurable endpoint and NetworkProfile routing remain agent-space authority.
+  Configurable endpoint and NetworkProfile routing remain Rainver authority.
 - Configured per space via `GET/POST/PATCH /api/v1/providers`. API keys are encrypted server-side; responses expose `has_api_key` only.
 - `RuntimeAdapter` = execution loop/tool environment (capability, model_api, claude_code, codex_cli, etc.).
 - Agents select a default provider/model on `AgentVersion` (`model_provider_id`, `model_name`); runs resolve provider at creation time.
@@ -116,7 +116,7 @@ capture / trigger
 ### External tools are adapters, not product foundations
 
 - Claude Code, Codex, Cursor, LangGraph, OpenAI Agents SDK are runtime adapters.
-- Memory, context, policy, proposals, audit, and Project Folder governance live in Agent-Space's database, not in vendor CLIs.
+- Memory, context, policy, proposals, audit, and Project Folder governance live in Rainver's database, not in vendor CLIs.
 - OpenCode is a third optional CLI runtime alongside Claude Code and Codex CLI, not a
   universal or preferred execution layer. User-initiated/supervised heavy work may use CLI
   subscription allowance; managed API work keeps its existing direct adapters. Claude

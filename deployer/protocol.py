@@ -10,8 +10,8 @@ from typing import Literal
 # ── Core deployment jobs ──────────────────────────────────────────────────────
 
 CoreJobType = Literal[
-    "rebuild_agent_space",   # docker compose build + up -d server frontend
-    "restart_agent_space",   # docker compose restart server frontend
+    "rebuild_rainver",   # docker compose build + up -d server frontend
+    "restart_rainver",   # docker compose restart server frontend
     "health_check",          # server /health check
 ]
 

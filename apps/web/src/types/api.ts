@@ -253,7 +253,7 @@ import type {
   SpaceRetrievalSettingsUpdate,
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 export type {
   AgentRunGroup,
   AgentRunGroupMember,
@@ -509,7 +509,7 @@ export type {
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
 }
-import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@agent-space/protocol'
+import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@rainver/protocol'
 
 export type SpaceType      = 'personal' | 'household' | 'team'
 
@@ -824,7 +824,7 @@ export interface AuthorizationRequest {
 
 export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
 
-export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'agent_space_provider'
+export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'rainver_provider'
 
 export interface RuntimeToolManifest {
   schema_version: 1

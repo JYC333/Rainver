@@ -1,4 +1,4 @@
-# agent-space — Claude Code Guide
+# Rainver — Claude Code Guide
 
 This file is the Claude Code adapter for the repo. It should stay small and
 route agents to the `.agent/` source-of-truth docs instead of duplicating them.
@@ -43,8 +43,8 @@ change.
 
 - Runtime data, user workspaces, sandboxes, secrets, database files, and logs
   must never be stored in the source repo.
-- `ASPACE_ROOT` is the host-side parent for mode roots (`dev/`, `test/`,
-  `prod/`). `AGENT_SPACE_HOME` is the running app instance root.
+- `RAINVER_ROOT` is the host-side parent for mode roots (`dev/`, `test/`,
+  `prod/`). `RAINVER_HOME` is the running app instance root.
 - `server/` is the TypeScript backend source root. Database schema authoring
   goes through `server/src/db/schema/` and Drizzle-generated migration
   artifacts in `server/migrations/`. The Compose service name remains `server`.

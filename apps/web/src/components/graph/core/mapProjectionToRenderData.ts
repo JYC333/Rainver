@@ -1,4 +1,4 @@
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 import { shouldShowEdgeLabel, shouldShowNodeLabel } from './semanticZoom'
 import { resolveEdgeStyle, resolveNodeStyle } from './graphTheme'
 import type { GraphLabelVisibility, GraphRenderData, GraphTheme, GraphViewState } from '../types'

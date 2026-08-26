@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { ProviderBindingFrame } from "./execution.js";
 
 /** Replaced with the absolute profile directory when files are written. */
-export const PROFILE_ROOT_PLACEHOLDER = "{{AGENT_SPACE_RUN_PROFILE}}";
+export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
 
 /**
  * Environment a *bound* run inherits from this machine.

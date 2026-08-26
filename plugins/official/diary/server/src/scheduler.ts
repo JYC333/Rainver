@@ -1,4 +1,4 @@
-import type { Queryable, PluginScheduledTask } from "@agent-space/protocol";
+import type { Queryable, PluginScheduledTask } from "@rainver/protocol";
 import { diaryRepository } from "./domain/repository.js";
 
 interface SchedulerLogger {

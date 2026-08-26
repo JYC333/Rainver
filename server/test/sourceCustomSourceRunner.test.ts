@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { customSourcePolicyEnvelope, runnerSettings } from "./support/customSourceFixtures.js";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
+import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import {
   CustomSourceRunner,
   cleanupSandbox,

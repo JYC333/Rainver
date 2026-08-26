@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as Protocol from "@agent-space/protocol";
-import type { SystemActionDefinition } from "@agent-space/protocol";
+import type * as Protocol from "@rainver/protocol";
+import type { SystemActionDefinition } from "@rainver/protocol";
 
 type RegistryProtocolModule = Pick<
   typeof Protocol,
@@ -13,7 +13,7 @@ const protocolState = vi.hoisted(() => ({
   module: null as RegistryProtocolModule | null,
 }));
 
-vi.mock("@agent-space/protocol", async (importOriginal) => {
+vi.mock("@rainver/protocol", async (importOriginal) => {
   const actual = await importOriginal<typeof Protocol>();
   const live = <K extends keyof RegistryProtocolModule>(key: K) =>
     (protocolState.module ?? (actual as unknown as RegistryProtocolModule))[key];
@@ -34,7 +34,7 @@ describe("system action registry loading", () => {
   let actualProtocol: typeof Protocol;
 
   beforeEach(async () => {
-    actualProtocol = await vi.importActual<typeof Protocol>("@agent-space/protocol");
+    actualProtocol = await vi.importActual<typeof Protocol>("@rainver/protocol");
     protocolState.module = actualProtocol;
     resetSystemActionRegistryForTests();
   });

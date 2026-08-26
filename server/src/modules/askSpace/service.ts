@@ -7,7 +7,7 @@ import type {
   RetrievalBriefResponse,
   RetrievalObjectType,
   RetrievalSearchMode,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable } from "../routeUtils/common.js";
 import type { BriefCandidate, SynthesisResult } from "../retrieval/index.js";

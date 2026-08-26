@@ -31,12 +31,12 @@ afterEach(async () => {
 });
 
 async function config(env: Record<string, string> = {}) {
-  const root = await mkdtemp(join(tmpdir(), "aspace-runtime-routes-"));
+  const root = await mkdtemp(join(tmpdir(), "rainver-runtime-routes-"));
   tmpPaths.push(root);
   return loadConfig({
-    AGENT_SPACE_HOME: root,
+    RAINVER_HOME: root,
     RUNTIME_TOOLS_ROOT: join(root, "runtime-tools"),
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     ...env,
   });
 }

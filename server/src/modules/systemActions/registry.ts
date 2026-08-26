@@ -1,5 +1,5 @@
-import type { SystemActionDefinition, SystemActionId } from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+import type { SystemActionDefinition, SystemActionId } from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 
 let cached: ReadonlyMap<SystemActionId, SystemActionDefinition> | null = null;
 

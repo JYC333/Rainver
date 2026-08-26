@@ -1,4 +1,4 @@
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 import { resolveEdgeStyle, resolveNodeStyle } from './core/graphTheme'
 import type { GraphTheme, GraphViewState } from './types'
 import { cn } from '../../lib/utils'

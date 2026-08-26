@@ -9,7 +9,7 @@ import type {
   UsageSummaryResponse,
   UsageTimeseriesResponse,
   UsageTotals,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 import UsagePage from '../UsagePage'
 import { credentialsApi, usageApi } from '../../../api/client'
 import type { CliCredentialProfileOut } from '../../../types/api'

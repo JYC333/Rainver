@@ -23,7 +23,7 @@ export default function InstanceSettingsPage() {
         </div>
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Instance Settings</h1>
-          <p className="text-sm text-muted-foreground">Manage server-wide configuration for this agent-space instance.</p>
+          <p className="text-sm text-muted-foreground">Manage server-wide configuration for this rainver instance.</p>
         </div>
       </div>
 

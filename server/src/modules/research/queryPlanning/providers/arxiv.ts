@@ -1,4 +1,4 @@
-import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchSemanticConcept, ResearchSemanticQuery } from "@rainver/protocol";
 import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared.js";
 
 export const ARXIV_LADDER_STRATEGY: QueryAdaptationStrategy = {

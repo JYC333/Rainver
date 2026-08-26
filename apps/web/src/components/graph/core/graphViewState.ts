@@ -1,6 +1,6 @@
 import { useReducer } from 'react'
 import type { GraphLayoutSource, GraphRendererMode, GraphViewAction, GraphViewState } from '../types'
-import type { GraphProjectionLayoutMode } from '@agent-space/protocol'
+import type { GraphProjectionLayoutMode } from '@rainver/protocol'
 
 export const DEFAULT_GRAPH_VIEW_STATE: GraphViewState = {
   selectedNodeId: null,

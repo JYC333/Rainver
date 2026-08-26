@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { PluginMigration } from "@agent-space/protocol";
+import type { PluginMigration } from "@rainver/protocol";
 import { DIARY_PLUGIN_ID } from "./manifest.js";
 
 const SQL_FILE_RE = /^(\d{4}_.+)\.sql$/;

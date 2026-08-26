@@ -16,7 +16,7 @@ function git(args: string[], cwd: string): Promise<void> {
 }
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "agent-space-host-gitdiff-"));
+  dir = await mkdtemp(join(tmpdir(), "rainver-host-gitdiff-"));
 });
 
 afterEach(async () => {

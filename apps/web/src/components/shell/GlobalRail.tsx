@@ -111,10 +111,10 @@ export function GlobalRail({
         to="/home"
         className={cn('flex items-center h-9 mb-1.5', expanded ? 'gap-2.5 px-3' : 'justify-center')}
         style={{ textDecoration: 'none' }}
-        title="agent-space — Home"
+        title="rainver — Home"
       >
         <ApertureMark size={22} />
-        {expanded && <span className="font-bold text-[13px] tracking-tight text-accent-foreground">agent-space</span>}
+        {expanded && <span className="font-bold text-[13px] tracking-tight text-accent-foreground">rainver</span>}
       </Link>
 
       <div className="flex flex-col gap-0.5 mt-1">

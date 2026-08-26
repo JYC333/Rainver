@@ -188,14 +188,14 @@ Steps:
 1. Add an `OfficialPluginDescriptor` under `server/src/modules/plugins/official/<pluginId>.ts`.
 2. Register the descriptor in `server/src/modules/plugins/registry.ts`.
 3. If the plugin contributes runtime behavior, create `plugins/official/<plugin-id>/`.
-4. Export an `AgentSpacePlugin` whose `activate(ctx)` synchronously registers routes, jobs,
+4. Export an `RainverPlugin` whose `activate(ctx)` synchronously registers routes, jobs,
    schedulers, and proposal appliers, then returns `{ activated: true }`.
 5. Ensure the plugin package has `plugin.json` and `server/tsconfig.json`; `server/scripts/build-official-plugins.mjs` compiles it into `server/dist/official-plugins/<plugin-id>/`, and `server/src/modules/plugins/builtInPlugins.ts` loads that artifact at startup.
 6. In plugin routes, call `ctx.http.pluginGuard(request, reply)` before returning any real content.
    Disabled state returns `{ error_code: "plugin_disabled" }`.
 7. Add plugin-owned SQL files under `plugins/official/<plugin-id>/migrations/`,
    load them from the runtime plugin, and expose them through
-   `AgentSpacePlugin.migrations`; the installer runs them, not `activate()`.
+   `RainverPlugin.migrations`; the installer runs them, not `activate()`.
 8. Put plugin-owned frontend pages under `plugins/official/<plugin-id>/web/src/`.
    Plugin frontend source must define the host API it needs and must not import
    `apps/web/src` directly.

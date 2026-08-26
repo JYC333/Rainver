@@ -3,7 +3,7 @@
  *
  * Claude Code writes a JSONL transcript per session under the managed profile
  * dir (`<profile>/projects/<slug>/<uuid>.jsonl`, and/or `<profile>/sessions/`).
- * Because agent-space symlinks each run's HOME/.claude to the credential
+ * Because rainver symlinks each run's HOME/.claude to the credential
  * profile, those transcripts accumulate across runs in one place. Each assistant
  * line carries a `message.usage` payload — we sum it to report cumulative token
  * usage (and an estimated cost) without any network call.

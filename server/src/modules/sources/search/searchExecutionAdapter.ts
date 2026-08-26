@@ -1,4 +1,4 @@
-import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol";
+import type { ResearchCompiledQuery, ResearchProviderKey } from "@rainver/protocol";
 import { buildArxivQueryUrl, type ArxivQueryConfig } from "../connectors/arxiv.js";
 import { HttpError } from "../../routeUtils/common.js";
 import {

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
-import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@agent-space/protocol";
+import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@rainver/protocol";
 import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access.js";
 import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";

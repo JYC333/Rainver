@@ -1,4 +1,4 @@
-import type { ProviderPresetDTO } from "@agent-space/protocol";
+import type { ProviderPresetDTO } from "@rainver/protocol";
 
 export type ProviderPreset = ProviderPresetDTO;
 

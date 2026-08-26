@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import type { GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjectionNode } from '@rainver/protocol'
 import { Crosshair, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'

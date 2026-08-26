@@ -3,7 +3,7 @@ import type {
   ResearchQueryAttemptDirection,
   ResearchSemanticConcept,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { ARXIV_LADDER_STRATEGY } from "./providers/arxiv.js";
 import { OPENALEX_LADDER_STRATEGY } from "./providers/openAlex.js";
 import { SEMANTIC_SCHOLAR_LADDER_STRATEGY } from "./providers/semanticScholar.js";

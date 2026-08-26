@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 
 /**
  * Reads text files back out of the per-run output directory
- * (`AGENT_SPACE_OUTPUT_DIR`) for upload as run artifacts — the phase-1
+ * (`RAINVER_OUTPUT_DIR`) for upload as run artifacts — the phase-1
  * substitute for Run Exchange (control-center-plan.md §5). Read as UTF-8:
  * phase-1 deliverables are expected to be text (code, reports, notes); a
  * binary output file would come back corrupted. Known gap, not a silent

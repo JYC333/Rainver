@@ -114,7 +114,7 @@ interface ActiveRun {
  * substituted value with `JSON.stringify` and splice it in as a JSON string
  * literal rather than a raw text swap.
  */
-export const REMOTE_CWD_PLACEHOLDER = "agent-space:remote-workspace-cwd";
+export const REMOTE_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
 
 function substituteCwd(value: string, cwd: string): string {
   return value.split(REMOTE_CWD_PLACEHOLDER).join(cwd);
@@ -306,7 +306,7 @@ async function launchRun(
 
   const child: ChildProcess = spawn(command, spawnArgs, {
     cwd,
-    env: { ...baseEnv, AGENT_SPACE_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv },
+    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv },
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });

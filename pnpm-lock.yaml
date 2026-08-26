@@ -95,7 +95,7 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
     devDependencies:
-      '@agent-space/protocol':
+      '@rainver/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
       '@tauri-apps/cli':
@@ -178,9 +178,6 @@ importers:
 
   server:
     dependencies:
-      '@agent-space/protocol':
-        specifier: workspace:*
-        version: link:../packages/protocol
       '@agentclientprotocol/sdk':
         specifier: ^1.3.0
         version: 1.4.0(zod@3.25.76)
@@ -193,6 +190,9 @@ importers:
       '@fastify/websocket':
         specifier: ^11.3.0
         version: 11.3.0
+      '@rainver/protocol':
+        specifier: workspace:*
+        version: link:../packages/protocol
       cron-parser:
         specifier: ^5.10.0
         version: 5.10.0

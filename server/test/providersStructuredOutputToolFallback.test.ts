@@ -5,7 +5,7 @@ import type { UsageObservation } from "../src/modules/usage/index.js";
 import { openAiChatResponse } from "./support/piAiHttp.js";
 
 // pi-ai expresses structured output as a constrained tool. Providers without
-// strict-tool support can still return text, which the agent-space scavenger
+// strict-tool support can still return text, which the rainver scavenger
 // validates at the boundary.
 
 afterEach(() => {

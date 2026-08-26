@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import type { ServerConfig } from "../config.js";
 
-export const INTERNAL_TOKEN_HEADER = "x-agent-space-internal-token";
+export const INTERNAL_TOKEN_HEADER = "x-rainver-internal-token";
 
 export function checkInternalToken(
   config: ServerConfig,

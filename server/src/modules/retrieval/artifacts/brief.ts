@@ -2,7 +2,7 @@ import type {
   RetrievalBriefResponse,
   RetrievalObjectType,
   RetrievalSearchMode,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 

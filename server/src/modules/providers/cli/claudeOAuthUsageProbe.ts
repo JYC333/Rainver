@@ -2,7 +2,7 @@
  * Claude subscription-quota probe through Claude's OAuth usage API.
  *
  * This is the primary path used before the PTY `/usage` fallback. It reads only
- * the aspace-managed Claude Code profile (`.credentials.json`) and sends the
+ * the rainver-managed Claude Code profile (`.credentials.json`) and sends the
  * access token to Anthropic's OAuth usage endpoint. No credential material is
  * returned or logged through the public API.
  */

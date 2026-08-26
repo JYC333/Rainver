@@ -4,7 +4,7 @@ import type {
   RelationDiscoveryReport,
   RelationDiscoveryScanRequest,
   RelationDiscoverySourceType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { extractRetrievalLinks } from "../retrieval/linkExtractor.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql.js";

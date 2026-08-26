@@ -1,4 +1,4 @@
-# agent-space server — multi-stage build
+# rainver server — multi-stage build
 #
 # Build context: the REPO ROOT (not server), because the server and protocol are
 # installed together from the repository pnpm workspace.
@@ -28,12 +28,12 @@ COPY packages/protocol/package.json ./packages/protocol/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile \
-    --filter @agent-space/protocol \
-    --filter @agent-space/server
+    --filter @rainver/protocol \
+    --filter @rainver/server
 
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
 COPY packages/protocol/src ./packages/protocol/src
-RUN pnpm --filter @agent-space/protocol build
+RUN pnpm --filter @rainver/protocol build
 
 # ---- build: compile TS -> dist ------------------------------------------------
 FROM deps AS build
@@ -44,8 +44,8 @@ COPY server/src ./server/src
 COPY server/migrations ./server/migrations
 COPY server/scripts ./server/scripts
 COPY plugins /app/plugins
-RUN pnpm --filter @agent-space/server schema:check
-RUN pnpm --filter @agent-space/server build
+RUN pnpm --filter @rainver/server schema:check
+RUN pnpm --filter @rainver/server build
 
 # ---- dev-runtime: full deps + writable dist for compose hot reload ------------
 FROM deps AS dev-runtime
@@ -63,7 +63,7 @@ COPY --from=build /app/server/dist /app/server/dist
 WORKDIR /app/server
 
 # CLI login helper processes need a writable HOME before their state is synced
-# into the managed profile dir under AGENT_SPACE_HOME. Dev/test compose also
+# into the managed profile dir under RAINVER_HOME. Dev/test compose also
 # runs TypeScript watch builds, so the compiled dist trees must be writable by
 # the non-root runtime user.
 RUN mkdir -p /home/node/.claude \
@@ -95,8 +95,8 @@ COPY packages/protocol/package.json ./packages/protocol/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --prod --frozen-lockfile \
-    --filter @agent-space/protocol \
-    --filter @agent-space/server
+    --filter @rainver/protocol \
+    --filter @rainver/server
 
 # ---- runtime: prod deps + compiled output -------------------------------------
 FROM node:24.18.0-slim AS runtime
@@ -122,7 +122,7 @@ COPY server/migrations ./migrations
 COPY --from=build /app/server/dist ./dist
 
 # CLI login helper processes need a writable HOME before their state is synced
-# into the managed profile dir under AGENT_SPACE_HOME.
+# into the managed profile dir under RAINVER_HOME.
 RUN mkdir -p /home/node/.claude && chown -R node:node /home/node
 USER node
 ENV HOME=/home/node

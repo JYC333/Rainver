@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import type { RetrievalBriefResponse } from "@agent-space/protocol";
+import type { RetrievalBriefResponse } from "@rainver/protocol";
 import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle.js";
 import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";

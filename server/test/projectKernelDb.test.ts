@@ -356,7 +356,7 @@ describe("Project Kernel (real Postgres)", () => {
     const replacementBrief = await kernel.createBriefVersion(ownerIdentity, project.id as string, {
       goal: "Replacement goal",
       confirmed_decisions: ["Use the canonical Context Engine"],
-      workspace_identity: { repository: "agent-space" },
+      workspace_identity: { repository: "rainver" },
       workspace_boundary: { writable_roots: ["/workspace"] },
       source_refs: [{ type: "decision", id: "decision-1" }],
     });
@@ -416,7 +416,7 @@ describe("Project Kernel (real Postgres)", () => {
       project_status: "active",
       confirmed_decisions: ["Use the canonical Context Engine"],
       primary_mode: replacementBrief.primary_mode,
-      workspace_identity: { repository: "agent-space" },
+      workspace_identity: { repository: "rainver" },
       workspace_boundary: { writable_roots: ["/workspace"] },
       source_refs: [{ type: "decision", id: "decision-1" }],
       status: "published",

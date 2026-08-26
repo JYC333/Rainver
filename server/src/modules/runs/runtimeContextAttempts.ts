@@ -5,7 +5,7 @@ import type {
   InvocationSnapshotSafe,
   RuntimeHostExecuteResponse,
   TurnContextRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type {
   RuntimeContextInvocationGatewayPort,
   RuntimeContextInvocationInput,

@@ -3,7 +3,7 @@ import type {
   ContextItem,
   RuntimeContextEnvelope,
   TurnContextRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { ContextWindowPlanner } from "./windowPlanner.js";
 import type { ModelWindowOverride } from "../usage/modelCatalog.js";
 

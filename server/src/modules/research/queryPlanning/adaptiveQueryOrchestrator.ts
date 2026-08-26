@@ -2,7 +2,7 @@ import type {
   ResearchContextVersion,
   ResearchProviderKey,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { ResearchContextRepository } from "../../projectResearch/question/researchContextRepository.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";

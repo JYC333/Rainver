@@ -194,7 +194,7 @@ function screenHasQuota(raw: string): { full: boolean; partial: boolean } {
 /**
  * Run `claude` in a PTY, inject `/usage`, scrape and parse the result.
  *
- * @param loginHome  aspace-managed HOME holding the synced credentials, so the
+ * @param loginHome  rainver-managed HOME holding the synced credentials, so the
  *                   CLI authenticates without touching the host home.
  */
 export async function probeClaudeQuota(

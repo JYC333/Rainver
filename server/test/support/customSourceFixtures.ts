@@ -1,4 +1,4 @@
-import type { CustomSourcePolicyEnvelope, SourcePolicyEnvelope } from "@agent-space/protocol";
+import type { CustomSourcePolicyEnvelope, SourcePolicyEnvelope } from "@rainver/protocol";
 import type { CustomSourceRunnerSettings } from "../../src/modules/sources/customSources/customSourceRunner.js";
 
 /**

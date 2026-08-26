@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
-import type { SessionOut } from "@agent-space/protocol";
+import type { SessionOut } from "@rainver/protocol";
 
 export interface RoomRecord {
   id: string;

@@ -1,7 +1,7 @@
 import type {
   AutomationTargetDefinition,
   AutomationTargetType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 let cached: ReadonlyMap<AutomationTargetType, AutomationTargetDefinition> | null = null;
 
@@ -9,7 +9,7 @@ export async function loadAutomationTargetDefinitions(): Promise<
   ReadonlyMap<AutomationTargetType, AutomationTargetDefinition>
 > {
   if (cached) return cached;
-  const protocol = await import("@agent-space/protocol");
+  const protocol = await import("@rainver/protocol");
   cached = new Map(
     protocol.AUTOMATION_TARGET_REGISTRY.map((definition) => [
       definition.target_type,

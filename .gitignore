@@ -14,7 +14,7 @@
 .env
 
 # PostgreSQL runtime data and dumps — never committed
-# (actual data lives under AGENT_SPACE_HOME/db/postgres, not in the repo)
+# (actual data lives under RAINVER_HOME/db/postgres, not in the repo)
 **/db/postgres/
 **/db/dumps/
 *.sql.gz

@@ -159,7 +159,7 @@ describe("repository agent guide invariants", () => {
     );
 
     const missing = Object.keys(manifest.dependencies ?? {})
-      .filter((name) => !name.startsWith("@agent-space/"))
+      .filter((name) => !name.startsWith("@rainver/"))
       .filter((name) => !policy.includes(name));
 
     expect(

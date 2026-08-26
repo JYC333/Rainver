@@ -115,7 +115,7 @@ describe("networkProfilesRoutes", () => {
     it("denies non-admin space members before exposing space network settings", async () => {
       __setAuthRepositoryForTests(authWithRole("member"));
       app = buildModuleServer(
-        loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }), [networkProfilesModule], { logger: false },);
+        loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/rainver" }), [networkProfilesModule], { logger: false },);
 
       const res = await app.inject({ method: "GET", url: "/api/v1/network-profiles" });
       expect(res.statusCode).toBe(403);

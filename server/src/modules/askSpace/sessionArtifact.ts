@@ -2,7 +2,7 @@ import type {
   AskSpaceDomain,
   AskSpaceGapSummary,
   AskSpaceProvenanceItem,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 

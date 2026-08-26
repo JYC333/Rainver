@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunRecord } from "../src/modules/runs/repository.js";
-import type { RuntimeSemanticEvent } from "@agent-space/protocol";
+import type { RuntimeSemanticEvent } from "@rainver/protocol";
 import { executeRemoteHostCliAdapter, remoteStallTimeoutSeconds } from "../src/modules/runs/remoteHostCliAdapter.js";
 import { loadConfig } from "../src/config.js";
 import { __setProvidersDbPortForTests } from "../src/modules/providers/dbReader.js";
@@ -113,7 +113,7 @@ describe("executeRemoteHostCliAdapter", () => {
     await vi.waitUntil(() => sink.sent.length === 1);
     const launchFrame = sink.sent[0]!;
     expect(launchFrame).toMatchObject({ type: "launch", run_id: "run-1", keep_stdin_open: true, stdin: null });
-    expect(launchFrame.argv as string[]).toContain("agent-space:remote-workspace-cwd");
+    expect(launchFrame.argv as string[]).toContain("rainver:remote-workspace-cwd");
 
     // The controller must not write its `initialize` request until the
     // daemon confirms the run is registered.
@@ -281,7 +281,7 @@ describe("executeRemoteHostCliAdapter", () => {
     await Promise.resolve();
     expect(JSON.parse((sink.sent[2] as { value: string }).value)).toMatchObject({
       method: "session/resume",
-      params: { sessionId: "vendor-session-abc", cwd: "agent-space:remote-workspace-cwd" },
+      params: { sessionId: "vendor-session-abc", cwd: "rainver:remote-workspace-cwd" },
     });
 
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "vendor-session-abc" } })}\n`);
@@ -700,7 +700,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         id: 2,
         result: {
           sessionId: "session-1",
-          configOptions: [{ id: "model", currentValue: "opencode/big-pickle", options: [{ value: "agent_space_provider/MiniMax-M3" }] }],
+          configOptions: [{ id: "model", currentValue: "opencode/big-pickle", options: [{ value: "rainver_provider/MiniMax-M3" }] }],
         },
       })}\n`);
       await vi.waitUntil(() => sink.sent.length >= 4);
@@ -708,7 +708,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const setConfig = JSON.parse((sink.sent[3] as { value: string }).value) as Record<string, unknown>;
       expect(setConfig).toMatchObject({
         method: "session/set_config_option",
-        params: { configId: "model", value: "agent_space_provider/MiniMax-M3" },
+        params: { configId: "model", value: "rainver_provider/MiniMax-M3" },
       });
 
       connections.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null });

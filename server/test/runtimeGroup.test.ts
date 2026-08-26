@@ -78,9 +78,9 @@ describe("runtimeAdapters", () => {
           relative_path: "opencode.json",
           denied_value: { "*": "deny" },
           required_values: expect.arrayContaining([
-            { path: ["default_agent"], value: "agent-space-locked", value_mode: "exact" },
+            { path: ["default_agent"], value: "rainver-locked", value_mode: "exact" },
             { path: ["subagent_depth"], value: 0, value_mode: "exact" },
-            { path: ["agent", "agent-space-locked", "mode"], value: "primary", value_mode: "exact" },
+            { path: ["agent", "rainver-locked", "mode"], value: "primary", value_mode: "exact" },
           ]),
         },
       });
@@ -147,7 +147,7 @@ describe("runtimeConformanceProbe", () => {
 
   describe("LocalCliConformanceProbeRunner", () => {
     it("runs the structured-output and credential-leakage probes through the executor boundary", async () => {
-      const root = await mkdtemp(join(tmpdir(), "aspace-conformance-"));
+      const root = await mkdtemp(join(tmpdir(), "rainver-conformance-"));
       roots.push(root);
       const executor = {
         async runCommand(input: { command: string[]; cwd: string | null }): Promise<CliExecutionResult> {
@@ -197,7 +197,7 @@ describe("runtimeConformanceProbe", () => {
         },
       };
       const runner = new LocalCliConformanceProbeRunner(
-        loadConfig({ AGENT_SPACE_HOME: root }),
+        loadConfig({ RAINVER_HOME: root }),
         { spaceId: "space-1", userId: "user-1" },
         deps,
       );
@@ -396,7 +396,7 @@ describe("runtimeSkillProvider", () => {
 
       const rendered = renderRuntimeSkillCandidate(candidates[0]!);
       expect(rendered?.rendered.files.map((file) => file.path)).toContain(
-        ".agent-space/generated-skills/codex/research-source-collect/SKILL.md",
+        ".rainver/generated-skills/codex/research-source-collect/SKILL.md",
       );
       expect(db.queries.find((sql) => sql.includes("JOIN capability_runtime_bindings")))
         .toContain("se.capability_version_id IS NOT NULL");

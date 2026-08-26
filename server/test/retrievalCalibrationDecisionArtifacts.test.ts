@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RetrievalCalibrationDecisionRequest } from "@agent-space/protocol";
+import type { RetrievalCalibrationDecisionRequest } from "@rainver/protocol";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import {
   persistRetrievalCalibrationDecisionArtifact,

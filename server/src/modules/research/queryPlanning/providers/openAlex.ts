@@ -1,4 +1,4 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchSemanticQuery } from "@rainver/protocol";
 import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared.js";
 
 // plainQuery has no boolean operators at all — core, qualifiers, and

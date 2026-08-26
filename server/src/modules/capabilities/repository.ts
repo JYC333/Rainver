@@ -33,7 +33,7 @@ import type {
   SkillLocalOverlayConfig,
   SkillLocalOverlayScope,
   SkillLocalOverlayStatus,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 interface SkillPackageRow {
   id: string;

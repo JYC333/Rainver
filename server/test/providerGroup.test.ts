@@ -89,7 +89,7 @@ describe("providerTaskAuditDb", () => {
       if (!db.available) return;
       const store = resolveProviderCommandStore({
         databaseUrl: db.connectionUri,
-        agentSpaceHome: "/tmp/provider-task-audit-test",
+        rainverHome: "/tmp/provider-task-audit-test",
       } as ServerConfig);
       const first = await store.beginProviderTaskAttempt!({
         space_id: SPACE,
@@ -172,7 +172,7 @@ describe("providerVendorCapabilities", () => {
       // model id would make swapping the chat implementation an edit to the
       // server's own vendor vocabulary.
       //
-      // What the registry does carry is everything agent-space knows about a
+      // What the registry does carry is everything rainver knows about a
       // vendor independently of who talks to it — including the published
       // endpoint and what it can be asked to do, which the web client and the
       // provider-task table used to keep their own copies of.

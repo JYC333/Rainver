@@ -488,7 +488,7 @@ describe('Knowledge routing', () => {
     const beta = makeNote({ id: 'note-beta', title: 'Beta note' })
     vi.mocked(notesApi.get)
       .mockImplementation(async id => (id === 'note-alpha' ? alpha : beta))
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
+    sessionStorage.setItem('rainver:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-beta')
@@ -533,7 +533,7 @@ describe('Knowledge routing', () => {
     vi.mocked(notesApi.delete)
       .mockResolvedValueOnce({ ...alpha, status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' })
       .mockResolvedValueOnce({ ...beta, status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' })
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
+    sessionStorage.setItem('rainver:notes-tabs:personal-1:all', JSON.stringify(['note-alpha', 'note-beta']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-beta')
@@ -597,7 +597,7 @@ describe('Knowledge routing', () => {
       archived = true
       return { ...alpha, status: 'archived', archived_at: '2026-06-09T00:00:00Z' }
     })
-    sessionStorage.setItem('agent-space:notes-tabs:personal-1:all', JSON.stringify(['note-alpha']))
+    sessionStorage.setItem('rainver:notes-tabs:personal-1:all', JSON.stringify(['note-alpha']))
 
     try {
       renderAt('/spaces/personal-1/knowledge/notes/note-alpha')

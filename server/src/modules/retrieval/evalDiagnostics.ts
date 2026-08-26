@@ -1,4 +1,4 @@
-import type { RetrievalEvalReportCase, RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { RetrievalEvalReportCase, RetrievalEvalReportRequest } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import {
   contentOwnerFilterSql,

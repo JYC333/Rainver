@@ -3,7 +3,7 @@ import type {
   RetrievalCitation,
   RetrievalGapAnalysis,
   RetrievalObjectType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
 import { candidateKey } from "./searchInternals.js";
 import type { RevalidatedObject, ScoredCandidate } from "./types.js";
@@ -12,7 +12,7 @@ import type { RevalidatedObject, ScoredCandidate } from "./types.js";
  * Context Brief synthesis (W6 of the context-layer roadmap).
  *
  * Ask Space is the context layer over raw retrieval: a synthesized, CITED
- * answer plus a gap analysis ("what the compiled context does not cover"). agent-space
+ * answer plus a gap analysis ("what the compiled context does not cover"). rainver
  * mirrors that as a brief, with the same safety contracts as the reranker:
  *
  *  - **revalidate-before-synthesis (invariant 1/2).** The synthesizer only ever

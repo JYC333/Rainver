@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
-import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { Pool, Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";

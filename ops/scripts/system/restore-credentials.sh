@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 ARCHIVE=""
 FORCE=false
 
@@ -45,7 +45,7 @@ for service in frontend server deployer; do
   fi
 done
 
-staging="$(mktemp -d -t aspace-credential-restore-XXXXXX)"
+staging="$(mktemp -d -t rainver-credential-restore-XXXXXX)"
 trap 'rm -rf "$staging"' EXIT
 python3 "$SCRIPT_DIR/safe_extract.py" "$ARCHIVE" "$staging" \
   secrets credential_backup_manifest.json
@@ -56,7 +56,7 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     manifest = json.load(fh)
-if manifest.get("backup_format") != "agent-space-credentials.v1":
+if manifest.get("backup_format") != "rainver-credentials.v1":
     raise SystemExit("credential archive has an incompatible backup_format")
 if manifest.get("included_paths") != ["secrets/"]:
     raise SystemExit("credential archive has unexpected included_paths")

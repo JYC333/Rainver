@@ -7,7 +7,7 @@
 import type {
   CanonicalMessage,
   MessageOut,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export interface ChatConversationWindowMessage {
   message_id: string | null;

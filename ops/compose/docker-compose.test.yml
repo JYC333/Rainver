@@ -1,16 +1,16 @@
 services:
   postgres:
-    container_name: agent-space-test-postgres
+    container_name: rainver-test-postgres
     image: pgvector/pgvector:pg${POSTGRES_MAJOR:-18}
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-agent_space}
-      - POSTGRES_USER=${POSTGRES_USER:-agent_space}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-agent_space_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-rainver}
+      - POSTGRES_USER=${POSTGRES_USER:-rainver}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-rainver_dev_password}
       - PGDATA=/var/lib/postgresql/data
     volumes:
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/db/postgres:/var/lib/postgresql/data
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/db/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent_space} -d ${POSTGRES_DB:-agent_space}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rainver} -d ${POSTGRES_DB:-rainver}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -23,7 +23,7 @@ services:
       dockerfile: server/Dockerfile
       target: dev-runtime
       network: host
-    container_name: agent-space-test-server
+    container_name: rainver-test-server
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -33,13 +33,13 @@ services:
       - ../../server/tsconfig.json:/app/server/tsconfig.json:ro
       - ../../packages/protocol/src:/app/packages/protocol/src:ro
       - ../../plugins:/app/plugins:ro
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}:/aspace
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:/rainver
     env_file:
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/.server.env
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/.server.env
     environment:
-      - AGENT_SPACE_HOME=/aspace
-      - AGENT_SPACE_ENV=test
-      - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-agent_space}:${POSTGRES_PASSWORD:-agent_space_dev_password}@postgres:5432/${POSTGRES_DB:-agent_space}}
+      - RAINVER_HOME=/rainver
+      - RAINVER_ENV=test
+      - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:-rainver_dev_password}@postgres:5432/${POSTGRES_DB:-rainver}}
       - SANDBOX_RUNNER_HOST=sandbox-runner
       - SANDBOX_RUNNER_SERVER_HOST=server
     depends_on:
@@ -80,15 +80,15 @@ services:
       - /tmp:rw,noexec,nosuid,size=128m
       - /run:rw,noexec,nosuid,size=16m
     env_file:
-      - path: ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/.runner.env
+      - path: ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/.runner.env
         required: false
     volumes:
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/workspaces:/runner/workspaces
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/sandboxes:/runner/sandboxes
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/runtime-tools:/runner/runtime-tools:ro
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/runtime-homes:/runner/run-homes
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/conversation-runtime-homes:/runner/conversation-homes
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}/cache/login-homes:/runner/login-homes
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/workspaces:/runner/workspaces
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/sandboxes:/runner/sandboxes
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/runtime-tools:/runner/runtime-tools:ro
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/runtime-homes:/runner/run-homes
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/conversation-runtime-homes:/runner/conversation-homes
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/login-homes:/runner/login-homes
     environment:
       - SANDBOX_RUNNER_PORT=8020
     networks:
@@ -126,13 +126,13 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../../:/repo:rw
-      - ${AGENT_SPACE_MODE_ROOT:-$HOME/.aspace/test}:/aspace
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:/rainver
     user: "1000:989"
     environment:
-      - DEPLOYER_SOCKET=/tmp/agent-space-deployer.sock
+      - DEPLOYER_SOCKET=/tmp/rainver-deployer.sock
       - REPO_ROOT=/repo
-      - AGENT_SPACE_HOME=/aspace
-      - AGENT_SPACE_ENV=test
+      - RAINVER_HOME=/rainver
+      - RAINVER_ENV=test
     restart: unless-stopped
 
 networks:

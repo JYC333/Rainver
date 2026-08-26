@@ -196,7 +196,7 @@ export function parseCrossrefIntegrityEvents(doi: string, sourceItemId: string |
 
 async function fetchCrossrefWork(doi: string): Promise<unknown> {
   const response = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
-    headers: { accept: "application/json", "user-agent": "AgentSpace/1.0 (mailto:admin@localhost)" },
+    headers: { accept: "application/json", "user-agent": "Rainver/1.0 (mailto:admin@localhost)" },
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`Crossref returned HTTP ${response.status}`);

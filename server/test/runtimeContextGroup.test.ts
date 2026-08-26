@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExecutionControlSnapshot, RuntimeContextPolicyVersion } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot, RuntimeContextPolicyVersion } from "@rainver/protocol";
 import { beforeEach, describe, expect, it } from "vitest";
 import { assertPolicyDoesNotWiden, assertPolicyPreferencesWithinConstraints, resolveRuntimeContextPolicies } from "../src/modules/policy/runtimeContextPolicyResolver.js";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext/reconciliationRepository.js";

@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   ProjectPublicSummaryDraftRequest,
   ProjectPublicSummaryUpsertRequest,
   RetrievalBriefRequest,
   RetrievalFeedbackRequest,
   RetrievalSearchRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,

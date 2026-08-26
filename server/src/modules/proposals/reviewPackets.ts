@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ProposalAcceptResultType } from "@agent-space/protocol";
+import type { ProposalAcceptResultType } from "@rainver/protocol";
 import { assertCanReviewContextOpsPacket } from "../contextOps/reviewPolicy.js";
 import type { Queryable } from "../routeUtils/common.js";
 import type { ProposalApplyContext, ProposalApplyResult } from "./applierRegistry.js";

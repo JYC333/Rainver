@@ -1,4 +1,4 @@
-import type { ContextItem, RuntimeContextEnvelope, TurnContextRequest } from "@agent-space/protocol";
+import type { ContextItem, RuntimeContextEnvelope, TurnContextRequest } from "@rainver/protocol";
 import { RuntimeContextPlanner } from "./planner.js";
 import { RuntimeContextPlanningError } from "./windowPlanner.js";
 import type { ModelWindowOverride } from "../usage/modelCatalog.js";

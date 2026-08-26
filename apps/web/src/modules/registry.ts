@@ -8,7 +8,7 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
  * Where an app entry originates.
  *
  * built_in       — shipped with the core bundle, always present.
- * official_plugin — an official optional module (developed by agent-space maintainers,
+ * official_plugin — an official optional module (developed by rainver maintainers,
  *                  installed/enabled via the official plugin control plane).
  *                  These entries are NOT capabilities. See OFFICIAL_OPTIONAL_MODULES.md.
  * installed      — reserved for future third-party installable plugin packages.
@@ -16,7 +16,7 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
  * external       — references a remote tool or external service (reserved).
  *
  * For current core features all entries are built_in.
- * Optional features added by agent-space maintainers use official_plugin.
+ * Optional features added by rainver maintainers use official_plugin.
  */
 export type AppSource = 'built_in' | 'official_plugin' | 'installed' | 'external'
 

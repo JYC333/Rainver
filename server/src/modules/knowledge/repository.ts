@@ -34,7 +34,7 @@ import { contentReadSql, contentVisibilityParamFilterSql } from "../access/conte
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
-import type { ProposalOut } from "@agent-space/protocol";
+import type { ProposalOut } from "@rainver/protocol";
 import {
   canMutateClaim,
   canMutateKnowledge,

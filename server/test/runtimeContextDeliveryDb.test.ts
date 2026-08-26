@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { seedServerHost } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@rainver/protocol";
 import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
 import { PgInvocationDeliveryAuthorizer } from "../src/modules/runtimeContext/gateway.js";
 import { RuntimeContextContinuityService } from "../src/modules/runtimeContext/continuity/service.js";

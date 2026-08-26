@@ -14,10 +14,10 @@ afterEach(async () => {
 });
 
 async function tempConfig() {
-  const root = await mkdtemp(join(tmpdir(), "aspace-runtime-tools-"));
+  const root = await mkdtemp(join(tmpdir(), "rainver-runtime-tools-"));
   tmpPaths.push(root);
   return loadConfig({
-    AGENT_SPACE_HOME: root,
+    RAINVER_HOME: root,
     RUNTIME_TOOLS_ROOT: join(root, "runtime-tools"),
   });
 }
@@ -270,7 +270,7 @@ describe("RuntimeToolRegistry", () => {
       "@agentclientprotocol/claude-agent-acp@latest",
       "@anthropic-ai/claude-code@latest",
     ]);
-    expect(installer.calls[0].cache_dir).toBe(join(cfg.agentSpaceHome, "cache", "npm"));
+    expect(installer.calls[0].cache_dir).toBe(join(cfg.rainverHome, "cache", "npm"));
 
     const resolved = await registry.resolveForExecution("claude_code");
     expect(resolved).toMatchObject({

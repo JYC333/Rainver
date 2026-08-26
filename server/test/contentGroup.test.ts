@@ -391,7 +391,7 @@ describe("contentDerivationVisibilityDb", () => {
       });
       const config = loadConfig({
         SERVER_DATABASE_URL: db.connectionUri,
-        ARTIFACT_STORAGE_ROOT: "/tmp/agent-space-content-derivation-artifacts",
+        ARTIFACT_STORAGE_ROOT: "/tmp/rainver-content-derivation-artifacts",
       });
       const materialized = await new RunMaterializationService(
         config,

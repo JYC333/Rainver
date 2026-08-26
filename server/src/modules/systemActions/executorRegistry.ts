@@ -1,4 +1,4 @@
-import type { SystemActionId } from "@agent-space/protocol";
+import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "./gateway.js";

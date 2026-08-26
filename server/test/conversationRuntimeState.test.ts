@@ -24,10 +24,10 @@ async function root(prefix: string): Promise<string> {
 
 describe("conversation runtime state", () => {
   it("reuses state only when both the isolated HOME and stable cwd exist", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
     const initial = await prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: false,
@@ -36,7 +36,7 @@ describe("conversation runtime state", () => {
     await writeFile(join(initial.cwd, "turn.txt"), "workspace state", "utf8");
 
     const resumed = await prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: true,
@@ -47,10 +47,10 @@ describe("conversation runtime state", () => {
   });
 
   it("clears partial state and forces replay when one state directory is missing", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
     const home = join(
-      agentSpaceHome,
+      rainverHome,
       "cache",
       "conversation-runtime-homes",
       STATE_KEY,
@@ -59,7 +59,7 @@ describe("conversation runtime state", () => {
     await writeFile(join(home, "stale.db"), "stale", "utf8");
 
     const prepared = await prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: true,
@@ -69,11 +69,11 @@ describe("conversation runtime state", () => {
   });
 
   it("does not resume through a symlinked state directory", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
-    const outside = await root("aspace-conversation-outside-");
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
+    const outside = await root("rainver-conversation-outside-");
     const home = join(
-      agentSpaceHome,
+      rainverHome,
       "cache",
       "conversation-runtime-homes",
       STATE_KEY,
@@ -84,7 +84,7 @@ describe("conversation runtime state", () => {
       STATE_KEY,
       "workspace",
     );
-    await mkdir(join(agentSpaceHome, "cache", "conversation-runtime-homes"), {
+    await mkdir(join(rainverHome, "cache", "conversation-runtime-homes"), {
       recursive: true,
     });
     await mkdir(cwd, { recursive: true });
@@ -92,7 +92,7 @@ describe("conversation runtime state", () => {
     await symlink(outside, home);
 
     const prepared = await prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: true,
@@ -102,15 +102,15 @@ describe("conversation runtime state", () => {
   });
 
   it("rejects a symlinked HOME state ancestor without touching its target", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
-    const outside = await root("aspace-conversation-outside-");
-    await mkdir(join(agentSpaceHome, "cache"), { recursive: true });
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
+    const outside = await root("rainver-conversation-outside-");
+    await mkdir(join(rainverHome, "cache"), { recursive: true });
     await writeFile(join(outside, "sentinel"), "outside", "utf8");
-    await symlink(outside, join(agentSpaceHome, "cache", "conversation-runtime-homes"));
+    await symlink(outside, join(rainverHome, "cache", "conversation-runtime-homes"));
 
     await expect(prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: false,
@@ -119,14 +119,14 @@ describe("conversation runtime state", () => {
   });
 
   it("rejects a symlinked cwd state ancestor without touching its target", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
-    const outside = await root("aspace-conversation-outside-");
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
+    const outside = await root("rainver-conversation-outside-");
     await writeFile(join(outside, "sentinel"), "outside", "utf8");
     await symlink(outside, join(sandboxRoot, "conversation-sessions"));
 
     await expect(prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: false,
@@ -135,31 +135,31 @@ describe("conversation runtime state", () => {
   });
 
   it("sweeps expired orphan state while retaining recent state", async () => {
-    const agentSpaceHome = await root("aspace-conversation-home-");
-    const sandboxRoot = await root("aspace-conversation-sandbox-");
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
     const prepared = await prepareConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       state_key: STATE_KEY,
       resume_requested: false,
     });
 
     await expect(sweepConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       protected_state_keys: new Set(),
       retention_ms: 60_000,
       now: new Date(),
     })).resolves.toBe(0);
     await expect(sweepConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       protected_state_keys: new Set([STATE_KEY]),
       retention_ms: 1,
       now: new Date(Date.now() + 1_000),
     })).resolves.toBe(0);
     await expect(sweepConversationRuntimeState({
-      agent_space_home: agentSpaceHome,
+      rainver_home: rainverHome,
       sandbox_root: sandboxRoot,
       protected_state_keys: new Set(),
       retention_ms: 1,
@@ -170,8 +170,8 @@ describe("conversation runtime state", () => {
 
   it("rejects non-UUID state keys before constructing filesystem paths", async () => {
     await expect(prepareConversationRuntimeState({
-      agent_space_home: await root("aspace-conversation-home-"),
-      sandbox_root: await root("aspace-conversation-sandbox-"),
+      rainver_home: await root("rainver-conversation-home-"),
+      sandbox_root: await root("rainver-conversation-sandbox-"),
       state_key: "../../escape",
       resume_requested: false,
     })).rejects.toThrow("conversation runtime state key must be a UUID");

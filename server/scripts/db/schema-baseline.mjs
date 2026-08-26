@@ -141,7 +141,7 @@ function check() {
   }
   assertSingleBaseline(drizzleDir);
   assertMigrationChain();
-  const tempRoot = mkdtempSync(join(tmpdir(), "agent-space-schema-check-"));
+  const tempRoot = mkdtempSync(join(tmpdir(), "rainver-schema-check-"));
   try {
     generateInto(tempRoot, { reportOutput: false });
     assertSingleBaseline(tempRoot);

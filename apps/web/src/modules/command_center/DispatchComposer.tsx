@@ -420,7 +420,7 @@ export default function DispatchComposer({
               <p className="mt-1 text-xs text-muted-foreground">
                 No workspace is registered yet{hostId ? ' for this host and project' : ''}. On the target machine, run:{' '}
                 <code className="font-mono select-all">
-                  agent-space-host workspace add &lt;path-on-host&gt; --project {projectId}
+                  rainver-host workspace add &lt;path-on-host&gt; --project {projectId}
                 </code>
               </p>
             )}

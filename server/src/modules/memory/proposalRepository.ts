@@ -14,8 +14,8 @@ import type {
   MemoryProposalCreateCommand,
   MemoryProposalUpdateCommand,
   ProposalOut,
-} from "@agent-space/protocol";
-import type { PolicyCheckRequest } from "@agent-space/protocol";
+} from "@rainver/protocol";
+import type { PolicyCheckRequest } from "@rainver/protocol";
 
 export interface QueryResult<Row> {
   rows: Row[];

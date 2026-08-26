@@ -86,7 +86,7 @@ External capability roots are **local only**. The registry does not scan GitHub 
 | Source | Default | Persisted? |
 |--------|---------|------------|
 | Builtin | manifest `enabled` (default `true`) | No — manifest is source of truth on reload |
-| External workspace | disabled | Yes — `$AGENT_SPACE_HOME/config/settings.yaml` |
+| External workspace | disabled | Yes — `$RAINVER_HOME/config/settings.yaml` |
 
 Persisted shape:
 
@@ -114,7 +114,7 @@ Key distinctions:
 |---|---|
 | Open Skill | External portable source package, usually `SKILL.md`; untrusted by default. |
 | NormalizedSkill | Internal intermediate representation produced from imported skill content. |
-| CapabilityDefinition | Agent-space canonical ability object and source of truth. |
+| CapabilityDefinition | Rainver canonical ability object and source of truth. |
 | CapabilityPack | Grouping of related capabilities, artifact types, docs/tests/examples. |
 | Runtime Skill | Generated Claude/Codex/model_api adapter content; not source of truth. |
 | Product Plugin | Optional product feature package; separate from capabilities. |
@@ -122,7 +122,7 @@ Key distinctions:
 Open Skill import must not execute scripts, install dependencies, load
 third-party server code, write active memory, or auto-enable capabilities.
 Imported skills are normalized and risk-scanned before any conversion into
-agent-space capability candidates.
+Rainver capability candidates.
 
 ## Built-in capabilities
 
@@ -137,7 +137,7 @@ planned runtime adapter type and is disabled by default. Current server routes e
 capability manifest metadata for catalog and UI use.
 
 Runtime-specific Claude Code, Codex, and `model_api` skill files are generated
-render targets. Agent-space capability definitions and profiles remain the
+render targets. Rainver capability definitions and profiles remain the
 source of truth.
 
 ## Related code

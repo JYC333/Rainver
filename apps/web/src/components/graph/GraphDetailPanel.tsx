@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import type { GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjectionNode } from '@rainver/protocol'
 import { Button } from '../ui/button'
 
 interface GraphDetailPanelProps {

@@ -1,4 +1,4 @@
-import type { RunToolGrant } from "@agent-space/protocol";
+import type { RunToolGrant } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "./registry.js";
 
 export async function buildRunToolGrants(

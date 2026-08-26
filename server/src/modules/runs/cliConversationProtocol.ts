@@ -2,7 +2,7 @@ import type { CliStdioController } from "./localCliExecution.js";
 import type {
   CanonicalModelUsage,
   CanonicalUsage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 // D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
 // §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
 // its tested start()-independent, phase-named anomaly handling — but its
@@ -153,7 +153,7 @@ export class AcpController implements CliStdioController {
       params: {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-        clientInfo: { name: "agent-space", version: "1" },
+        clientInfo: { name: "rainver", version: "1" },
       },
     });
   }
@@ -188,7 +188,7 @@ export class AcpController implements CliStdioController {
         id: message.id,
         error: {
           code: -32601,
-          message: `Agent Space does not permit interactive ACP request '${message.method}'`,
+          message: `Rainver does not permit interactive ACP request '${message.method}'`,
         },
       });
       this.fail(
@@ -308,7 +308,7 @@ export class AcpController implements CliStdioController {
       if (applied !== this.requestedEffort) {
         this.input.on_protocol_event?.({
           jsonrpc: "2.0",
-          method: "agent-space/effort_not_applied",
+          method: "rainver/effort_not_applied",
           params: { requested: this.requestedEffort, applied: applied ?? null },
         });
       }
@@ -625,7 +625,7 @@ function normalizeModelOptionValue(
   );
   if (exact) return stringField(exact, "value");
 
-  // Claude ACP exposes stable family aliases while Agent Space stores the
+  // Claude ACP exposes stable family aliases while Rainver stores the
   // provider's concrete model name. Match the family before falling back to
   // the session's current/default option, which keeps compatible providers
   // working through ANTHROPIC_MODEL without sending an invalid ACP id.

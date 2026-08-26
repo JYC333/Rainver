@@ -17,7 +17,7 @@ const profile = {
   id: "claude_code/default",
   runtime: "claude_code",
   name: "default",
-  source_path: "/aspace/credentials/cli/claude_code/default",
+  source_path: "/rainver/credentials/cli/claude_code/default",
   target_path: "/home/agent/.claude",
   readonly: true,
   notes: "",

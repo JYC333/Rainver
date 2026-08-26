@@ -1,4 +1,4 @@
-import type { ResearchCompiledQuery } from "@agent-space/protocol";
+import type { ResearchCompiledQuery } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";

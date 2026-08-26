@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@agent-space/protocol";
-import type { ProviderFromPresetCreateRequest } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import type { ProviderFromPresetCreateRequest } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../../gateway/errorEnvelope.js";
 import { checkInternalToken } from "../../../gateway/internalAuth.js";
@@ -408,7 +408,7 @@ export function registerProviderCommandRoutes(
         const embedding = scope === "rerank" ? null : await completeProviderEmbedding(store, identity.spaceId, {
           provider_id: target.provider.id,
           model: firstModelMatching(target.provider, looksLikeEmbeddingModel),
-          inputs: ["agent-space retrieval provider connection test"],
+          inputs: ["rainver retrieval provider connection test"],
           inputType: "document",
           metering: { subject_user_id: identity.userId },
         });

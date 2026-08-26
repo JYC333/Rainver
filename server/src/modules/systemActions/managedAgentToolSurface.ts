@@ -1,4 +1,4 @@
-import type { CanonicalToolCall, RuntimeHostExecuteRequest, RuntimeHostExecuteResponse } from "@agent-space/protocol";
+import type { CanonicalToolCall, RuntimeHostExecuteRequest, RuntimeHostExecuteResponse } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   retrievalToolContribution,

@@ -1,4 +1,4 @@
-import type { RetrievalEvalReportRequest } from "@agent-space/protocol";
+import type { RetrievalEvalReportRequest } from "@rainver/protocol";
 import type { ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import {

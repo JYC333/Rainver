@@ -62,7 +62,7 @@ describe("compose server config", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
       const text = composeText(mode);
       expect(text).toContain("\n  server:");
-      expect(text).toContain("container_name: agent-space-" + mode + "-server");
+      expect(text).toContain("container_name: rainver-" + mode + "-server");
     }
   });
 
@@ -122,7 +122,7 @@ describe("compose server config", () => {
   it("keeps the privileged deployer socket private to the deployer container", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
       expect(deployerServiceBlock(mode)).toContain(
-        "DEPLOYER_SOCKET=/tmp/agent-space-deployer.sock",
+        "DEPLOYER_SOCKET=/tmp/rainver-deployer.sock",
       );
       expect(serverServiceBlock(mode)).not.toContain("deployer.sock");
     }
@@ -139,7 +139,7 @@ describe("compose server config", () => {
       expect(runner).toContain("read_only: true");
       expect(runner).toContain(".runner.env");
       expect(runner).not.toContain(".server.env");
-      expect(runner).not.toContain(":/aspace");
+      expect(runner).not.toContain(":/rainver");
       expect(runner).not.toContain("docker.sock");
       expect(runner).not.toContain("../../:/repo");
       expect(runner).not.toMatch(/\/cache:\/runner\//);

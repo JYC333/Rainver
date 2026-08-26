@@ -1,4 +1,4 @@
-import type { Queryable } from "@agent-space/protocol";
+import type { Queryable } from "@rainver/protocol";
 
 export interface DiaryEntryRow {
   id: string;

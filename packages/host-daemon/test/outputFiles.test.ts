@@ -7,7 +7,7 @@ import { collectOutputFiles } from "../src/outputFiles.js";
 let dir: string;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "agent-space-host-outputs-"));
+  dir = await mkdtemp(join(tmpdir(), "rainver-host-outputs-"));
 });
 
 afterEach(async () => {

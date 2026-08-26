@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Eye, Import, RotateCcw, Share2 } from 'lucide-react'
 import { toast } from 'sonner'
-import type { ContentPublication, PublicationResourceType } from '@agent-space/protocol'
+import type { ContentPublication, PublicationResourceType } from '@rainver/protocol'
 import { publicationsApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'

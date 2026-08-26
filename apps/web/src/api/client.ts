@@ -418,7 +418,7 @@ import type {
   UsageSubjectsResponse,
   UsageSummaryResponse,
   UsageTimeseriesResponse,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 
 const BASE = '/api/v1'
 
@@ -480,7 +480,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData
   const headers: Record<string, string> = isForm ? {} : { 'Content-Type': 'application/json' }
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-  if (options.includeSpaceContext ?? true) headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  if (options.includeSpaceContext ?? true) headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey
 
   const url = BASE + path
@@ -537,7 +537,7 @@ async function postChatTurn(
   options.onAccepted?.(accepted)
   const headers: Record<string, string> = {}
   if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
-  headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
   const response = await fetch(accepted.event_stream_url, { headers })
   if (!response.ok || !response.body) {
     throw new ApiRequestError(`Run event stream failed (${response.status})`, response.status)
@@ -1187,7 +1187,7 @@ async function streamRunLifecycle(
 ): Promise<void> {
   const headers: Record<string, string> = {}
   if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
-  headers['X-Agent-Space-Id'] = options.spaceId ?? _spaceId
+  headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
   const response = await fetch(
     `${BASE}/runs/${encodeURIComponent(runId)}/events/stream`,
     { headers, signal: options.signal },
@@ -1436,7 +1436,7 @@ async function downloadArtifactExport(
 ): Promise<void> {
   const headers: Record<string, string> = {}
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-  headers['X-Agent-Space-Id'] = _spaceId
+  headers['X-Rainver-Space-Id'] = _spaceId
   const sep = '/artifacts/' + artifactId + '/export'
   const query = new URLSearchParams()
   if (params.project_folder_id !== undefined) query.set('project_folder_id', params.project_folder_id)
@@ -2092,7 +2092,7 @@ export const credentialsApi = {
     const url = `${BASE}/credentials/cli/login/stream?runtime=${encodeURIComponent(runtime)}${profileParam}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-    headers['X-Agent-Space-Id'] = spaceId ?? _spaceId
+    headers['X-Rainver-Space-Id'] = spaceId ?? _spaceId
 
     const r = await fetch(url, { headers })
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
@@ -3409,7 +3409,7 @@ export const providersApi = {
     const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-    headers['X-Agent-Space-Id'] = _spaceId
+    headers['X-Rainver-Space-Id'] = _spaceId
     const response = await fetch(url, { headers })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     if (!response.body) throw new Error('No response body')

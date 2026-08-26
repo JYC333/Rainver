@@ -1,7 +1,7 @@
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginHostContext,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { registerDiaryRoutes } from "./routes.js";
 import { JOB_TYPE_DIARY_REFLECTION, buildDiaryReflectionHandler } from "./jobs.js";
@@ -12,7 +12,7 @@ import {
   DIARY_PLUGIN_VERSION,
 } from "./manifest.js";
 
-export const diaryPlugin: AgentSpacePlugin = {
+export const diaryPlugin: RainverPlugin = {
   id: DIARY_PLUGIN_ID,
   version: DIARY_PLUGIN_VERSION,
   migrations: diaryMigrations,

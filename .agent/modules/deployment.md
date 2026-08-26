@@ -10,7 +10,7 @@ runtime access to Docker or deployment execution.
 ```text
 Host operator
   → allowlisted script, or operator-controlled client inside deployer container
-  → private Unix socket (/tmp/agent-space-deployer.sock)
+  → private Unix socket (/tmp/rainver-deployer.sock)
   → privileged deployer process (deployer/deployer.py)
   → allowlisted deploy script (deployer/scripts/)
   → docker compose build/restart server frontend
@@ -26,8 +26,8 @@ deployment job persistence and proposal-gated submission are not implemented.
 
 | Job Type | Script | Effect |
 |---|---|---|
-| `rebuild_agent_space` | `deployer/scripts/rebuild.sh` | build and recreate server/frontend |
-| `restart_agent_space` | `deployer/scripts/restart.sh` | restart server/frontend |
+| `rebuild_rainver` | `deployer/scripts/rebuild.sh` | build and recreate server/frontend |
+| `restart_rainver` | `deployer/scripts/restart.sh` | restart server/frontend |
 | `health_check` | `deployer/scripts/health_check.sh` | check server `/health` |
 
 No other job type, arbitrary command, caller-selected script, code-patch action,

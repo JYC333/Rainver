@@ -1,4 +1,4 @@
-import type { Queryable } from "@agent-space/protocol";
+import type { Queryable } from "@rainver/protocol";
 import type { LedgerLoadResult } from "../beancount/entries.js";
 import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
 import { transactionBalanceErrors } from "../beancount/validation.js";

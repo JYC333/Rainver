@@ -60,7 +60,7 @@ artifact's production context remains unchanged.
 - Artifact records must remain scoped to the owning run and space.
 - The server resolves file-backed exports under
   `ARTIFACT_STORAGE_ROOT` (default:
-  `$AGENT_SPACE_HOME/storage/artifacts`).
+  `$RAINVER_HOME/storage/artifacts`).
 
 ## Path Safety
 

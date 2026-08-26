@@ -11,7 +11,7 @@ implemented Claim Candidate Packet, Memory-derived claim extraction, and future
 domain modules such as people/assets/events/tasks.
 
 This document replaces the earlier Knowledge-only claim table sketch. The audit
-found that Agent Space already uses `knowledge_items` as the canonical Wiki
+found that Rainver already uses `knowledge_items` as the canonical Wiki
 model, not as a generic root object table. The implemented backend shape is now:
 
 ```
@@ -101,7 +101,7 @@ uses `retrieval_edges` only as a rebuildable projection of active
 
 ### Constraint Lessons Apply Only At The Constraint Layer
 
-Agent Space should keep discipline around small canonical types, aliases/subtypes,
+Rainver should keep discipline around small canonical types, aliases/subtypes,
 migration review, and audit. It should not copy a page-oriented schema-pack
 runtime as the authoritative application model.
 

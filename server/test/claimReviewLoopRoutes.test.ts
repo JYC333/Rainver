@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 function config() {
-  return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" });
+  return loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" });
 }
 
 interface Handler {

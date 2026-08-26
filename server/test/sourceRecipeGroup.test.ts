@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SourceRecipeDefinition } from "@agent-space/protocol";
+import type { SourceRecipeDefinition } from "@rainver/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";

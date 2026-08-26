@@ -8,7 +8,7 @@ implemented. Re-audited against the upstream master (v3) branch on 2026-07-02:
 
 ## Scope
 
-Agent Space Finance Ledger targets Beancount v3 core ledger compatibility while
+Rainver Finance Ledger targets Beancount v3 core ledger compatibility while
 keeping PostgreSQL as the runtime source of truth. Beancount text is an
 import/export compatibility format, not primary storage.
 
@@ -26,7 +26,7 @@ The upstream reference is the Beancount repository v3 branch:
 - `beancount/parser/printer.py`
 
 Licensing boundary: Beancount is GPLv2 only. This matrix records public
-concepts and compatibility targets. The Agent Space implementation must
+concepts and compatibility targets. The Rainver implementation must
 reimplement behavior in TypeScript and must not copy GPL source into this
 repository without an explicit license decision.
 
@@ -36,7 +36,7 @@ repository without an explicit license decision.
 - `partial` - implemented for a safe subset, with known gaps listed.
 - `stored_export_only` - stored and exportable, but not executed/transformed.
 - `deferred` - not implemented yet, intentionally listed.
-- `not_applicable` - deliberately outside Agent Space's runtime responsibility.
+- `not_applicable` - deliberately outside Rainver's runtime responsibility.
 
 ## Phase Mapping
 
@@ -62,7 +62,7 @@ repository without an explicit license decision.
 
 ## Matrix
 
-| Beancount concept | Source file | Agent Space domain model | PostgreSQL storage | API/export support | Tests | Status |
+| Beancount concept | Source file | Rainver domain model | PostgreSQL storage | API/export support | Tests | Status |
 |---|---|---|---|---|---|---|
 | Directive stream / entries | `core/data.py`, `loader.py` | `LedgerEntry` union sorted by Beancount-compatible entry key | `finance_directives` plus directive-specific tables | Engine loads from text or DB; exporter renders the stored stream; REST routes list directives | `financeLedgerEngine.test.ts`, `financeLedgerImportExport.test.ts` | implemented |
 | Source metadata: filename / lineno | `core/data.py`, `loader.py`, `parser/grammar.y` | `SourceLocation` on directives and imports | `finance_directives.source_filename`, `source_lineno`, `source_hash`, `finance_import_sources` | Importer persists source locations; validation errors carry them | `financeLedgerImportExport.test.ts` | implemented |
@@ -111,8 +111,8 @@ repository without an explicit license decision.
 | Loader pipeline | `loader.py` | `FinanceLedgerEngine.loadFromDb/loadFromText` → normalize → sort → interpolate → pad → validate | Reads full directive stream, options, config directives, import sources | Returns entries/errors/options; DB load restricted to posted directives | `financeLedgerEngine.test.ts`, `financeLedgerImportExport.test.ts` | implemented |
 | Built-in validation | `ops/validation.py` | `validateEntries()` mirrors BASIC_VALIDATIONS (open/close, active accounts, currency constraints, duplicate balances/commodities, document paths, transaction balances) | Errors returned as structured values, not stored | `POST /validate` route and import results return structured errors | `financeLedgerEngine.test.ts`, `financeLedgerRoutes.test.ts` | implemented |
 | Printer/exporter | `parser/printer.py` | `BeancountExporter` | Reads stored directives | UTF-8 Beancount text; decimal text preserved; `finance_exports` audit row with content hash and validation summary; no column alignment | `financeLedgerImportExport.test.ts` roundtrip | implemented |
-| Import dedup / provenance | n/a (Agent Space) | `finance_import_sources` content-hash dedup, default `proposed` status | `finance_import_sources`, `finance_directives.import_source_id` | `POST /import/beancount`; `post_directly` requires a clean file | `financeLedgerImportExport.test.ts` | implemented |
-| Proposal-gated posting | n/a (Agent Space) | `finance_ledger.post_directive`, `finance_ledger.post_import_batch` appliers | `finance_directives.status/proposal_id` | Appliers revalidate at apply time; disabled plugin fails closed via host gating | `financeLedgerImportExport.test.ts`, `pluginHost.test.ts` | implemented |
+| Import dedup / provenance | n/a (Rainver) | `finance_import_sources` content-hash dedup, default `proposed` status | `finance_import_sources`, `finance_directives.import_source_id` | `POST /import/beancount`; `post_directly` requires a clean file | `financeLedgerImportExport.test.ts` | implemented |
+| Proposal-gated posting | n/a (Rainver) | `finance_ledger.post_directive`, `finance_ledger.post_import_batch` appliers | `finance_directives.status/proposal_id` | Appliers revalidate at apply time; disabled plugin fails closed via host gating | `financeLedgerImportExport.test.ts`, `pluginHost.test.ts` | implemented |
 | External Python plugin execution | `loader.py` | Not executed in Finance Ledger core | Plugin declarations stored only | Explicitly unsupported without future sandbox policy | Negative test for no execution | not_applicable |
 | Realtime market prices | Not Beancount core | Future investment plugin concern | No storage in finance core beyond explicit `price` directives | No quote fetching | Boundary tests | not_applicable |
 

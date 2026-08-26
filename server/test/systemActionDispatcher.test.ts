@@ -3,7 +3,7 @@ import type {
   RuntimeHostExecuteRequest,
   SystemActionDefinition,
   SystemActionId,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { loadConfig } from "../src/config.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
@@ -15,7 +15,7 @@ vi.mock("../src/modules/systemActions/registry.js", () => ({
   loadSystemActionRegistry: async () => registryState.registry,
 }));
 
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 
 describe("SystemActionDispatcher tool binding projection", () => {

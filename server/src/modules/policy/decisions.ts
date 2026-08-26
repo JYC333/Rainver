@@ -1,7 +1,7 @@
 /**
  * Policy decision value objects and risk-rank helpers.
  *
- * `PolicyDecision` mirrors the wire schema (`@agent-space/protocol` `policy.ts`)
+ * `PolicyDecision` mirrors the wire schema (`@rainver/protocol` `policy.ts`)
  * field-for-field (snake_case) so a decision serializes directly to the
  * `PolicyDecisionSchema` contract.
  */
@@ -9,7 +9,7 @@
 import type {
   PolicyDecisionValue,
   PolicyRiskLevel,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export type Decision = PolicyDecisionValue; // "allow" | "deny" | "require_approval"
 export type RiskLevel = PolicyRiskLevel; // "low" | "medium" | "high" | "critical"

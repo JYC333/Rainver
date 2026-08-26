@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalObjectType } from "@rainver/protocol";
 import type { EvidenceRow, SourceItemRow, SourceConnectionRow } from "../sourceRepositoryRows.js";
 import {
   ARXIV_NEW_PAPERS_CONTENT_PROFILE,

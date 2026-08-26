@@ -573,7 +573,7 @@ describe("jobs route visibility", () => {
 
 describe("AutomationService policy preflight", () => {
   const config = loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
   });
   const configWithoutDb = loadConfig({});
 

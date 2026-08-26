@@ -87,7 +87,7 @@ describe('agentsApi.chat', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/agents/agent-1/chat')
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'POST',
-      headers: expect.objectContaining({ 'X-Agent-Space-Id': 'space-1' }),
+      headers: expect.objectContaining({ 'X-Rainver-Space-Id': 'space-1' }),
     })
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/runs/run-1/events/stream')
     expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/sessions/session-1/messages')

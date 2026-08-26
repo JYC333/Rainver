@@ -73,7 +73,7 @@ export class CustomSourceCredentialService {
     // trim-to-null behavior.
     const headerValuePrefix = typeof body.header_value_prefix === "string" ? body.header_value_prefix : "Bearer ";
 
-    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(this.config.agentSpaceHome);
+    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(this.config.rainverHome);
     const secretRef = encryptCustomSourceFetchCredential(secret, masterKey);
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -130,7 +130,7 @@ export class CustomSourceCredentialService {
     );
     const secretRef = secretRefResult.rows[0]?.secret_ref;
     if (!secretRef) return null;
-    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(this.config.agentSpaceHome);
+    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(this.config.rainverHome);
     const secret = decryptCustomSourceFetchCredential(secretRef, masterKey);
     const scopes = (row.scopes_json ?? {}) as { header_name?: string; header_value_prefix?: string };
     const headerName = scopes.header_name ?? "Authorization";

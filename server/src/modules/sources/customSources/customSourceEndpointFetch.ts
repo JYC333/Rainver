@@ -1,4 +1,4 @@
-import type { SourcePolicyEnvelope } from "@agent-space/protocol";
+import type { SourcePolicyEnvelope } from "@rainver/protocol";
 import { HttpError } from "../../routeUtils/common.js";
 import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner.js";
 

@@ -3,7 +3,7 @@ import type {
   SourcePolicyEnvelope,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { dateIso, type Queryable } from "../../routeUtils/common.js";
 import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
 import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";

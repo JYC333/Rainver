@@ -219,8 +219,8 @@ function environmentMap(env = {}) {
   for (const [field, key] of [["base_url", "ANTHROPIC_BASE_URL"], ["auth_token", "ANTHROPIC_AUTH_TOKEN"], ["model", "ANTHROPIC_MODEL"], ["default_sonnet_model", "ANTHROPIC_DEFAULT_SONNET_MODEL"], ["default_opus_model", "ANTHROPIC_DEFAULT_OPUS_MODEL"], ["default_haiku_model", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]]) if (typeof anthropic[field] === "string") result[key] = anthropic[field];
   const proxy = env.proxy ?? {};
   for (const [field, keys] of [["http", ["HTTP_PROXY", "http_proxy"]], ["https", ["HTTPS_PROXY", "https_proxy"]], ["all", ["ALL_PROXY", "all_proxy"]], ["no_proxy", ["NO_PROXY", "no_proxy"]]]) if (typeof proxy[field] === "string") for (const key of keys) result[key] = proxy[field];
-  if (env.tool_channel && typeof env.tool_channel.url === "string" && typeof env.tool_channel.token === "string") { result.AGENT_SPACE_MCP_URL = env.tool_channel.url; result.AGENT_SPACE_TOOL_TOKEN = env.tool_channel.token; }
-  if (env.exchange) { result.AGENT_SPACE_EXCHANGE_INPUT = "/run-exchange/input/run_input.json"; result.AGENT_SPACE_EXCHANGE_OUTPUT = "/run-exchange/output"; }
+  if (env.tool_channel && typeof env.tool_channel.url === "string" && typeof env.tool_channel.token === "string") { result.RAINVER_MCP_URL = env.tool_channel.url; result.RAINVER_TOOL_TOKEN = env.tool_channel.token; }
+  if (env.exchange) { result.RAINVER_EXCHANGE_INPUT = "/run-exchange/input/run_input.json"; result.RAINVER_EXCHANGE_OUTPUT = "/run-exchange/output"; }
   return result;
 }
 

@@ -3,8 +3,8 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+} from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import {
@@ -135,7 +135,7 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
 
 function agentWaitForResultsToolDefinition(
   targets: readonly AgentDelegationTarget[],
-  protocol: typeof import("@agent-space/protocol"),
+  protocol: typeof import("@rainver/protocol"),
 ): CanonicalToolDefinition {
   const generatedInputSchema = protocol.systemActionInputJsonSchema({ input_schema: protocol.AgentWaitForResultsInputSchema });
   const generatedProperties = (generatedInputSchema.properties ?? {}) as Record<string, Record<string, unknown>>;

@@ -20,7 +20,7 @@ export const REQUEST_ID_HEADER = "x-request-id";
  * Marker stamped on requests/responses that passed through the server. It
  * is trace metadata only — never a grant of trust.
  */
-export const SERVER_MARKER_HEADER = "x-agent-space-server";
+export const SERVER_MARKER_HEADER = "x-rainver-server";
 export const SERVER_MARKER_VALUE = "server";
 
 /**

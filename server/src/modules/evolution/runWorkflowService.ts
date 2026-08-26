@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
-import type { WorkflowDefinition } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import type { WorkflowDefinition } from "@rainver/protocol";
 import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, requiredString } from "../routeUtils/common.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";

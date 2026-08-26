@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
  * Forwarding fixed the existing pairs; this keeps new ones from appearing.
  *
  * Only *local redeclaration* fails. Forwarding is the target state, so
- * `export type { Thing } from '@agent-space/protocol'` — and the import-then-
+ * `export type { Thing } from '@rainver/protocol'` — and the import-then-
  * export form api.ts uses — must keep passing.
  */
 const here = dirname(fileURLToPath(import.meta.url))
@@ -53,7 +53,7 @@ describe('protocol forwarding', () => {
       duplicated,
       duplicated.length
         ? `api.ts redeclares wire types the protocol package owns: ${duplicated.join(', ')}. `
-          + 'Forward them (`import type { X } from \'@agent-space/protocol\'` plus `export type { X }`) '
+          + 'Forward them (`import type { X } from \'@rainver/protocol\'` plus `export type { X }`) '
           + 'instead of writing a second declaration, or rename the client view model if it only shares the name.'
         : undefined,
     ).toEqual([])

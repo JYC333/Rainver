@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 import GraphPage from '../GraphPage'
 
 const graphApiMock = vi.hoisted(() => ({

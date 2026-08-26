@@ -4,7 +4,7 @@ import type {
   RunAdapterResultEnvelope,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { loadConfig } from "../src/config.js";
 import {
   DEFAULT_MAX_MODEL_TURNS,

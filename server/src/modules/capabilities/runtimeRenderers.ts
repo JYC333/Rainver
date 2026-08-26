@@ -13,10 +13,10 @@ export function renderClaudeSkill(input: {
   return {
     runtime_adapter_type: "claude_code",
     render_mode: "render_skill",
-    root_path: `.agent-space/generated-skills/claude/${slug}`,
+    root_path: `.rainver/generated-skills/claude/${slug}`,
     files: [
       {
-        path: `.agent-space/generated-skills/claude/${slug}/SKILL.md`,
+        path: `.rainver/generated-skills/claude/${slug}/SKILL.md`,
         content: renderSkillMarkdown(input, "Claude Code"),
       },
     ],
@@ -33,18 +33,18 @@ export function renderCodexSkill(input: {
   return {
     runtime_adapter_type: "codex_cli",
     render_mode: "render_skill",
-    root_path: `.agent-space/generated-skills/codex/${slug}`,
+    root_path: `.rainver/generated-skills/codex/${slug}`,
     files: [
       {
-        path: `.agent-space/generated-skills/codex/${slug}/SKILL.md`,
+        path: `.rainver/generated-skills/codex/${slug}/SKILL.md`,
         content: renderSkillMarkdown(input, "Codex"),
       },
       {
-        path: `.agent-space/generated-skills/codex/${slug}/agents/openai.yaml`,
+        path: `.rainver/generated-skills/codex/${slug}/agents/openai.yaml`,
         content: [
           "schema_version: 1",
           `capability_id: ${JSON.stringify(input.capability.id)}`,
-          "source: agent-space-generated",
+          "source: rainver-generated",
           "permissions:",
           "  mode: policy_intersection",
           "",
@@ -108,7 +108,7 @@ function renderSkillMarkdown(input: {
     "",
     "## Governance",
     "",
-    "- Treat runtime permissions as the intersection of this skill request and agent-space policy.",
+    "- Treat runtime permissions as the intersection of this skill request and rainver policy.",
     "- Do not write active memory directly; create proposals where durable memory changes are needed.",
     "- Treat this file as generated adapter content, not source of truth.",
     "",

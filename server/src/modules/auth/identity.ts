@@ -144,7 +144,7 @@ export async function introspectIdentity(
     return { ok: false, reason: "unavailable", statusCode: 502, body: "" };
   }
   const query = request.query as Record<string, unknown> | undefined;
-  const requestedSpaceHeader = headerValue(request.headers["x-agent-space-id"]);
+  const requestedSpaceHeader = headerValue(request.headers["x-rainver-space-id"]);
   return repository.resolveIdentity({
     authorization: headerValue(request.headers.authorization),
     sessionToken: cookieValue(headerValue(request.headers.cookie), SESSION_COOKIE),

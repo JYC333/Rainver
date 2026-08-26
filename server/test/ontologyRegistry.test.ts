@@ -37,13 +37,13 @@ import {
 // `object_relations` would reject on write.
 describe("ontology registry", () => {
   it("declares every link type in the protocol vocabulary", async () => {
-    const { LINK_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { LINK_TYPE_VALUES } = await import("@rainver/protocol");
     const missing = LINK_TYPE_VALUES.filter((value) => !hasDeclaration(value));
     expect(missing).toEqual([]);
   });
 
   it("does not declare a link type outside the protocol vocabulary", async () => {
-    const { LINK_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { LINK_TYPE_VALUES } = await import("@rainver/protocol");
     const known = new Set<string>(LINK_TYPE_VALUES);
     const extra = registeredLinkTypes()
       .map((definition) => definition.linkType)
@@ -86,7 +86,7 @@ describe("ontology registry", () => {
   });
 
   it("keeps the retrieval object types agreeing with the Retrievable interface", async () => {
-    const { RETRIEVAL_OBJECT_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { RETRIEVAL_OBJECT_TYPE_VALUES } = await import("@rainver/protocol");
     expect([...retrievableEntityTypes()].sort()).toEqual([...RETRIEVAL_OBJECT_TYPE_VALUES].sort());
   });
 

@@ -122,7 +122,7 @@ const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
-  testRoot = await mkdtemp(join(tmpdir(), "agent-space-room-db-"));
+  testRoot = await mkdtemp(join(tmpdir(), "rainver-room-db-"));
   credentialOne = join(testRoot, "credential-one");
   credentialTwo = join(testRoot, "credential-two");
   await Promise.all([
@@ -135,16 +135,16 @@ beforeAll(async () => {
   ]);
   service = new RoomService(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
-    AGENT_SPACE_HOME: testRoot,
+    RAINVER_HOME: testRoot,
   }), db.pool);
   groupService = new AgentGroupRunService(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
-    AGENT_SPACE_HOME: testRoot,
+    RAINVER_HOME: testRoot,
   }), db.pool);
   // Installs the fake claude_code tool once for the whole file: on-disk
   // state under testRoot, independent of the per-test DB fixtures below.
   await new RuntimeToolRegistry(
-    loadConfig({ AGENT_SPACE_HOME: testRoot }),
+    loadConfig({ RAINVER_HOME: testRoot }),
     new FakeClaudeCodeInstaller(),
   ).install("claude_code", { version: INSTALLED_CLAUDE_CODE_VERSION });
 }, 120_000);
@@ -566,7 +566,7 @@ describe("Room workflow (real Postgres)", () => {
       [continuationPolicyId],
     );
     const continuationExecution = await new RunOrchestrationService(
-      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! }),
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
       new PgRunRepository(db.pool),
       {
         usageRecorder: async () => {},
@@ -676,7 +676,7 @@ describe("Room workflow (real Postgres)", () => {
       getTaskChain: async () => [{ provider_id: "provider-1", model: "cheap-model" }],
     } as unknown as ProviderCommandStore;
     const result = await new RoomConversationTitleService(
-      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! }),
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
       db.pool,
       {
         resolveProviderStore: () => providerStore,
@@ -917,7 +917,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const finalizerConfig = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
-      AGENT_SPACE_HOME: testRoot,
+      RAINVER_HOME: testRoot,
     });
     const continuity = {
       async finalizeChatTurn() {
@@ -1963,7 +1963,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const projector = new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
-      AGENT_SPACE_HOME: testRoot,
+      RAINVER_HOME: testRoot,
     }));
     await projector.markDelegatedRunTerminal(childRun);
 
@@ -2082,7 +2082,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const projector = new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
-      AGENT_SPACE_HOME: testRoot,
+      RAINVER_HOME: testRoot,
     }));
     await projector.markDelegatedRunTerminal(childRun);
 
@@ -2107,7 +2107,7 @@ describe("Room workflow (real Postgres)", () => {
     const now = new Date().toISOString();
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
-      AGENT_SPACE_HOME: testRoot,
+      RAINVER_HOME: testRoot,
     });
     await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, current_version_id, visibility, created_at, updated_at)
@@ -2311,7 +2311,7 @@ describe("Room workflow (real Postgres)", () => {
         usage: { input_tokens: 10, output_tokens: 8 },
       }),
     };
-    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, AGENT_SPACE_HOME: testRoot! });
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! });
     const summaries = new RoomConversationSummaryService(config, testPool, dependencies);
     await requestRoomConversationSummary(testPool, {
       spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,

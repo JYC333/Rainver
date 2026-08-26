@@ -3,7 +3,7 @@ import type {
   PluginHostContext,
   Queryable,
   ResolvedIdentity,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type {
   BalanceScope,
   DirectiveStatus,

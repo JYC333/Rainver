@@ -64,7 +64,7 @@ export function useRemoteWorkspaces(projectId: string): { workspaces: RemoteWork
   return { workspaces, loading }
 }
 
-const LAST_WORKSPACE_KEY_PREFIX = 'agent-space:command-center:last-workspace:'
+const LAST_WORKSPACE_KEY_PREFIX = 'rainver:command-center:last-workspace:'
 
 export function lastUsedWorkspaceId(projectId: string): string | null {
   try {

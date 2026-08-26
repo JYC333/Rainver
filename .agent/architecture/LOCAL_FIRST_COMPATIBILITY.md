@@ -1,13 +1,13 @@
 # Local-First Compatibility Architecture Note
 
 **Status:** Durable design position — not a planned sprint  
-**Scope:** What agent-space must preserve to remain compatible with future partial local-first clients
+**Scope:** What Rainver must preserve to remain compatible with future partial local-first clients
 
 ---
 
 ## 1. Product Stance
 
-agent-space is **not** a local-first system and will not become one. The server-authoritative model is a deliberate design choice: the control plane holds canonical state, memory is managed through a proposal workflow, and policy and credentials require central enforcement.
+Rainver is **not** a local-first system and will not become one. The server-authoritative model is a deliberate design choice: the control plane holds canonical state, memory is managed through a proposal workflow, and policy and credentials require central enforcement.
 
 The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping active memory, proposals, credentials, policy, and deployment firmly server-authoritative.
 

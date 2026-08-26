@@ -123,7 +123,7 @@ export function normalizeUsageObservation(
     request_count: nonNegativeInt(input.request_count) ?? 1,
     estimated_cost_usd: catalogCost,
     cost_accuracy: costAccuracy,
-    usage_schema: trimOrNull(input.usage_schema) ?? "agent_space_v1",
+    usage_schema: trimOrNull(input.usage_schema) ?? "rainver_v1",
     usage_details_json: normalized.usageDetails,
     cost_details_json: costAccuracy === "catalog" ? normalizeCostDetails(input.cost_details) : {},
     provider_usage_json: providerUsage,

@@ -1,10 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginActivationResult,
   PluginHostContext,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { loadConfig } from "../src/config.js";
 import { PluginHost } from "../src/modules/plugins/host/index.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
@@ -13,7 +13,7 @@ import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistr
 describe("PluginHost", () => {
   it("activates built-in plugins synchronously and exposes contributions", async () => {
     const app = Fastify({ logger: false });
-    const plugin: AgentSpacePlugin = {
+    const plugin: RainverPlugin = {
       id: "test_plugin",
       version: "0.1.0",
       activate(ctx: PluginHostContext) {
@@ -52,7 +52,7 @@ describe("PluginHost", () => {
 
   it("rejects async activation because contributions would be registered too late", () => {
     const app = Fastify({ logger: false });
-    const plugin: AgentSpacePlugin = {
+    const plugin: RainverPlugin = {
       id: "async_plugin",
       version: "0.1.0",
       activate: (() =>

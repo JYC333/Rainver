@@ -18,7 +18,7 @@ import type {
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository.js";
-import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@rainver/protocol";
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.js";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
 import { LocalCliProcessRegistry, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
@@ -26,10 +26,10 @@ import type { UsageObservation } from "../src/modules/usage/types.js";
 
 function config(withDatabase = false) {
   return loadConfig({
-    ...(withDatabase ? { SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" } : {}),
+    ...(withDatabase ? { SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" } : {}),
     SERVER_INTERNAL_TOKEN: "internal-token",
-    AGENT_SPACE_HOME: "/tmp/agent-space-run-orchestration-tests-home",
-    SANDBOX_ROOT: "/tmp/agent-space-run-orchestration-tests",
+    RAINVER_HOME: "/tmp/rainver-run-orchestration-tests-home",
+    SANDBOX_ROOT: "/tmp/rainver-run-orchestration-tests",
   });
 }
 
@@ -464,8 +464,8 @@ class FakeWorkspaceManager implements RunSandboxManagerPort {
   async prepareRunWorkspace(run: RunRecord): Promise<PreparedRunSandbox> {
     this.calls.push(`prepare:${run.id}`);
     return {
-      sandbox_cwd: "/tmp/aspace-prepared-run",
-      context_cwd: "/tmp/aspace-prepared-run",
+      sandbox_cwd: "/tmp/rainver-prepared-run",
+      context_cwd: "/tmp/rainver-prepared-run",
       cleanup_kind: "git_worktree",
       sandbox_kind: this.sandboxKind,
       project_folder_root: "/tmp/workspace-root",
@@ -1148,7 +1148,7 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            const output = input.env.AGENT_SPACE_EXCHANGE_OUTPUT;
+            const output = input.env.RAINVER_EXCHANGE_OUTPUT;
             expect(output).toBeTruthy();
             await mkdir(dirname(`${output}/report.json`), { recursive: true });
             await writeFile(`${output}/report.json`, JSON.stringify({ answer: "ok" }));
@@ -1239,7 +1239,7 @@ describe("RunOrchestrationService", () => {
 
     expect(workspaceManager.calls).toEqual([
       "prepare:run-1",
-      "cleanup:run-1:git_worktree:/tmp/aspace-prepared-run:/tmp/workspace-root",
+      "cleanup:run-1:git_worktree:/tmp/rainver-prepared-run:/tmp/workspace-root",
     ]);
     expect(runtimeContextGateway.calls[0]).toMatchObject({
       invocationId: "run-1",
@@ -1249,7 +1249,7 @@ describe("RunOrchestrationService", () => {
     });
     expect(executorCalls[0]).toEqual({
       command: [process.execPath],
-      cwd: "/tmp/aspace-prepared-run",
+      cwd: "/tmp/rainver-prepared-run",
     });
     expect(repo.calls).toContain("event:sandbox_created:succeeded");
     expect(repo.terminalUpdates[0]).toMatchObject({
@@ -2629,7 +2629,7 @@ describe("retrievalIntentFor", () => {
   });
 
   it("keeps an explicit intent whole, so a batch caller never relies on truncation", async () => {
-    const { RETRIEVAL_INTENT_MAX_CHARS } = await import("@agent-space/protocol");
+    const { RETRIEVAL_INTENT_MAX_CHARS } = await import("@rainver/protocol");
     const goal = "How do long-term memory architectures compare in personalization quality?";
     const renderedBatch = "ITEM 1\n".repeat(RETRIEVAL_INTENT_MAX_CHARS);
     expect(await retrievalIntentFor(goal ?? renderedBatch)).toBe(goal);
@@ -2637,7 +2637,7 @@ describe("retrievalIntentFor", () => {
   });
 
   it("truncates a batch-sized prompt to something the turn schema accepts", async () => {
-    const { RETRIEVAL_INTENT_MAX_CHARS, TurnContextRequestSchema } = await import("@agent-space/protocol");
+    const { RETRIEVAL_INTENT_MAX_CHARS, TurnContextRequestSchema } = await import("@rainver/protocol");
     const intent = await retrievalIntentFor("x".repeat(RETRIEVAL_INTENT_MAX_CHARS * 4));
     expect(intent!.length).toBeLessThanOrEqual(RETRIEVAL_INTENT_MAX_CHARS);
     const parsed = TurnContextRequestSchema.safeParse({

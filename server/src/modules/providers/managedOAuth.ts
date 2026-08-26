@@ -1,7 +1,7 @@
 /**
- * The agent-space contract for a managed subscription OAuth flow.
+ * The rainver contract for a managed subscription OAuth flow.
  *
- * Agent-space owns the credential: it decides which subscriptions may be
+ * Rainver owns the credential: it decides which subscriptions may be
  * connected, who may connect them, how the refresh token is encrypted at rest,
  * when it is refreshed, and which Runs may spend it. What it does not own is
  * the vendor's device-code and PKCE choreography, which is what an

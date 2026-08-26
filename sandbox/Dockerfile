@@ -1,11 +1,11 @@
-# agent-space-sandbox-runner — dedicated scoped CLI execution service
+# rainver-sandbox-runner — dedicated scoped CLI execution service
 #
 # This long-lived service has only the managed authority roots mounted by
 # Compose. Each launch creates a fresh bubblewrap mount/PID namespace and
 # exposes only the request's allowlisted ids to the vendor CLI.
 #
 # Build:
-#   docker build -f sandbox/Dockerfile -t agent-space-sandbox .
+#   docker build -f sandbox/Dockerfile -t rainver-sandbox .
 #
 # Vendor CLIs are not baked into this image. The Runner resolves one selected
 # version below its read-only runtime-tools authority root.

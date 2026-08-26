@@ -153,7 +153,7 @@ describe("object schema / object kind protocol contracts", () => {
 
   it("parses object schema export/import manifests without runtime schema pack fields", () => {
     const manifest = ObjectSchemaExportManifestSchema.parse({
-      format: "agent_space.object_schema.v1",
+      format: "rainver.object_schema.v1",
       exported_at: "2026-06-27T00:00:00.000Z",
       object_schema_version: 3,
       object_profiles: [{
@@ -168,7 +168,7 @@ describe("object schema / object kind protocol contracts", () => {
       }],
     });
 
-    expect(ObjectSchemaImportRequestSchema.parse({ manifest }).manifest.format).toBe("agent_space.object_schema.v1");
+    expect(ObjectSchemaImportRequestSchema.parse({ manifest }).manifest.format).toBe("rainver.object_schema.v1");
     expect(manifest).not.toHaveProperty("schema_pack");
     expect(manifest.object_profiles[0]!.relation_hints[0]).toMatchObject({ direction: "from", confidence_default: 0.55 });
   });

@@ -1,4 +1,4 @@
-import type { GraphProjection, GraphProjectionLayoutMode } from '@agent-space/protocol'
+import type { GraphProjection, GraphProjectionLayoutMode } from '@rainver/protocol'
 import type { GraphLayoutConfig, GraphViewState } from '../types'
 
 export const IN_THREAD_FORCE_NODE_LIMIT = 1500

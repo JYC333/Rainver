@@ -141,7 +141,7 @@ export function probeAcpOptions(
 
     // A session needs a working directory, and the probe must not touch a real
     // workspace: some runtimes snapshot or index whatever they are opened in.
-    const cwdPromise = mkdtemp(join(tmpdir(), "agent-space-acp-probe-"));
+    const cwdPromise = mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
     send({
       jsonrpc: "2.0",
       id: 1,

@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalObjectType } from "@rainver/protocol";
 import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
 import type { ScoredCandidate } from "./types.js";
 

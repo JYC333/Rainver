@@ -15,7 +15,7 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
-const API_KEY_STORAGE = 'agent-space:api-key'
+const API_KEY_STORAGE = 'rainver:api-key'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)

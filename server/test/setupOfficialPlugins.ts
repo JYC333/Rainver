@@ -50,7 +50,7 @@ function quoteIdentifier(identifier: string): string {
 /** How old a leftover run's databases must be before setup reclaims them. */
 const STALE_RUN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-const TEMPLATE_PREFIX = "aspace_test_tpl_";
+const TEMPLATE_PREFIX = "rainver_test_tpl_";
 
 /** Serializes template creation between Vitest runs sharing one container. */
 const TEMPLATE_LOCK_KEY = 7263123498013;
@@ -124,7 +124,7 @@ async function dropTestDatabases(admin: Pool, pattern: string): Promise<void> {
  */
 async function dropStaleTestDatabases(admin: Pool, currentTemplate: string): Promise<void> {
   const { rows } = await admin.query<{ datname: string }>(
-    `SELECT datname FROM pg_database WHERE datname LIKE 'aspace_test_%'`,
+    `SELECT datname FROM pg_database WHERE datname LIKE 'rainver_test_%'`,
   );
   const staleRuns = new Set<string>();
   for (const { datname } of rows) {
@@ -133,12 +133,12 @@ async function dropStaleTestDatabases(admin: Pool, currentTemplate: string): Pro
       if (datname !== currentTemplate) staleRuns.add(datname);
       continue;
     }
-    const match = /^aspace_test_([0-9a-z]+)x([0-9a-f]+)_/.exec(datname);
+    const match = /^rainver_test_([0-9a-z]+)x([0-9a-f]+)_/.exec(datname);
     // Databases from before run ids carried a timestamp have no age; they can
     // only come from finished runs, so reclaim them too.
     const startedAt = match ? parseInt(match[1], 36) : 0;
     if (Date.now() - startedAt > STALE_RUN_MAX_AGE_MS) {
-      staleRuns.add(match ? `aspace_test_${match[1]}x${match[2]}_%` : datname);
+      staleRuns.add(match ? `rainver_test_${match[1]}x${match[2]}_%` : datname);
     }
   }
   for (const pattern of staleRuns) await dropTestDatabases(admin, pattern);
@@ -263,7 +263,7 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
       try {
         // Any per-file database whose afterAll never ran. The template stays
         // for the next run on a reused container.
-        await dropTestDatabases(admin, `aspace_test_${context.runId}_%`);
+        await dropTestDatabases(admin, `rainver_test_${context.runId}_%`);
         if (!reuse) await dropTestDatabases(admin, context.templateDatabase ?? "");
       } finally {
         await admin.end();

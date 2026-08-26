@@ -19,28 +19,28 @@ local_compose_validate_mode() {
 }
 
 local_compose_init() {
-  MODE="${1:-${AGENT_SPACE_MODE:-dev}}"
+  MODE="${1:-${RAINVER_MODE:-dev}}"
   local_compose_validate_mode "$MODE"
 
   REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
   COMPOSE_DIR="$REPO_ROOT/ops/compose"
   ENV_DIR="$REPO_ROOT/ops/env"
 
-  # ASPACE_ROOT is the host-side parent of mode roots: dev/, test/, prod/.
-  ASPACE_ROOT="${ASPACE_ROOT:-$HOME/.aspace}"
-  ASPACE_ROOT="${ASPACE_ROOT/#\~/$HOME}"
-  export ASPACE_ROOT
+  # RAINVER_ROOT is the host-side parent of mode roots: dev/, test/, prod/.
+  RAINVER_ROOT="${RAINVER_ROOT:-$HOME/.rainver-data}"
+  RAINVER_ROOT="${RAINVER_ROOT/#\~/$HOME}"
+  export RAINVER_ROOT
 
-  MODE_ROOT="$ASPACE_ROOT/$MODE"
+  MODE_ROOT="$RAINVER_ROOT/$MODE"
   ENV_FILE="$MODE_ROOT/.env"
-  COMPOSE_PROJECT="agent-space-$MODE"
+  COMPOSE_PROJECT="rainver-$MODE"
   COMPOSE_FILE="$COMPOSE_DIR/docker-compose.$MODE.yml"
 
   export REPO_ROOT
   export COMPOSE_DIR
   export ENV_DIR
   export MODE_ROOT
-  export AGENT_SPACE_MODE_ROOT="$MODE_ROOT"
+  export RAINVER_MODE_ROOT="$MODE_ROOT"
 
   # Host shells and Node tooling often export DEBUG for their own purposes
   # (for example DEBUG=release). Keep that generic variable out of compose;
@@ -318,14 +318,14 @@ local_compose_postgres_password_or_default() {
     echo "ERROR: POSTGRES_PASSWORD is required for production server database URL generation." >&2
     exit 1
   fi
-  printf '%s\n' "agent_space_dev_password"
+  printf '%s\n' "rainver_dev_password"
 }
 
 local_compose_server_owner_database_url() {
   local pguser pgpass pgdb
-  pguser="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
   pgpass="$(local_compose_postgres_password_or_default)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
+  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   printf 'postgresql://%s:%s@postgres:5432/%s\n' \

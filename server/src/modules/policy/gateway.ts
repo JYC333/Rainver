@@ -28,7 +28,7 @@ import { sanitizePolicyMetadata } from "./sanitizer.js";
 import type {
   PolicyAuditEnvelope,
   PolicyCheckRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export type Registry = ReadonlyMap<string, PolicyActionDefinition>;
 

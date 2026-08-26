@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { jsonBody, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
 import { AskSpaceService } from "./service.js";

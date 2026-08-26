@@ -1,4 +1,4 @@
-import type { MessageOut } from "@agent-space/protocol";
+import type { MessageOut } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
 import { assembleRoomConversationContext, estimateRoomSummaryTokens, ROOM_RECENT_TOKEN_BUDGET, ROOM_SUMMARY_SOURCE_TOKEN_BUDGET, selectRoomCompactionBatch } from "../src/modules/rooms/conversationContext.js";
 import { parseSummary } from "../src/modules/rooms/conversationSummaryService.js";

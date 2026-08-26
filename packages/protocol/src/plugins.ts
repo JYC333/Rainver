@@ -7,7 +7,7 @@
  *
  * Terminology note: "plugin" is the internal identifier used in code and the
  * API surface. "Official Optional Module" is the product-facing term. These
- * types describe official product modules developed by agent-space maintainers.
+ * types describe official product modules developed by rainver maintainers.
  * They are NOT third-party plugins.
  */
 
@@ -314,7 +314,7 @@ export interface PluginProposalPort {
 }
 
 /**
- * Full context passed to AgentSpacePlugin.activate().
+ * Full context passed to RainverPlugin.activate().
  *
  * Official plugins (trusted, same-process) receive the raw Fastify instance
  * and a Queryable DB wrapper. Third-party plugins (future) will receive a
@@ -367,9 +367,9 @@ export interface PluginMigration {
  * Bundled official plugins implement this interface and are compiled into
  * server/dist/official-plugins before the server loads them at startup.
  * Downloaded plugins (Level 2) will use the same startup-load contract from
- * {AGENT_SPACE_HOME}/plugins/{id}/server/dist/index.js.
+ * {RAINVER_HOME}/plugins/{id}/server/dist/index.js.
  */
-export interface AgentSpacePlugin {
+export interface RainverPlugin {
   /** Must match OfficialPluginDescriptor.id. */
   readonly id: string;
   /** Must match OfficialPluginDescriptor.version for built-in official plugins. */

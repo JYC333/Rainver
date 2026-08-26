@@ -24,7 +24,7 @@ interpreted handler code, and it is never pooled/rotated the way ModelProvider k
 
 - **Cipher:** AES-256-GCM (`server/src/modules/providers/secretRefCrypto.ts`). Plaintext → `(ciphertext, nonce)`, both base64.
 - **Master key:** a 32-byte random key in a file on disk at
-  `AGENT_SPACE_HOME/secrets/provider_keys.key` (auto-generated on first use, `chmod 0600`).
+  `RAINVER_HOME/secrets/provider_keys.key` (auto-generated on first use, `chmod 0600`).
   **The master key is NOT in the database.** A database-only compromise does not reveal keys —
   the on-disk key file is also required.
 
@@ -141,7 +141,7 @@ request to the configured `openai_compatible_base_url`.
 
 The master key is a **local-file symmetric key**, not KMS/HSM-managed. Consequences:
 
-- Whoever can read both `AGENT_SPACE_HOME/secrets/provider_keys.key` and the database can decrypt all
+- Whoever can read both `RAINVER_HOME/secrets/provider_keys.key` and the database can decrypt all
   keys — keep credential-only archives separate from normal DB/data backups; combining them
   carries decryptable material.
 - This is appropriate for a single self-hosted instance. Stronger setups (multi-tenant, compliance)

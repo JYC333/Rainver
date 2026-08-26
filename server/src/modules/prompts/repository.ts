@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
-import { PROMPT_TYPES, PromptAssetContentSchema } from "@agent-space/protocol";
-import type { PromptAssetContent, PromptType } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import { PROMPT_TYPES, PromptAssetContentSchema } from "@rainver/protocol";
+import type { PromptAssetContent, PromptType } from "@rainver/protocol";
 import {
   assertAssetAllowsTargetScope,
   assertCanWriteAssetOwnerScope,

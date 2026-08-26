@@ -16,10 +16,10 @@ export interface DaemonConfig {
   workspaces: Record<string, string>;
 }
 
-const CONFIG_DIR_ENV = "AGENT_SPACE_HOST_CONFIG_DIR";
+const CONFIG_DIR_ENV = "RAINVER_HOST_CONFIG_DIR";
 
 export function configDir(): string {
-  return process.env[CONFIG_DIR_ENV] ?? join(homedir(), ".agent-space-host");
+  return process.env[CONFIG_DIR_ENV] ?? join(homedir(), ".rainver-host");
 }
 
 export function configPath(): string {
@@ -43,7 +43,7 @@ export async function loadConfig(): Promise<DaemonConfig | null> {
 export async function requireConfig(): Promise<DaemonConfig> {
   const config = await loadConfig();
   if (!config) {
-    throw new Error(`Not registered yet — run 'agent-space-host register --server <url> --code <pairing-code>' first (expected config at ${configPath()})`);
+    throw new Error(`Not registered yet — run 'rainver-host register --server <url> --code <pairing-code>' first (expected config at ${configPath()})`);
   }
   return config;
 }

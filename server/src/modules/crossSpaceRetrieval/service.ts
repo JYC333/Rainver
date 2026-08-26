@@ -3,7 +3,7 @@ import type {
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalResponse,
   RetrievalObjectType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";

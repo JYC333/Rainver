@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { ExecutionControlSnapshot, InvocationSnapshotSafe } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot, InvocationSnapshotSafe } from "@rainver/protocol";
 import { RuntimeContextInvocationGateway, type InvocationSnapshotStorePort } from "../src/modules/runtimeContext/gateway.js";
 import { RuntimeContextPlanningService } from "../src/modules/runtimeContext/planningService.js";
 import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";

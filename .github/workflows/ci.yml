@@ -31,7 +31,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build protocol
-        run: pnpm --filter @agent-space/protocol build
+        run: pnpm --filter @rainver/protocol build
 
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
@@ -40,16 +40,16 @@ jobs:
         run: python3 -m unittest discover -s ops/scripts/system -p 'test_*.py'
 
       - name: Typecheck server
-        run: pnpm --filter @agent-space/server typecheck
+        run: pnpm --filter @rainver/server typecheck
 
       - name: Test server
         env:
           REQUIRE_TEST_POSTGRES: "true"
           TESTCONTAINERS_REUSE_ENABLE: "false"
-        run: pnpm --filter @agent-space/server test
+        run: pnpm --filter @rainver/server test
 
       - name: Typecheck web
-        run: pnpm --filter agent-core-ui typecheck
+        run: pnpm --filter @rainver/web typecheck
 
       - name: Test web
-        run: pnpm --filter agent-core-ui test
+        run: pnpm --filter @rainver/web test

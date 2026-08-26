@@ -141,7 +141,7 @@ export const ModelProviderModelsResponseSchema = z.object({
 /**
  * `GET /providers/vendors`: the server-owned vendor registry, secret-free.
  *
- * These are facts agent-space owns about a vendor — identity, wire protocol,
+ * These are facts rainver owns about a vendor — identity, wire protocol,
  * what it can be asked to do, where it publishes its API, and how it is
  * credentialed. The client reads them rather than keeping its own copy, which
  * is how the two drifted before.

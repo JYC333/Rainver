@@ -1,4 +1,4 @@
-import type { LinkType } from "@agent-space/protocol";
+import type { LinkType } from "@rainver/protocol";
 
 /**
  * Link Type declarations: legal endpoints and governance, per edge type.

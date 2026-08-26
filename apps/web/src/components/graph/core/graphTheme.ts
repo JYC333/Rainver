@@ -1,4 +1,4 @@
-import type { GraphProjectionEdge, GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjectionEdge, GraphProjectionNode } from '@rainver/protocol'
 import type { GraphEdgeStyle, GraphNodeStyle, GraphTheme, GraphThemeMode, GraphThemeOverrides } from '../types'
 
 const lightNodeDefaults: Record<string, GraphNodeStyle> = {

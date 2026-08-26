@@ -3,7 +3,7 @@ import type {
   RuntimeContextPolicyDocument,
   RuntimeContextPolicyVersion,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { HttpError } from "../routeUtils/common.js";
 
 type Constraints = RuntimeContextPolicyDocument["constraints"];

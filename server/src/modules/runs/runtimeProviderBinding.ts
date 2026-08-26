@@ -11,7 +11,7 @@ import {
 import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { subscriptionEgressLeases, type SubscriptionRuntime } from "../providers/proxy/subscriptionEgress.js";
 import type { RunRecord } from "./repository.js";
-import type { InvocationAuditRefs } from "@agent-space/protocol";
+import type { InvocationAuditRefs } from "@rainver/protocol";
 import {
   CodexProviderConfigError,
   materializeRunCodexHome,
@@ -309,7 +309,7 @@ async function buildCodexProviderBinding(
   try {
     codexHome = await writeCodexProviderConfig({
       tempHome: deps.credential.temp_home,
-      providerName: stringValue(provider.name) ?? "Agent Space Provider",
+      providerName: stringValue(provider.name) ?? "Rainver Provider",
       proxyBaseUrl: runtimeProviderProxyUrl("openai", lease.id, deps.proxyBaseUrl),
       leaseToken: lease.token,
       model,
@@ -384,7 +384,7 @@ async function buildOpenCodeProviderBinding(
   try {
     const config = await writeOpenCodeProviderConfig({
       sandboxCwd: input.sandbox_cwd ?? null,
-      providerName: stringValue(provider.name) ?? "Agent Space Provider",
+      providerName: stringValue(provider.name) ?? "Rainver Provider",
       proxyBaseUrl: runtimeProviderProxyUrl("openai", lease.id, deps.proxyBaseUrl),
       leaseToken: lease.token,
       model,

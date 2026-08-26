@@ -8,7 +8,7 @@ import { computeNextRunAtFromScheduleRule, type SourceScheduleRule } from "../so
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import { PgProposalApplyService } from "../../proposals/applyService.js";
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
-import type { ResearchCompiledQuery, ResearchProviderKey } from "@agent-space/protocol";
+import type { ResearchCompiledQuery, ResearchProviderKey } from "@rainver/protocol";
 import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler.js";
 
 interface SourceChannelProposalActor {

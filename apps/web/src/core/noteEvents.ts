@@ -32,7 +32,7 @@ export interface NoteChangedDetail {
   reason: NoteChangedReason
 }
 
-const TOPIC = 'aspace:note-changed'
+const TOPIC = 'rainver:note-changed'
 
 const bus = new EventTarget()
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { GraphProjection, GraphProjectionNode, GraphProjectionViewMode } from '@agent-space/protocol'
+import type { GraphProjection, GraphProjectionNode, GraphProjectionViewMode } from '@rainver/protocol'
 import { GitBranch, Loader2, Network, RefreshCw, Search } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'

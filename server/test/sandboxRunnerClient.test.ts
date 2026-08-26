@@ -23,7 +23,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("sends verification through a no-egress workspace-only Runner request", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-verification-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-verification-"));
     roots.push(root);
     let launch: Record<string, unknown> | undefined;
     const { server, port } = await runnerServer((frame, send) => {
@@ -55,7 +55,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("sends only typed managed ids and translates host paths out of runtime arguments", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-client-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-client-"));
     roots.push(root);
     let launch: Record<string, unknown> | undefined;
     const { server, port } = await runnerServer((frame, send) => {
@@ -74,7 +74,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
       command: [tool, "exec", "--cwd", workspace, "hello"],
       cwd: workspace,
       timeout_seconds: 30,
-      env: { HOME: home, CODEX_HOME: join(home, ".codex"), AGENT_SPACE_TOOL_TOKEN: "lease", AGENT_SPACE_MCP_URL: "http://server:8010/internal" },
+      env: { HOME: home, CODEX_HOME: join(home, ".codex"), RAINVER_TOOL_TOKEN: "lease", RAINVER_MCP_URL: "http://server:8010/internal" },
       run_id: "run-1",
       stdin: null,
     });
@@ -98,7 +98,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("terminates verification when combined output exceeds the fixed bound", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-output-limit-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-output-limit-"));
     roots.push(root);
     let terminated = false;
     const { server, port } = await runnerServer((frame, send) => {
@@ -125,7 +125,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("fails closed when the dedicated Runner is unavailable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-unavailable-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-unavailable-"));
     roots.push(root);
     const result = await new SandboxRunnerCliCommandExecutor(testConfig(root, 1), "claude_code").runCommand({
       command: [join(root, "runtime-tools", "claude_code", "versions", "1", "bin", "claude")],
@@ -139,7 +139,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("routes cancellation to the Runner instead of signalling a server PID", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-cancel-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-cancel-"));
     roots.push(root);
     let terminated = false;
     const { server, port } = await runnerServer((frame, send) => {
@@ -164,7 +164,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("preserves split UTF-8 protocol data and closes absent stdin", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-utf8-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-utf8-"));
     roots.push(root);
     let stdinClosed = false;
     const { server, port } = await runnerServer((frame, send, socket) => {
@@ -190,7 +190,7 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   });
 
   it("carries interactive login through the typed Runner PTY channel", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-runner-pty-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-pty-"));
     roots.push(root);
     let launch: Record<string, any> | undefined;
     const { server, port } = await runnerServer((frame, send) => {
@@ -252,7 +252,7 @@ function testConfig(root: string, port: number) {
     sandboxRoot: join(root, "sandboxes"),
     workspaceRoot: join(root, "workspaces"),
     cliToolsRoot: join(root, "runtime-tools"),
-    agentSpaceHome: root,
+    rainverHome: root,
     internalToken: "runner-test-token",
   };
 }

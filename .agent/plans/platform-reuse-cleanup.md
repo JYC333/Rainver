@@ -16,24 +16,24 @@ checked against the code; verify before scheduling.
 
 | Item | Current | Target | Priority | Trigger | Status |
 | --- | --- | --- | --- | --- | --- |
-| Credential / CLI multi-account | Self-built login engine + usage probes (`server/src/modules/providers/cli/loginEngine.ts`, `usageProbe.ts`) | Official CLI login owns OAuth; Agent-Space owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
+| Credential / CLI multi-account | Self-built login engine + usage probes (`server/src/modules/providers/cli/loginEngine.ts`, `usageProbe.ts`) | Official CLI login owns OAuth; Rainver owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
 | CLI tool surface | MCP shim `/internal/runs/:runId/mcp` (`runs/routes.ts`) + MCP config injection in `runs/vendorCliAdapter.ts`; thin JSON-RPC over `CliAgentToolTransport` → `SystemActionDispatcher` | Thin CLI + Skill over REST, reusing the per-run TTL token from `runs/cliToolTransport.ts`; then **delete** the MCP route. Official MCP SDK only revives if external MCP clients become a requirement | P0/P1 | None | Not started |
 | Multipart upload parsing | Hand-written `parseMultipartUpload` (`activity/routes.ts`, single site) | `@fastify/multipart` | P1 | None — low-risk commodity cleanup | Not started |
-| HTML → article extraction | Self-built `stripHtml` / `htmlToReaderPmDoc` (`sources/contentParsing.ts`) | `@mozilla/readability` + DOM parser + sanitizer; Agent-Space keeps reading objects, highlights, Source, AI analysis | P1 | None | Not started |
+| HTML → article extraction | Self-built `stripHtml` / `htmlToReaderPmDoc` (`sources/contentParsing.ts`) | `@mozilla/readability` + DOM parser + sanitizer; Rainver keeps reading objects, highlights, Source, AI analysis | P1 | None | Not started |
 | Custom Source pseudo-sandbox | Child-process monkey-patch runner (`sources/customSources/customSourceRunner.ts`; its own header admits it is not OS-sandboxed) | Reuse the existing namespace-based `sandboxRunner` (NOT Bubblewrap — none exists in this repo) | P1 | None | Not started |
-| Backup mechanics | Self-built tar.gz + pg_dump + retention (`backups/service.ts`) | restic owns archive/snapshot/storage/retention; Agent-Space keeps backup policy, manifest, restore flow, audit | P1/P2 | None | Not started |
+| Backup mechanics | Self-built tar.gz + pg_dump + retention (`backups/service.ts`) | restic owns archive/snapshot/storage/retention; Rainver keeps backup policy, manifest, restore flow, audit | P1/P2 | None | Not started |
 | Local retry/backoff | ~10+ independent implementations (`sources/sourceConnectionFetch.ts`, `runs/supervisor.ts`, `retrieval/embeddingStore.ts`, …) | `p-retry` for non-durable local calls only; durable retry stays with the job engine | P1/P2 | Opportunistic — adopt when touching a call site | Not started |
 | Job queue | Self-built Postgres queue (claim/heartbeat/reclaim/attempts in `jobs/repository.ts`, scheduler loops in `scheduler/registry.ts`) | pg-boss | P1/P2 | Before unattended execution scales up (Project Steward). Precondition: extract domain logic that mutates Run/Task from queue internals. **Explicitly NOT a prerequisite for first real-usage Project testing** — automation's `agent_run` enqueue rides the current queue, which already has the needed semantics | Not started |
 | Non-interactive subprocess | Raw `spawn` call sites across server + host-daemon | `execa` for non-interactive commands; PTY/TUI stays `node-pty` | P1/P2 | Opportunistic | Not started |
 | Throttle | Ad-hoc where present | `p-throttle` | P2 | Only when real duplicate implementations show up | Not started |
 | REST contract / typed client | Hand-written route DTOs + frontend API client (**unverified**: client size/duplication not audited) | Zod/Fastify schema → OpenAPI → generated typed client shared by web, future CLI, SDK | P2 | Not a Project blocker | Needs verification |
-| AuthN plumbing | Hand-written Google OAuth + session cookies (`auth/oauth.ts`) | Better Auth for identity/session/OAuth plumbing only; Space, membership, visibility, Policy stay in Agent-Space | P2 | When auth surface grows (more providers, MFA, org SSO) | Not started |
-| Spaced repetition | Naive `+1 day` interval scheduling (`learning/service.ts`) | `ts-fsrs`; learning objects, Project binding, mastery stay in Agent-Space | P2 | When Learning gets real usage | Not started |
+| AuthN plumbing | Hand-written Google OAuth + session cookies (`auth/oauth.ts`) | Better Auth for identity/session/OAuth plumbing only; Space, membership, visibility, Policy stay in Rainver | P2 | When auth surface grows (more providers, MFA, org SSO) | Not started |
+| Spaced repetition | Naive `+1 day` interval scheduling (`learning/service.ts`) | `ts-fsrs`; learning objects, Project binding, mastery stay in Rainver | P2 | When Learning gets real usage | Not started |
 | Finance decimal arithmetic | **unverified**: actual float/decimal pain point in `plugins/official/financeLedger.ts` not confirmed | `decimal.js` for math primitives only | P2 | Verify pain point first | Needs verification |
 | Beancount text compat | DB-native ledger already treats Beancount text as import/export format only (matches target posture) | `tree-sitter-beancount` or mature parser as the compat adapter, if/when import parsing grows | P2 | Import/export fidelity demands it | Not started |
-| Eval harness | **unverified**: evolution module is asset/promotion machinery; no self-built evaluator harness located | Promptfoo as sandbox evaluator engine; Evolution Case, promotion authority, result normalization stay in Agent-Space | Conditional | Evolution evaluation work actually starts | Needs verification |
+| Eval harness | **unverified**: evolution module is asset/promotion machinery; no self-built evaluator harness located | Promptfoo as sandbox evaluator engine; Evolution Case, promotion authority, result normalization stay in Rainver | Conditional | Evolution evaluation work actually starts | Needs verification |
 | Operational telemetry | None dedicated | OpenTelemetry for operational telemetry only; never a substitute for the Run/Event/Usage durable ledger | P2 | Multi-instance / control-center operations need it | Not started |
-| Source crawling engine | Scheduled fetch + retry + recipe interpreter (`sources/`); **no Playwright or crawler engine exists** — earlier claims of one were wrong | Crawlee, if browser-rendered crawling becomes a need; SourceRecipe, consent, provenance, policy stay in Agent-Space | Conditional | A source genuinely requires browser rendering / large-scale crawl | Not started |
+| Source crawling engine | Scheduled fetch + retry + recipe interpreter (`sources/`); **no Playwright or crawler engine exists** — earlier claims of one were wrong | Crawlee, if browser-rendered crawling becomes a need; SourceRecipe, consent, provenance, policy stay in Rainver | Conditional | A source genuinely requires browser rendering / large-scale crawl | Not started |
 | Declarative authorization | Hard invariants + Proposal + policy code | Cedar POC | Conditional | Declarative rule volume actually grows | Not started |
 | Durable workflow engine | Run/Job/Workflow via `automations/workflowExecutionService.ts` graph scheduler | Restate | Conditional | Only if timer/signal/human-pause/saga complexity outgrows the current spine | Not started |
 | External agent interop | None | A2A / official MCP SDK | Deferred | External interop demand exists | Not started |
@@ -51,7 +51,7 @@ mechanisms.
 - **IM.codes** (`github.com/im4codes/imcodes`, MIT; reviewed 2026-08-24).
   Messaging/control layer for terminal coding agents: Browser/Mobile → WS →
   self-hosted Server (relay) ← outbound WS ← Daemon → tmux/ConPTY or SDK
-  transports. Same relay topology as Control Plane ← `agent-space-host`; no
+  transports. Same relay topology as Control Plane ← `rainver-host`; no
   ACP-style runtime protocol layer (per-vendor SDK transports). Worth
   borrowing when the need arrives, not now:
   - **Agent-to-agent send semantics** — target resolution by label/session
@@ -60,7 +60,7 @@ mechanisms.
     agent-initiated cross-agent messaging is ever added.
   - **Localhost preview tunnel** — daemon proxies local dev servers through
     the existing WS connection (HTML rewrite + runtime URL patch, HMR
-    works). Candidate far-future `agent-space-host` capability for viewing
+    works). Candidate far-future `rainver-host` capability for viewing
     agent-produced results from mobile. No trigger yet.
 
 ## Do not replace (guardrails)
@@ -70,7 +70,7 @@ mechanisms.
 - **Runtime/model routing** — capability, host, sandbox, trust, credential,
   cost, verification; no generic router fits.
 - **Verification authority** — external lint/test are callable, but "what
-  counts as passing" belongs to Agent-Space.
+  counts as passing" belongs to Rainver.
 - **Finance accounting core** — DB-native ledger; Beancount is a design source
   and compat format only (already implemented this way).
 - **Action/Tool authority** — `SystemActionGateway` owns semantics, grants,

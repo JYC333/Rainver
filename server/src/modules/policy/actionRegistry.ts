@@ -6,8 +6,8 @@
  */
 
 
-import type { PolicyActionDefinition } from "@agent-space/protocol";
-import { POLICY_ACTION_REGISTRY } from "@agent-space/protocol";
+import type { PolicyActionDefinition } from "@rainver/protocol";
+import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
 
 export type { PolicyActionDefinition };
 

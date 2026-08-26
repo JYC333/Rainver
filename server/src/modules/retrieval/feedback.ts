@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   RetrievalFeedbackSignal,
   RetrievalObjectType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { normalizeTextForSearch } from "./normalize.js";
 import type { RetrievalRegistry } from "./registry.js";

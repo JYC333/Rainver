@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProjectResearchHistoryModeSchema, ProjectResearchInitialIntakeRequestSchema, ProjectResearchRunKindSchema, ResearchReportV1Schema } from "@agent-space/protocol";
+import { ProjectResearchHistoryModeSchema, ProjectResearchInitialIntakeRequestSchema, ProjectResearchRunKindSchema, ResearchReportV1Schema } from "@rainver/protocol";
 
 const citation = { arxiv_id: "2601.12345" };
 

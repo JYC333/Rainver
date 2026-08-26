@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 FORCE_RUNNING=false
 USE_DEV_SETUP=true
 
@@ -34,8 +34,8 @@ local_compose_ensure_mode_env_file
 local_compose_ensure_server_database_env
 local_compose_generate_server_env
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 DEV_SETUP_DUMP="$MODE_ROOT/setup/database.dump"
 
 # Validate identifiers — only allow alphanumeric + underscore to prevent injection

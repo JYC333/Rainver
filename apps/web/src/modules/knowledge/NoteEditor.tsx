@@ -8,7 +8,7 @@ import {
   systemActionsForObjectType,
   type NoteLinkTargetType,
   type NoteSystemActionId,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 import { inquiryApi, knowledgeApi, notesApi, ApiRequestError } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg, isNotFoundError } from '../../lib/utils'

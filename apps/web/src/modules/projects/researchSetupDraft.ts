@@ -94,7 +94,7 @@ export interface ResearchSetupSession {
 // search" dialog can be open/used around the same time and must not stomp on
 // each other's in-progress session.
 function sessionKey(projectId: string, workflowScope: string): string {
-  return `agent-space:research-setup-session:${projectId}:${workflowScope}`
+  return `rainver:research-setup-session:${projectId}:${workflowScope}`
 }
 
 export function loadResearchSetupSession(projectId: string, workflowScope: string): ResearchSetupSession | null {

@@ -1,6 +1,6 @@
 # Glossary
 
-Key terms used consistently across agent-space.
+Key terms used consistently across rainver.
 
 ---
 
@@ -36,7 +36,7 @@ proposals first. `server/src/modules/activity/`.
 
 **Artifact**
 Persistent output of an agent run: file, diff, log, report. Survives sandbox cleanup
-(stored in `~/.aspace/artifacts/`, not in sandbox directories). Exportable via
+(stored in `~/.rainver-data/artifacts/`, not in sandbox directories). Exportable via
 `GET /api/v1/artifacts/{id}/export`. Artifact types: `diff | patch | report | log | context |
 validation | file | export`.
 
@@ -77,16 +77,16 @@ A specific action a capability can perform. Permissions declared per-agent, enfo
 Isolated execution environment for an agent run. Worktree (default) or Docker (high-risk).
 
 **Managed Mode**
-Agent run tracked, sandboxed, and logged by agent-space. Proposals and artifacts captured.
+Agent run tracked, sandboxed, and logged by rainver. Proposals and artifacts captured.
 
 **IDE Assist Mode**
-Direct CLI use (Claude Code, Codex) without agent-space orchestration. Not fully tracked.
+Direct CLI use (Claude Code, Codex) without Rainver orchestration. Not fully tracked.
 
 ---
 
 ## Ontology Vocabulary
 
-Agent-space's object model is compared against the Palantir Foundry Ontology's
+Rainver's object model is compared against the Palantir Foundry Ontology's
 Language / Engine / Toolchain decomposition in
 [ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md).
 Vocabulary was aligned **only where the semantics genuinely match**. This

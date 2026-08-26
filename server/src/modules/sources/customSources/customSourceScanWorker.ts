@@ -1,7 +1,7 @@
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import {

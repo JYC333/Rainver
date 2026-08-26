@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { dbPool, intQuery, jsonBody, query, resolveIdentity, sendRouteError, HttpError, withDbTransaction } from "../routeUtils/common.js";

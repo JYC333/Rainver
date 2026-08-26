@@ -4,7 +4,7 @@
 **PLANNED** — No sync implementation. Single-instance local deployment only. Architecture must remain sync-ready.
 
 ## Purpose
-Define the sync strategy for a future where agent-space can run on multiple devices or have a cloud-backed instance. Sync is not active now, but every data model decision must remain aligned with the sync model described here to avoid a painful migration later.
+Define the sync strategy for a future where Rainver can run on multiple devices or have a cloud-backed instance. Sync is not active now, but every data model decision must remain aligned with the sync model described here to avoid a painful migration later.
 
 ## Owns
 - Sync protocol design (local-first captures and drafts; CRDT-friendly merges for syncable objects)
@@ -67,7 +67,7 @@ These fields are not yet in the canonical schema, but every new model should be 
 
 ## Future Transport Options
 
-1. **Self-hosted cloud relay** — agent-space server as sync hub between devices
+1. **Self-hosted cloud relay** — Rainver server as sync hub between devices
 2. **Peer-to-peer** — direct device sync (no cloud dependency)
 3. **Third-party client-side sync store** — a client-side local store for offline capture (not the server-side backend)
 

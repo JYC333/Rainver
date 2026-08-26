@@ -21,12 +21,12 @@ describe("loadConfig", () => {
     expect(c.notificationWebhookAllowlist).toEqual([]);
     expect(c.notificationMaxPayloadBytes).toBe(65536);
     expect(c.backupDatabaseUrl).toBeNull();
-    expect(c.agentSpaceHome).toBe("/aspace");
-    expect(c.cliToolsRoot).toBe("/aspace/runtime-tools");
-    expect(c.cliSandboxImage).toBe("agent-space-sandbox");
-    expect(c.workspaceRoot).toBe("/aspace/workspaces");
-    expect(c.artifactStorageRoot).toBe("/aspace/storage/artifacts");
-    expect(c.deployerSocketPath).toBe("/aspace/run/deployer.sock");
+    expect(c.rainverHome).toBe("/rainver");
+    expect(c.cliToolsRoot).toBe("/rainver/runtime-tools");
+    expect(c.cliSandboxImage).toBe("rainver-sandbox");
+    expect(c.workspaceRoot).toBe("/rainver/workspaces");
+    expect(c.artifactStorageRoot).toBe("/rainver/storage/artifacts");
+    expect(c.deployerSocketPath).toBe("/rainver/run/deployer.sock");
     expect(c.internalToken).toBeNull();
     expect(c.googleClientId).toBe("");
     expect(c.googleClientSecret).toBe("");
@@ -46,8 +46,8 @@ describe("loadConfig", () => {
       SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true",
       SERVER_NOTIFICATION_WEBHOOK_ALLOWLIST: "https://hooks.example.com/proposal",
       SERVER_NOTIFICATION_MAX_PAYLOAD_BYTES: "4096",
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
-      BACKUP_DATABASE_URL: "postgresql://backup:secret@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+      BACKUP_DATABASE_URL: "postgresql://backup:secret@db:5432/rainver",
       SERVER_INTERNAL_TOKEN: "service-token",
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
@@ -56,12 +56,12 @@ describe("loadConfig", () => {
       INSTANCE_ADMIN_EMAIL: "Owner@Example.COM ",
       SESSION_EXPIRE_DAYS: "7",
       SERVER_DEBUG: "true",
-      AGENT_SPACE_HOME: "/tmp/aspace",
-      RUNTIME_TOOLS_ROOT: "/tmp/aspace/tools",
-      SERVER_CLI_SANDBOX_IMAGE: "registry.example.com/agent-space-sandbox:v1",
-      WORKSPACE_ROOT: "/tmp/aspace/workspaces-root",
-      ARTIFACT_STORAGE_ROOT: "/tmp/aspace/artifacts-root",
-      DEPLOYER_SOCKET_PATH: "/tmp/aspace/run/deployer.sock",
+      RAINVER_HOME: "/tmp/rainver",
+      RUNTIME_TOOLS_ROOT: "/tmp/rainver/tools",
+      SERVER_CLI_SANDBOX_IMAGE: "registry.example.com/rainver-sandbox:v1",
+      WORKSPACE_ROOT: "/tmp/rainver/workspaces-root",
+      ARTIFACT_STORAGE_ROOT: "/tmp/rainver/artifacts-root",
+      DEPLOYER_SOCKET_PATH: "/tmp/rainver/run/deployer.sock",
     });
     expect(c.host).toBe("0.0.0.0");
     expect(c.port).toBe(8010);
@@ -74,8 +74,8 @@ describe("loadConfig", () => {
       "https://hooks.example.com/proposal",
     ]);
     expect(c.notificationMaxPayloadBytes).toBe(4096);
-    expect(c.databaseUrl).toBe("postgresql://server@db:5432/agent_space");
-    expect(c.backupDatabaseUrl).toBe("postgresql://backup:secret@db:5432/agent_space");
+    expect(c.databaseUrl).toBe("postgresql://server@db:5432/rainver");
+    expect(c.backupDatabaseUrl).toBe("postgresql://backup:secret@db:5432/rainver");
     expect(c.internalToken).toBe("service-token");
     expect(c.googleClientId).toBe("google-client");
     expect(c.googleClientSecret).toBe("google-secret");
@@ -84,12 +84,12 @@ describe("loadConfig", () => {
     expect(c.instanceAdminEmail).toBe("owner@example.com");
     expect(c.sessionExpireDays).toBe(7);
     expect(c.debug).toBe(true);
-    expect(c.agentSpaceHome).toBe("/tmp/aspace");
-    expect(c.cliToolsRoot).toBe("/tmp/aspace/tools");
-    expect(c.cliSandboxImage).toBe("registry.example.com/agent-space-sandbox:v1");
-    expect(c.workspaceRoot).toBe("/tmp/aspace/workspaces-root");
-    expect(c.artifactStorageRoot).toBe("/tmp/aspace/artifacts-root");
-    expect(c.deployerSocketPath).toBe("/tmp/aspace/run/deployer.sock");
+    expect(c.rainverHome).toBe("/tmp/rainver");
+    expect(c.cliToolsRoot).toBe("/tmp/rainver/tools");
+    expect(c.cliSandboxImage).toBe("registry.example.com/rainver-sandbox:v1");
+    expect(c.workspaceRoot).toBe("/tmp/rainver/workspaces-root");
+    expect(c.artifactStorageRoot).toBe("/tmp/rainver/artifacts-root");
+    expect(c.deployerSocketPath).toBe("/tmp/rainver/run/deployer.sock");
   });
 
   it("accepts legacy DEBUG only when SERVER_DEBUG is unset", () => {

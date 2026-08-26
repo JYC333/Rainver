@@ -13,7 +13,7 @@ import type {
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ProviderInfo } from "../commands/store.js";
 import { effectiveMaxOutputTokens } from "../modelOutputLimits.js";
 import { requireProviderVendor } from "../vendors.js";
@@ -35,7 +35,7 @@ let catalogModulePromise: Promise<PiCatalogModule> | null = null;
 
 /**
  * Keep every pi-ai import and provider-auth implementation behind one adapter
- * boundary. The returned flow satisfies the agent-space `ManagedOAuthFlow`
+ * boundary. The returned flow satisfies the rainver `ManagedOAuthFlow`
  * contract; no caller sees a pi type.
  */
 export async function loadManagedOAuthFlow(
@@ -189,7 +189,7 @@ async function piModel(
       ? {
           // Custom and older OpenAI-compatible servers commonly implement the
           // original Chat Completions fields only. Preserve the request shape
-          // agent-space used before Pi instead of auto-detecting modern OpenAI
+          // rainver used before Pi instead of auto-detecting modern OpenAI
           // features from an arbitrary URL.
           compat: {
             supportsStore: false,
@@ -247,7 +247,7 @@ function piMessages(messages: ChatMessage[]): Context["messages"] {
           ...(message.tool_calls ?? []).map(toolCall),
         ],
         api: "pi-messages",
-        provider: "agent-space",
+        provider: "rainver",
         model: "transcript",
         usage: emptyUsage(),
         stopReason: message.tool_calls?.length ? "toolUse" : "stop",
@@ -301,7 +301,7 @@ function structuredTool(output: ProviderStructuredOutput): Tool {
     name: output.schema_id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "structured_output",
     description: `Return the ${output.schema_id} structured result.`,
     parameters: output.schema as Tool["parameters"],
-    // `strict` remains an output-validation contract at agent-space's
+    // `strict` remains an output-validation contract at rainver's
     // boundary. Provider-side strict tools are best-effort so vendors without
     // that capability can still reach the text scavenger and be validated.
     constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -327,7 +327,7 @@ function responseUsage(message: AssistantMessage): Record<string, unknown> {
   if (!reported) return {};
   return {
     input_tokens: message.usage.input,
-    // pi-ai documents reasoning as a subset of output. The agent-space
+    // pi-ai documents reasoning as a subset of output. The rainver
     // ledger stores disjoint buckets so totals remain recomputable.
     output_tokens: Math.max(0, message.usage.output - (message.usage.reasoning ?? 0)),
     total_tokens: message.usage.totalTokens,
@@ -491,8 +491,8 @@ export async function completePiAiChat(
     // pi-ai requires a non-empty option before constructing an OpenAI stream,
     // even for registries that explicitly allow keyless endpoints. The value
     // never crosses the adapter boundary: trackedFetch strips Authorization
-    // whenever agent-space supplied no credential.
-    apiKey: apiKey ?? "agent-space-keyless",
+    // whenever rainver supplied no credential.
+    apiKey: apiKey ?? "rainver-keyless",
     fetch: trackedFetch,
     signal: body.abort_signal,
     temperature: body.temperature,

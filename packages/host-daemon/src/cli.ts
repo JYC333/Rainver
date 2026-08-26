@@ -29,7 +29,7 @@ async function main(argv: string[]): Promise<void> {
   if (command === "workspace") {
     if (sub === "add") {
       const path = rest[0];
-      if (!path || path.startsWith("--")) throw new Error("usage: agent-space-host workspace add <path> --project <project_id> [--name <name>]");
+      if (!path || path.startsWith("--")) throw new Error("usage: rainver-host workspace add <path> --project <project_id> [--name <name>]");
       const projectId = requireFlag(rest, "project");
       const name = flag(rest, "name") ?? path.split("/").filter(Boolean).pop() ?? path;
       const created = await workspaceAdd({ path, projectId, name });
@@ -49,12 +49,12 @@ async function main(argv: string[]): Promise<void> {
     }
     if (sub === "remove") {
       const id = rest[0];
-      if (!id) throw new Error("usage: agent-space-host workspace remove <workspace_id>");
+      if (!id) throw new Error("usage: rainver-host workspace remove <workspace_id>");
       await workspaceRemove({ id });
       console.log(`Removed workspace ${id}.`);
       return;
     }
-    throw new Error("usage: agent-space-host workspace <add|list|remove>");
+    throw new Error("usage: rainver-host workspace <add|list|remove>");
   }
 
   if (command === "run") {
@@ -63,7 +63,7 @@ async function main(argv: string[]): Promise<void> {
   }
 
   throw new Error(
-    "usage: agent-space-host <register|workspace|run>\n" +
+    "usage: rainver-host <register|workspace|run>\n" +
       "  register --server <url> --code <pairing-code>\n" +
       "  workspace add <path> --project <project_id> [--name <name>]\n" +
       "  workspace list\n" +

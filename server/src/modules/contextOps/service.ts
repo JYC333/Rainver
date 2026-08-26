@@ -8,7 +8,7 @@ import type {
   ContextOpsSourceWarningDetail,
   ContextOpsSummary,
   RetrievalObjectType,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable } from "../routeUtils/common.js";
 import type { RetrievalRegistry } from "../retrieval/registry.js";

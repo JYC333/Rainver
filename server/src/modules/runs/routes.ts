@@ -162,7 +162,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           result: {
             protocolVersion: "2025-03-26",
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "agent-space-run-tools", version: "1" },
+            serverInfo: { name: "rainver-run-tools", version: "1" },
           },
         });
       }

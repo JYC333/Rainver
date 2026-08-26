@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import type {
   RunAdapterResultEnvelope,
   RunMaterializationItemSummary,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";

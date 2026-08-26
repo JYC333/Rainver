@@ -1,5 +1,5 @@
-import type { PromptResolveResult } from "@agent-space/protocol";
-import { PromptAssetContentSchema } from "@agent-space/protocol";
+import type { PromptResolveResult } from "@rainver/protocol";
+import { PromptAssetContentSchema } from "@rainver/protocol";
 import { assetAllowsUserScope } from "../evolution/assetAccess.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { sha256, sha256Json } from "./hash.js";

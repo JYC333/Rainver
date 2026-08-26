@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { PromptAssetContentSchema } from "@agent-space/protocol";
+import { PromptAssetContentSchema } from "@rainver/protocol";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import type { PromptAssetContent } from "@agent-space/protocol";
+import type { PromptAssetContent } from "@rainver/protocol";
 import { HttpError, optionalString, type Queryable } from "../routeUtils/common.js";
 import { sha256Json, stableJsonStringify } from "./hash.js";
 

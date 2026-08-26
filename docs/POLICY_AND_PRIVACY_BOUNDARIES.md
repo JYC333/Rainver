@@ -1,7 +1,7 @@
 # Policy and Privacy Boundaries
 
 This document describes the canonical policy enforcement stack and privacy
-invariants for agent-space. All information here describes the current
+invariants for rainver. All information here describes the current
 enforced state.
 
 ---

@@ -6,7 +6,7 @@ import type {
   RetrievalSearchMode,
   RetrievalToolMode,
   SpaceRetrievalSettingsUpdate,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";

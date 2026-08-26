@@ -17,9 +17,9 @@
 
 import type { FastifyInstance } from "fastify";
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginActivationResult,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
 import type { ScheduledTask } from "../../scheduler/registry.js";
 import type { ProposalApplierRegistry } from "../../proposals/applierRegistry.js";
@@ -27,11 +27,11 @@ import type { ServerConfig } from "../../../config.js";
 import { PluginHostContextImpl, type PluginContributions } from "./context.js";
 
 export class PluginHost {
-  private readonly _plugins: readonly AgentSpacePlugin[];
+  private readonly _plugins: readonly RainverPlugin[];
   private _contributions: PluginContributions[] = [];
   private _activated = false;
 
-  constructor(plugins: readonly AgentSpacePlugin[]) {
+  constructor(plugins: readonly RainverPlugin[]) {
     this._plugins = plugins;
   }
 

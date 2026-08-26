@@ -1,7 +1,7 @@
 import type {
   AssistantMessage,
   ChatTurnCompletion,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";

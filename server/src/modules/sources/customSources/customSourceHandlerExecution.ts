@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, type Queryable } from "../../routeUtils/common.js";
 import type { CustomSourceFetchCredential } from "./customSourceEndpointFetch.js";

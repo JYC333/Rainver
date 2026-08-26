@@ -3,8 +3,8 @@ import { createConnection } from "node:net";
 import type { ServerConfig } from "../../config.js";
 
 export const ALLOWED_DEPLOYER_JOB_TYPES = new Set([
-  "rebuild_agent_space",
-  "restart_agent_space",
+  "rebuild_rainver",
+  "restart_rainver",
   "health_check",
 ]);
 

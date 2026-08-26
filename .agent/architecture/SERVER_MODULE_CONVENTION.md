@@ -89,7 +89,7 @@ A route becomes owned only by explicit registration, never by accident.
 - `readHeader(request, name)` — safe header access; refuses to return
   `Authorization`, `Cookie`, `Proxy-Authorization`. Auth resolution reads cookie
   material in `modules/auth`.
-- `x-agent-space-server: server` is trace metadata, never trust.
+- `x-rainver-server: server` is trace metadata, never trust.
 
 Authorization, Cookie, request bodies, and response bodies are never logged
 (`gateway/logging.ts` redaction is defense in depth on top of Fastify's default

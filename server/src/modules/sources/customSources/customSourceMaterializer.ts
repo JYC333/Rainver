@@ -4,7 +4,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import type {
   CustomSourceHandlerOutput,
   SourcePolicyEnvelope,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import { inheritContentAccessGrants } from "../../access/contentAccessInheritance.js";

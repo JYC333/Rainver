@@ -5,7 +5,7 @@ Status: accepted
 
 ## Decision
 
-For the next two quarters, Agent-Space is a **server-authoritative Agent Workbench for
+For the next two quarters, Rainver is a **server-authoritative Agent Workbench for
 individuals, households, and small teams**. It is intended to carry substantial daily work:
 research, writing, knowledge synthesis, project execution, recurring workflows, automation,
 and code work.
@@ -23,7 +23,7 @@ self-evolution is a supporting internal capability, not the primary product iden
 
 OpenCode is a **third optional CLI runtime**, alongside Claude Code and Codex CLI. It is not
 the preferred universal runtime, does not replace the managed API path, and does not impose a
-Router preference order. Agent-Space retains all product authority and governance.
+Router preference order. Rainver retains all product authority and governance.
 
 CLI subscription capacity and paid APIs remain dual primary funding/access paths selected by
 task shape rather than by a universal API-first rule.

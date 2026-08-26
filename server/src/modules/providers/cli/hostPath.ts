@@ -9,7 +9,7 @@
  * point inside this mount namespace and field 3 (`root`) is the path of the
  * bound directory on its filesystem — i.e. the host-side path for host-dir
  * binds. The LONGEST matching mount point wins so the root overlay mount
- * (`/`) never shadows a specific bind like `/aspace`. Outside Docker (no
+ * (`/`) never shadows a specific bind like `/rainver`. Outside Docker (no
  * matching bind), the container path is returned unchanged: it already IS
  * the host path.
  */

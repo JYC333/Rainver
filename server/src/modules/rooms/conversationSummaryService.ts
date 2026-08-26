@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MessageOut } from "@agent-space/protocol";
+import type { MessageOut } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";

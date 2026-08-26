@@ -8,7 +8,7 @@
 ## A. RC Purpose
 
 This runbook describes the release-candidate boundary for two-person local dogfooding of
-Agent-Space. The system's foundation — space isolation, actor identity, run replay, runtime
+Rainver. The system's foundation — space isolation, actor identity, run replay, runtime
 and credential boundaries, policy enforcement, activity provenance, backup/restore, and
 deployment control — is hardened and tested.
 
@@ -125,7 +125,7 @@ No connector marketplace, crawler, or automatic system self-evolution controls a
 
 ## D. RC Config Requirements
 
-The following config must be set in `~/.aspace/<mode>/.env` before dogfooding begins.
+The following config must be set in `~/.rainver-data/<mode>/.env` before dogfooding begins.
 
 ### Required backup config
 
@@ -145,7 +145,7 @@ backup task to run one backup immediately after startup in the background, so se
 readiness and dependent containers are not blocked while the archive is created.
 Leave it at the default for dogfooding.
 
-`BACKUP_ROOT` defaults to `AGENT_SPACE_HOME/backups/`. Override only if you need a
+`BACKUP_ROOT` defaults to `RAINVER_HOME/backups/`. Override only if you need a
 non-standard location.
 
 `INSTANCE_ADMIN_EMAIL` must be set only for the deployment owner who should manage
@@ -172,14 +172,14 @@ Multi-user dogfooding requires each user to authenticate with their own credenti
 
 ### Where config lives
 
-- Host: `~/.aspace/<mode>/.env` (never stored in the repo).
-- In Docker: mounted at `/aspace/.env` through the Compose volume.
+- Host: `~/.rainver-data/<mode>/.env` (never stored in the repo).
+- In Docker: mounted at `/rainver/.env` through the Compose volume.
 - See `ops/compose/docker-compose.dev.yml` for volume mapping.
 
 ### Where runtime data lives
 
 ```
-AGENT_SPACE_HOME/          (default: ~/.aspace/dev/)
+RAINVER_HOME/          (default: ~/.rainver-data/dev/)
   db/                      PostgreSQL data volume + pg_dump archives
   storage/                 Artifact storage files
   secrets/                 Encrypted provider key files
@@ -189,7 +189,7 @@ AGENT_SPACE_HOME/          (default: ~/.aspace/dev/)
   logs/                    Application logs (optional; BACKUP_INCLUDE_LOGS=false by default)
 ```
 
-Backups are stored at `AGENT_SPACE_HOME/backups/` by default. Normal archives contain `db/`,
+Backups are stored at `RAINVER_HOME/backups/` by default. Normal archives contain `db/`,
 `storage/`, `config/`, and `workspaces/`. Logs optional. `secrets/` uses the separate
 credential archive workflow. `backups/` and `sandboxes/` are always excluded.
 
@@ -207,8 +207,8 @@ credentials must resolve through the CLI CredentialBroker.
 ### Deployment posture
 
 - `POST /deployments/jobs` returns 501. Deployment job persistence is absent.
-- Deployer `ALLOWED_JOB_TYPES` is exactly `rebuild_agent_space`,
-  `restart_agent_space`, and `health_check`; these jobs accept no request arguments.
+- Deployer `ALLOWED_JOB_TYPES` is exactly `rebuild_rainver`,
+  `restart_rainver`, and `health_check`; these jobs accept no request arguments.
 - The deployer socket is private to its privileged sidecar; product paths cannot submit jobs.
 - Evolution runs require an explicitly selected Agent and cannot create a privileged
   system-evolution Agent.
@@ -315,8 +315,8 @@ curl -s http://localhost:3000/api/v1/system/backups \
 
 Inspect the manifest:
 ```bash
-tar -xOf ~/.aspace/dev/backups/manual-*.tar.gz backup_manifest.json | python3 -m json.tool
-# Expected: backup_format="agent-space-backup.v1", included_paths lists db/ etc.
+tar -xOf ~/.rainver-data/dev/backups/manual-*.tar.gz backup_manifest.json | python3 -m json.tool
+# Expected: backup_format="rainver-backup.v1", included_paths lists db/ etc.
 ```
 
 ### Step 2 — User setup
@@ -513,11 +513,11 @@ Run this before first write session and periodically during dogfooding.
 ### Verify automatic backup is configured
 
 ```bash
-grep BACKUP_ENABLED ~/.aspace/dev/.env
+grep BACKUP_ENABLED ~/.rainver-data/dev/.env
 # Expected: BACKUP_ENABLED=true
 
 # Check server startup logs for scheduler confirmation
-docker compose -p agent-space-dev -f ops/compose/docker-compose.dev.yml logs server | grep "backup_scheduler"
+docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml logs server | grep "backup_scheduler"
 # Expected: scheduler registry started with backup_scheduler
 ```
 
@@ -533,7 +533,7 @@ curl -s -X POST http://localhost:3000/api/v1/system/backups/manual \
 **Offline full-system CLI (server not running, postgres up):**
 ```bash
 ops/scripts/system/backup.sh --mode dev
-# Archives to ~/.aspace/dev/backups/system-<timestamp>.tar.gz
+# Archives to ~/.rainver-data/dev/backups/system-<timestamp>.tar.gz
 # Same archive format as BackupService (PostgreSQL snapshot + files + backup_manifest.json)
 ```
 
@@ -545,22 +545,22 @@ curl -s http://localhost:3000/api/v1/system/backups \
 # Expected: JSON list of archives with name, size, created_at
 
 # Or list on filesystem
-ls -lh ~/.aspace/dev/backups/
+ls -lh ~/.rainver-data/dev/backups/
 ```
 
 ### Inspect backup_manifest.json
 
 ```bash
-ARCHIVE=$(ls ~/.aspace/dev/backups/auto-*.tar.gz | tail -1)
+ARCHIVE=$(ls ~/.rainver-data/dev/backups/auto-*.tar.gz | tail -1)
 tar -xOf "$ARCHIVE" backup_manifest.json | python3 -m json.tool
 ```
 
 Expected fields in manifest:
-- `backup_format: "agent-space-backup.v1"`
+- `backup_format: "rainver-backup.v1"`
 - `kind: "auto"` or `"manual"`
 - `created_at` — ISO timestamp
 - `source_root` — absolute path of data root at backup time
-- `included_paths` — list: `db/agent_space.dump`, `storage/`, `artifacts/`, `config/`, `workspaces/`; never `secrets/`
+- `included_paths` — list: `db/rainver.dump`, `storage/`, `artifacts/`, `config/`, `workspaces/`; never `secrets/`
 - `excluded_paths` — `backups/`, `sandboxes/`, `cache/`, `db/postgres/` with reason
 - `db_snapshot_method: "pg_dump_custom"`
 - `warnings` — empty list for clean backup
@@ -571,13 +571,13 @@ Rehearse against the disposable `test` mode so the live `dev` data is untouched.
 
 **Stop the app, leave postgres running:**
 ```bash
-docker compose -p agent-space-test -f ops/compose/docker-compose.test.yml stop server frontend deployer
-docker compose -p agent-space-test -f ops/compose/docker-compose.test.yml up -d postgres
+docker compose -p rainver-test -f ops/compose/docker-compose.test.yml stop server frontend deployer
+docker compose -p rainver-test -f ops/compose/docker-compose.test.yml up -d postgres
 ```
 
 **Restore:**
 ```bash
-ARCHIVE=~/.aspace/dev/backups/auto-<timestamp>.tar.gz
+ARCHIVE=~/.rainver-data/dev/backups/auto-<timestamp>.tar.gz
 
 # Full-system restore into the disposable test mode (database + files)
 ops/scripts/system/restore.sh "$ARCHIVE" --mode test --force
@@ -589,8 +589,8 @@ ops/scripts/system/restore.sh "$ARCHIVE" --mode test --force
 
 ```bash
 # The restore above targeted --mode test, so start that mode to verify it.
-# (start.sh derives the mode root from ASPACE_ROOT, default ~/.aspace; it does not
-#  read AGENT_SPACE_HOME — that is the in-container instance root.)
+# (start.sh derives the mode root from RAINVER_ROOT, default ~/.rainver-data; it does not
+#  read RAINVER_HOME — that is the in-container instance root.)
 ./ops/scripts/start.sh --test
 curl -s http://localhost:3100/api/v1/server/health
 # Expected: {"status": "ok", ...}
@@ -639,7 +639,7 @@ Use this procedure when a stop condition triggers or a serious incident occurs.
 
 Prevent new writes from entering the database:
 ```bash
-docker compose -p agent-space-dev -f ops/compose/docker-compose.dev.yml stop server frontend deployer
+docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml stop server frontend deployer
 ```
 
 Keep postgres running so restore tooling can connect.
@@ -654,7 +654,7 @@ docker compose -f ops/compose/docker-compose.dev.yml stop
 
 Before overwriting anything, copy the current data root:
 ```bash
-cp -a ~/.aspace/dev ~/.aspace/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)
+cp -a ~/.rainver-data/dev ~/.rainver-data/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)
 ```
 
 This preserves the failing state for incident analysis.
@@ -678,9 +678,9 @@ git reset --hard <known-good-commit>
 
 ```bash
 # Bring postgres back up so pg_restore can connect (the app stays stopped)
-docker compose -p agent-space-dev -f ops/compose/docker-compose.dev.yml up -d postgres
+docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml up -d postgres
 
-ARCHIVE=$(ls ~/.aspace/dev/backups/auto-*.tar.gz | sort | tail -2 | head -1)
+ARCHIVE=$(ls ~/.rainver-data/dev/backups/auto-*.tar.gz | sort | tail -2 | head -1)
 ops/scripts/system/restore.sh "$ARCHIVE" --mode dev --force
 ```
 
@@ -689,7 +689,7 @@ already be corrupted).
 
 ### Step 7 — Disable implicated surface
 
-Edit `~/.aspace/dev/.env` to disable the problematic surface:
+Edit `~/.rainver-data/dev/.env` to disable the problematic surface:
 ```bash
 # Example:
 BACKUP_ENABLED=false             # temporarily if backup itself is problematic

@@ -19,8 +19,8 @@ MODE="dev"
 local_compose_init "$MODE"
 local_compose_ensure_mode_env_file
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
 

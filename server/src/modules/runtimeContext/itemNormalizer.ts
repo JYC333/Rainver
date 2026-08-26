@@ -6,7 +6,7 @@ import type {
   RuntimeContextSemanticRole,
   RuntimeContextSensitivity,
   RuntimeContextTrust,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { estimateModelTokens } from "../usage/modelCatalog.js";
 
 export interface ContextItemSource {

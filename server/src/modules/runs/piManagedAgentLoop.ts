@@ -4,7 +4,7 @@
  * This is the only module in the server allowed to reach that package, which
  * `boundaries.test.ts` enforces. Pi owns transcript accumulation, sequential
  * batch execution, truncated-batch failure and turn stopping. It owns nothing
- * else: every model turn goes back out through the agent-space executor, and
+ * else: every model turn goes back out through the rainver executor, and
  * every tool call goes back out through the caller's dispatch into
  * `SystemActionGateway`.
  *
@@ -17,7 +17,7 @@ import type {
   CanonicalToolCall,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type {
   ManagedAgentLoopInput,
   ManagedAgentLoopPort,
@@ -215,7 +215,7 @@ function loopModel(request: RuntimeHostExecuteRequest): PiModel {
     id,
     name: id,
     api: "pi-messages",
-    provider: "agent-space",
+    provider: "rainver",
     baseUrl: "",
     reasoning: false,
     input: ["text"],
@@ -252,7 +252,7 @@ function canonicalToPiMessages(messages: readonly CanonicalMessage[]): PiAgentMe
           })),
         ],
         api: "pi-messages",
-        provider: "agent-space",
+        provider: "rainver",
         model: "transcript",
         usage: emptyUsage(),
         stopReason: message.tool_calls?.length ? "toolUse" : "stop",
@@ -318,7 +318,7 @@ function responseStream(response: RuntimeHostExecuteResponse, signal?: AbortSign
       })),
     ],
     api: "pi-messages",
-    provider: "agent-space",
+    provider: "rainver",
     model: response.model ?? "provider-default",
     usage: usageFromResponse(response),
     stopReason,

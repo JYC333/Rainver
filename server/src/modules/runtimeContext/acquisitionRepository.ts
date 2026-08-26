@@ -1,11 +1,11 @@
 import type { Pool } from "../../db/pool.js";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../memory/repository.js";
 import { HttpError } from "../routeUtils/common.js";
 import { canAccessProject } from "../memory/projectAccess.js";
-import type { ExecutionControlSnapshot } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import {
   resolveExplicitReferences,
   resolveWorkContextScopeBindings,

@@ -12,4 +12,4 @@ export type {
   ResearchQueryStrategy,
   ResearchSemanticConcept,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";

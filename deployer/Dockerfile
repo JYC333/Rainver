@@ -1,4 +1,4 @@
-# agent-space deployer — host-level deployment supervisor
+# rainver deployer — host-level deployment supervisor
 #
 # Runs as a sidecar container in the Compose stack.
 # This is the ONLY container with Docker socket access for deployment purposes.
@@ -32,12 +32,12 @@ RUN chmod +x scripts/*.sh
 # /repo — repo root mounted by docker-compose.yml (needed by deploy scripts)
 # The socket stays private to this privileged container. Product runtimes and
 # agent subprocesses must not be able to submit host-equivalent jobs directly.
-ENV DEPLOYER_SOCKET=/tmp/agent-space-deployer.sock
+ENV DEPLOYER_SOCKET=/tmp/rainver-deployer.sock
 ENV REPO_ROOT=/repo
 
 # Non-root user matching server (uid 1000) so socket files are accessible to both
 RUN useradd -m -u 1000 deployer && chown -R deployer /deployer
-RUN mkdir -p /aspace && chown deployer:deployer /aspace
+RUN mkdir -p /rainver && chown deployer:deployer /rainver
 USER deployer
 
 CMD ["python", "deployer.py"]

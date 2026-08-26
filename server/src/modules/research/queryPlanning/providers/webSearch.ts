@@ -1,4 +1,4 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchSemanticQuery } from "@rainver/protocol";
 import { boundedPageSize, conceptTerms, type QueryAdaptationStrategy } from "./shared.js";
 
 // core concepts are space-joined (AND-like), but expansions get their own

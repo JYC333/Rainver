@@ -1,4 +1,4 @@
-import type { GraphProjection, GraphProjectionEdge, GraphProjectionNode } from "@agent-space/protocol";
+import type { GraphProjection, GraphProjectionEdge, GraphProjectionNode } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";

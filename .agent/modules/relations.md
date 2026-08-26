@@ -6,7 +6,7 @@ source links, and academic paper object extensions are implemented as
 server-owned modules.
 
 ## Purpose
-Relations is the reusable relationship data foundation for Agent Space. It owns
+Relations is the reusable relationship data foundation for Rainver. It owns
 people and organization records, identity handles, affiliation edges, and
 provenance links that can be used by normal life, team, and research workflows.
 

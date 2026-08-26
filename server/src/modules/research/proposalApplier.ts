@@ -1,4 +1,4 @@
-import type { ResearchProviderKey } from "@agent-space/protocol";
+import type { ResearchProviderKey } from "@rainver/protocol";
 import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
 import { requiredString } from "../routeUtils/common.js";
 import { ResearchMonitorMaterializer } from "./discovery/monitorMaterializer.js";

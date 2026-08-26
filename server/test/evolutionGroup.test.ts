@@ -405,7 +405,7 @@ describe("evolutionBundlesDb", () => {
 
 describe("evolutionPrompt", () => {
   describe("buildEvolutionPlanPrompt", () => {
-    it("builds an agent-space prompt with proposal and evidence boundaries", () => {
+    it("builds an rainver prompt with proposal and evidence boundaries", () => {
       const prompt = buildEvolutionPlanPrompt({
         target: target(),
         selectedStrategy: strategy(),
@@ -417,7 +417,7 @@ describe("evolutionPrompt", () => {
       });
 
       expect(prompt.prompt_version).toBe(EVOLUTION_PLAN_PROMPT_VERSION);
-      expect(prompt.system).toContain("agent-space Evolution planner");
+      expect(prompt.system).toContain("rainver Evolution planner");
       expect(prompt.system).toContain("ProposalApplierRegistry");
       expect(prompt.system).toContain("Do not apply changes");
       expect(prompt.user).toContain(EVOLUTION_PLAN_REVIEW_SCHEMA);

@@ -37,7 +37,7 @@ afterEach(async () => {
 
 function chatConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }

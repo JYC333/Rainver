@@ -1,4 +1,4 @@
-import type { ContextEvent, SemanticCheckpoint } from "@agent-space/protocol";
+import type { ContextEvent, SemanticCheckpoint } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";

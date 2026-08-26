@@ -39,7 +39,7 @@ import {
   PgAgentGroupRepository,
 } from "./repository.js";
 
-import type { PolicyCheckRequest } from "@agent-space/protocol";
+import type { PolicyCheckRequest } from "@rainver/protocol";
 
 export interface AgentGroupIdentity {
   spaceId: string;
@@ -1629,7 +1629,7 @@ function roomRunContract(
       name: "conversation_capture",
       path: "conversation_capture.json",
       required: Boolean(backend && isLocalCliRuntimeAdapter(backend.adapter_type)),
-      media_type: "application/vnd.agent-space.proposals+json",
+      media_type: "application/vnd.rainver.proposals+json",
       max_bytes: 262_144,
       json_schema: {
         type: "object",

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start agent-space via Docker Compose (frontend + server + deployer).
+# Start rainver via Docker Compose (frontend + server + deployer).
 #
 # Usage:
 #   ./ops/scripts/start.sh              — dev (default)
@@ -8,10 +8,10 @@
 #   ./ops/scripts/start.sh --prod       — prod (web/nginx 80 proxies /api to internal server)
 #   ./ops/scripts/start.sh --build      — same as above with image rebuild
 #
-# Data layout: $ASPACE_ROOT/<mode>/ (e.g. ~/.aspace/dev). Override the host-side
-# parent directory with ASPACE_ROOT when you need a non-default location.
-# AGENT_SPACE_HOME is NOT this parent: inside containers it is the mounted mode
-# root (/aspace).
+# Data layout: $RAINVER_ROOT/<mode>/ (e.g. ~/.rainver-data/dev). Override the host-side
+# parent directory with RAINVER_ROOT when you need a non-default location.
+# RAINVER_HOME is NOT this parent: inside containers it is the mounted mode
+# root (/rainver).
 
 set -euo pipefail
 
@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/local-compose.sh
 source "$SCRIPT_DIR/lib/local-compose.sh"
 
-SANDBOX_IMAGE="agent-space-sandbox"
+SANDBOX_IMAGE="rainver-sandbox"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 build_flag=""
 
 for arg in "$@"; do
@@ -39,10 +39,10 @@ ENV_TEMPLATE="$ENV_DIR/.env.$MODE.example"
 
 # ── Initialize data root directories (idempotent) ──────────────────────────────
 init_data_dirs() {
-  echo "  → aspace root: $ASPACE_ROOT"
+  echo "  → rainver root: $RAINVER_ROOT"
   echo "  → mode root:   $MODE_ROOT"
 
-  install -d -m 700 "$ASPACE_ROOT"
+  install -d -m 700 "$RAINVER_ROOT"
   install -d -m 700 "$MODE_ROOT"
   install -d -m 700 "$MODE_ROOT/storage"
   install -d -m 700 "$MODE_ROOT/logs"
@@ -103,7 +103,7 @@ validate_prod_env() {
     echo "Refusing to start prod: POSTGRES_PASSWORD is empty in $ENV_FILE" >&2
     exit 1
   fi
-  if [[ "$pw" == "agent_space_dev_password" ]]; then
+  if [[ "$pw" == "rainver_dev_password" ]]; then
     echo "Refusing to start prod: POSTGRES_PASSWORD uses the development password" >&2
     exit 1
   fi
@@ -145,7 +145,7 @@ fi
 ensure_server_image_for_migrations
 run_database_migrations
 
-echo "Starting agent-space ($MODE) with Docker Compose..."
+echo "Starting rainver ($MODE) with Docker Compose..."
 echo "  compose file: $COMPOSE_FILE"
 echo "  project:      $COMPOSE_PROJECT"
 echo "  mode root:    $MODE_ROOT"

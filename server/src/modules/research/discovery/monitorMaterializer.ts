@@ -2,8 +2,8 @@ import type {
   MaterializeResearchQueryStrategyResponse,
   ResearchCompiledQuery,
   ResearchProviderKey,
-} from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+} from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { assertProjectWriter } from "../../projects/access.js";
 import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService.js";

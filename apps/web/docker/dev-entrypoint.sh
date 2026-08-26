@@ -3,7 +3,7 @@ set -eu
 
 cd /repo/apps/web
 
-STAMP_DIR="node_modules/.cache/agent-space"
+STAMP_DIR="node_modules/.cache/rainver"
 STAMP_FILE="$STAMP_DIR/package-inputs.sha256"
 
 dependency_hash() {
@@ -38,8 +38,8 @@ fi
 if [ -n "$install_reason" ]; then
   echo "[web-dev] $install_reason; running pnpm install"
   pnpm --dir /repo install --frozen-lockfile \
-    --filter @agent-space/protocol \
-    --filter agent-core-ui
+    --filter @rainver/protocol \
+    --filter @rainver/web
   mkdir -p "$STAMP_DIR"
   printf '%s\n' "$current_hash" > "$STAMP_FILE"
 else

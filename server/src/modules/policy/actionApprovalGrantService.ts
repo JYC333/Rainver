@@ -17,7 +17,7 @@ export class ActionApprovalGrantService {
     await this.assertOwner(identity);
     const agentId = requiredString(body.agent_id, "agent_id");
     const actionId = requiredString(body.action_id, "action_id");
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === actionId);
     if (!definition) throw new HttpError(422, "Unknown system action");
     if (!definition.grantable) throw new HttpError(422, "This action cannot be pre-authorized");
@@ -117,7 +117,7 @@ export class ActionApprovalGrantService {
    * that actually need them.
    */
   async consumeMatching(input: { spaceId: string; agentId: string; actionId: string; runId?: string | null; projectId?: string | null; resourceKind?: string | null; resourceId?: string | null }) {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === input.actionId);
     if (!definition?.grantable) return null;
     const now = new Date().toISOString();
@@ -146,7 +146,7 @@ export class ActionApprovalGrantService {
 
   /** Read-only invocation check; the owning proposal transaction consumes the grant. */
   async hasMatching(input: { spaceId: string; agentId: string; actionId: string; runId?: string | null; projectId?: string | null; resourceKind?: string | null; resourceId?: string | null }): Promise<boolean> {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === input.actionId);
     if (!definition?.grantable) return false;
     const result = await this.db.query(

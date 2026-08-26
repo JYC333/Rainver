@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import { HttpError } from "../routeUtils/common.js";
 import { normalizeAssetOwnerScopeForCreate } from "./assetAccess.js";

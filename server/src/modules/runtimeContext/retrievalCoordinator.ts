@@ -2,7 +2,7 @@ import type {
   ContextItem,
   RetrievalObjectType,
   RetrievalSearchResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { normalizeContextItem } from "./itemNormalizer.js";
 import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
 

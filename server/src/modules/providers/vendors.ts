@@ -1,7 +1,7 @@
 /**
  * Vendor identity for a configured ModelProvider.
  *
- * What lives here is what agent-space owns about a vendor: its identity, its
+ * What lives here is what rainver owns about a vendor: its identity, its
  * protocol family, and generic capability facts. How a vendor's models are
  * described to whichever chat implementation is in use is that adapter's
  * concern and lives with it.

@@ -8,7 +8,7 @@ It describes the framework, not a fully active capability executor.
 ## Position
 
 An external Agent Skill package is the source of truth for its own procedural
-content. Agent-space owns the immutable import snapshot and provenance, risk and
+content. Rainver owns the immutable import snapshot and provenance, risk and
 trust review, requested and granted policy, scope/Agent binding, pinned version,
 runtime compatibility, Runtime Context Delivery authorization, and audit. It
 does not own a canonical re-representation of imported skill content.
@@ -19,7 +19,7 @@ adapter artifacts, not content authorities. Skill content is model-visible
 durable context and reaches a Run only through Runtime Context Delivery.
 
 A Skill is a procedure for a model. A System Action / Tool is an
-agent-space-owned callable operation exposed through the policy-enforced
+rainver-owned callable operation exposed through the policy-enforced
 gateway. A package's tool, hook, script, dependency, or MCP declaration is a
 request only and grants no callable or execution authority. A Workflow is a
 third concept: an enforced process definition, not a soft instruction package.
@@ -49,10 +49,10 @@ It usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
 
 An Open Skill is not trusted by default, but its approved package snapshot
-remains the content of record. Agent-space may preview, inventory, hash,
+remains the content of record. Rainver may preview, inventory, hash,
 risk-scan, review, approve, bind, pin, and deliver that snapshot; it does not
-rewrite it into a canonical agent-space skill definition. Approval governs
-whether and where the content may be delivered, not whether agent-space owns it.
+rewrite it into a canonical Rainver skill definition. Approval governs
+whether and where the content may be delivered, not whether Rainver owns it.
 
 ### NormalizedSkill
 
@@ -109,14 +109,14 @@ API:
 
 ### CapabilityDefinition
 
-`CapabilityDefinition` is the current agent-space ability object. It defines
+`CapabilityDefinition` is the current Rainver ability object. It defines
 the semantic ability, input/output contracts, permissions, artifact types,
 proposal policy, supported execution modes, runtime support, and lifecycle
 status.
 
 Definitions may currently be built in, official, generated, or converted from
 an imported skill. Imported-skill conversion is transitional and must not be
-extended: an external Skill remains a `SkillPackage`, while agent-space-owned
+extended: an external Skill remains a `SkillPackage`, while rainver-owned
 System Actions retain their own registry and gateway. Users do not directly
 mutate definitions.
 
@@ -262,7 +262,7 @@ one.
 - Import does not install npm, pnpm, Python, or other dependencies.
 - Vendor tool declarations are permission requests, not permission grants.
 - Actual runtime permissions are the intersection of the skill request,
-  capability definition, profile configuration, and agent-space policy.
+  capability definition, profile configuration, and Rainver policy.
 - Skill import records source URL, source ref, commit SHA when available, fetch
   time, package hash, package root, and bounded same-repository file inventory.
 - GitHub imports must pin a commit SHA when available or at least record source

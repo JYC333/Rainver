@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   RunMaterializationItemSummary,
   RuntimeDelegationOutputItem,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";

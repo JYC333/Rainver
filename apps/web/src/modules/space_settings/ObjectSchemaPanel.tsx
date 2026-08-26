@@ -353,7 +353,7 @@ export function ObjectSchemaPanel() {
               className="mt-2 min-h-32 font-mono text-xs"
               value={importManifest}
               onChange={e => setImportManifest(e.target.value)}
-              placeholder="paste agent_space.object_schema.v1 JSON"
+              placeholder="paste rainver.object_schema.v1 JSON"
             />
           </div>
         </div>

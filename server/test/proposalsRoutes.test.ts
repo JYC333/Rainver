@@ -6,7 +6,7 @@ import { loadConfig } from "../src/config.js";
 import { __setProposalIdentityForTests, __setProposalServicesFactoryForTests } from "../src/modules/proposals/routes.js";
 import { ProposalApplyHttpError } from "../src/modules/proposals/applyService.js";
 import { UnknownProposalApplierError } from "../src/modules/proposals/applierRegistry.js";
-import type { ProposalOut, ProposalPage } from "@agent-space/protocol";
+import type { ProposalOut, ProposalPage } from "@rainver/protocol";
 
 let app: FastifyInstance;
 
@@ -18,7 +18,7 @@ afterEach(async () => {
 
 function proposalsConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
   });
 }
 

@@ -61,7 +61,7 @@ export default function LoginPage() {
         <div className="flex flex-col items-center gap-3">
           <ApertureMark size={56} />
           <div className="text-center">
-            <h1 className="text-xl font-bold tracking-tight text-foreground">agent-space</h1>
+            <h1 className="text-xl font-bold tracking-tight text-foreground">rainver</h1>
             <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
           </div>
         </div>

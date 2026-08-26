@@ -80,7 +80,7 @@ export const KNOWLEDGE_WORKSPACE_SECTIONS: Exclude<KnowledgeSection, 'home'>[] =
 
 export const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
 
-const LAST_SECTION_KEY = 'agent-space:knowledge-section'
+const LAST_SECTION_KEY = 'rainver:knowledge-section'
 
 function isWorkingSection(value: string): value is Exclude<KnowledgeSection, 'home'> {
   return (KNOWLEDGE_WORKSPACE_SECTIONS as string[]).includes(value)

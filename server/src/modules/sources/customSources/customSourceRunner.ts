@@ -7,7 +7,7 @@ import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
   CustomSourcePolicyLimits,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 
 /**

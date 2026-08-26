@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { Queryable, RunRecord } from "../src/modules/runs/repository.js";
 import {
   PgVerificationEngine,

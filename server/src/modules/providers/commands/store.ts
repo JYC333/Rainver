@@ -176,7 +176,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   private async masterKey(): Promise<Buffer> {
-    return loadOrCreateModelProviderApiKeyMasterKey(this.config.agentSpaceHome);
+    return loadOrCreateModelProviderApiKeyMasterKey(this.config.rainverHome);
   }
 
   private async reconcileManagedAssistantProfilesForSpace(spaceId: string): Promise<void> {
@@ -1285,7 +1285,7 @@ export function resolveProviderCommandStore(config: ServerConfig): ProviderComma
   if (!config.databaseUrl) {
     throw new Error("Provider command store requires SERVER_DATABASE_URL");
   }
-  const key = `${config.databaseUrl}|${config.agentSpaceHome}`;
+  const key = `${config.databaseUrl}|${config.rainverHome}`;
   if (!pgStore || pgStoreKey !== key) {
     pgStore = new PgProviderCommandStore(config);
     pgStoreKey = key;

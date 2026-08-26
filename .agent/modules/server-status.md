@@ -7,7 +7,7 @@ jobs worker, queue depth). Provider/adapter/capability/sandbox components and
 the `RuntimeStatusBar` UI are not built.
 
 ## Purpose
-Surface the operational health of the agent-space runtime to the user. Users must be able to see at a glance whether the backend, adapters, capabilities, and external integrations are reachable and functioning. This is not monitoring — it is a user-facing status display integrated into the product shell.
+Surface the operational health of the Rainver runtime to the user. Users must be able to see at a glance whether the backend, adapters, capabilities, and external integrations are reachable and functioning. This is not monitoring — it is a user-facing status display integrated into the product shell.
 
 ## Owns
 - Runtime status API endpoint (`GET /api/v1/status`)

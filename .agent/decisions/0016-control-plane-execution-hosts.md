@@ -47,7 +47,7 @@ construction, none of it portable to a remote host without being rebuilt.
 
 ## Decision
 
-### 1. An Agent Space instance is one control plane plus N execution hosts
+### 1. An Rainver instance is one control plane plus N execution hosts
 
 The control plane (the existing server) remains the sole owner of canonical
 state, orchestration, governance (proposals, policy, audit), and the
@@ -81,7 +81,7 @@ preventing Location/Folder drift.
   today, to server-host Locations. A remote Location is never passed through
   the server sandbox path resolver.
 - **Remote (personal) host**: a new, deliberately weaker **trusted-host**
-  mode. A thin daemon (`agent-space-host`) registers with the control plane
+  mode. A thin daemon (`rainver-host`) registers with the control plane
   over a private network (v1: the user's own Tailscale network; no public
   exposure), then spawns the machine's natively installed CLI directly —
   no bubblewrap, no mount containment, no PathPolicy enforcement, using the
@@ -228,7 +228,7 @@ showed that framing to be too broad. The daemon's durable role is narrowed to
   needs one, through the same outbound connection.
 
 Runtime protocol knowledge lives on the server side, not in the daemon — "the
-daemon must not become a second Agent Space" continues to hold. What the
+daemon must not become a second Rainver" continues to hold. What the
 daemon must also never become is a vendor protocol translator. Rejected in
 the same decision: adopting OpenCode Server as the general execution
 foundation (it substitutes API spend for the subscription quota that

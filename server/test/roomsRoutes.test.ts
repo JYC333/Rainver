@@ -32,7 +32,7 @@ function service(overrides: Record<string, unknown>) {
 
 function config() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
   });
 }
 

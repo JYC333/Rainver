@@ -48,7 +48,7 @@ export interface RemoteProviderBindingFrame {
   files: Array<{ relative_path: string; contents: string; escape?: "toml_basic_string" }>;
 }
 
-export const PROFILE_ROOT_PLACEHOLDER = "{{AGENT_SPACE_RUN_PROFILE}}";
+export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
 
 /**
  * `model_override_json.source` written when the remote path actually bound a
@@ -221,7 +221,7 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
 
-  const providerName = stringValue(record.name) ?? "Agent Space Provider";
+  const providerName = stringValue(record.name) ?? "Rainver Provider";
   const availableModels = stringArray(record.available_models);
   const model = input.binding.model
     ?? stringValue(recordValue(input.run.model_override_json).model)
@@ -368,7 +368,7 @@ function bindingFrame(input: {
 
   const model = input.model!;
   if (input.adapterType === "codex_cli") {
-    const catalogRelative = ".codex/model-catalogs/agent-space-provider.json";
+    const catalogRelative = ".codex/model-catalogs/rainver-provider.json";
     return {
       profile_key,
       env: {},

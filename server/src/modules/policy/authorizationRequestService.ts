@@ -317,7 +317,7 @@ export async function classifyRequestableDecision(
     !metadataActionId
     || decision.metadata_json?.surface !== "managed_run_system_action_gateway"
   ) return null;
-  const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+  const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
   const definition = SYSTEM_ACTION_REGISTRY.find(
     (candidate) =>
       candidate.grantable

@@ -7,7 +7,7 @@ import type {
   RetrievalRuntimeRankingConfig,
   RetrievalSearchResponse,
   RetrievalSearchResult,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { normalizeAlias, tokenizeSimple } from "./normalize.js";
 import { normalizeTextForSearch } from "./normalize.js";

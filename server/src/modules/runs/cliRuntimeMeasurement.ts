@@ -1,7 +1,7 @@
 import type {
   CanonicalModelUsage,
   CanonicalUsage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export interface CliRuntimeMeasurement {
   external_session_id: string | null;

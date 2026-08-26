@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-Initial design considered a Tauri-based desktop app that would run the full agent-space backend natively on Windows. Technical obstacles:
+Initial design considered a Tauri-based desktop app that would run the full Rainver backend natively on Windows. Technical obstacles:
 - Claude Code CLI and Codex CLI require Linux/macOS (or WSL2 on Windows)
 - Docker-based sandbox isolation requires Linux kernel features
 - Maintaining Windows native + Linux paths doubles complexity

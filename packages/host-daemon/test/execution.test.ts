@@ -18,9 +18,9 @@ let configDir: string;
 let workspaceDir: string;
 
 beforeEach(async () => {
-  configDir = await mkdtemp(join(tmpdir(), "agent-space-host-exec-config-"));
-  workspaceDir = await mkdtemp(join(tmpdir(), "agent-space-host-exec-workspace-"));
-  process.env.AGENT_SPACE_HOST_CONFIG_DIR = configDir;
+  configDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-config-"));
+  workspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-workspace-"));
+  process.env.RAINVER_HOST_CONFIG_DIR = configDir;
   // Not a real control plane — uploads are expected to fail and be caught
   // internally; these tests only assert on the WS frames handleLaunch sends.
   await saveConfig({
@@ -32,7 +32,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  delete process.env.AGENT_SPACE_HOST_CONFIG_DIR;
+  delete process.env.RAINVER_HOST_CONFIG_DIR;
   await rm(configDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
 });
@@ -302,7 +302,7 @@ describe("handleLaunch with a provider binding", () => {
             profile_key: "codex_cli/provider-1",
             env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1", ANTHROPIC_AUTH_TOKEN: "lease-token" },
             profile_env: { HOME: ".", CODEX_HOME: ".codex" },
-            files: [{ relative_path: ".codex/config.toml", contents: "catalog = \"{{AGENT_SPACE_RUN_PROFILE}}/x.json\"" }],
+            files: [{ relative_path: ".codex/config.toml", contents: "catalog = \"{{RAINVER_RUN_PROFILE}}/x.json\"" }],
           },
         },
         send,

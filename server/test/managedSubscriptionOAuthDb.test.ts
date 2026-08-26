@@ -17,13 +17,13 @@ const SPACE = "7b000000-0000-4000-8000-000000000001";
 const OWNER = "7b000000-0000-4000-8000-000000000002";
 const OTHER = "7b000000-0000-4000-8000-000000000003";
 
-let agentSpaceHome: string | undefined;
+let rainverHome: string | undefined;
 
 const db = useTestDatabase(import.meta.filename, { max: 5 });
 
 beforeAll(async () => {
   if (!db.available) return;
-  agentSpaceHome = await mkdtemp(join(tmpdir(), "aspace-managed-subscription-"));
+  rainverHome = await mkdtemp(join(tmpdir(), "rainver-managed-subscription-"));
   await db.pool.query(
     `INSERT INTO spaces (id,name,type,created_at,updated_at)
      VALUES ($1,'Managed subscription','personal',now(),now())`,
@@ -45,12 +45,12 @@ beforeAll(async () => {
 afterAll(async () => {
   __setManagedSubscriptionOAuthForTests(null);
   __setManagedSubscriptionFetchForTests(null);
-  if (agentSpaceHome) await rm(agentSpaceHome, { recursive: true, force: true });
+  if (rainverHome) await rm(rainverHome, { recursive: true, force: true });
 });
 
 describe("managed subscription OAuth persistence", () => {
   it("keeps Codex tokens encrypted, owner-bound, and refreshes once under a row lock", async () => {
-    if (!db.available || !agentSpaceHome) return;
+    if (!db.available || !rainverHome) return;
     let refreshes = 0;
     __setManagedSubscriptionOAuthForTests(async () => ({
       async login() {
@@ -82,7 +82,7 @@ describe("managed subscription OAuth persistence", () => {
 
     const config = {
       databaseUrl: db.connectionUri,
-      agentSpaceHome,
+      rainverHome,
     } as ServerConfig;
     const provider = await loginManagedSubscription(
       config,

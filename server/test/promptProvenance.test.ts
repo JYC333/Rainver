@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { promptProvenanceOf, withPromptProvenance } from "../src/modules/prompts/provenance.js";
-import type { PromptResolveResult } from "@agent-space/protocol";
+import type { PromptResolveResult } from "@rainver/protocol";
 
 function resolveResult(overrides: Partial<PromptResolveResult> = {}): PromptResolveResult {
   return {

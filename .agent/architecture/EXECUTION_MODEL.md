@@ -339,7 +339,7 @@ call id as their idempotency key. Best-effort `action_invoked` /
 their persistence failure does not block or roll back the action. Required
 PolicyDecisionRecord persistence remains the fail-closed audit boundary.
 
-The managed multi-turn loop is implemented behind the agent-space-owned
+The managed multi-turn loop is implemented behind the rainver-owned
 `managedAgentLoop` port by pi-agent-core. Pi owns transcript accumulation,
 sequential batch execution, truncated-batch failure and turn stopping; it does
 not own provider access, tool grants, policy, audit, credentials or context.
@@ -391,7 +391,7 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   `RunOrchestrationService` dispatches through that family map rather than
   enumerating adapter names.
 - **Controlled CLI tools:** `runtimeTools` installs vendor CLI versions under
-  `$AGENT_SPACE_HOME/runtime-tools`; only the `INSTANCE_ADMIN_EMAIL` user may
+  `$RAINVER_HOME/runtime-tools`; only the `INSTANCE_ADMIN_EMAIL` user may
   install/activate instance tool versions.
 - **Run authority:** server `runs` owns run execution, stop,
   top-level run read/status/trace, post-run evaluation/finalization, the

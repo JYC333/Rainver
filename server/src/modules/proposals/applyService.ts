@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { PoolClient } from "../../db/pool.js";
@@ -30,7 +30,7 @@ import type {
   ProposalAcceptResultType,
   ProposalApprovalOut,
   ProposalOut,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
 
@@ -260,7 +260,7 @@ export class PgProposalApplyService {
         return null;
       }
       await this.assertBundleMemberMayBeDecided(client, proposal.id, false);
-      const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+      const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
       const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === action.actionId);
       const payloadActionId = proposal.payload_json?.action_id;
       if (

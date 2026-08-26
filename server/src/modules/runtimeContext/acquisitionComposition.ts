@@ -1,6 +1,6 @@
-import type { ContextItem } from "@agent-space/protocol";
+import type { ContextItem } from "@rainver/protocol";
 import type { ModelWindowOverride } from "../usage/modelCatalog.js";
-import type { ExecutionControlSnapshot } from "@agent-space/protocol";
+import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import type {
   AcquiredRuntimeContext,
   RuntimeContextAcquisitionPort,

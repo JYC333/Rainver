@@ -40,7 +40,7 @@ function assistantLine(opts: {
 
 describe("readClaudeTokenUsage", () => {
   it("sums usage across transcripts, dedupes replayed messages, and estimates cost", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-usage-"));
     const proj = join(tempDir, "projects", "-app-server");
     await mkdir(proj, { recursive: true });
 
@@ -86,7 +86,7 @@ describe("readClaudeTokenUsage", () => {
   });
 
   it("emits lower-bound import events without raw transcript content", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-usage-"));
     const proj = join(tempDir, "projects", "-app-server");
     await mkdir(proj, { recursive: true });
 
@@ -147,7 +147,7 @@ describe("readClaudeTokenUsage", () => {
   });
 
   it("returns an unavailable (not error) result when no transcripts exist", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-usage-"));
     const usage = await readClaudeTokenUsage(tempDir);
     expect(usage.available).toBe(false);
     expect(usage.source).toBe("transcripts");
@@ -156,7 +156,7 @@ describe("readClaudeTokenUsage", () => {
   });
 
   it("reads transcripts under sessions/ as well as projects/", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-usage-"));
     const sess = join(tempDir, "sessions");
     await mkdir(sess, { recursive: true });
     await writeFile(join(sess, "s.jsonl"), assistantLine({ model: "claude-sonnet-4-6", id: "x", input: 7, output: 3 }));
@@ -173,7 +173,7 @@ function codexLine(value: Record<string, unknown>): string {
 
 describe("readCodexTokenUsage", () => {
   it("sums Codex token_count deltas from sessions and estimates cost", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-codex-usage-"));
     const day = join(tempDir, "sessions", "2026", "06", "14");
     await mkdir(day, { recursive: true });
     const model = "openai/gpt-5.2-codex";
@@ -233,7 +233,7 @@ describe("readCodexTokenUsage", () => {
   });
 
   it("returns an unavailable Codex-session result when no sessions exist", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-codex-usage-"));
     const usage = await readCodexTokenUsage(tempDir);
     expect(usage.available).toBe(false);
     expect(usage.source).toBe("codex_sessions");
@@ -241,7 +241,7 @@ describe("readCodexTokenUsage", () => {
   });
 
   it("emits Codex import events from cumulative token_count deltas", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-usage-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-codex-usage-"));
     const day = join(tempDir, "sessions", "2026", "06", "14");
     await mkdir(day, { recursive: true });
 

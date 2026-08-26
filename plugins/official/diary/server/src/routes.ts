@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { Queryable, PluginHostContext } from "@agent-space/protocol";
+import type { Queryable, PluginHostContext } from "@rainver/protocol";
 import { diaryRepository } from "./domain/repository.js";
 import { JOB_TYPE_DIARY_REFLECTION } from "./jobs.js";
 

@@ -1,12 +1,12 @@
 [package]
-name = "agent-core-desktop"
+name = "rainver-desktop"
 version = "0.1.0"
-description = "Agent Core Desktop"
+description = "Rainver Desktop"
 authors = []
 edition = "2021"
 
 [lib]
-name = "agent_core_desktop_lib"
+name = "rainver_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]

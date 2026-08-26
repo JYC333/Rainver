@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely extract an agent-space tar archive into an empty staging directory."""
+"""Safely extract an rainver tar archive into an empty staging directory."""
 
 from __future__ import annotations
 

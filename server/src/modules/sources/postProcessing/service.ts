@@ -3,7 +3,7 @@ import { getDbPool, type Pool } from "../../../db/pool.js";
 import type {
   RetrievalObjectType,
   RetrievalSearchResult,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { PgAgentRepository } from "../../agents/repository.js";
 import { PgJobQueueRepository } from "../../jobs/repository.js";
 import { PgRunRepository, type RunRecord } from "../../runs/repository.js";

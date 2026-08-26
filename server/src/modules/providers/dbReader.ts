@@ -10,7 +10,7 @@
  */
 
 import { getDbPool, type Pool } from "./db.js";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { defaultBaseUrlFor } from "./commands/helpers.js";
 

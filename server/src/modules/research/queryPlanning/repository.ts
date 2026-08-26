@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   ResearchCompiledQuery,
   ResearchPreviewObservation,
@@ -7,7 +7,7 @@ import type {
   ResearchQueryAttemptDirection,
   ResearchQueryDecision,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   HttpError,
   type Queryable,
@@ -505,7 +505,7 @@ export class ResearchQueryRepository {
   }
 }
 
-function mapAttempt(row: AttemptRow, protocol: typeof import("@agent-space/protocol")): StoredResearchQueryAttempt {
+function mapAttempt(row: AttemptRow, protocol: typeof import("@rainver/protocol")): StoredResearchQueryAttempt {
   const sampleSummary = recordValue(row.sample_summary_json);
   const metrics = recordValue(row.relevance_metrics_json);
   const observation = row.provider_hit_count === null || row.accessible_hit_count === null

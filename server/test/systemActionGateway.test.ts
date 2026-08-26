@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@agent-space/protocol";
-import type { SystemActionDefinition, SystemActionId, SystemActionPolicyResource } from "@agent-space/protocol";
+import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@rainver/protocol";
+import type { SystemActionDefinition, SystemActionId, SystemActionPolicyResource } from "@rainver/protocol";
 import { SystemActionGateway } from "../src/modules/systemActions/gateway.js";
 import { resolveDeclaredResourceId } from "../src/modules/systemActions/systemActionDispatcher.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";

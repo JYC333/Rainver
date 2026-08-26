@@ -8,7 +8,7 @@ import { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 import { enforceRetrievalToolCallPolicy } from "../src/modules/retrieval/tool/policy.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// W10 agent-space-controlled retrieval tool surface. A managed run calls retrieval
+// W10 rainver-controlled retrieval tool surface. A managed run calls retrieval
 // through RetrievalToolService, which forces the viewer to the run's INSTRUCTING
 // USER (the agent cannot widen its own access). Policy enforcement and the audit
 // write happen one layer up, at the SystemActionGateway dispatch step (action

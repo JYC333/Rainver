@@ -14,7 +14,7 @@ import { loadConfig } from "../src/config.js";
 describe("backup policy guard", () => {
   it("fails fast in prod when backups are disabled and unacknowledged", () => {
     const config = loadConfig({
-      AGENT_SPACE_ENV: "prod",
+      RAINVER_ENV: "prod",
       BACKUP_ENABLED: "false",
       BACKUP_ACCEPT_NO_BACKUP: "false",
     });
@@ -24,7 +24,7 @@ describe("backup policy guard", () => {
   it("allows prod startup when BACKUP_ACCEPT_NO_BACKUP=true and logs a warning", () => {
     const warn = vi.fn();
     const config = loadConfig({
-      AGENT_SPACE_ENV: "prod",
+      RAINVER_ENV: "prod",
       BACKUP_ENABLED: "false",
       BACKUP_ACCEPT_NO_BACKUP: "true",
     });
@@ -35,7 +35,7 @@ describe("backup policy guard", () => {
   it("logs a warning when non-prod backups are disabled", () => {
     const warn = vi.fn();
     const config = loadConfig({
-      AGENT_SPACE_ENV: "dev",
+      RAINVER_ENV: "dev",
       BACKUP_ENABLED: "false",
     });
     enforceBackupPolicy(config, { warn });
@@ -45,10 +45,10 @@ describe("backup policy guard", () => {
 
 describe("BackupService lock handling", () => {
   it("refuses to create a backup without a database snapshot URL", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-required-db-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-required-db-"));
     try {
       const service = new BackupService(loadConfig({
-        AGENT_SPACE_HOME: join(root, "home"),
+        RAINVER_HOME: join(root, "home"),
         BACKUP_ROOT: join(root, "backups"),
         BACKUP_DATABASE_URL: "",
       }));
@@ -69,7 +69,7 @@ describe("BackupService lock handling", () => {
   });
 
   it("rejects links that cannot pass safe restore extraction", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-safe-tree-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-safe-tree-"));
     try {
       await writeFile(join(root, "value"), "ok");
       await symlink("value", join(root, "link"));
@@ -80,7 +80,7 @@ describe("BackupService lock handling", () => {
   });
 
   it("rejects a top-level backup directory that is itself a link", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-safe-root-link-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-safe-root-link-"));
     try {
       const target = join(root, "target");
       const linkedRoot = join(root, "storage");
@@ -94,7 +94,7 @@ describe("BackupService lock handling", () => {
   });
 
   it("removes stale lock files before pruning", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-lock-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-lock-"));
     try {
       const home = join(root, "home");
       const backupRoot = join(root, "backups");
@@ -105,7 +105,7 @@ describe("BackupService lock handling", () => {
 
       const service = new BackupService(
         loadConfig({
-          AGENT_SPACE_HOME: home,
+          RAINVER_HOME: home,
           BACKUP_ROOT: backupRoot,
           BACKUP_RETENTION_COUNT: "2",
         }),
@@ -119,7 +119,7 @@ describe("BackupService lock handling", () => {
   });
 
   it("tightens existing backup root permissions before pruning", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-mode-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-mode-"));
     try {
       const home = join(root, "home");
       const backupRoot = join(root, "backups");
@@ -129,7 +129,7 @@ describe("BackupService lock handling", () => {
 
       const service = new BackupService(
         loadConfig({
-          AGENT_SPACE_HOME: home,
+          RAINVER_HOME: home,
           BACKUP_ROOT: backupRoot,
           BACKUP_RETENTION_COUNT: "2",
         }),
@@ -144,7 +144,7 @@ describe("BackupService lock handling", () => {
   });
 
   it("skips prune when another live process owns the lock", async () => {
-    const root = await mkdtemp(join(tmpdir(), "aspace-backup-lock-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-lock-"));
     try {
       const home = join(root, "home");
       const backupRoot = join(root, "backups");
@@ -155,7 +155,7 @@ describe("BackupService lock handling", () => {
 
       const service = new BackupService(
         loadConfig({
-          AGENT_SPACE_HOME: home,
+          RAINVER_HOME: home,
           BACKUP_ROOT: backupRoot,
           BACKUP_RETENTION_COUNT: "2",
         }),

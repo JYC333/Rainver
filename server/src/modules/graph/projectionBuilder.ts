@@ -4,7 +4,7 @@ import type {
   GraphProjectionEdge,
   GraphProjectionNode,
   GraphProjectionViewMode,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import {

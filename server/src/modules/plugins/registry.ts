@@ -1,4 +1,4 @@
-import type { OfficialPluginDescriptor } from "@agent-space/protocol";
+import type { OfficialPluginDescriptor } from "@rainver/protocol";
 import { diaryDescriptor } from "./official/diary.js";
 import { financeLedgerDescriptor } from "./official/financeLedger.js";
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { loadConfig } from "../src/config.js";
 import { managedAgentLoop } from "../src/modules/runs/managedAgentLoopBinding.js";
 import { piManagedAgentLoop } from "../src/modules/runs/piManagedAgentLoop.js";

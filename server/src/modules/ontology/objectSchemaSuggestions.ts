@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ObjectSchemaSuggestionReport,
   ObjectSchemaSuggestionScanRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";

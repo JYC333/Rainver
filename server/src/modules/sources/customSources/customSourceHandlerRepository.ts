@@ -1,7 +1,7 @@
 import type {
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourceSpacePolicyUpdate,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
 import {

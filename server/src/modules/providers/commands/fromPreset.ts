@@ -1,6 +1,6 @@
 import type {
   ProviderFromPresetCreateRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../db.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";

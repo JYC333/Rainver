@@ -2,7 +2,7 @@
 
 ## Concept
 
-A **space** is the primary collaboration and permission boundary in agent-space. One deployment
+A **space** is the primary collaboration and permission boundary in rainver. One deployment
 instance can host many spaces:
 
 ```

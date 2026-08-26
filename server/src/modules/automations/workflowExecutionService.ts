@@ -14,7 +14,7 @@ import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js
 import { InputBindingResolutionError, resolveNodeInputs, type ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
 import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "./actionNodeRegistry.js";
 import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry.js";
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
+import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 
 export interface ResolvedWorkflowExecutionTarget {
   versionId: string;

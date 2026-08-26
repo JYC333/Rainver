@@ -404,4 +404,4 @@ deferred item pending real usage evidence.
 - A Room does not turn `agent_run_groups` into a conversation container; each
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and
-  never a source of truth — agent-space retains full replay capability (ADR 0004).
+  never a source of truth — Rainver retains full replay capability (ADR 0004).

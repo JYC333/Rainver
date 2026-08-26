@@ -2,7 +2,7 @@
 # Full-system backup (offline equivalent of BackupService).
 #
 # Produces the same archive format as the in-process BackupService:
-#   db/agent_space.dump   PostgreSQL snapshot (pg_dump custom format)
+#   db/rainver.dump   PostgreSQL snapshot (pg_dump custom format)
 #   storage/ artifacts/ config/ workspaces/   non-credential file data
 #   logs/                 only with --include-logs
 #   backup_manifest.json  archive metadata
@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 OUTPUT_DIR=""
 INCLUDE_LOGS=false
 FORCE_RUNNING=false
@@ -49,8 +49,8 @@ if [[ ! -d "$MODE_ROOT" ]]; then
   exit 1
 fi
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
@@ -117,7 +117,7 @@ ARCHIVE_PATH="$OUTPUT_DIR/system-$TIMESTAMP.tar.gz"
 ARCHIVE_TMP="$(mktemp "$OUTPUT_DIR/.system-$TIMESTAMP-XXXXXX.tmp")"
 chmod 600 "$ARCHIVE_TMP"
 
-STAGING="$(mktemp -d -t aspace-system-backup-XXXXXX)"
+STAGING="$(mktemp -d -t rainver-system-backup-XXXXXX)"
 
 echo "[backup] mode:    $MODE"
 echo "[backup] output:  $ARCHIVE_PATH"
@@ -126,10 +126,10 @@ echo "[backup] output:  $ARCHIVE_PATH"
 echo "[backup] dumping database '$PGDB' (pg_dump custom format)..."
 mkdir -p "$STAGING/db"
 "${COMPOSE[@]}" exec -T postgres \
-  pg_dump -U "$PGUSER" -Fc --no-owner --no-acl "$PGDB" > "$STAGING/db/agent_space.dump"
+  pg_dump -U "$PGUSER" -Fc --no-owner --no-acl "$PGDB" > "$STAGING/db/rainver.dump"
 
 # ── File data (db/postgres, cache, sandboxes, backups are never archived) ──────
-INCLUDED=("db/agent_space.dump (pg_dump_custom)")
+INCLUDED=("db/rainver.dump (pg_dump_custom)")
 EXCLUDED=()
 for d in storage artifacts config workspaces; do
   if [[ -d "$MODE_ROOT/$d" ]]; then
@@ -203,7 +203,7 @@ def _opt(name):
 
 
 manifest = {
-    "backup_format": "agent-space-backup.v1",
+    "backup_format": "rainver-backup.v1",
     "kind": "manual",
     "created_at": created_at,
     "source_root": source_root,
@@ -230,7 +230,7 @@ python3 -m json.tool "$STAGING/backup_manifest.json" >/dev/null
 # ── Archive ────────────────────────────────────────────────────────────────────
 tar -czf "$ARCHIVE_TMP" -C "$STAGING" .
 tar -tzf "$ARCHIVE_TMP" >/dev/null
-VERIFY_STAGING="$(mktemp -d -t aspace-system-backup-verify-XXXXXX)"
+VERIFY_STAGING="$(mktemp -d -t rainver-system-backup-verify-XXXXXX)"
 python3 "$SCRIPT_DIR/safe_extract.py" "$ARCHIVE_TMP" "$VERIFY_STAGING" \
   db storage artifacts config workspaces logs backup_manifest.json
 rm -rf "$VERIFY_STAGING"

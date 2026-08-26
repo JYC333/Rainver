@@ -15,7 +15,7 @@
 # Pre-migration backup safety:
 #   For --mode prod a pre-migration pg_dump custom-format backup is REQUIRED and
 #   is taken before migrations run, written to:
-#       $ASPACE_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump
+#       $RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump
 #   If that dump fails, migration aborts before the schema is touched.
 #   Non-prod modes skip it for convenience; opt in with PRE_MIGRATION_BACKUP=1
 #   or the --pre-migration-backup flag to get the identical safety net.
@@ -40,7 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 RUN_MODE="docker"
 PRE_MIGRATION_BACKUP="${PRE_MIGRATION_BACKUP:-0}"
 
@@ -84,14 +84,14 @@ postgres_password_or_default() {
     echo "ERROR: POSTGRES_PASSWORD is required for production migrations." >&2
     exit 1
   fi
-  printf '%s\n' "agent_space_dev_password"
+  printf '%s\n' "rainver_dev_password"
 }
 
 compose_admin_database_url() {
   local pguser pgpass pgdb
-  pguser="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
   pgpass="$(postgres_password_or_default)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
+  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   printf 'postgresql://%s:%s@postgres:5432/%s\n' \
@@ -100,8 +100,8 @@ compose_admin_database_url() {
 
 ensure_docker_database_exists() {
   local pguser pgdb exists
-  pguser="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
+  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
+  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
 
@@ -184,8 +184,8 @@ resolve_host_database_url() {
 pre_migration_backup_docker() {
   local out="$1"
   local pgdb pguser
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-  pguser="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
 
@@ -233,8 +233,8 @@ run_docker() {
   echo "  target: in-network postgres service (generated from POSTGRES_*)"
 
   local pguser pgdb database_url
-  pguser="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
+  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
+  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   local_compose_ensure_postgres_ready "migration" "$pguser" "$pgdb"

@@ -18,7 +18,7 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { managedAgentLoop } from "./managedAgentLoopBinding.js";
 import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort.js";

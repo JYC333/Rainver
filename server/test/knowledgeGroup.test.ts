@@ -96,7 +96,7 @@ describe("knowledgeNoteScopeDb", () => {
     app = buildModuleServer(loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",
-      AGENT_SPACE_HOME: "/tmp/agent-space-note-scope-test",
+      RAINVER_HOME: "/tmp/rainver-note-scope-test",
     }), [knowledgeModule]);
   });
 

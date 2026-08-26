@@ -3,7 +3,7 @@ import type {
   CanonicalUsage,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import {

@@ -4,7 +4,7 @@ import type {
   AskSpaceFollowUp,
   AskSpaceGapSummary,
   AskSpaceProvenanceItem,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export const DEFAULT_DOMAINS: AskSpaceDomain[] = ["knowledge"];
 

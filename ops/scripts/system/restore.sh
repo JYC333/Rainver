@@ -6,10 +6,10 @@
 # Restore sequence (single command):
 #   1. Extract to staging and validate archive/file restore preconditions.
 #   2. Refuse active app services unless --force-running is supplied.
-#   3. Restore the database from db/agent_space.dump via pg_restore
+#   3. Restore the database from db/rainver.dump via pg_restore
 #      (terminate connections, drop, create, restore).
 #   4. Restore non-credential file data (config/ storage/ artifacts/ workspaces/, and
-#      logs/ if present) into $ASPACE_ROOT/<mode>/.
+#      logs/ if present) into $RAINVER_ROOT/<mode>/.
 #
 # The live PostgreSQL data directory (db/postgres) is never overwritten — the
 # database is rebuilt logically with pg_restore. The script starts PostgreSQL if
@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 ARCHIVE=""
 FORCE=false
 FORCE_RUNNING=false
@@ -68,8 +68,8 @@ if [[ ! -f "$ARCHIVE" ]]; then
 fi
 ARCHIVE="$(cd "$(dirname "$ARCHIVE")" && pwd)/$(basename "$ARCHIVE")"
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
@@ -114,7 +114,7 @@ echo "[restore] mode:    $MODE"
 echo "[restore] target:  $MODE_ROOT"
 
 # ── Safely extract to staging ──────────────────────────────────────────────────
-STAGING="$(mktemp -d -t aspace-system-restore-XXXXXX)"
+STAGING="$(mktemp -d -t rainver-system-restore-XXXXXX)"
 trap 'local_compose_stop_postgres_if_started "restore"; rm -rf "$STAGING"' EXIT
 if ! python3 "$SCRIPT_DIR/safe_extract.py" "$ARCHIVE" "$STAGING" \
   db storage artifacts config workspaces logs backup_manifest.json; then
@@ -136,8 +136,8 @@ if (( ${#DUMP_FILES[@]} != 1 )); then
   preflight_error "archive must contain exactly one db/*.dump file"
 fi
 DUMP_FILE="${DUMP_FILES[0]}"
-if [[ "$(basename "$DUMP_FILE")" != "agent_space.dump" ]]; then
-  preflight_error "archive dump must be db/agent_space.dump"
+if [[ "$(basename "$DUMP_FILE")" != "rainver.dump" ]]; then
+  preflight_error "archive dump must be db/rainver.dump"
 fi
 
 if ! install -d -m 700 "$MODE_ROOT"; then
@@ -161,7 +161,7 @@ if ! local_compose_ensure_postgres_ready "restore" "$PGUSER"; then
 fi
 
 if ! "${COMPOSE[@]}" exec -T postgres pg_restore --list < "$DUMP_FILE" >/dev/null; then
-  preflight_error "db/agent_space.dump is not a readable pg_restore custom-format dump"
+  preflight_error "db/rainver.dump is not a readable pg_restore custom-format dump"
 fi
 
 # ── Manifest version metadata (read + validate; fail closed on mismatch) ───────
@@ -205,7 +205,7 @@ incompatible_backup() {
   exit 1
 }
 
-EXPECTED_FORMAT="agent-space-backup.v1"
+EXPECTED_FORMAT="rainver-backup.v1"
 if [[ -z "$BK_FORMAT" ]]; then
   incompatible_backup "backup_manifest.json has no backup_format — archive provenance is unknown."
 elif [[ "$BK_FORMAT" != "$EXPECTED_FORMAT" ]]; then

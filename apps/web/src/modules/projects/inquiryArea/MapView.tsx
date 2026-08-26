@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import type { GraphProjection, GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjection, GraphProjectionNode } from '@rainver/protocol'
 import { AlertTriangle, Ban, FlaskConical, HelpCircle } from 'lucide-react'
 import { inquiryApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'

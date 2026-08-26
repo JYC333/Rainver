@@ -1,10 +1,10 @@
 import { lstat, realpath } from "node:fs/promises";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { resolve } from "node:path";
 import type {
   CustomSourceHandlerOutput,
   CustomSourcePolicyLimits,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 /**
  * Validates untrusted Custom Source handler output (`output.json`) against

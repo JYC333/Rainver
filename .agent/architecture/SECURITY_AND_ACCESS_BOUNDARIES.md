@@ -1,6 +1,6 @@
 # Security and Access Boundaries
 
-This document records the durable access control principles for the agent-space backend.
+This document records the durable access control principles for the Rainver backend.
 It covers authentication boundaries, space isolation, object visibility, session and task
 policy, activity policy, proposal/memory governance, intentional cross-space exceptions,
 credential secrecy, path safety, and current dogfooding readiness.

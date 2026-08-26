@@ -1,4 +1,4 @@
-# agent-space Web UI — multi-stage build
+# rainver Web UI — multi-stage build
 #
 # Build context: repo root
 # Run via docker-compose in ops/compose/ — the compose file selects a stage
@@ -27,8 +27,8 @@ COPY packages/protocol/package.json ./packages/protocol/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile \
-    --filter @agent-space/protocol \
-    --filter agent-core-ui
+    --filter @rainver/protocol \
+    --filter @rainver/web
 
 WORKDIR /repo/packages/protocol
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./
@@ -37,11 +37,11 @@ RUN pnpm run build
 
 WORKDIR /repo/apps/web
 
-RUN mkdir -p node_modules/.cache/agent-space \
+RUN mkdir -p node_modules/.cache/rainver \
     && sha256sum /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
       /repo/packages/protocol/package.json /repo/server/package.json package.json \
       | sha256sum \
-      | awk '{print $1}' > node_modules/.cache/agent-space/package-inputs.sha256
+      | awk '{print $1}' > node_modules/.cache/rainver/package-inputs.sha256
 
 # ---- dev: Vite dev server -------------------------------------------------
 # Source is bind-mounted by docker-compose, so we don't COPY it here. The PWA

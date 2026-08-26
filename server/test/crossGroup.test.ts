@@ -305,7 +305,7 @@ describe("crossSpaceRetrievalRoutes", () => {
     vi.clearAllMocks();
     __setAuthIdentityForTests({ spaceId: SPACE_A, userId: USER });
     __setCrossSpaceRetrievalServiceFactoryForTests(() => fake);
-    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db/agent_space" }), [crossSpaceRetrievalModule]);
+    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db/rainver" }), [crossSpaceRetrievalModule]);
   });
 
   afterEach(async () => {

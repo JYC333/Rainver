@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { checkInternalToken } from "../../gateway/internalAuth.js";
 import { executeRuntimeHost } from "./service.js";
 import { getDbPool } from "../../db/pool.js";
-import type { RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import type { RuntimeHostExecuteRequest } from "@rainver/protocol";
 import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "./deliveryAuthorizer.js";
 
 let deliveryAuthorizerOverride: ((input: RuntimeHostExecuteRequest) => Promise<void>) | null = null;

@@ -12,7 +12,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ServerConfig } from "../../../config.js";
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginHostContext,
   PluginHttpPort,
   PluginJobHandler,
@@ -23,7 +23,7 @@ import type {
   PluginSchedulerPort,
   Queryable,
   ResolvedIdentity,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { JobEnvelopeForHandler, JobHandler } from "../../jobs/handlerRegistry.js";
 import type { ScheduledTask } from "../../scheduler/registry.js";
 import type { ProposalApplier, ProposalApplyContext, ProposalApplyResult } from "../../proposals/applierRegistry.js";
@@ -52,7 +52,7 @@ export class PluginHostContextImpl implements PluginHostContext {
   private readonly _dbUrl: string;
   private readonly _contributions: PluginContributions;
 
-  constructor(plugin: AgentSpacePlugin, fastify: FastifyInstance, config: ServerConfig) {
+  constructor(plugin: RainverPlugin, fastify: FastifyInstance, config: ServerConfig) {
     this.pluginId = plugin.id;
     this.fastify = fastify;
     this.db = config.databaseUrl

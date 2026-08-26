@@ -1,4 +1,4 @@
-import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@agent-space/protocol";
+import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@rainver/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadProjectChatActionPreviews } from "../src/modules/agents/projectChatActionPreviews.js";
 import { projectChatCapabilities } from "../src/modules/agents/routes.js";

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
 import type {
   RuntimeContextPolicyResolveRequest,
@@ -7,7 +7,7 @@ import type {
   RuntimeContextPolicyVersion,
   RuntimeContextPolicyWriteRequest,
   RuntimeContextResolvedPolicy,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { withTransaction } from "../../db/tx.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { contentReadSql } from "../access/contentAccessSql.js";

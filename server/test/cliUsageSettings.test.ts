@@ -14,8 +14,8 @@ afterEach(async () => {
 
 describe("CLI usage auto-refresh settings", () => {
   it("defaults to enabled and persists frontend changes", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-usage-settings-"));
-    const broker = new CliCredentialBroker(loadConfig({ AGENT_SPACE_HOME: tempDir }));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-usage-settings-"));
+    const broker = new CliCredentialBroker(loadConfig({ RAINVER_HOME: tempDir }));
 
     expect(await broker.isCliUsageAutoRefreshEnabled()).toBe(true);
     expect((await broker.cliUsageAutoRefreshSettings()).updated_at).toBeNull();
@@ -24,13 +24,13 @@ describe("CLI usage auto-refresh settings", () => {
     expect(saved.enabled).toBe(false);
     expect(saved.updated_at).toBeTruthy();
 
-    const brokerAfterReload = new CliCredentialBroker(loadConfig({ AGENT_SPACE_HOME: tempDir }));
+    const brokerAfterReload = new CliCredentialBroker(loadConfig({ RAINVER_HOME: tempDir }));
     expect(await brokerAfterReload.isCliUsageAutoRefreshEnabled()).toBe(false);
   });
 
   it("stores live Claude quota in the selected profile cache", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-live-quota-"));
-    const broker = new CliCredentialBroker(loadConfig({ AGENT_SPACE_HOME: tempDir }));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-live-quota-"));
+    const broker = new CliCredentialBroker(loadConfig({ RAINVER_HOME: tempDir }));
 
     await broker.recordLiveQuota("claude_code", "profile-1", {
       status: "allowed_warning",

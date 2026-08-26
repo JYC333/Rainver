@@ -37,7 +37,7 @@ targets:
 | `/run-exchange/input` | Run Exchange input | read-only |
 | `/run-exchange/output` | Run Exchange output | read-write |
 
-`/aspace`, sibling Projects, the agent-space source tree and development
+`/rainver`, sibling Projects, the Rainver source tree and development
 guides, server source/dist and HOME, instance secrets, database and log paths,
 the Docker socket, and other session/profile stores are not mounted. `none`
 egress also receives a new network namespace. The Runner service itself is
@@ -100,7 +100,7 @@ terminate frames act on the Runner-owned process group.
 - runtime boundary probes must read selected workspace + Delivery content and
   prove all forbidden roots are absent;
 - Compose mounts only the six narrow Runner authority roots and never mounts the
-  source repository, whole `/aspace`, secrets tree, database, logs, or Docker
+  source repository, whole `/rainver`, secrets tree, database, logs, or Docker
   socket into the Runner service.
 
 ## Related files

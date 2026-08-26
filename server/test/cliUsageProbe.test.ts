@@ -123,7 +123,7 @@ describe("probeClaudeQuota", () => {
     const factory: ProbePtyFactory = { spawn: () => pty };
     __setProbeFactoryForTests(factory);
 
-    const result = await probeClaudeQuota("/tmp/aspace-probe-home", claudeResolver, FAST);
+    const result = await probeClaudeQuota("/tmp/rainver-probe-home", claudeResolver, FAST);
 
     expect(pty.written).toContain("/usage\r");
     expect(result.available).toBe(true);
@@ -134,7 +134,7 @@ describe("probeClaudeQuota", () => {
   it("returns an error result when the runtime tool is missing", async () => {
     __setProbeFactoryForTests({ spawn: () => new FakeProbePty(USAGE_SCREEN) });
     const result = await probeClaudeQuota(
-      "/tmp/aspace-probe-home",
+      "/tmp/rainver-probe-home",
       {
         async resolveForExecution() {
           throw new Error("Runtime tool 'claude_code' is not installed.");
@@ -162,7 +162,7 @@ describe("probeClaudeOAuthQuota", () => {
   });
 
   it("calls the Claude OAuth usage API with the managed profile access token", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-claude-oauth-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-claude-oauth-"));
     const profile = join(tempDir, "profile");
     await mkdir(profile, { recursive: true });
     await writeFile(
@@ -199,7 +199,7 @@ describe("probeClaudeOAuthQuota", () => {
   });
 
   it("rejects expired credentials so callers can fall back to PTY", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-claude-oauth-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-claude-oauth-"));
     const profile = join(tempDir, "profile");
     await mkdir(profile, { recursive: true });
     await writeFile(
@@ -303,7 +303,7 @@ describe("probeCodexQuota", () => {
   });
 
   it("routes the production quota RPC through the scoped Runner executor", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-codex-runner-probe-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-codex-runner-probe-"));
     const home = join(tempDir, "home");
     const workspace = join(tempDir, "workspace");
     await mkdir(workspace, { recursive: true });
@@ -361,15 +361,15 @@ describe("probeCodexQuota", () => {
     process.env.OPENAI_API_KEY = "sk-host-should-not-pass";
     process.env.CODEX_HOME = "/host/codex";
     try {
-      const result = await probeCodexQuota("/tmp/aspace-codex-profile", "/tmp/aspace-codex-home", codexResolver, FAST_RPC);
+      const result = await probeCodexQuota("/tmp/rainver-codex-profile", "/tmp/rainver-codex-home", codexResolver, FAST_RPC);
       expect(result.available).toBe(true);
       expect(result.session_pct).toBe(91);
       expect(result.week_pct).toBe(82);
       expect(result.session_resets).toContain("2025");
       expect(spawned[0]?.command).toBe("codex");
       expect(spawned[0]?.args).toEqual(["-s", "read-only", "-a", "untrusted", "app-server"]);
-      expect(spawned[0]?.env.HOME).toBe("/tmp/aspace-codex-home");
-      expect(spawned[0]?.env.CODEX_HOME).toBe("/tmp/aspace-codex-profile");
+      expect(spawned[0]?.env.HOME).toBe("/tmp/rainver-codex-home");
+      expect(spawned[0]?.env.CODEX_HOME).toBe("/tmp/rainver-codex-profile");
       expect(spawned[0]?.env.OPENAI_API_KEY).toBeUndefined();
       expect(rpc.writes.map((w) => w.method)).toContain("account/rateLimits/read");
     } finally {

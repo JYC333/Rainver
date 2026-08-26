@@ -27,7 +27,7 @@ import type {
   UsageTimeseriesPoint,
   UsageTimeseriesResponse,
   UsageTotals,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 import { credentialsApi, usageApi, type UsageApiQuery } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'

@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 DUMP_FILE=""
@@ -43,8 +43,8 @@ if [[ ! -f "$DUMP_FILE" ]]; then
   exit 1
 fi
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 # Validate identifiers
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"

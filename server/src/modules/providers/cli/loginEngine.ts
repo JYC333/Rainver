@@ -11,7 +11,7 @@
  *
  * After a successful login the engine copies the login state from the
  * process HOME into the managed profile directory (the durable credential
- * store under AGENT_SPACE_HOME/secrets/cli-credentials) and emits a
+ * store under RAINVER_HOME/secrets/cli-credentials) and emits a
  * `synced` event. Login state is the ADR 0008 CLI channel: it is never
  * pooled, rotated, or exposed through responses.
  */
@@ -266,7 +266,7 @@ async function runPtyLogin(
   }
   env.TERM = env.TERM || "xterm-256color";
   // Isolate the login from the host: the CLI writes its login state into an
-  // aspace-managed HOME, never the operator's real ~/.<runtime>.
+  // rainver-managed HOME, never the operator's real ~/.<runtime>.
   env.HOME = loginHome;
   isolateVendorLoginEnv(env);
 
@@ -452,7 +452,7 @@ export async function runCliLogin(
 
   const runtimeCfg = { ...cfg, command };
   // Default to the test/process home only when the caller (the broker) did not
-  // supply an aspace-managed login HOME.
+  // supply an rainver-managed login HOME.
   const resolvedHome = loginHome ?? processHome();
   emit({ type: "output", text: `$ ${command.join(" ")}\n` });
   if (cfg.hint_cli) emit({ type: "hint", text: `${cfg.hint_cli}\n` });

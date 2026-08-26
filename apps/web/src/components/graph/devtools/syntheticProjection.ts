@@ -1,4 +1,4 @@
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 
 const kinds = ['knowledge_item', 'note', 'source', 'claim', 'project', 'person']
 const edgeKinds = ['related_to', 'references', 'supports', 'depends_on']

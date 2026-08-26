@@ -264,7 +264,7 @@ export type ObjectSchemaManifestKind = z.infer<typeof ObjectSchemaManifestKindSc
 
 export const ObjectSchemaExportManifestSchema = z
   .object({
-    format: z.literal("agent_space.object_schema.v1"),
+    format: z.literal("rainver.object_schema.v1"),
     exported_at: ISODateTimeSchema,
     object_schema_version: z.number().int().nonnegative(),
     object_profiles: z.array(ObjectSchemaManifestKindSchema).max(500),

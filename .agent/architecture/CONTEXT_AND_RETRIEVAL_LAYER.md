@@ -4,12 +4,12 @@ Status: implemented (current through 2026-07-06). This is a current-state
 architecture doc. Follow-up quality work and risk watch items live in
 [`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md).
 
-agent-space's knowledge retrieval is a deterministic recall **substrate** plus a
+Rainver's knowledge retrieval is a deterministic recall **substrate** plus a
 **context layer** layered on top: hybrid recall,
 multi-hop graph recall, intent-aware ranking, a synthesized + cited Context Brief
 with gap analysis, read-only maintenance scans, explicit artifact-backed context
 attachments, egress governance, Context Ops read models, and a governed agent tool
-surface. These are agent-space-native mechanics, and the agent-space DB stays
+surface. These are rainver-native mechanics, and the Rainver DB stays
 authoritative.
 
 Per-module current-state lives in `.agent/modules/knowledge-base.md` and
@@ -40,7 +40,7 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 
 ## Invariants (load-bearing — do not relax)
 
-1. **agent-space DB is authoritative.** Retrieval tables are derived projections,
+1. **Rainver DB is authoritative.** Retrieval tables are derived projections,
    rebuildable from canonical Knowledge/Memory/Project/Sources tables. No external retrieval runtime,
    dependency, or system of record.
 2. **Single live read gate.** `revalidate` runs on every candidate *before* any
@@ -63,7 +63,7 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
    record pointer-only `policy_decision_records` audit (task, model, counts,
    surface — never content).
 8. **Vendor files / CLIs are adapters, not source of truth.** The agent-facing
-   retrieval tool surface is agent-space-controlled; external tools never become
+   retrieval tool surface is rainver-controlled; external tools never become
    the context system of record.
 
 ## Context Observation Reports
@@ -613,11 +613,11 @@ Object types stay fixed (`knowledge_item` / `note` / `source` / `claim` /
 `extracted_evidence`), encoded as a closed protocol enum and the
 `public.retrieval_object_type` SQL domain used by retrieval/object-schema
 endpoint columns. **Decision: do not adopt dynamic schema
-packs as the runtime primitive.** Agent Space keeps the canonical domain boundary
+packs as the runtime primitive.** Rainver keeps the canonical domain boundary
 closed and uses the existing Space/User/Agent/Run/Proposal/Artifact governance
 instead.
 
-The Agent Space-native implementation is a per-space **Object Schema Registry**:
+The Rainver-native implementation is a per-space **Object Schema Registry**:
 fixed `object_type`, configurable `object_profile`, and an `object_schema` export
 view over active registry rows. `object_type` is the closed domain boundary used
 by protocol, the SQL retrieval object type domain, retrieval adapters, read
@@ -659,7 +659,7 @@ The implemented server/protocol surface is:
   do not create canonical Knowledge, Memory, Claim, Project, relation, or
   retrieval projection rows. `object_profile_update` is the draft activation
   path; only `draft -> active` activation is allowed.
-- Object-schema export returns `agent_space.object_schema.v1` manifests with
+- Object-schema export returns `rainver.object_schema.v1` manifests with
   registry definitions only. Import creates draft object-profile proposals and
   never activates definitions directly.
 

@@ -36,14 +36,14 @@ authorized.
 
 ## Purpose
 
-Stop maintaining an agent-space-native skill standard. Keep the parts that are
-genuinely agent-space's: where a skill came from, which version, what it asks
+Stop maintaining an rainver-native skill standard. Keep the parts that are
+genuinely Rainver's: where a skill came from, which version, what it asks
 for, who approved it, which agents may use it, and which snapshot a run used.
 
 The position to move to:
 
 > An external Agent Skill package is the source of truth for its own content.
-> Agent-space owns provenance, trust, policy, and binding — not a canonical
+> Rainver owns provenance, trust, policy, and binding — not a canonical
 > re-representation of the skill.
 
 And a boundary that must survive the shrink, because it is the thing most likely
@@ -51,9 +51,9 @@ to be lost by treating "capability" as a single word:
 
 > **Skill** = a procedure a model should follow.
 > **System Action / Tool** = something the model can invoke that mutates
-> agent-space state, gated by `agentToolGateway` and policy.
+> Rainver state, gated by `agentToolGateway` and policy.
 
-The first is content and should be external. The second is agent-space's own
+The first is content and should be external. The second is Rainver's own
 API and must stay owned, versioned, and gated. Today both live under
 "capabilities" and that is the source of the confusion.
 
@@ -121,7 +121,7 @@ conversion, and `NormalizedSkill` is its intermediate representation.
 "mcp_tool"`.
 
 These are adapter glue and are fine as adapter glue. What is not fine is that
-they render *from* a canonical agent-space representation, which is what forces
+they render *from* a canonical Rainver representation, which is what forces
 the conversion layer to exist.
 
 ### What must not be deleted
@@ -164,7 +164,7 @@ here.
 
 `NormalizedSkill` and the `imported_skill → CapabilityDefinition` path in
 `skillImporter.ts` go. What the importer keeps is the part that is actually
-agent-space's: fetch, hash, file inventory, risk scan, permission extraction,
+Rainver's: fetch, hash, file inventory, risk scan, permission extraction,
 and approval state.
 
 The skill's own files remain the content of record. A run receives the package,
@@ -185,7 +185,7 @@ rendering at all, the corresponding renderer is deleted rather than kept
 Delivery.** Clarified 2026-08-14. Skill content is model-visible durable
 context, so it reaches a run through Runtime Context Delivery on the same terms
 as everything else the model sees, including the per-turn hash binding that
-`deliveryAuthorizer.ts` verifies. What this plan deletes is agent-space's second
+`deliveryAuthorizer.ts` verifies. What this plan deletes is Rainver's second
 description of the skill; the authorization path that makes the skill's presence
 in a prompt explicable afterwards is not part of the deletion.
 
@@ -201,7 +201,7 @@ this is the compatibility surface that matters most in this plan.
 `systemActions/agentToolGateway.ts` (590 lines) is already the right thing and
 is not touched by this plan. What changes is that it stops being presented as a
 kind of capability. The user-visible surface becomes two things — **Skills**
-(imported, external content) and **Tools / System Actions** (agent-space's own
+(imported, external content) and **Tools / System Actions** (Rainver's own
 gated API) — rather than one "Capabilities" page covering both.
 
 ## Non-goals

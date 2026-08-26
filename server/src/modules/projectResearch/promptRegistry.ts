@@ -1,4 +1,4 @@
-import type { PromptResolveResult } from "@agent-space/protocol";
+import type { PromptResolveResult } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 import type { ResearchScopeContext } from "./researchContext.js";

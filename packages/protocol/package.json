@@ -1,7 +1,7 @@
 {
-  "name": "@agent-space/protocol",
+  "name": "@rainver/protocol",
   "version": "0.0.0",
-  "description": "Shared, framework-free wire contracts (DTOs, command + event envelopes) for agent-space consumers. Schemas and types only — no handlers, no transport, no authority.",
+  "description": "Shared, framework-free wire contracts (DTOs, command + event envelopes) for rainver consumers. Schemas and types only — no handlers, no transport, no authority.",
   "private": true,
   "type": "module",
   "engines": {

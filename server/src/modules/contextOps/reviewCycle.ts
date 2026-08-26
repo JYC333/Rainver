@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ContextReviewCycleRequest } from "@agent-space/protocol";
+import type { ContextReviewCycleRequest } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { visibilityForReviewScope } from "../proposals/reviewPackets.js";

@@ -4,7 +4,7 @@
 **PLANNED** — PWA scaffold exists (Vite + manifest). Mobile-specific UI not built.
 
 ## Purpose
-Define the mobile client strategy. agent-space targets mobile as a thin client for capture, review, and consumption — not as a full agent execution environment. Mobile is a first-class surface for quick capture (thoughts, life logs), card review, and proposal approval, not for running agents or editing Project Folders.
+Define the mobile client strategy. Rainver targets mobile as a thin client for capture, review, and consumption — not as a full agent execution environment. Mobile is a first-class surface for quick capture (thoughts, life logs), card review, and proposal approval, not for running agents or editing Project Folders.
 
 ## Owns
 - PWA manifest and service worker (offline shell)

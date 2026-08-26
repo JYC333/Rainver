@@ -1,4 +1,4 @@
-import type { ContextOpsReviewMode, ContextOpsScanMode } from "@agent-space/protocol";
+import type { ContextOpsReviewMode, ContextOpsScanMode } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import {

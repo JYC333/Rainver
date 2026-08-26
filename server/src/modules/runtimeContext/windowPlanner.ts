@@ -3,7 +3,7 @@ import type {
   ContextWindowAllocations,
   ContextWindowDecision,
   ContextWindowPlan,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   estimateModelTokens,
   resolveModelWindow,

@@ -3,7 +3,7 @@
 # archive using pg_dump. Expert tool; for a full-system backup use
 # ops/scripts/system/backup.sh or the BackupService API.
 #
-# Dumps are written to $ASPACE_ROOT/<mode>/db/dumps/ and restore with
+# Dumps are written to $RAINVER_ROOT/<mode>/db/dumps/ and restore with
 # ops/scripts/db/restore.sh or pg_restore.
 #
 # Usage:
@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 
 # ── Argument parsing (before computing mode-dependent paths) ───────────────────
 OUTPUT_PATH=""
@@ -34,8 +34,8 @@ done
 
 local_compose_init "$MODE"
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 # Validate identifiers
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"

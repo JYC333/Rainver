@@ -40,7 +40,7 @@ api() {
   curl --fail --silent --show-error \
     --request "$method" \
     --header "Authorization: Bearer $ACCEPTANCE_AUTH_TOKEN" \
-    --header "X-Agent-Space-Id: $ACCEPTANCE_SPACE_ID" \
+    --header "X-Rainver-Space-Id: $ACCEPTANCE_SPACE_ID" \
     --header "Content-Type: application/json" \
     "$API_BASE$path"
 }

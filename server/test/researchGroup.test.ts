@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import * as protocol from "@agent-space/protocol";
-import type { ResearchContext, ResearchProviderKey, ResearchSemanticQuery } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import type { ResearchContext, ResearchProviderKey, ResearchSemanticQuery } from "@rainver/protocol";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ServerConfig } from "../src/config.js";
 import { ProjectResearchDiscoveryBridge } from "../src/modules/projectResearch/pipeline/researchDiscoveryBridge.js";
@@ -176,7 +176,7 @@ describe("researchGeneralizationGuard", () => {
     });
 
     it("keeps standing advice on the shared object-action inventory", async () => {
-      const { systemActionsForObjectType } = await import("@agent-space/protocol");
+      const { systemActionsForObjectType } = await import("@rainver/protocol");
       expect(systemActionsForObjectType("source").map((definition) => definition.id))
         .toEqual(["source.raise_as_question"]);
     });

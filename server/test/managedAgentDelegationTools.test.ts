@@ -17,7 +17,7 @@ import type {
   CanonicalToolCall,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ManagedToolDispatchResult } from "../src/modules/runs/managedAgentLoopPort.js";
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
@@ -146,7 +146,7 @@ describe("managed agent delegation tools", () => {
     const spawnCalls: unknown[] = [];
     const managerRun = run();
     const binding = await resolveAgentDelegationToolBinding(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       managerRun,
       {
         targets: [
@@ -243,7 +243,7 @@ describe("managed agent delegation tools", () => {
     };
 
     const result = await executeManagedToolLoop(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       request(),
       execute,
       delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),
@@ -310,7 +310,7 @@ describe("managed agent delegation tools", () => {
       },
     } as unknown as Pool;
     const binding = await resolveAgentDelegationToolBinding(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       managerRun,
       {
         pool,
@@ -365,7 +365,7 @@ describe("managed agent delegation tools", () => {
     };
 
     const result = await executeManagedToolLoop(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       request(),
       execute,
       delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),

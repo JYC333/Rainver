@@ -11,7 +11,7 @@ import type {
   SourceRecipePaginateStep,
   SourceRecipeStep,
   SourceRecipeStepTrace,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 import {
   fetchAllowedOriginResponse,

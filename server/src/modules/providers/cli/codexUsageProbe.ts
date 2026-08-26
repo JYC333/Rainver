@@ -399,7 +399,7 @@ export async function probeCodexQuota(
     session = new CodexRpcSession(handle);
     await session.request(
       "initialize",
-      { clientInfo: { name: "agent-space", version: "0.0.0" } },
+      { clientInfo: { name: "rainver", version: "0.0.0" } },
       timings.initializeTimeoutMs,
     );
     session.notify("initialized");
@@ -456,7 +456,7 @@ class CodexQuotaController implements CliStdioController {
   private completed = false;
 
   start(send: (message: Record<string, unknown>) => void): void {
-    send({ id: 1, method: "initialize", params: { clientInfo: { name: "agent-space", version: "0.0.0" } } });
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "rainver", version: "0.0.0" } } });
   }
 
   // Synchronous in effect (this is Codex's own app-server rate-limit RPC,

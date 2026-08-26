@@ -23,7 +23,7 @@ import { writePolicyAudit } from "./auditWriter.js";
 import type { PolicyDecision } from "./decisions.js";
 import type { ServerConfig } from "../../config.js";
 
-import type { PolicyCheckRequest } from "@agent-space/protocol";
+import type { PolicyCheckRequest } from "@rainver/protocol";
 
 /**
  * Service-side result shape. Validated against the wire

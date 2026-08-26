@@ -59,11 +59,11 @@ export function activeNoteIdFromPath(basePath: string, logicalPath: string): str
 }
 
 function tabsKey(scopeKey: string) {
-  return `agent-space:notes-tabs:${scopeKey}`
+  return `rainver:notes-tabs:${scopeKey}`
 }
 
 function hoistKey(scopeKey: string) {
-  return `agent-space:notes-hoist:${scopeKey}`
+  return `rainver:notes-hoist:${scopeKey}`
 }
 
 /**

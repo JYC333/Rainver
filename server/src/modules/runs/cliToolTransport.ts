@@ -3,7 +3,7 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RunTriggerOrigin,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   SystemActionDispatcher,

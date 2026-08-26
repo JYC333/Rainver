@@ -1,4 +1,4 @@
-# agent-space
+# Rainver
 
 A space-based, multi-user, agent-first system for personal, family, and small team use.
 The runtime target is **Linux / WSL / server + a browser UI**. By default agent runs are
@@ -21,7 +21,7 @@ Each space has its own users, workspaces, memories, permissions, agents, and too
 ## Repository Layout
 
 ```
-agent-space/
+rainver/
 ├── README.md
 ├── CLAUDE.md
 ├── .gitignore
@@ -46,27 +46,27 @@ agent-space/
 ```
 
 Runtime data (DB, config, secrets, logs, workspaces, sandboxes) never lives in the repo.
-It lives under a host-side parent `ASPACE_ROOT` (default `~/.aspace`), one mode root per
-environment: `$ASPACE_ROOT/dev`, `$ASPACE_ROOT/test`, `$ASPACE_ROOT/prod`. Each mode root
-is bind-mounted into the containers as `AGENT_SPACE_HOME=/aspace`.
+It lives under a host-side parent `RAINVER_ROOT` (default `~/.rainver-data`), one mode root per
+environment: `$RAINVER_ROOT/dev`, `$RAINVER_ROOT/test`, `$RAINVER_ROOT/prod`. Each mode root
+is bind-mounted into the containers as `RAINVER_HOME=/rainver`.
 Local DB/system scripts use the same compose/env path as `ops/scripts/start.sh`: mode validation,
-`$ASPACE_ROOT/<mode>`, `$ASPACE_ROOT/<mode>/.env`, `AGENT_SPACE_MODE_ROOT`, compose project,
+`$RAINVER_ROOT/<mode>`, `$RAINVER_ROOT/<mode>/.env`, `RAINVER_MODE_ROOT`, compose project,
 and `docker compose --env-file ...` are centralized in `ops/scripts/lib/local-compose.sh`.
-The local PostgreSQL containers use stable names: `agent-space-dev-postgres`,
-`agent-space-test-postgres`, and `agent-space-prod-postgres`.
+The local PostgreSQL containers use stable names: `rainver-dev-postgres`,
+`rainver-test-postgres`, and `rainver-prod-postgres`.
 
 ## Quick Start
 
 ```bash
-# 1. Start everything (creates ~/.aspace/dev/ and .env from template on first run)
+# 1. Start everything (creates ~/.rainver-data/dev/ and .env from template on first run)
 ./ops/scripts/start.sh
 
 # 2. Add a model provider in the app
 #    Open the web app → Providers and paste your API key (stored encrypted; never in .env).
-#    ~/.aspace/dev/.env holds infra-only settings (e.g. POSTGRES_PASSWORD for --prod).
+#    ~/.rainver-data/dev/.env holds infra-only settings (e.g. POSTGRES_PASSWORD for --prod).
 ```
 
-`start.sh` builds the sandbox image on first run, then starts frontend + server + deployer via Docker Compose. Data lives under **`~/.aspace/<mode>/`** (default mode `dev`). Browser API traffic reaches the TypeScript server through the frontend proxy.
+`start.sh` builds the sandbox image on first run, then starts frontend + server + deployer via Docker Compose. Data lives under **`~/.rainver-data/<mode>/`** (default mode `dev`). Browser API traffic reaches the TypeScript server through the frontend proxy.
 
 ```
 Web UI:           http://localhost:3000   # Docker maps container 5173 → host 3000 (dev compose)
@@ -77,7 +77,7 @@ API:              http://localhost:3000/api/v1   # server entrypoint
 
 ```bash
 ./ops/scripts/start.sh           # Docker Compose — dev (default)
-./ops/scripts/start.sh --test    # separate ports + ~/.aspace/test
+./ops/scripts/start.sh --test    # separate ports + ~/.rainver-data/test
 ./ops/scripts/start.sh --prod
 ./ops/scripts/start.sh --build   # force image rebuild
 ```

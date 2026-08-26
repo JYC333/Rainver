@@ -36,7 +36,7 @@ import {
 import type { Queryable } from "./repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
-import type { ProposalAcceptResultType } from "@agent-space/protocol";
+import type { ProposalAcceptResultType } from "@rainver/protocol";
 import { validateProposalPayload } from "./payloadSchemas.js";
 export { ProposalPayloadValidationError } from "./payloadSchemas.js";
 

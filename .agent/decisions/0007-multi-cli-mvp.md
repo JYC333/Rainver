@@ -6,24 +6,24 @@ Accepted — 2026-05-06
 
 ## Context
 
-Agent-space is the governance and context layer for users who work across
+Rainver is the governance and context layer for users who work across
 multiple AI/agent CLI tools.
 
 - Users subscribe to multiple AI/agent CLI tools (Claude Code, Codex CLI, OpenCode, Gemini CLI, etc.).
 - Each subscription has a monthly quota that may run out before month end.
 - The user wants one unified workspace to switch between CLI tools without losing workspace context, run history, artifacts, proposals, or approval flows.
 - Each CLI tool continues using its own account, model selection, and subscription.
-- Agent-space is not a model-provider router.
+- Rainver is not a model-provider router.
 
 ## Decision
 
-Agent-space focuses on managed multi-CLI runtime usage, not direct
+Rainver focuses on managed multi-CLI runtime usage, not direct
 multi-provider model orchestration.
 
 ## Architecture
 
 ```
-AgentSpace Core
+Rainver Core
 ├── WorkspaceManager      - workspace isolation and path policy
 ├── SandboxManager        - worktree execution environments
 ├── ContextCompiler       - compiles unified context into vendor-specific files
@@ -51,12 +51,12 @@ Runs carry a `model_selection_mode` field:
 | Mode | Meaning | When |
 |---|---|---|
 | `cli_default` | CLI uses its own configured model/account | default |
-| `cli_model_override` | Agent-space passes a model flag to the CLI | only when the spec supports it |
-| `agent_space_provider` | The run resolves a configured ModelProvider | implemented |
+| `cli_model_override` | Rainver passes a model flag to the CLI | only when the spec supports it |
+| `rainver_provider` | The run resolves a configured ModelProvider | implemented |
 
 The default is `cli_default`.
 
-`agent_space_provider` works in both directions: managed adapters call the provider in
+`rainver_provider` works in both directions: managed adapters call the provider in
 process, and local CLIs receive a run-scoped provider
 binding — Claude Code through injected proxy environment variables, Codex CLI through a
 run-scoped `CODEX_HOME/config.toml`, OpenCode through a run-scoped `opencode.json` — each
@@ -144,7 +144,7 @@ the final assistant message remains the durable source of truth.
 
 **Runtime session.** `RuntimeAdapterSpec.checkpoint_resume` distinguishes runtimes that can
 resume a prior session. Conversation uses a hybrid context strategy: the first turn replays
-agent-space-composed context to establish the vendor session, later turns resume and send
+rainver-composed context to establish the vendor session, later turns resume and send
 only the increment. Backend switch, session invalidation, or required context re-injection
 degrades back to replay. The vendor session is permitted runtime state and is never a source
 of truth (ADR 0004).

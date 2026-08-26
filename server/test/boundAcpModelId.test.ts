@@ -11,12 +11,12 @@ import { openCodeModelId } from "../src/modules/runs/opencodeProviderConfig.js";
 
 describe("the bound model in each runtime's identifier space", () => {
   it("addresses an OpenCode model through the provider the binding declares", () => {
-    // Not a bare name: `agent_space_provider` is the id
+    // Not a bare name: `rainver_provider` is the id
     // `applyOpenCodeProviderConfig` writes into the profile's opencode.json,
     // and OpenCode resolves `<provider>/<model>`. Built by the same function
     // that writes the config, so the two cannot drift.
     expect(boundAcpModelId("opencode", "MiniMax-M3")).toBe(openCodeModelId("MiniMax-M3"));
-    expect(boundAcpModelId("opencode", "MiniMax-M3")).toBe("agent_space_provider/MiniMax-M3");
+    expect(boundAcpModelId("opencode", "MiniMax-M3")).toBe("rainver_provider/MiniMax-M3");
   });
 
   it("uses the provider's own model name for Codex", () => {

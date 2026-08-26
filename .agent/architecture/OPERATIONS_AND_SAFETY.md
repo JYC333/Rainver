@@ -4,15 +4,15 @@ See also: [docs/BACKUP_AND_RESTORE.md](../../docs/BACKUP_AND_RESTORE.md) and [do
 
 ## Data Root
 
-All runtime data for the running environment lives under `AGENT_SPACE_HOME` — the single
-instance root (in Docker it is the `/aspace` bind mount). Never store runtime data in the source repository.
+All runtime data for the running environment lives under `RAINVER_HOME` — the single
+instance root (in Docker it is the `/rainver` bind mount). Never store runtime data in the source repository.
 
-`AGENT_SPACE_HOME` is **not** the parent of the `dev/`/`test/`/`prod/` mode dirs. That host-side
-parent is `ASPACE_ROOT` (default `~/.aspace`), used only by `ops/scripts/`, which derive
-`MODE_ROOT="$ASPACE_ROOT/<mode>"`.
+`RAINVER_HOME` is **not** the parent of the `dev/`/`test/`/`prod/` mode dirs. That host-side
+parent is `RAINVER_ROOT` (default `~/.rainver-data`), used only by `ops/scripts/`, which derive
+`MODE_ROOT="$RAINVER_ROOT/<mode>"`.
 
 ```
-AGENT_SPACE_HOME/
+RAINVER_HOME/
   db/postgres/ Live PostgreSQL data directory (bind-mounted into the postgres container; never archived)
   db/dumps/    pg_dump custom-format dump files (written by ops/scripts/db/dump.sh)
   storage/     Artifact storage files
@@ -29,7 +29,7 @@ AGENT_SPACE_HOME/
 
 `BackupService` (`server/src/modules/backups/service.ts`) is the canonical full-system backup mechanism. It runs automatically on the server scheduler and writes a structured manifest into every archive. The full procedure lives in [docs/BACKUP_AND_RESTORE.md](../../docs/BACKUP_AND_RESTORE.md).
 
-**Enable in `$ASPACE_ROOT/<mode>/.env`:**
+**Enable in `$RAINVER_ROOT/<mode>/.env`:**
 
 ```
 BACKUP_ENABLED=true
@@ -48,7 +48,7 @@ the archive to finish.
 
 | Directory | Included |
 |---|---|
-| `db/agent_space.dump` — PostgreSQL snapshot (`pg_dump` custom format) | Always |
+| `db/rainver.dump` — PostgreSQL snapshot (`pg_dump` custom format) | Always |
 | `storage/` — artifact files | Always |
 | `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
@@ -75,12 +75,12 @@ read-only-context staging directory or generated vendor context file exists.
 
 **Manifest version metadata:** every manifest records `backup_format`, `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, and `pg_dump_version` (best-effort, `null` when undeterminable). `ops/scripts/system/restore.sh` reads these during preflight and **fails** on an incompatible `backup_format`, a PostgreSQL major-version mismatch, or a `schema_migration_checksum` that differs from this build's `server/migrations/0001_baseline.sql`, unless `--force-incompatible-backup` is supplied — the metadata is never silently ignored. The checksum gate matters because the runtime schema is a single regenerated baseline (`server/migrations/README.md`): an archive taken before a schema change restores a database whose recorded checksum no longer matches, and the migration runner then refuses to start against it, so the restore would otherwise appear to succeed and fail at the next start.
 
-**Pre-migration backup:** `ops/scripts/db/migrate.sh --mode prod` takes a `pg_dump` custom-format dump to `$ASPACE_ROOT/<mode>/db/dumps/pre-migrate-<ts>.dump` before server migrations run and aborts if it fails; non-prod opts in via `PRE_MIGRATION_BACKUP=1` / `--pre-migration-backup`.
+**Pre-migration backup:** `ops/scripts/db/migrate.sh --mode prod` takes a `pg_dump` custom-format dump to `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>.dump` before server migrations run and aborts if it fails; non-prod opts in via `PRE_MIGRATION_BACKUP=1` / `--pre-migration-backup`.
 
 **Archive naming:**
-- Auto: `$ASPACE_ROOT/<mode>/backups/auto-YYYYMMDD-HHMMSS.tar.gz`
-- Manual (API): `$ASPACE_ROOT/<mode>/backups/manual-YYYYMMDD-HHMMSS.tar.gz`
-- Offline CLI: `$ASPACE_ROOT/<mode>/backups/system-YYYYMMDD-HHMMSS.tar.gz`
+- Auto: `$RAINVER_ROOT/<mode>/backups/auto-YYYYMMDD-HHMMSS.tar.gz`
+- Manual (API): `$RAINVER_ROOT/<mode>/backups/manual-YYYYMMDD-HHMMSS.tar.gz`
+- Offline CLI: `$RAINVER_ROOT/<mode>/backups/system-YYYYMMDD-HHMMSS.tar.gz`
 
 **Local overlap protection:** `backups/.backup.lock` (local lock file with stale-lock recovery). Fails closed if `pg_dump` fails.
 
@@ -116,13 +116,13 @@ Restore is always **manual and explicit**. There is no automatic restore. One co
 
 ```bash
 # 1. Stop the app, leaving postgres running
-docker compose -p agent-space-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
+docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
 
 # 2. Ensure PostgreSQL is up
 ops/scripts/start.sh --dev
 
 # 3. Restore database + files from one archive
-ops/scripts/system/restore.sh ~/.aspace/dev/backups/auto-<timestamp>.tar.gz --mode dev --force
+ops/scripts/system/restore.sh ~/.rainver-data/dev/backups/auto-<timestamp>.tar.gz --mode dev --force
 ```
 
 `ops/scripts/system/restore.sh` runs `pg_restore` against the database and restores the file directories; `--force` overwrites existing file data. The live `db/postgres` directory is never touched.
@@ -164,7 +164,7 @@ new Folder-backed execution but never deletes, moves, or rewrites the
 physical directory; all metadata (id, name, tasks, runs, artifacts,
 proposals, audit references) is fully preserved. Unregistering
 (`POST /projects/{id}/folders/{folderId}/unregister`) removes only the
-Agent-Space registration row — it never touches disk either. There is no
+Rainver registration row — it never touches disk either. There is no
 automatic missing-path detection or stale-marking scan; `POST
 /projects/{id}/folders/scan` only lists unregistered directories eligible
 for the "connect existing" creation flow.
@@ -198,7 +198,7 @@ Operator restores an archived Folder: `PATCH /projects/{id}/folders/{folderId}` 
 - App container does not restart or rebuild itself.
 - Product deployment routes currently fail closed with 501; deployment is operator-triggered only.
 - The privileged deployer socket is container-private and is not reachable from server or agent runtimes.
-- Deployer `ALLOWED_JOB_TYPES`: `rebuild_agent_space`, `restart_agent_space`, `health_check`. No arbitrary shell.
+- Deployer `ALLOWED_JOB_TYPES`: `rebuild_rainver`, `restart_rainver`, `health_check`. No arbitrary shell.
 - Self-evolution/code-patch/capability paths cannot submit deployer jobs. A future product
   trigger requires server-side human-approval verification and durable audit first.
 - The instance must not be exposed directly to the public internet until TLS termination,
@@ -225,7 +225,7 @@ Dogfooding must stop immediately on any of these:
 ## Rollback Procedure
 
 1. Stop writes: `docker compose stop frontend server deployer`.
-2. Snapshot current state: `cp -a ~/.aspace/dev ~/.aspace/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
+2. Snapshot current state: `cp -a ~/.rainver-data/dev ~/.rainver-data/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
 3. Identify known-good revision: `git log --oneline -10`.
 4. Revert app: `git checkout <known-good-commit>`.
 5. If data integrity is suspect, restore from last known-good backup (not the latest, which may already contain the problem).

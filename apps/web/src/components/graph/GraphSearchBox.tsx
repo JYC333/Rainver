@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
-import type { GraphProjection, GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjection, GraphProjectionNode } from '@rainver/protocol'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 

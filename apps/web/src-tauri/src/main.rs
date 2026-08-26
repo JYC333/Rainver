@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    agent_core_desktop_lib::run()
+    rainver_desktop_lib::run()
 }

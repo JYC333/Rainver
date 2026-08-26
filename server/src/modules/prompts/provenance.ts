@@ -1,4 +1,4 @@
-import type { PromptResolveResult } from "@agent-space/protocol";
+import type { PromptResolveResult } from "@rainver/protocol";
 
 /**
  * The provenance shape runtime records (e.g. run_steps.metadata_json) should

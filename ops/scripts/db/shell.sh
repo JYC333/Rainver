@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
 
-MODE="${AGENT_SPACE_MODE:-dev}"
+MODE="${RAINVER_MODE:-dev}"
 
 # ── Argument parsing (before computing mode-dependent paths) ───────────────────
 while [[ $# -gt 0 ]]; do
@@ -23,8 +23,8 @@ done
 
 local_compose_init "$MODE"
 
-PGDB="$(local_compose_setting_or_default POSTGRES_DB agent_space)"
-PGUSER="$(local_compose_setting_or_default POSTGRES_USER agent_space)"
+PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 if ! "${COMPOSE[@]}" exec -T postgres true 2>/dev/null; then
   echo "ERROR: postgres service is not running for mode '$MODE'." >&2

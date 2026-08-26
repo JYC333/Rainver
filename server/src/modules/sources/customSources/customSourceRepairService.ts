@@ -1,4 +1,4 @@
-import type { CustomSourcePolicyEnvelope } from "@agent-space/protocol";
+import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";

@@ -1,4 +1,4 @@
-import type { SystemActionId } from "@agent-space/protocol";
+import type { SystemActionId } from "@rainver/protocol";
 
 /**
  * Scenario tool allowances.

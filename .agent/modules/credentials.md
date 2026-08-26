@@ -2,7 +2,7 @@
 
 ## Design Statement
 
-CLI login state belongs to agent-space, not to individual sandboxes.
+CLI login state belongs to Rainver, not to individual sandboxes.
 
 Sandboxes receive short-lived, minimal, audited access to one approved CLI credential profile.
 
@@ -131,7 +131,7 @@ curl -X POST localhost:3000/api/v1/runtime-tools/claude_code/install \
 # Step 3: run the managed login stream from the frontend or API.
 # The server launches the active runtime-tool binary and syncs the
 # resulting login state into the selected user-owned profile directory:
-#   $AGENT_SPACE_HOME/secrets/cli-credentials/users/<owner_user_id>/claude_code/<profile_uuid>/
+#   $RAINVER_HOME/secrets/cli-credentials/users/<owner_user_id>/claude_code/<profile_uuid>/
 
 # Step 4: verify the broker sees it through the default server entrypoint
 curl localhost:3000/api/v1/credentials/cli/profiles?runtime=claude_code

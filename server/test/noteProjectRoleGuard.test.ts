@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { listTsFiles } from "./support/sourceFiles.js";
-import { NOTE_PROJECT_ROLE_VALUES } from "@agent-space/protocol";
+import { NOTE_PROJECT_ROLE_VALUES } from "@rainver/protocol";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AskSpaceDomainSection,
   RetrievalBrief,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   aggregateGaps,
   buildFollowUps,
@@ -10,7 +10,7 @@ import {
   dedupeDomains,
   PROVENANCE_CAP,
 } from "../src/modules/askSpace/aggregate.js";
-import { AskSpaceResponseSchema } from "@agent-space/protocol";
+import { AskSpaceResponseSchema } from "@rainver/protocol";
 
 function brief(partial: Partial<RetrievalBrief> & { gap?: Partial<RetrievalBrief["gap_analysis"]> }): RetrievalBrief {
   return {

@@ -1,4 +1,4 @@
-# Backup and Restore — agent-space Local Instance
+# Backup and Restore — Rainver Local Instance
 
 **Scope:** Local two-person dogfooding instance. PostgreSQL is the server database.
 
@@ -29,18 +29,18 @@ Across dev, test, and prod the client-facing API entrypoint is `server`.
 Dev publishes server at `http://localhost:3000/api/v1`; test publishes it at
 `http://localhost:3100/api/v1`. The test frontend uses server.
 The bundled PostgreSQL containers have stable names per mode:
-`agent-space-dev-postgres`, `agent-space-test-postgres`, and `agent-space-prod-postgres`.
+`rainver-dev-postgres`, `rainver-test-postgres`, and `rainver-prod-postgres`.
 
 ---
 
 ## Data locations
 
-> **Path semantics.** `ASPACE_ROOT` is the host-side parent directory that holds the
-> `dev/`, `test/`, `prod/` mode roots (default `~/.aspace`); the scripts locate a mode
-> root as `$ASPACE_ROOT/<mode>`. Inside containers the running app sees that mode
-> root as `AGENT_SPACE_HOME=/aspace`. `AGENT_SPACE_HOME` is never the parent of the mode dirs.
+> **Path semantics.** `RAINVER_ROOT` is the host-side parent directory that holds the
+> `dev/`, `test/`, `prod/` mode roots (default `~/.rainver-data`); the scripts locate a mode
+> root as `$RAINVER_ROOT/<mode>`. Inside containers the running app sees that mode
+> root as `RAINVER_HOME=/rainver`. `RAINVER_HOME` is never the parent of the mode dirs.
 > The DB/system scripts share `ops/scripts/lib/local-compose.sh` with `ops/scripts/start.sh`,
-> so mode validation, `$MODE_ROOT/.env`, `AGENT_SPACE_MODE_ROOT`, compose project/file,
+> so mode validation, `$MODE_ROOT/.env`, `RAINVER_MODE_ROOT`, compose project/file,
 > and `docker compose --env-file "$ENV_FILE"` stay consistent.
 > Docker-native `ops/scripts/db/migrate.sh`, DB-only `ops/scripts/db/{dump,restore,reset-postgres}.sh`,
 > and offline `ops/scripts/system/{backup,restore,verify-restore}.sh` stop the compose
@@ -49,8 +49,8 @@ The bundled PostgreSQL containers have stable names per mode:
 
 | Path | Meaning | In normal backups? |
 |---|---|---|
-| `$ASPACE_ROOT/<mode>/db/postgres` | Live PostgreSQL data directory (bind-mounted into the postgres container) | **No** — never archived. The database is captured logically via `pg_dump`. |
-| `$ASPACE_ROOT/<mode>/db/dumps` | `pg_dump` custom-format dump files written by `ops/scripts/db/dump.sh` | Operator-managed; not part of the system archive |
+| `$RAINVER_ROOT/<mode>/db/postgres` | Live PostgreSQL data directory (bind-mounted into the postgres container) | **No** — never archived. The database is captured logically via `pg_dump`. |
+| `$RAINVER_ROOT/<mode>/db/dumps` | `pg_dump` custom-format dump files written by `ops/scripts/db/dump.sh` | Operator-managed; not part of the system archive |
 | `storage/`, `artifacts/`, `config/`, `workspaces/` | Non-credential file data | Yes |
 | `secrets/` | Credential master key and CLI login state | **No** — separate credential archive only |
 | `logs/` | Application logs | Optional (`BACKUP_INCLUDE_LOGS=true`) |
@@ -62,7 +62,7 @@ The bundled PostgreSQL containers have stable names per mode:
 
 ### Enable
 
-In `$ASPACE_ROOT/<mode>/.env`:
+In `$RAINVER_ROOT/<mode>/.env`:
 
 ```
 BACKUP_ENABLED=true
@@ -78,7 +78,7 @@ The server reads these on startup and registers its backup tick with the server 
 
 | Path in archive | Contents |
 |---|---|
-| `db/agent_space.dump` | PostgreSQL snapshot (`pg_dump -Fc --no-owner --no-acl`) — all memory, proposals, runs, activity, artifacts, policies, run steps |
+| `db/rainver.dump` | PostgreSQL snapshot (`pg_dump -Fc --no-owner --no-acl`) — all memory, proposals, runs, activity, artifacts, policies, run steps |
 | `storage/` | Artifact storage files |
 | `artifacts/` | Artifact storage root |
 | `config/` | Runtime configuration (no secret values) |
@@ -96,9 +96,9 @@ from containing both the encrypted provider-key database rows and their decrypti
 ### Archive naming
 
 ```
-$ASPACE_ROOT/<mode>/backups/auto-YYYYMMDD-HHMMSS.tar.gz     ← scheduled
-$ASPACE_ROOT/<mode>/backups/manual-YYYYMMDD-HHMMSS.tar.gz   ← API trigger
-$ASPACE_ROOT/<mode>/backups/system-YYYYMMDD-HHMMSS.tar.gz   ← ops/scripts/system/backup.sh
+$RAINVER_ROOT/<mode>/backups/auto-YYYYMMDD-HHMMSS.tar.gz     ← scheduled
+$RAINVER_ROOT/<mode>/backups/manual-YYYYMMDD-HHMMSS.tar.gz   ← API trigger
+$RAINVER_ROOT/<mode>/backups/system-YYYYMMDD-HHMMSS.tar.gz   ← ops/scripts/system/backup.sh
 ```
 
 ### backup_manifest.json
@@ -107,7 +107,7 @@ Every full-system backup archive — whether written by `BackupService` or by
 `ops/scripts/system/backup.sh` — contains a `backup_manifest.json` at its root with
 the same schema:
 
-- `backup_format: "agent-space-backup.v1"` — backup format version
+- `backup_format: "rainver-backup.v1"` — backup format version
 - `kind` — `"auto"` | `"manual"`
 - `created_at` — ISO timestamp
 - `source_root` — absolute path of the data root at backup time
@@ -140,7 +140,7 @@ the runtime/client image in lockstep. The server never mounts the Docker socket.
 
 ### Backup safety guard (prod)
 
-When `AGENT_SPACE_ENV=prod` and `BACKUP_ENABLED=false`, the server **fails fast at startup**
+When `RAINVER_ENV=prod` and `BACKUP_ENABLED=false`, the server **fails fast at startup**
 rather than silently running without backups. To run prod without automatic backups you must
 explicitly acknowledge the risk with `BACKUP_ACCEPT_NO_BACKUP=true`; non-prod environments only
 log a strong warning. See `server/src/modules/backups/guard.ts`.
@@ -168,7 +168,7 @@ When app services are stopped, produce an identical-format archive with:
 
 ```bash
 # Stop writers first; backup starts postgres automatically if needed.
-docker compose --env-file "${ASPACE_ROOT:-$HOME/.aspace}/dev/.env" -p agent-space-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
+docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
 
 ops/scripts/system/backup.sh --mode dev
 ops/scripts/system/backup.sh --mode prod --include-logs
@@ -184,10 +184,10 @@ stopped, create and restore it explicitly:
 
 ```bash
 ops/scripts/system/backup-credentials.sh --mode dev
-# output: ~/.aspace/dev/credential-backups/credentials-<timestamp>.tar.gz
+# output: ~/.rainver-data/dev/credential-backups/credentials-<timestamp>.tar.gz
 
 ops/scripts/system/restore-credentials.sh \
-  ~/.aspace/dev/credential-backups/credentials-<timestamp>.tar.gz \
+  ~/.rainver-data/dev/credential-backups/credentials-<timestamp>.tar.gz \
   --mode dev --force
 ```
 
@@ -202,12 +202,12 @@ Local archives protect against accidental deletion, not disk or host loss. After
 normal data archive and a credential archive, encrypt and transfer them as two separate files:
 
 ```bash
-gpg --symmetric --cipher-algo AES256 ~/.aspace/dev/backups/<data-archive>.tar.gz
-gpg --symmetric --cipher-algo AES256 ~/.aspace/dev/credential-backups/<credential-archive>.tar.gz
+gpg --symmetric --cipher-algo AES256 ~/.rainver-data/dev/backups/<data-archive>.tar.gz
+gpg --symmetric --cipher-algo AES256 ~/.rainver-data/dev/credential-backups/<credential-archive>.tar.gz
 
 # Verify the encrypted copies before transfer.
-gpg --decrypt ~/.aspace/dev/backups/<data-archive>.tar.gz.gpg | tar -tzf - >/dev/null
-gpg --decrypt ~/.aspace/dev/credential-backups/<credential-archive>.tar.gz.gpg | tar -tzf - >/dev/null
+gpg --decrypt ~/.rainver-data/dev/backups/<data-archive>.tar.gz.gpg | tar -tzf - >/dev/null
+gpg --decrypt ~/.rainver-data/dev/credential-backups/<credential-archive>.tar.gz.gpg | tar -tzf - >/dev/null
 ```
 
 Copy both `.gpg` files to offsite storage, keep the passphrase in a different password manager
@@ -224,20 +224,20 @@ Restore rebuilds the database and the file data from one archive. Stop `frontend
 
 ```bash
 # 1. Stop the app (leave postgres running)
-docker compose --env-file "${ASPACE_ROOT:-$HOME/.aspace}/dev/.env" -p agent-space-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
+docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
 
 # 2. Keep or start postgres only
-docker compose --env-file "${ASPACE_ROOT:-$HOME/.aspace}/dev/.env" -p agent-space-dev -f ops/compose/docker-compose.dev.yml up -d postgres
+docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml up -d postgres
 
 # 3. Restore database + files from one archive
-ops/scripts/system/restore.sh ~/.aspace/dev/backups/auto-20260101-120000.tar.gz --mode dev --force
+ops/scripts/system/restore.sh ~/.rainver-data/dev/backups/auto-20260101-120000.tar.gz --mode dev --force
 
 # 4. Start the app after restore succeeds, then verify
 ops/scripts/start.sh --dev
 ops/scripts/system/verify-restore.sh --mode dev
 ```
 
-`restore.sh` extracts the archive to a temporary staging directory before any destructive database operation. It validates `backup_manifest.json`, verifies `db/agent_space.dump`, checks file-directory overwrite preconditions, refuses to continue while `frontend`, `server`, or `deployer` are running, then runs `pg_restore` (terminate connections → drop → create → restore) against the maintenance database and restores the non-credential file directories into `$ASPACE_ROOT/<mode>/`. `--force` is required to overwrite existing file directories. It never restores or overwrites `secrets/`; use `restore-credentials.sh` explicitly. The live `db/postgres` directory is never touched — the database is rebuilt logically.
+`restore.sh` extracts the archive to a temporary staging directory before any destructive database operation. It validates `backup_manifest.json`, verifies `db/rainver.dump`, checks file-directory overwrite preconditions, refuses to continue while `frontend`, `server`, or `deployer` are running, then runs `pg_restore` (terminate connections → drop → create → restore) against the maintenance database and restores the non-credential file directories into `$RAINVER_ROOT/<mode>/`. `--force` is required to overwrite existing file directories. It never restores or overwrites `secrets/`; use `restore-credentials.sh` explicitly. The live `db/postgres` directory is never touched — the database is rebuilt logically.
 
 During preflight, `restore.sh` reads the manifest **version metadata** (`backup_format`,
 `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, `pg_dump_version`),
@@ -251,7 +251,7 @@ the archive. For controlled recovery you can override this check with
 `--force-incompatible-backup`; `--force` (file overwrite) and `--force-running` (active
 services) do **not** imply it. The metadata is never silently ignored.
 
-For `test` or `prod`, use the matching compose project and file, for example `agent-space-test` with `ops/compose/docker-compose.test.yml` or `agent-space-prod` with `ops/compose/docker-compose.prod.yml`.
+For `test` or `prod`, use the matching compose project and file, for example `rainver-test` with `ops/compose/docker-compose.test.yml` or `rainver-prod` with `ops/compose/docker-compose.prod.yml`.
 
 `--force-running` bypasses the running-service refusal and should only be used for controlled recovery when you have independently stopped all writers. `--force-incompatible-backup` bypasses the backup-compatibility preflight (unexpected `backup_format`, PostgreSQL major-version mismatch, or schema-checksum mismatch) and should only be used when you have verified the archive is restorable **and startable** on the target build.
 
@@ -261,7 +261,7 @@ To dump or restore only the database (no file data):
 
 ```bash
 ops/scripts/db/dump.sh --mode dev                       # → db/dumps/dump-<ts>.dump
-ops/scripts/db/restore.sh ~/.aspace/dev/db/dumps/dump-<ts>.dump --mode dev
+ops/scripts/db/restore.sh ~/.rainver-data/dev/db/dumps/dump-<ts>.dump --mode dev
 ```
 
 DB-only dump/restore/reset start `postgres` automatically and stop it afterward only if that script started it. Restore and reset refuse to run while app services are active; stop `frontend`, `server`, and `deployer` first. `ops/scripts/db/restore.sh` validates the dump with `pg_restore --list` before any destructive drop, so an unreadable archive is rejected before the database is touched.
@@ -295,8 +295,8 @@ curl -s "http://localhost:3000/api/v1/runs/<run_id>/steps?space_id=personal"   #
 
 ## Rollback strategy
 
-1. Stop writes: `docker compose --env-file "${ASPACE_ROOT:-$HOME/.aspace}/dev/.env" -p agent-space-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer`.
-2. Snapshot current state: `cp -a ~/.aspace/dev ~/.aspace/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
+1. Stop writes: `docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer`.
+2. Snapshot current state: `cp -a ~/.rainver-data/dev ~/.rainver-data/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
 3. Restore from the last known-good archive: `ops/scripts/system/restore.sh <archive> --mode dev --force`.
 4. Restart: `ops/scripts/start.sh --dev`.
 5. Verify with `ops/scripts/system/verify-restore.sh --mode dev`.

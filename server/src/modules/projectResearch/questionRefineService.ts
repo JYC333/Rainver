@@ -1,5 +1,5 @@
 import type { ServerConfig } from "../../config.js";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";

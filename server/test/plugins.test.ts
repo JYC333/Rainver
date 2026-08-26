@@ -24,12 +24,12 @@ import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins.js";
 import { DIARY_PLUGIN_ID } from "../src/modules/plugins/official/diary.js";
 import { FINANCE_LEDGER_PLUGIN_ID } from "../src/modules/plugins/official/financeLedger.js";
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginHostContext,
   PluginJobHandler,
   PluginScheduledTask,
   Queryable,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 // ── Registry unit tests (no DB needed) ────────────────────────────────────────
 
@@ -243,7 +243,7 @@ async function buildDiaryJobHandler(jobType: string): Promise<PluginJobHandler> 
 }
 
 function testPluginHostContext(
-  plugin: AgentSpacePlugin,
+  plugin: RainverPlugin,
   fastify: unknown,
   db: Queryable,
   handlers: Map<string, PluginJobHandler>,

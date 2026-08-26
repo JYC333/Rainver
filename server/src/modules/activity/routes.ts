@@ -61,7 +61,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       });
       const ext = extname(originalName).slice(0, 16);
       const storedName = `${randomUUID().replace(/-/g, "")}${ext}`;
-      const dir = join(context.config.agentSpaceHome, "storage", "uploads", creation.spaceId);
+      const dir = join(context.config.rainverHome, "storage", "uploads", creation.spaceId);
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, storedName), upload.file);
       const kind = (upload.fields.kind || "file").toLowerCase();

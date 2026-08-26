@@ -1,4 +1,4 @@
-import type { GraphProjectionEdge, GraphProjectionNode } from '@agent-space/protocol'
+import type { GraphProjectionEdge, GraphProjectionNode } from '@rainver/protocol'
 
 export type SemanticZoomBand = 'overview' | 'standard' | 'detail'
 

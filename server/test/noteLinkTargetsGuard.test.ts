@@ -43,7 +43,7 @@ function tsxFiles(dir: string): string[] {
 
 describe("note link target guardrail", () => {
   it("equals the linkable-and-searchable intersection the registry declares", async () => {
-    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
     const retrievable = new Set<string>(retrievableEntityTypes());
     const expected = spaceObjectSubtypes().filter((type) => retrievable.has(type));
     expect([...NOTE_LINK_TARGET_TYPE_VALUES].sort()).toEqual([...expected].sort());
@@ -54,7 +54,7 @@ describe("note link target guardrail", () => {
     // what the backend supported, and the missing entries were the ones that
     // connected notes to research material. Registering a new searchable
     // `space_objects` subtype must fail here until the editor offers it.
-    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
     const offered = new Set<string>(NOTE_LINK_TARGET_TYPE_VALUES);
     const retrievable = new Set<string>(retrievableEntityTypes());
     const missing = spaceObjectSubtypes().filter((type) => retrievable.has(type) && !offered.has(type));
@@ -69,7 +69,7 @@ describe("note link target guardrail", () => {
     // `knowledge_item_sources`. Evidence is reached through the Source object
     // its paper materializes into instead. This asserts the decision so a
     // later reader sees a choice rather than an oversight.
-    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@agent-space/protocol");
+    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
     const offered = new Set<string>(NOTE_LINK_TARGET_TYPE_VALUES);
     const subtypes = new Set<string>(spaceObjectSubtypes());
     for (const rootless of ["source_item", "extracted_evidence", "memory_entry"]) {

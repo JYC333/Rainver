@@ -17,7 +17,7 @@ import {
 import { proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { assertProjectReadable } from "../projects/access.js";
-import type { ProposalOut } from "@agent-space/protocol";
+import type { ProposalOut } from "@rainver/protocol";
 import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { recordDetailRead } from "../contentAccess/audit.js";

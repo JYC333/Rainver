@@ -1,4 +1,4 @@
-import type { RetrievalObjectType, RetrievalSearchMode } from "@agent-space/protocol";
+import type { RetrievalObjectType, RetrievalSearchMode } from "@rainver/protocol";
 import { loadActionRegistry } from "../../policy/actionRegistry.js";
 import { enforce } from "../../policy/service.js";
 

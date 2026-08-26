@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   ContextItem,
   ExecutionControlSnapshot,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import { contextItemText, normalizeContextItem } from "../itemNormalizer.js";
@@ -615,7 +615,7 @@ export function renderCliEventDelta(events: CliDeltaEvent[]): string | null {
     && event.event_type !== "model.tool_call_delta");
   if (meaningful.length === 0) return null;
   return [
-    "Agent Space context changes since the last acknowledged CLI delivery:",
+    "Rainver context changes since the last acknowledged CLI delivery:",
     ...meaningful.map((event) => {
       const content = event.content?.trim();
       return content
@@ -629,7 +629,7 @@ function renderCliReconstruction(checkpoint: unknown, events: CliDeltaEvent[]): 
   const delta = renderCliEventDelta(events);
   if (!checkpoint && !delta) return null;
   return [
-    "Agent Space canonical continuity reconstruction:",
+    "Rainver canonical continuity reconstruction:",
     ...(checkpoint
       ? ["Validated semantic checkpoint:", stableJson(checkpoint)]
       : []),

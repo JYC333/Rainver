@@ -3,11 +3,11 @@ import type {
   RetrievalObjectType,
   RetrievalSearchMode,
   RetrievalSearchResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { RetrievalSearchService } from "../index.js";
 
 /**
- * Agent-space-controlled retrieval tool surface (W10).
+ * Rainver-controlled retrieval tool surface (W10).
  *
  * Managed runs do not expose retrieval as an external MCP server. Vendor tools
  * are adapters, never the system of record:

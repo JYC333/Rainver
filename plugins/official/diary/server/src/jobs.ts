@@ -1,4 +1,4 @@
-import type { Queryable, PluginJobHandler } from "@agent-space/protocol";
+import type { Queryable, PluginJobHandler } from "@rainver/protocol";
 import { diaryRepository } from "./domain/repository.js";
 
 export const JOB_TYPE_DIARY_REFLECTION = "diary_reflection";

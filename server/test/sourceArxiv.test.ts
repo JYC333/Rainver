@@ -17,8 +17,8 @@ import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.j
 
 function config() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
-    ARTIFACT_STORAGE_ROOT: "/tmp/agent-space-test-artifacts",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+    ARTIFACT_STORAGE_ROOT: "/tmp/rainver-test-artifacts",
   });
 }
 

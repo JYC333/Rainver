@@ -37,7 +37,7 @@ afterEach(async () => {
 
 function config() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }
@@ -581,7 +581,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({ invocation_audit_refs: undefined }),
     });
 
@@ -599,7 +599,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         max_tokens: 64,
         session_id: "session-1",
@@ -694,7 +694,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -737,7 +737,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -771,7 +771,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -884,7 +884,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -929,7 +929,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -975,7 +975,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -1014,7 +1014,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -1049,7 +1049,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -1083,7 +1083,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -1118,7 +1118,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody(),
     });
 
@@ -1160,7 +1160,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         output_format: {
           type: "json_schema",
@@ -1204,7 +1204,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         prompt: "fallback prompt",
         messages: [
@@ -1238,7 +1238,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         tool_mode: "disabled",
         tools: [{ name: "retrieval.search", input_schema: { type: "object" } }],
@@ -1294,7 +1294,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         tool_mode: "authorized_bindings",
         tools: [
@@ -1408,7 +1408,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         model: "claude-3-5-sonnet-latest",
         tool_mode: "authorized_bindings",
@@ -1483,7 +1483,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         model: "claude-3-5-sonnet-latest",
         messages: [
@@ -1564,7 +1564,7 @@ describe("runtime host internal route", () => {
     const res = await app.inject({
       method: "POST",
       url: "/internal/runtime-host/execute",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: requestBody({
         tool_mode: "authorized_bindings",
         tools: [

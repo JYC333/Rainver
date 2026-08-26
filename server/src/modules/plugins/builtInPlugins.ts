@@ -1,4 +1,4 @@
-import type { AgentSpacePlugin } from "@agent-space/protocol";
+import type { RainverPlugin } from "@rainver/protocol";
 import { defaultOfficialPluginArtifactRoot, loadOfficialPluginPackages } from "./packageLoader.js";
 import { listOfficialPlugins } from "./registry.js";
 
@@ -10,7 +10,7 @@ import { listOfficialPlugins } from "./registry.js";
  * Level 1 monorepo development flow while matching the Level 2 startup-scan
  * shape for downloaded official plugins.
  */
-export const BUILT_IN_PLUGINS: readonly AgentSpacePlugin[] = await loadOfficialPluginPackages(
+export const BUILT_IN_PLUGINS: readonly RainverPlugin[] = await loadOfficialPluginPackages(
   defaultOfficialPluginArtifactRoot(),
   { allowedPluginIds: listOfficialPlugins().map((descriptor) => descriptor.id) },
 );

@@ -8,7 +8,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { checkInternalToken } from "../../gateway/internalAuth.js";
 import { loadActionRegistry } from "./actionRegistry.js";

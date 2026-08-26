@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 import { GraphView } from '../GraphView'
 import { normalizeGraphViewState } from '../core/graphViewState'
 

@@ -9,7 +9,7 @@ import type {
   MessageOut,
   SessionOut,
   SessionPage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
@@ -32,7 +32,7 @@ afterEach(async () => {
 
 function sessionsConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }

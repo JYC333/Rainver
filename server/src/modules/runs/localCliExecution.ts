@@ -1,4 +1,4 @@
-import type { CanonicalUsage } from "@agent-space/protocol";
+import type { CanonicalUsage } from "@rainver/protocol";
 
 export interface CliExecutionResult {
   returncode: number;
@@ -20,7 +20,7 @@ export interface ReadOnlyCliExecutionOptions {
   workspace_cwd: string;
   context_cwd: string;
   sandbox_root: string;
-  agent_space_home: string;
+  rainver_home: string;
   cli_tools_root: string;
   readable_paths: string[];
   writable_paths: string[];

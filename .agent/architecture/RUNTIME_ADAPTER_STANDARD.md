@@ -3,7 +3,7 @@
 The runtime adapter standard separates product orchestration from vendor
 execution tools.
 
-Agent-space owns run lifecycle, accepted Runtime Context Delivery, policy gates, credential
+Rainver owns run lifecycle, accepted Runtime Context Delivery, policy gates, credential
 gating, sandbox/worktree governance, artifacts, proposals, and audit/events.
 Vendor CLIs such as Claude Code and Codex CLI are local CLI runtime adapters.
 
@@ -38,7 +38,7 @@ and
 `/runtime-adapters` instance API is retired.
 
 Runtime tool status is non-mutating: it checks the active allowlisted binary
-and installed versions under `$AGENT_SPACE_HOME/runtime-tools` without creating
+and installed versions under `$RAINVER_HOME/runtime-tools` without creating
 runs, sandboxes, events, credential grants, or model calls. Installing or
 activating tool versions requires the configured `INSTANCE_ADMIN_EMAIL` user.
 Space owners/admins choose enabled/default/allowed versions for their own
@@ -55,7 +55,7 @@ Accepted Runtime Context Delivery is rendered directly at the adapter boundary;
 its context is not copied into vendor context files. Vendor-specific control
 files needed to disable unsupported delegation may still be generated only in
 the private run/conversation sandbox. They are never written to the real
-Project Folder because agent-space remains the source of truth.
+Project Folder because Rainver remains the source of truth.
 
 Subscription CLIs are explicit `local_cli` external-egress destinations in the
 immutable execution-control snapshot. Preflight and live Delivery authorization

@@ -173,7 +173,7 @@ function httpBaseUrl(): string {
 async function api(method: string, path: string, body?: unknown): Promise<Response> {
   return fetch(`${httpBaseUrl()}${path}`, {
     method,
-    headers: { "content-type": "application/json", "X-Agent-Space-Id": SPACE },
+    headers: { "content-type": "application/json", "X-Rainver-Space-Id": SPACE },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -803,7 +803,7 @@ describe("the files a bound host is told to write", () => {
     if (!db.available) return;
     const frame = await frameFor("codex_cli", OPENAI_PROVIDER);
     const toml = frame.files.find((f) => f.relative_path === ".codex/config.toml")!.contents;
-    const catalogPath = ".codex/model-catalogs/agent-space-provider.json";
+    const catalogPath = ".codex/model-catalogs/rainver-provider.json";
     expect(frame.files.some((f) => f.relative_path === catalogPath)).toBe(true);
     // A catalog nothing points at is a catalog Codex never reads, and the
     // model then resolves against its built-in list instead of the provider's.
@@ -826,10 +826,10 @@ describe("the files a bound host is told to write", () => {
     if (!db.available) return;
     const frame = await frameFor("opencode", OPENAI_PROVIDER);
     const config = JSON.parse(frame.files.find((f) => f.relative_path === "opencode.json")!.contents);
-    // Without `npm`, OpenCode has no SDK to load `agent_space_provider` with
+    // Without `npm`, OpenCode has no SDK to load `rainver_provider` with
     // and falls back to a registry provider — i.e. to ambient credentials.
-    expect(config.provider.agent_space_provider.npm).toBe("@ai-sdk/openai-compatible");
-    expect(config.model).toBe("agent_space_provider/m-1");
+    expect(config.provider.rainver_provider.npm).toBe("@ai-sdk/openai-compatible");
+    expect(config.model).toBe("rainver_provider/m-1");
     expect(frame.profile_env.OPENCODE_CONFIG).toBe("opencode.json");
     expect(frame.profile_key).toBe(`opencode/${OPENAI_PROVIDER}`);
   });

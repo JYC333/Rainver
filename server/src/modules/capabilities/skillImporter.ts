@@ -96,7 +96,7 @@ export const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
-        "user-agent": "agent-space-skill-import",
+        "user-agent": "rainver-skill-import",
       },
       redirect: "follow",
     },
@@ -117,7 +117,7 @@ export const defaultGitHubPackageLister: SkillPackageLister = async (source) => 
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
-        "user-agent": "agent-space-skill-import",
+        "user-agent": "rainver-skill-import",
       },
       redirect: "follow",
     },
@@ -154,7 +154,7 @@ async function resolveGitHubTreeSha(repo: string, commitShaValue: string): Promi
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
-        "user-agent": "agent-space-skill-import",
+        "user-agent": "rainver-skill-import",
       },
       redirect: "follow",
     },

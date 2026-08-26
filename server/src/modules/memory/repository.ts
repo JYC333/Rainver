@@ -3,7 +3,7 @@ import { getDbPool } from "../../db/pool.js";
 import type {
   MemoryOut,
   MemoryPage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   canReadMemory,
   shouldRedactMemoryContent,

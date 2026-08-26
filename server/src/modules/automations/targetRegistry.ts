@@ -1,4 +1,4 @@
-import type { AutomationTargetType } from "@agent-space/protocol";
+import type { AutomationTargetType } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { HttpError } from "../routeUtils/common.js";
 import type {

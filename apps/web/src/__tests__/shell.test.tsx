@@ -29,7 +29,7 @@ describe('Shell scene sidebar collapse', () => {
   // sections via an in-header breadcrumb), so this generic collapse behaviour is
   // exercised against a module that still owns a scene.
   it('shows a visible expand handle in the header when the scene sidebar is collapsed', () => {
-    localStorage.setItem('agent-space:scene-collapsed', JSON.stringify({ agents: true }))
+    localStorage.setItem('rainver:scene-collapsed', JSON.stringify({ agents: true }))
     render(<MemoryRouter initialEntries={['/spaces/personal-1/agents']} future={routerFuture}><Shell /></MemoryRouter>)
 
     // Expand handle visible in the header, labelled with the scene title (e.g. "☰ Agents").

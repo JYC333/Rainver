@@ -1,5 +1,5 @@
 import type { ServerConfig } from "../../config.js";
-import type { AutomationTargetType } from "@agent-space/protocol";
+import type { AutomationTargetType } from "@rainver/protocol";
 import {
   OperationalAlertService,
   safelyEmitOperationalAlert,

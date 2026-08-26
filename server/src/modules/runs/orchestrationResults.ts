@@ -5,7 +5,7 @@ import type {
   RunMaterializationItemSummary,
   RunStatus,
   RunTerminalStatus,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,

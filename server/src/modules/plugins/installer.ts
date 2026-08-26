@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentSpacePlugin } from "@agent-space/protocol";
+import type { RainverPlugin } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { getOfficialPlugin } from "./registry.js";
@@ -13,7 +13,7 @@ export interface InstallPluginOptions {
 export async function installOfficialPlugin(
   db: Queryable,
   pluginId: string,
-  plugins: readonly AgentSpacePlugin[],
+  plugins: readonly RainverPlugin[],
   opts: InstallPluginOptions,
 ): Promise<PluginInstallRow> {
   const descriptor = getOfficialPlugin(pluginId);

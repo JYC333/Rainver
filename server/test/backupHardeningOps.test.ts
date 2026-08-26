@@ -24,9 +24,9 @@ describe("backup credential separation", () => {
     const backup = script("backup-credentials.sh");
     const restore = script("restore-credentials.sh");
     const safeExtract = script("safe_extract.py");
-    expect(backup).toContain('"backup_format": "agent-space-credentials.v1"');
+    expect(backup).toContain('"backup_format": "rainver-credentials.v1"');
     expect(backup).toContain('"included_paths": ["secrets/"]');
-    expect(restore).toContain('manifest.get("backup_format") != "agent-space-credentials.v1"');
+    expect(restore).toContain('manifest.get("backup_format") != "rainver-credentials.v1"');
     expect(restore).toContain('safe_extract.py" "$ARCHIVE" "$staging"');
     expect(safeExtract).toContain("unsafe archive path");
     expect(safeExtract).toContain('filter="data"');

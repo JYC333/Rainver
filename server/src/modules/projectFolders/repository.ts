@@ -433,7 +433,7 @@ export class PgProjectFolderRepository {
   }
 
   /**
-   * Removes only the Agent-Space registration row. Never deletes, moves, or
+   * Removes only the Rainver registration row. Never deletes, moves, or
    * rewrites the physical directory.
    */
   async unregister(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<boolean> {

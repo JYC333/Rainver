@@ -71,7 +71,7 @@ describe("EvolutionRepository core", () => {
     });
     expect(run.rows[0]!.prompt).toContain(EVOLUTION_PLAN_REVIEW_SCHEMA);
     expect(run.rows[0]!.prompt).toContain(result.selectorDecisionId);
-    expect(run.rows[0]!.instruction).toContain("agent-space Evolution planner");
+    expect(run.rows[0]!.instruction).toContain("rainver Evolution planner");
 
     const decision = await db.pool.query<{ run_id: string; selected_strategy_asset_id: string | null }>(
       "SELECT run_id, selected_strategy_asset_id FROM evolution_selector_decisions WHERE id = $1 AND space_id = $2",

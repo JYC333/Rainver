@@ -20,7 +20,7 @@ afterEach(async () => {
 
 describe("CLI credential login-state detection", () => {
   it("uses the runtime credential file rather than directory non-emptiness", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-cli-state-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-cli-state-"));
     const cacheOnlyPath = join(tempDir, "codex-cache-only");
     const loggedInPath = join(tempDir, "codex-logged-in");
     await mkdir(join(cacheOnlyPath, "log"), { recursive: true });
@@ -96,8 +96,8 @@ describe("CLI credential login-state detection", () => {
 
     const broker = new CliCredentialBroker(
       loadConfig({
-        AGENT_SPACE_HOME: tempDir,
-        SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+        RAINVER_HOME: tempDir,
+        SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       }),
     );
 
@@ -142,7 +142,7 @@ describe("CLI credential login-state detection", () => {
   });
 
   it("enumerates every logged-in user profile for background quota refresh", async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "aspace-cli-refresh-targets-"));
+    tempDir = await mkdtemp(join(tmpdir(), "rainver-cli-refresh-targets-"));
     const profileOne = join(tempDir, "profile-one");
     const profileTwo = join(tempDir, "profile-two");
     const loggedOut = join(tempDir, "logged-out");
@@ -178,8 +178,8 @@ describe("CLI credential login-state detection", () => {
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
     const broker = new CliCredentialBroker(
       loadConfig({
-        AGENT_SPACE_HOME: tempDir,
-        SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+        RAINVER_HOME: tempDir,
+        SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       }),
     );
 

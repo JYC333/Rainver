@@ -1,4 +1,4 @@
-import type { MessageOut } from "@agent-space/protocol";
+import type { MessageOut } from "@rainver/protocol";
 import { estimateModelTokens } from "../usage/modelCatalog.js";
 
 export const ROOM_SUMMARY_TOKEN_BUDGET = 2_000;

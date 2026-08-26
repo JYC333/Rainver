@@ -44,7 +44,7 @@ describe("server-owned features route", () => {
     });
   });
 
-  it("detects the @agent-space/protocol package (declared file dependency)", () => {
+  it("detects the @rainver/protocol package (declared file dependency)", () => {
     expect(isProtocolPackageDetected()).toBe(true);
     expect(computeFeatures(loadConfig({}))).toContain("protocol_package_detected");
   });

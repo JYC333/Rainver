@@ -3,7 +3,7 @@ import type {
   ResearchCompiledQuery,
   ResearchProviderKey,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { compileArxivSemanticQuery } from "./providers/arxiv.js";
 import { compileOpenAlexSemanticQuery } from "./providers/openAlex.js";
 import { compileSemanticScholarSemanticQuery } from "./providers/semanticScholar.js";

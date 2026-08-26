@@ -7,7 +7,7 @@ import { RetrievalProjectionService } from "../src/modules/retrieval/projectionS
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
 import { type RerankCandidate, type RerankScore, type Reranker } from "../src/modules/retrieval/reranker.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
-import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalObjectType } from "@rainver/protocol";
 import { runRecallCases, type RecallCase } from "./support/retrievalEval.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 

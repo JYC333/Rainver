@@ -95,7 +95,7 @@ describe("Project Folder database invariants", () => {
     });
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
 
@@ -163,7 +163,7 @@ describe("Project Folder database invariants", () => {
 
   it("prepares a zero-copy read-only Folder without requiring Git or writing context into it", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    const root = await mkdtemp(join(tmpdir(), "aspace-read-only-folder-"));
+    const root = await mkdtemp(join(tmpdir(), "rainver-read-only-folder-"));
     try {
       const workspaceRoot = join(root, "workspaces");
       const folderRoot = join(workspaceRoot, "plain-project");
@@ -173,7 +173,7 @@ describe("Project Folder database invariants", () => {
       const folderId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       await insertFolder(db.pool, { id: folderId, rootPath: folderRoot });
       const manager = new PgRunSandboxManager(loadConfig({
-        AGENT_SPACE_HOME: root,
+        RAINVER_HOME: root,
         WORKSPACE_ROOT: workspaceRoot,
         SANDBOX_ROOT: sandboxRoot,
       }), db.pool);
@@ -215,7 +215,7 @@ describe("Project Folder database invariants", () => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
     const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
@@ -248,7 +248,7 @@ describe("Project Folder database invariants", () => {
     );
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
     );
     const identity = { spaceId: SPACE, userId: USER };
 
@@ -258,7 +258,7 @@ describe("Project Folder database invariants", () => {
     await expect(repo.getGitDiff(identity, PROJECT, remoteFolderId, null)).rejects.toMatchObject({ statusCode: 409 });
 
     const manager = new PgRunSandboxManager(
-      loadConfig({ WORKSPACE_ROOT: "/tmp/agent-space-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
       db.pool,
     );
     await expect(

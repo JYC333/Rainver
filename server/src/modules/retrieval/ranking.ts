@@ -1,4 +1,4 @@
-import type { RetrievalObjectType } from "@agent-space/protocol";
+import type { RetrievalObjectType } from "@rainver/protocol";
 import { normalizeTextForSearch } from "./normalize.js";
 import type { EvidenceKind, ScoredCandidate } from "./types.js";
 

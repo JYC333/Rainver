@@ -9,7 +9,7 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Core",
+        "title": "Rainver",
         "width": 1280,
         "height": 860,
         "minWidth": 900,
@@ -25,7 +25,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "identifier": "com.agentcore.app",
+    "identifier": "com.rainver.app",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,4 +1,4 @@
-import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@agent-space/protocol";
+import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
@@ -58,7 +58,7 @@ import {
  * which must stay textually identical to this literal — the two packages
  * share no dependency to enforce that at the type level).
  */
-export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = "agent-space:remote-workspace-cwd";
+export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
 
 export interface RemoteHostCliAdapterInput {
   run: RunRecord;
@@ -213,11 +213,11 @@ async function runRemoteHostCliAdapter(
   // stages new files with `git add --intent-to-add --all` before `git diff
   // HEAD`, so a brand-new file written directly into the workspace shows
   // its full content in "Review diff" — nudging the agent to write
-  // deliverables to `$AGENT_SPACE_OUTPUT_DIR` instead only misdirected
+  // deliverables to `$RAINVER_OUTPUT_DIR` instead only misdirected
   // ordinary work out of the workspace the user actually asked for it in.
-  // The daemon still injects `AGENT_SPACE_OUTPUT_DIR` and uploads whatever
+  // The daemon still injects `RAINVER_OUTPUT_DIR` and uploads whatever
   // lands there (kept dormant, not removed — a future structured
-  // agent-space-information channel, distinct from workspace file
+  // rainver-information channel, distinct from workspace file
   // changes, is a real open design question logged in
   // `tasks/deferred-register.md`, not decided here).
   const prompt = input.prompt ?? input.run.prompt ?? "";

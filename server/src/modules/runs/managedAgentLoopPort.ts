@@ -1,5 +1,5 @@
 /**
- * The agent-space contract for a managed multi-turn tool loop.
+ * The rainver contract for a managed multi-turn tool loop.
  *
  * A managed run that carries tool grants alternates model turns and tool calls
  * until the model stops asking, a tool suspends the run, the caller aborts, or
@@ -21,7 +21,7 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 
 /** One physical model turn. Implementations call this once per turn, never directly a provider. */

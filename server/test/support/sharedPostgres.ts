@@ -84,7 +84,7 @@ export async function getTestPostgres(
   }
 
   const fileHash = createHash("sha256").update(fileUrl).digest("hex").slice(0, 12);
-  const database = `aspace_test_${context.runId}_${fileHash}`;
+  const database = `rainver_test_${context.runId}_${fileHash}`;
   const template = options.empty ? "template0" : context.templateDatabase;
   const admin = new Pool({ connectionString: context.adminUri, max: 1 });
 

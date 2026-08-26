@@ -27,7 +27,7 @@ export class PgMachineRepository {
       `SELECT m.id FROM machines m JOIN hosts h ON h.machine_id = m.id WHERE h.kind = 'server' LIMIT 1`,
     );
     if (existing.rows[0]) return existing.rows[0].id;
-    return (await this.create(null, "Agent-Space Server", "server")).id;
+    return (await this.create(null, "Rainver Server", "server")).id;
   }
 
   async create(ownerUserId: string | null, displayName: string, deviceKind: string | null): Promise<MachineRow> {

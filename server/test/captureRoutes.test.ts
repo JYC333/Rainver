@@ -50,7 +50,7 @@ const auth: AuthRepository = {
 function server(): FastifyInstance {
   __setAuthRepositoryForTests(auth);
   return buildModuleServer(
-    loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/agent_space" }), [captureModule], { logger: false },);
+    loadConfig({ SERVER_DATABASE_URL: "postgresql://server_ro@db:5432/rainver" }), [captureModule], { logger: false },);
 }
 
 describe("POST /api/v1/captures", () => {

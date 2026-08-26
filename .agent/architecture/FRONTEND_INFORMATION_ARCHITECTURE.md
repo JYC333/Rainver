@@ -2,7 +2,7 @@
 
 ## 1. Frontend Role
 
-The frontend is the primary command surface for the agent-space product loop. It provides
+The frontend is the primary command surface for the Rainver product loop. It provides
 access to: capture, activity inbox, proposals, runs, tasks, memory, Project Folders, runtime
 status, structured Plan execution, Automation scheduling, and the Evolution review loop.
 

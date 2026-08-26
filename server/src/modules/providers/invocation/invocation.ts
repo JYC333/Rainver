@@ -29,7 +29,7 @@
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { createHash } from "node:crypto";
 import type {
   InvocationTarget,

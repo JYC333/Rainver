@@ -1,7 +1,7 @@
 import type {
-  AgentSpacePlugin,
+  RainverPlugin,
   PluginHostContext,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { registerFinanceLedgerProposalAppliers } from "./proposalAppliers.js";
 import { registerFinanceLedgerRoutes } from "./routes.js";
@@ -11,7 +11,7 @@ import {
   FINANCE_LEDGER_PLUGIN_VERSION,
 } from "./manifest.js";
 
-export const financeLedgerPlugin: AgentSpacePlugin = {
+export const financeLedgerPlugin: RainverPlugin = {
   id: FINANCE_LEDGER_PLUGIN_ID,
   version: FINANCE_LEDGER_PLUGIN_VERSION,
   migrations: financeLedgerMigrations,

@@ -7,12 +7,12 @@ import { configPath, loadConfig, requireConfig, saveConfig } from "../src/config
 let dir: string;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), "agent-space-host-config-"));
-  process.env.AGENT_SPACE_HOST_CONFIG_DIR = dir;
+  dir = await mkdtemp(join(tmpdir(), "rainver-host-config-"));
+  process.env.RAINVER_HOST_CONFIG_DIR = dir;
 });
 
 afterEach(async () => {
-  delete process.env.AGENT_SPACE_HOST_CONFIG_DIR;
+  delete process.env.RAINVER_HOST_CONFIG_DIR;
   await rm(dir, { recursive: true, force: true });
 });
 

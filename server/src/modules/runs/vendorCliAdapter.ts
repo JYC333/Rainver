@@ -5,7 +5,7 @@ import type {
   RunInputEnvelope,
   RuntimeSemanticEvent,
   InvocationDelivery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   CliCredentialBroker,
@@ -364,7 +364,7 @@ export async function executeVendorCliAdapter(
         // the CODEX_HOME the credential broker already prepared).
         ...(spec.adapter_type === "codex_cli" ? { NO_BROWSER: "1" } : {}),
         ...(toolToken && toolUrl
-          ? { AGENT_SPACE_MCP_URL: toolUrl, AGENT_SPACE_TOOL_TOKEN: toolToken }
+          ? { RAINVER_MCP_URL: toolUrl, RAINVER_TOOL_TOKEN: toolToken }
           : {}),
       }),
       run_id: input.run.id,
@@ -453,8 +453,8 @@ function renderCliDeliveryMessages(delivery: InvocationDelivery): string[] {
   const current = delivery.message_blocks.filter((block) => block.delivery_phase === "current_user");
   const context = delivery.message_blocks.filter((block) => block.delivery_phase !== "current_user");
   const contextLabel = delivery.mode === "full"
-    ? "Agent Space context bootstrap"
-    : "Agent Space context delta";
+    ? "Rainver context bootstrap"
+    : "Rainver context delta";
   return [
     ...(context.length > 0
       ? [[`[${contextLabel} — ordinary context message]`, ...context.map((block) => block.content)].join("\n\n")]
@@ -479,16 +479,16 @@ async function configureCliToolTransport(
     if (!codexHome) throw new Error("Codex tool transport requires CODEX_HOME.");
     await appendFile(
       join(codexHome, "config.toml"),
-      `\n[mcp_servers.agent_space]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "AGENT_SPACE_TOOL_TOKEN"\n`,
+      `\n[mcp_servers.rainver]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "RAINVER_TOOL_TOKEN"\n`,
       { encoding: "utf8", mode: 0o600 },
     );
     return;
   }
   if (spec.adapter_type === "claude_code") {
-    const stagedConfigPath = join(contextCwd, ".agent-space-mcp.json");
+    const stagedConfigPath = join(contextCwd, ".rainver-mcp.json");
     await writeFile(stagedConfigPath, JSON.stringify({
       mcpServers: {
-        "agent-space": {
+        "rainver": {
           type: "http",
           url,
           headers: { Authorization: `Bearer ${token}` },
@@ -497,7 +497,7 @@ async function configureCliToolTransport(
     }), { encoding: "utf8", mode: 0o600 });
     const configPath =
       (input.required_sandbox_level ?? input.run.required_sandbox_level) === "read_only"
-        ? join(input.sandbox_cwd, ".agent-space-mcp.json")
+        ? join(input.sandbox_cwd, ".rainver-mcp.json")
         : stagedConfigPath;
     const insertAt = Math.max(1, rendered.argv.length - 1);
     rendered.argv.splice(insertAt, 0, "--mcp-config", configPath);
@@ -509,11 +509,11 @@ async function configureCliToolTransport(
   const mcp = recordValue(existing.mcp);
   existing.mcp = {
     ...mcp,
-    "agent-space": {
+    "rainver": {
       type: "remote",
       url,
       enabled: true,
-      headers: { Authorization: "Bearer {env:AGENT_SPACE_TOOL_TOKEN}" },
+      headers: { Authorization: "Bearer {env:RAINVER_TOOL_TOKEN}" },
     },
   };
   await writeFile(configPath, JSON.stringify(existing, null, 2), {
@@ -527,8 +527,8 @@ function runExchangeEnv(config: Record<string, unknown> | undefined): Record<str
   const outputDir = stringValue(config?.run_exchange_output_dir);
   if (!inputDir || !outputDir) return {};
   return {
-    AGENT_SPACE_EXCHANGE_INPUT: join(inputDir, "run_input.json"),
-    AGENT_SPACE_EXCHANGE_OUTPUT: outputDir,
+    RAINVER_EXCHANGE_INPUT: join(inputDir, "run_input.json"),
+    RAINVER_EXCHANGE_OUTPUT: outputDir,
   };
 }
 
@@ -547,7 +547,7 @@ function readOnlyExecutionOptions(
   workspace_cwd: string;
   context_cwd: string;
   sandbox_root: string;
-  agent_space_home: string;
+  rainver_home: string;
   cli_tools_root: string;
   readable_paths: string[];
   writable_paths: string[];
@@ -562,7 +562,7 @@ function readOnlyExecutionOptions(
     workspace_cwd: workspaceCwd,
     context_cwd: contextCwd,
     sandbox_root: config.sandboxRoot,
-    agent_space_home: config.agentSpaceHome,
+    rainver_home: config.rainverHome,
     cli_tools_root: config.cliToolsRoot,
     readable_paths: [exchangeInputCwd].filter(
       (value): value is string => Boolean(value),

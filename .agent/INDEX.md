@@ -2,7 +2,7 @@
 
 ## 1. Repository Context
 
-agent-space is a space-based, multi-user, agent-first system for personal, family, and small-team
+Rainver is a space-based, multi-user, agent-first system for personal, family, and small-team
 use within a single deployment instance. It has a server backend (PostgreSQL),
 a React/Vite frontend (PWA), and a server-authoritative control plane: canonical state, orchestration,
 memory (written only through a proposal → approval workflow), and policy/credential enforcement all

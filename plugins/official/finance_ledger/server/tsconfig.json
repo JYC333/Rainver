@@ -20,7 +20,7 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@agent-space/protocol": ["../../../../packages/protocol/dist/index.d.ts"],
+      "@rainver/protocol": ["../../../../packages/protocol/dist/index.d.ts"],
       "fastify": ["../../../../server/node_modules/fastify/fastify.d.ts"]
     }
   },

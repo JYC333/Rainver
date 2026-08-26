@@ -67,7 +67,7 @@ Folder metadata. Package identity comes from the explicit package source and
 reviewed import record; no current code path scans Project Folders for
 capability manifests.
 
-Builtin capabilities follow their manifest `enabled` value. External capabilities default to disabled when discovered. Enable/disable for external capabilities is persisted outside manifests in `$AGENT_SPACE_HOME/config/settings.yaml`:
+Builtin capabilities follow their manifest `enabled` value. External capabilities default to disabled when discovered. Enable/disable for external capabilities is persisted outside manifests in `$RAINVER_HOME/config/settings.yaml`:
 
 ```yaml
 capabilities:

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowUpRight, Inbox, Lightbulb, RefreshCw, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { systemActionsForObjectType, type SourceSystemActionId } from '@agent-space/protocol'
+import { systemActionsForObjectType, type SourceSystemActionId } from '@rainver/protocol'
 import { projectResearchApi } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'

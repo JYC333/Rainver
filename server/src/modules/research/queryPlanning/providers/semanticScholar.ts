@@ -1,4 +1,4 @@
-import type { ResearchSemanticQuery } from "@agent-space/protocol";
+import type { ResearchSemanticQuery } from "@rainver/protocol";
 import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared.js";
 
 // Same plainQuery flattening as openalex — no boolean operators, so

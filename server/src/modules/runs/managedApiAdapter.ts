@@ -7,7 +7,7 @@ import type {
   RuntimeHostExecuteResponse,
   RunTriggerOrigin,
   InvocationDelivery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   authorizeRuntimeHostDelivery,

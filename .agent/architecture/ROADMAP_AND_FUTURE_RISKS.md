@@ -99,7 +99,7 @@ fix per week.
   Memory changes still require normal proposal review.
 
 **Rejected / non-goals (not backlog)**
-- External retrieval runtime dependency or repository as an Agent Space source of
+- External retrieval runtime dependency or repository as an Rainver source of
   truth.
 - Dynamic schema-pack runtime or per-call schema-pack overrides.
 - Default external MCP retrieval server as the context interface.

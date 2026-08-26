@@ -8,7 +8,7 @@ import {
 } from "../src/modules/runs/managedApiAdapter.js";
 import type { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
-import type { InvocationDelivery } from "@agent-space/protocol";
+import type { InvocationDelivery } from "@rainver/protocol";
 import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts.js";
 import { __setProviderCommandStoreForTests, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { __setProviderHttpClientForTests, type ProviderHttpClient } from "../src/modules/providers/invocation/invocation.js";
@@ -27,7 +27,7 @@ afterEach(() => {
 
 function config() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }

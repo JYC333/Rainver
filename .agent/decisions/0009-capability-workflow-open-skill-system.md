@@ -8,7 +8,7 @@ Accepted; amended 2026-08-14
 
 ## Context
 
-Agent-space needs a vendor-neutral way to represent canonical capabilities,
+Rainver needs a vendor-neutral way to represent canonical capabilities,
 group them into packs, configure them per project, import external
 Agent-Skills-compatible packages safely, and render
 capabilities for runtime adapters such as Claude Code, Codex, and `model_api`.
@@ -38,17 +38,17 @@ permission declarations are treated as permission requests only.
 
 Claude Code, Codex, `model_api`, and future runtimes are rendering/invocation
 targets. Runtime skill files are generated artifacts and do not become
-agent-space source of truth.
+Rainver source of truth.
 
 ## Amendment — Skill Content Authority (2026-08-14)
 
 The original decision made imported skill content source material for a second,
-canonical agent-space representation. That part is amended.
+canonical Rainver representation. That part is amended.
 
 An external Agent Skill package is the source of truth for its own procedural
-content. Agent-space does not own or produce a canonical re-representation of
+content. Rainver does not own or produce a canonical re-representation of
 that content and does not convert an imported skill into a
-`CapabilityDefinition`. Agent-space owns the surrounding control plane:
+`CapabilityDefinition`. Rainver owns the surrounding control plane:
 
 - source, version or commit, content hash, package-root-relative file inventory,
   license and import provenance;
@@ -68,7 +68,7 @@ A skill is a procedure, not callable authority. Package declarations of tools,
 hooks, scripts, dependencies, or MCP servers remain untrusted requests. They do
 not install dependencies, execute scripts, register a System Action, expose an
 MCP server, or grant any permission. System Actions and their policy-enforced
-gateway remain agent-space-owned and separate from Skills. Workflows likewise
+gateway remain rainver-owned and separate from Skills. Workflows likewise
 remain enforced process definitions rather than soft skill instructions.
 
 The existing `NormalizedSkill`, imported-skill conversion, capability binding,

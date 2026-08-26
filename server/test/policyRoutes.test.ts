@@ -12,7 +12,7 @@ afterEach(async () => {
 
 function policyConfig() {
   return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     SERVER_INTERNAL_TOKEN: "internal-token",
   });
 }
@@ -38,7 +38,7 @@ describe("policy internal routes", () => {
     const invalid = await app.inject({
       method: "POST",
       url: "/internal/policy/enforce-proposal-apply",
-      headers: { "x-agent-space-internal-token": "internal-token" },
+      headers: { "x-rainver-internal-token": "internal-token" },
       payload: {
         user_id: "u1",
         space_id: "s1",

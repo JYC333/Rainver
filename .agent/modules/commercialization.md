@@ -2,7 +2,7 @@
 
 ## Current Target
 
-agent-space is built for **personal and family use first**.
+Rainver is built for **personal and family use first**.
 
 ```
 Current users:

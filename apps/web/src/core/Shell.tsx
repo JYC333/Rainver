@@ -18,8 +18,8 @@ import { useEffectiveModules } from '../modules/plugins/useEffectivePlugins'
 import { proposalsApi } from '../api/client'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from './reviewAttention'
 
-const RAIL_KEY = 'agent-space:rail-expanded'
-const SCENE_COLLAPSE_KEY = 'agent-space:scene-collapsed'
+const RAIL_KEY = 'rainver:rail-expanded'
+const SCENE_COLLAPSE_KEY = 'rainver:scene-collapsed'
 
 function readBool(key: string, fallback: boolean): boolean {
   try { const v = localStorage.getItem(key); return v === null ? fallback : v === 'true' } catch { return fallback }
@@ -152,8 +152,8 @@ export default function Shell() {
   // Re-fetch plugin state whenever PluginsPage enables or disables a module.
   useEffect(() => {
     const handler = () => refreshPlugins()
-    window.addEventListener('agent-space:plugin-state-changed', handler)
-    return () => window.removeEventListener('agent-space:plugin-state-changed', handler)
+    window.addEventListener('rainver:plugin-state-changed', handler)
+    return () => window.removeEventListener('rainver:plugin-state-changed', handler)
   }, [refreshPlugins])
 
   const scope = routeScopeForPath(location.pathname)
@@ -196,7 +196,7 @@ export default function Shell() {
 
   const sceneCollapsed = scene ? (collapsedScenes[scene.id] ?? false) : false
   const showSidebar = Boolean(scene) && !sceneCollapsed
-  const title = scene?.title ?? (isHome ? 'Home' : moduleForPath(logicalPath, effectiveModules)?.label ?? 'agent-space')
+  const title = scene?.title ?? (isHome ? 'Home' : moduleForPath(logicalPath, effectiveModules)?.label ?? 'rainver')
   const permissionSpaceId = activeSpaceId ?? preferredSpaceId
   const permissionRole = spaces.find(s => s.id === permissionSpaceId)?.role
   const canManageSpace = permissionRole === 'owner' || permissionRole === 'admin'

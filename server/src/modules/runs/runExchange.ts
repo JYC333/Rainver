@@ -15,7 +15,7 @@ import type {
   RunInputEnvelope,
   RunOutputDeclaration,
   RunOutputManifestItem,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { validateStructuredOutput } from "./structuredOutputValidation.js";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;

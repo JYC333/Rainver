@@ -1,5 +1,5 @@
-import type { MessageOut, SemanticCheckpoint } from "@agent-space/protocol";
-import * as protocol from "@agent-space/protocol";
+import type { MessageOut, SemanticCheckpoint } from "@rainver/protocol";
+import * as protocol from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import type { RoomSummaryCoverage } from "../rooms/conversationContext.js";
 

@@ -20,7 +20,7 @@
  */
 
 import type { ServerConfig } from "../../config.js";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../routeUtils/common.js";
 

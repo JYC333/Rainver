@@ -38,7 +38,7 @@ export interface ServerConfig {
   /** PostgreSQL connection string for server-owned reads/commands. */
   databaseUrl: string | null;
   /** Instance root used for provider key material and CLI credential profiles. */
-  agentSpaceHome: string;
+  rainverHome: string;
   /** Instance-owned runtime CLI installation root. */
   cliToolsRoot: string;
   /** Immutable image used for one-shot Docker CLI execution. */
@@ -117,7 +117,7 @@ export interface ServerConfig {
   retrievalRerankEnabled: boolean;
   /** Legacy env gate parsed for older env files; route enablement is space-scoped. */
   retrievalQueryRewriteEnabled: boolean;
-  agentSpaceEnv: string;
+  rainverEnv: string;
   appVersion: string | null;
   backupEnabled: boolean;
   backupIntervalHours: number;
@@ -155,7 +155,7 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_NOTIFICATION_WEBHOOK_ALLOWLIST",
   "SERVER_NOTIFICATION_MAX_PAYLOAD_BYTES",
   "SERVER_DATABASE_URL",
-  "AGENT_SPACE_HOME",
+  "RAINVER_HOME",
   "RUNTIME_TOOLS_ROOT",
   "SERVER_CLI_SANDBOX_IMAGE",
   "SANDBOX_RUNNER_HOST",
@@ -199,7 +199,7 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_ENABLED",
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_DAYS",
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_INTERVAL_SECONDS",
-  "AGENT_SPACE_ENV",
+  "RAINVER_ENV",
   "APP_VERSION",
   "BACKUP_ENABLED",
   "BACKUP_INTERVAL_HOURS",
@@ -434,11 +434,11 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   );
   const rawDatabaseUrl = env.SERVER_DATABASE_URL?.trim();
   const databaseUrl = rawDatabaseUrl ? validateDatabaseUrl(rawDatabaseUrl) : null;
-  const agentSpaceHome = resolve(env.AGENT_SPACE_HOME?.trim() || "/aspace");
+  const rainverHome = resolve(env.RAINVER_HOME?.trim() || "/rainver");
   const cliToolsRoot = resolve(
-    env.RUNTIME_TOOLS_ROOT?.trim() || resolve(agentSpaceHome, "runtime-tools"),
+    env.RUNTIME_TOOLS_ROOT?.trim() || resolve(rainverHome, "runtime-tools"),
   );
-  const cliSandboxImage = env.SERVER_CLI_SANDBOX_IMAGE?.trim() || "agent-space-sandbox";
+  const cliSandboxImage = env.SERVER_CLI_SANDBOX_IMAGE?.trim() || "rainver-sandbox";
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$/.test(cliSandboxImage)) {
     throw new ConfigError(
       "SERVER_CLI_SANDBOX_IMAGE must be a valid local image reference",
@@ -486,17 +486,17 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     // which the check above catches.
   }
   const workspaceRoot = resolve(
-    env.WORKSPACE_ROOT?.trim() || resolve(agentSpaceHome, "workspaces"),
+    env.WORKSPACE_ROOT?.trim() || resolve(rainverHome, "workspaces"),
   );
   // Keep ephemeral dirs and workspace worktrees under one sandbox root.
   const sandboxRoot = resolve(
-    env.SANDBOX_ROOT?.trim() || resolve(agentSpaceHome, "sandboxes"),
+    env.SANDBOX_ROOT?.trim() || resolve(rainverHome, "sandboxes"),
   );
   const artifactStorageRoot = resolve(
-    env.ARTIFACT_STORAGE_ROOT?.trim() || resolve(agentSpaceHome, "storage", "artifacts"),
+    env.ARTIFACT_STORAGE_ROOT?.trim() || resolve(rainverHome, "storage", "artifacts"),
   );
   const deployerSocketPath = resolve(
-    env.DEPLOYER_SOCKET_PATH?.trim() || resolve(agentSpaceHome, "run", "deployer.sock"),
+    env.DEPLOYER_SOCKET_PATH?.trim() || resolve(rainverHome, "run", "deployer.sock"),
   );
   const internalToken = env.SERVER_INTERNAL_TOKEN?.trim() || null;
   const googleClientId = env.GOOGLE_CLIENT_ID?.trim() || "";
@@ -659,7 +659,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   // these keys remain deliberately absent from KNOWN_ENV_KEYS.
   const retrievalRerankEnabled = parseBool(env.SERVER_RETRIEVAL_RERANK_ENABLED, false);
   const retrievalQueryRewriteEnabled = parseBool(env.SERVER_RETRIEVAL_QUERY_REWRITE_ENABLED, false);
-  const agentSpaceEnv = env.AGENT_SPACE_ENV?.trim() || "";
+  const rainverEnv = env.RAINVER_ENV?.trim() || "";
   const appVersion = env.APP_VERSION?.trim() || null;
   const backupEnabled = parseBool(env.BACKUP_ENABLED, false);
   const backupIntervalHours = parseBoundedInt(
@@ -679,7 +679,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   const backupIncludeLogs = parseBool(env.BACKUP_INCLUDE_LOGS, false);
   const backupOnStartup = parseBool(env.BACKUP_ON_STARTUP, true);
   const backupRoot = resolve(
-    env.BACKUP_ROOT?.trim() || resolve(agentSpaceHome, "backups"),
+    env.BACKUP_ROOT?.trim() || resolve(rainverHome, "backups"),
   );
   const backupAcceptNoBackup = parseBool(env.BACKUP_ACCEPT_NO_BACKUP, false);
   const backupDatabaseUrl = env.BACKUP_DATABASE_URL?.trim() || null;
@@ -696,7 +696,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     notificationWebhookAllowlist,
     notificationMaxPayloadBytes,
     databaseUrl,
-    agentSpaceHome,
+    rainverHome,
     cliToolsRoot,
     cliSandboxImage,
     sandboxRunnerHost,
@@ -743,7 +743,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     customSourceArtifactRetentionIntervalSeconds,
     retrievalRerankEnabled,
     retrievalQueryRewriteEnabled,
-    agentSpaceEnv,
+    rainverEnv,
     appVersion,
     backupEnabled,
     backupIntervalHours,
@@ -771,7 +771,7 @@ export function describeConfig(config: ServerConfig): string {
     `notificationWebhookEgress=${config.enableNotificationWebhookEgress}`,
     `notificationWebhookAllowlistCount=${config.notificationWebhookAllowlist.length}`,
     `notificationMaxPayloadBytes=${config.notificationMaxPayloadBytes}`,
-    `agentSpaceHome=${config.agentSpaceHome}`,
+    `rainverHome=${config.rainverHome}`,
     `cliToolsRoot=${config.cliToolsRoot}`,
     `cliSandboxImage=${config.cliSandboxImage}`,
     `workspaceRoot=${config.workspaceRoot}`,

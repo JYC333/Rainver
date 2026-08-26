@@ -11,7 +11,7 @@ import {
 import type {
   ProposalOut,
   ProposalPage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 interface ProposalServices {
   repository: Pick<PgProposalRepository, "listVisible" | "getVisible">;

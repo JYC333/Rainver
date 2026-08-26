@@ -203,7 +203,7 @@ describe("usageCliHistoryImport", () => {
 
   function config() {
     return loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     });
   }
 
@@ -325,7 +325,7 @@ describe("usageCliHistoryImport", () => {
     });
 
     it("previews and commits managed Claude transcript usage as lower-bound ledger events", async () => {
-      tempDir = await mkdtemp(join(tmpdir(), "aspace-cli-import-"));
+      tempDir = await mkdtemp(join(tmpdir(), "rainver-cli-import-"));
       const project = join(tempDir, "projects", "demo");
       await mkdir(project, { recursive: true });
       await writeFile(join(project, "session.jsonl"), assistantLine());

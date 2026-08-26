@@ -1,4 +1,4 @@
-import type { ResearchPreviewObservation, ResearchQueryDecision } from "@agent-space/protocol";
+import type { ResearchPreviewObservation, ResearchQueryDecision } from "@rainver/protocol";
 import type { ResearchQueryPolicy } from "./queryPolicy.js";
 
 export interface AdaptiveQueryEvaluation {

@@ -204,7 +204,7 @@ export class CliCredentialBroker {
   }
 
   private get credentialsRoot(): string {
-    return join(this.config.agentSpaceHome, "secrets", "cli-credentials");
+    return join(this.config.rainverHome, "secrets", "cli-credentials");
   }
 
   private get userCredentialsRoot(): string {
@@ -212,17 +212,17 @@ export class CliCredentialBroker {
   }
 
   private get runtimeHomesRoot(): string {
-    return join(this.config.agentSpaceHome, "cache", "runtime-homes");
+    return join(this.config.rainverHome, "cache", "runtime-homes");
   }
 
   private get conversationRuntimeHomesRoot(): string {
-    return join(this.config.agentSpaceHome, "cache", "conversation-runtime-homes");
+    return join(this.config.rainverHome, "cache", "conversation-runtime-homes");
   }
 
-  /** Transient HOME the interactive login writes into, kept under aspace so the
+  /** Transient HOME the interactive login writes into, kept under rainver so the
    * vendor CLI never touches the operator's real ~/.<runtime>. */
   private get loginHomesRoot(): string {
-    return join(this.config.agentSpaceHome, "cache", "login-homes");
+    return join(this.config.rainverHome, "cache", "login-homes");
   }
 
   private profileFromRow(row: CredentialProfileRow): CredentialProfile {
@@ -715,7 +715,7 @@ export class CliCredentialBroker {
 
   private quotaCachePath(runtime: string, profileId: string): string {
     return join(
-      this.config.agentSpaceHome,
+      this.config.rainverHome,
       "cache",
       "cli-quota",
       cleanComponent(runtime, "runtime"),
@@ -724,7 +724,7 @@ export class CliCredentialBroker {
   }
 
   private get usageAutoRefreshSettingsPath(): string {
-    return join(this.config.agentSpaceHome, "config", "cli-usage-auto-refresh.json");
+    return join(this.config.rainverHome, "config", "cli-usage-auto-refresh.json");
   }
 
   async cliUsageAutoRefreshSettings(): Promise<CliUsageAutoRefreshSettings> {
@@ -1040,7 +1040,7 @@ export class CliCredentialBroker {
 
   async prepareConversationHome(stateKey: string): Promise<string> {
     await ensureRealDirectoryChain(
-      resolve(this.config.agentSpaceHome),
+      resolve(this.config.rainverHome),
       "cache/conversation-runtime-homes",
       "conversation",
     );
@@ -1069,7 +1069,7 @@ export class CliCredentialBroker {
       "x-accel-buffering": "no",
     });
     // Only known runtimes reach a real login; a clean component keeps the
-    // login HOME path inside aspace even if an unknown runtime slips through.
+    // login HOME path inside rainver even if an unknown runtime slips through.
     const adapter = cliLoginAdapterFor(runtime);
     const safeRuntime = adapter ? cleanComponent(runtime, "runtime") : "_invalid";
     const db = this.db();

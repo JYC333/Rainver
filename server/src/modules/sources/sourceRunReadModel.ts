@@ -1,4 +1,4 @@
-import type { SourceRunSummaryDTO } from "@agent-space/protocol";
+import type { SourceRunSummaryDTO } from "@rainver/protocol";
 import {
   HttpError,
   countFromRow,

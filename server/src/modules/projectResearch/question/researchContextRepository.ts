@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   ResearchContext,
   ResearchContextVersion,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   HttpError,
   type Queryable,

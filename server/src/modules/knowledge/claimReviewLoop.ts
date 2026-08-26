@@ -5,7 +5,7 @@ import type {
   ClaimTrajectoryPoint,
   ClaimTrajectoryResponse,
   ClaimTrajectorySignal,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { CLAIM_COLUMNS, CLAIM_FROM, type ClaimRow } from "./knowledgeRepositoryRows.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";

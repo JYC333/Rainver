@@ -931,14 +931,14 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
       await this.runner.run({
         package_ref: packageRef(definition, requestedVersion),
         prefix: tmpDir,
-        cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+        cache_dir: join(this.config.rainverHome, "cache", "npm"),
         ignore_scripts: definition.runtime === "opencode",
       });
       if (definition.vendor_package_name) {
         await this.runner.run({
           package_ref: `${definition.vendor_package_name}@${definition.vendor_package_version ?? "latest"}`,
           prefix: tmpDir,
-          cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+          cache_dir: join(this.config.rainverHome, "cache", "npm"),
         });
       }
       const packageJson = await readJsonFile<{
@@ -1069,7 +1069,7 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
       await this.runner.run({
         package_ref: `${nativePackageName}@${nativePackageSpec}`,
         prefix,
-        cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+        cache_dir: join(this.config.rainverHome, "cache", "npm"),
       });
     }
     if (definition.runtime === "claude_code") await this.ensureClaudePostinstall(prefix);
@@ -1089,7 +1089,7 @@ export class RuntimeToolRegistry implements RuntimeToolResolverPort {
         await this.runner.run({
           package_ref: `${packageName}@${packageSpec}`,
           prefix,
-          cache_dir: join(this.config.agentSpaceHome, "cache", "npm"),
+          cache_dir: join(this.config.rainverHome, "cache", "npm"),
           ignore_scripts: true,
         });
       }

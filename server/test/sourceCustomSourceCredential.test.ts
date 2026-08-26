@@ -39,7 +39,7 @@ beforeEach(async () => {
     databaseUrl: db.connectionUri,
     artifactStorageRoot,
     customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
-    agentSpaceHome: artifactStorageRoot,
+    rainverHome: artifactStorageRoot,
   };
   createFlow = new CustomSourceCreateFlowService(db.pool, config);
   credentialService = new CustomSourceCredentialService(db.pool, config);

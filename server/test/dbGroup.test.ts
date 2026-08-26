@@ -93,7 +93,7 @@ describe("dbOwnerRoleCutover", () => {
       const combined = files.map((path) => readRepoFile(path)).join("\n");
       const forbidden = [
         ["SERVER_DB", "_RW"].join(""),
-        ["agent_space", "_cp"].join(""),
+        ["rainver", "_cp"].join(""),
         ["local_compose_provision", "_server_db_role"].join(""),
         ["GRANT SELECT ON TABLE public.", "participation_records"].join(""),
         ["least", "-privilege"].join(""),

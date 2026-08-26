@@ -1,4 +1,4 @@
-import type { WorkflowNodeInputBinding } from "@agent-space/protocol";
+import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 

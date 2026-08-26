@@ -40,7 +40,7 @@ describe("evolution run routes", () => {
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
     app = buildModuleServer(loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
     }), [evolutionModule]);
 
     const response = await app.inject({

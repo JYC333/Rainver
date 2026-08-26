@@ -23,13 +23,13 @@ const NOTE_ACTION_IDS = [
 
 describe("note object actions", () => {
   it("declares all three against the note object type", async () => {
-    const { systemActionsForObjectType } = await import("@agent-space/protocol");
+    const { systemActionsForObjectType } = await import("@rainver/protocol");
     const ids = systemActionsForObjectType("note").map((definition) => definition.id);
     expect(ids.sort()).toEqual([...NOTE_ACTION_IDS].sort());
   });
 
   it("does not widen the agent's callable surface", async () => {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     for (const id of NOTE_ACTION_IDS) {
       const definition = SYSTEM_ACTION_REGISTRY.find((entry) => entry.id === id);
       expect(definition, `${id} is not registered`).toBeTruthy();
@@ -42,7 +42,7 @@ describe("note object actions", () => {
   });
 
   it("keeps promotion behind the proposal gate and the other two direct", async () => {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((entry) => [entry.id, entry]));
     // ND: promotion proposes. P2 confirmed Thread structure stays a direct
     // write, and a note_link is navigational (N4) — so those two are direct.
@@ -56,7 +56,7 @@ describe("note object actions", () => {
   });
 
   it("binds only to object types the ontology registry knows", async () => {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     // An `applies_to` naming something that is not an entity would make the
     // menu unresolvable at the surface that renders it — the same class of
     // defect as a relation hint for an edge `object_relations` would reject.
@@ -74,14 +74,14 @@ describe("note object actions", () => {
     // prefix it would appear in the menu with an undefined label; if a
     // `note.`-prefixed action were registered without `applies_to`, the label
     // map would demand an entry for something the menu never shows.
-    const { SYSTEM_ACTION_REGISTRY, systemActionsForObjectType } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY, systemActionsForObjectType } = await import("@rainver/protocol");
     const byPrefix = SYSTEM_ACTION_REGISTRY.filter((entry) => entry.id.startsWith("note.")).map((entry) => entry.id);
     const byDeclaration = systemActionsForObjectType("note").map((definition) => definition.id);
     expect(byPrefix.sort()).toEqual(byDeclaration.sort());
   });
 
   it("references policy actions that exist", async () => {
-    const { SYSTEM_ACTION_REGISTRY, POLICY_ACTION_REGISTRY } = await import("@agent-space/protocol");
+    const { SYSTEM_ACTION_REGISTRY, POLICY_ACTION_REGISTRY } = await import("@rainver/protocol");
     const known = new Set(POLICY_ACTION_REGISTRY.map((entry) => entry.action));
     for (const id of NOTE_ACTION_IDS) {
       const definition = SYSTEM_ACTION_REGISTRY.find((entry) => entry.id === id);

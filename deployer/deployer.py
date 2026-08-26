@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-agent-space host deployer — Unix domain socket server.
+rainver host deployer — Unix domain socket server.
 
 Runs on the HOST (outside the main app container) and handles deployment
 requests from the server. The server cannot restart itself; this process can.
@@ -13,7 +13,7 @@ Start:
 
 Or via systemd — see deployer/README.md.
 
-Socket path: $DEPLOYER_SOCKET or /tmp/agent-space-deployer.sock
+Socket path: $DEPLOYER_SOCKET or /tmp/rainver-deployer.sock
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ log = logging.getLogger("deployer")
 SCRIPT_DIR = Path(__file__).parent / "scripts"
 
 JOB_SCRIPTS: dict[str, Path] = {
-    "rebuild_agent_space":          SCRIPT_DIR / "rebuild.sh",
-    "restart_agent_space":          SCRIPT_DIR / "restart.sh",
+    "rebuild_rainver":          SCRIPT_DIR / "rebuild.sh",
+    "restart_rainver":          SCRIPT_DIR / "restart.sh",
     "health_check":                 SCRIPT_DIR / "health_check.sh",
 }
 
@@ -127,7 +127,7 @@ def _write(writer: asyncio.StreamWriter, obj: dict) -> None:
 async def main() -> None:
     socket_path = os.environ.get(
         "DEPLOYER_SOCKET",
-        "/tmp/agent-space-deployer.sock",
+        "/tmp/rainver-deployer.sock",
     )
     sock_file = Path(socket_path)
     sock_file.parent.mkdir(parents=True, exist_ok=True)

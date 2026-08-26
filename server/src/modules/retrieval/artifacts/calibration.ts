@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   RetrievalCalibrationDecisionRequest,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 import {

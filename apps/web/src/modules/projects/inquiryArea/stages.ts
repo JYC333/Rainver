@@ -1,7 +1,7 @@
 import {
   INQUIRY_STAGE_FOR_KIND, INQUIRY_STAGE_HELP, INQUIRY_STAGE_LABELS, INQUIRY_STAGE_ORDER, inquiryKindsInStage,
   type InquiryStageId,
-} from '@agent-space/protocol'
+} from '@rainver/protocol'
 import type {
   InquiryEvidenceSignal, InquiryNextFocusKind, InquiryThreadDetail, InquiryThreadStep, ProjectResearchWorkflow,
 } from '../../../types/api'
@@ -18,7 +18,7 @@ import type {
  *
  * The kind→stage vocabulary itself (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
  * `STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) lives in
- * `@agent-space/protocol` (plan Phase B) so a future non-frontend consumer —
+ * `@rainver/protocol` (plan Phase B) so a future non-frontend consumer —
  * today, none — shares this file's exact classification instead of a second
  * copy. Everything below this point is this page's own derived-state
  * presentation logic and stays here; only the static vocabulary moved.

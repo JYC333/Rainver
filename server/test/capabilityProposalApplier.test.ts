@@ -25,7 +25,7 @@ describe("Capability proposal applier", () => {
     };
 
     await expect(registry.apply({
-      config: loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space" }),
+      config: loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
       db: { query: async () => { throw new Error("database must not be reached"); } } as never,
       proposal,
       userId: "user-1",

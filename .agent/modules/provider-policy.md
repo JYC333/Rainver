@@ -73,12 +73,12 @@ profile, and to nothing about a chat implementation: which pi-ai catalog
 describes a vendor's models is a fact about pi-ai and lives with the adapter.
 Managed chat calls run through
 `@earendil-works/pi-ai`; per-space `base_url`, NetworkProfile fetch routing,
-agent-space credential pools, egress authorization, usage recording, and
+Rainver credential pools, egress authorization, usage recording, and
 structured-output validation remain outside pi-ai. MiniMax uses its
 Anthropic-compatible endpoint. A requested model uses its pi-ai catalog entry
 when one exists. Completion-budget
 authority is ordered: an explicit caller `max_tokens` wins, then an
-agent-space `modelSpecs` recommendation when one is independently registered;
+Rainver `modelSpecs` recommendation when one is independently registered;
 otherwise the Pi Model's `maxTokens` governs (the pi-ai catalog value for a
 catalogued model, or the adapter's 16,384 fallback for an uncatalogued model).
 The catalog fallback is intentionally not copied into `modelSpecs`, whose
@@ -128,7 +128,7 @@ Responses-compatible endpoints. The Provider row remains the source of truth:
 and `default_model` / `available_models` store model choices. The server creates
 a short-lived per-run provider proxy lease, materializes the run's temporary
 `CODEX_HOME` directory from the managed Codex profile, and writes a run-scoped
-`config.toml` plus `model-catalogs/agent-space-provider.json` there. The
+`config.toml` plus `model-catalogs/rainver-provider.json` there. The
 generated Codex config points at the provider proxy with
 `wire_api = "responses"` and stores only the lease token as
 `experimental_bearer_token`. If no provider is selected for Codex CLI, the
@@ -143,7 +143,7 @@ are applied to both server-side provider fetches and CLI subprocess proxy env.
 
 Provider calls emit best-effort observations to the append-only `usage` module.
 Managed API invocations record pi-ai's per-call token detail once at the
-agent-space provider boundary; provider-proxy responses use their existing
+Rainver provider boundary; provider-proxy responses use their existing
 path. Both normalize into mutually exclusive token buckets. Prompts,
 completions, request/response bodies, credentials, and raw CLI transcripts are
 excluded. See `docs/TOKEN_USAGE_METERING.md`.

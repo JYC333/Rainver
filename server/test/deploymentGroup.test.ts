@@ -22,8 +22,8 @@ describe("deploymentClient", () => {
     it("limits submitted deployer jobs to the allowlist", async () => {
       expect([...ALLOWED_DEPLOYER_JOB_TYPES].sort()).toEqual([
         "health_check",
-        "rebuild_agent_space",
-        "restart_agent_space",
+        "rebuild_rainver",
+        "restart_rainver",
       ]);
       const client = new DeployerSocketClient({ deployerSocketPath: "/tmp/missing-deployer.sock" });
       await expect(client.submit("self_evolution_apply" as string)).resolves.toMatchObject({

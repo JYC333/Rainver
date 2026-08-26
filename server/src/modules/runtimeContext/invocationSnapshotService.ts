@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   DeliveryAcknowledgement,
   ExecutionControlSnapshot,
   InvocationDelivery,
   InvocationSnapshotSafe,
   RuntimeContextEnvelope,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { managedProviderMessages, renderManagedDelivery } from "./managedRenderer.js";

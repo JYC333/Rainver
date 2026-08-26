@@ -3,7 +3,7 @@ import type {
   ContextOpsContextObservationReport,
   ContextOpsContextObservationScanRequest,
   ContextObservationItem,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { ContextOpsService } from "./service.js";

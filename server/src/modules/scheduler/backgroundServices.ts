@@ -64,7 +64,7 @@ export function startBackgroundServices(
             )
           : { rows: [] };
         const removed = await sweepConversationRuntimeState({
-          agent_space_home: config.agentSpaceHome,
+          rainver_home: config.rainverHome,
           sandbox_root: config.sandboxRoot,
           protected_state_keys: new Set(
             protectedRows.rows.map((row) => row.runtime_state_key),

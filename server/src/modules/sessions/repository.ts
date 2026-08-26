@@ -6,7 +6,7 @@ import type {
   MessageOut,
   SessionOut,
   SessionPage,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 
 export interface CreateSessionInput {

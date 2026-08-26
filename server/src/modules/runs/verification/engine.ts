@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
-import type { RunMaterializationItemSummary } from "@agent-space/protocol";
+import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import type { RunRecord } from "../repository.js";

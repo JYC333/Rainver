@@ -185,7 +185,7 @@ rendered preview as executable context.
 Each provider invocation or CLI delivery receives an immutable Invocation
 Snapshot after payload validation. Managed tool loops create a snapshot for
 each provider call. Stateful CLI snapshots record the full or delta delivery
-that agent-space actually sent, not an unverifiable claim about the vendor's
+that Rainver actually sent, not an unverifiable claim about the vendor's
 internal context.
 
 Long-term snapshot data is safe metadata, source/version references, hashes,
@@ -256,7 +256,7 @@ New CLI sessions receive checkpoint + raw tail + current context. Existing CLI
 sessions receive only the deterministic relevant delivery delta plus current
 turn input. No LLM is used to calculate this delta.
 
-For a new vendor session, agent-space sends an agent-space-authored context
+For a new vendor session, Rainver sends an rainver-authored context
 bootstrap as the first ordinary message, then sends the current user message as
 a separate subsequent message. The bootstrap does not replace, edit, or claim
 the authority of the vendor CLI's own system prompt. For an existing session,
@@ -268,7 +268,7 @@ session or when later planning selects it as reference data.
 Vendor-local transcripts and session files may remain in the isolated
 scope-runtime state as an implementation cache. They are not the Context Event
 ledger, are not assumed complete, and are never the source read by an
-independent checkpoint task. Agent-space builds checkpoint input from its own
+independent checkpoint task. Rainver builds checkpoint input from its own
 canonical messages, events, runs, artifacts, tool records, and snapshots.
 
 ### 12. Every work scope gets an independently isolated runtime
@@ -277,7 +277,7 @@ Local coding CLIs run in a per-`work_context_scope` sandbox runtime. The scope
 may persist for the life of the task, but a new scope receives a new
 environment. The runtime can see only the selected Project/worktree, generated
 delivery, allowlisted runtime tool, current credential channel, and Run
-Exchange. It cannot see the whole `/aspace`, other Projects, the source
+Exchange. It cannot see the whole `/rainver`, other Projects, the source
 repository, the server HOME, or instance state.
 
 The current unisolated worktree subprocess path is deleted. Project Folder

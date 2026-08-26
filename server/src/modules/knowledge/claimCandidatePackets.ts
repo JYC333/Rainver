@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
-import type { ClaimCandidatePacketCreateRequest } from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
+import type { ClaimCandidatePacketCreateRequest } from "@rainver/protocol";
 import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";

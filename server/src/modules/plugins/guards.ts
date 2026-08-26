@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ServerConfig } from "../../config.js";
-import type { PluginDisabledError } from "@agent-space/protocol";
+import type { PluginDisabledError } from "@rainver/protocol";
 import { dbPool, resolveIdentity } from "../routeUtils/common.js";
 import { pluginService } from "./service.js";
 

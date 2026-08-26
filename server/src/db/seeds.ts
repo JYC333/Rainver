@@ -41,7 +41,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_run_trace": true, "requires_validation": true}',
       '{"allow_direct_apply": false}',
       '{"preferred_run_mode": "dry_run"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.55,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.55,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -56,7 +56,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_validation_trace": true, "minimum_evidence_count": 1}',
       '{"allow_direct_apply": false}',
       '{"preferred_run_mode": "dry_run"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.55,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.55,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -71,7 +71,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_before_after_review": true}',
       '{"allow_direct_apply": false}',
       '{"preferred_artifact_type": "evolution_plan.v1"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.5,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -86,7 +86,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_policy_review_for_permission_change": true}',
       '{"allow_direct_apply": false, "permission_expansion_requires_high_risk": true}',
       '{"preferred_proposal_type": "runtime_skill_binding_update"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.5,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -101,7 +101,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_policy_trace": true, "requires_owner_review": true}',
       '{"allow_direct_apply": false, "force_review": true}',
       '{"preferred_run_status": "waiting_for_review"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.65,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.65,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -116,7 +116,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_capability_lifecycle": true}',
       '{"allow_direct_apply": false, "external_source_untrusted": true}',
       '{"preferred_proposal_types": ["capability_install","capability_update","capability_enable"]}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.5,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -131,7 +131,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_source_snapshot": true, "requires_risk_scan": true}',
       '{"allow_direct_apply": false, "scripts_executable": false}',
       '{"preferred_proposal_types": ["skill_import_approve","capability_install"]}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.6,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.6,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -146,7 +146,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_memory_read_boundary": true}',
       '{"allow_direct_apply": false}',
       '{"preferred_proposal_type": "memory_maintenance_packet"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.55,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.55,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -161,7 +161,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_retrieval_evidence": true}',
       '{"allow_direct_apply": false}',
       '{"preferred_proposal_type": "retrieval_maintenance_packet"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.55,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.55,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (
@@ -176,7 +176,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_success_or_partial_outcome": true}',
       '{"allow_direct_apply": false}',
       '{"service": "ExperienceSolidifier"}',
-      'built_in', '{"source": "agent_space_native_seed"}', 0, 0, 0.6,
+      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.6,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     )
     ON CONFLICT (id) DO UPDATE SET

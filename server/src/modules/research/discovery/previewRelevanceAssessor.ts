@@ -3,7 +3,7 @@ import type {
   ResearchPreviewObservation,
   ResearchPreviewSample,
   ResearchSemanticQuery,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 
 export interface ResearchPreviewCandidate {
   sampleId: string;

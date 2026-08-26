@@ -7,7 +7,7 @@ import { consumeConnectionQuota } from './sourceQuotaBucket.js'
 import { fetchSource, type SourceFetchResult } from './sourceFetch.js'
 import { CustomSourceCredentialService } from './customSources/customSourceCredentialService.js'
 import { ResearchProviderCompiler } from '../research/queryPlanning/providerCompiler.js'
-import type { ResearchProviderKey } from '@agent-space/protocol'
+import type { ResearchProviderKey } from '@rainver/protocol'
 
 type PreviewFetcher = (url: string, options: { headers?: Record<string, string>; maxDownloadBytes: number; timeoutMs?: number }) => Promise<SourceFetchResult>
 

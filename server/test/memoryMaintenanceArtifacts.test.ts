@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MemoryMaintenanceReport } from "@agent-space/protocol";
+import type { MemoryMaintenanceReport } from "@rainver/protocol";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import {
   createMemoryMaintenanceProposalPacket,

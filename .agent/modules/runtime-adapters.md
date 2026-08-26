@@ -1,6 +1,6 @@
 # Module: Runtime Tools And Adapter Types
 
-Agent-space owns agents, runs, Runtime Context Delivery, policy, credential gating,
+Rainver owns agents, runs, Runtime Context Delivery, policy, credential gating,
 worktree governance, artifacts, proposals, audit records, and events. Vendor
 CLIs are runtime adapter types, but their binaries are installed as controlled
 runtime tools.
@@ -125,7 +125,7 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    `space_runtime_tool_policies`, and installed instance tool versions.
    Disabled, disallowed, or missing versions fail closed before credential
    release. `RuntimeToolRegistry` then resolves that exact installed version
-   under `$AGENT_SPACE_HOME/runtime-tools/<runtime>/versions/<version>`.
+   under `$RAINVER_HOME/runtime-tools/<runtime>/versions/<version>`.
 6. Credential profiles are granted through the server CLI credential broker.
    Claude Code may also receive a per-run Claude-compatible ModelProvider
    binding. When selected, the server resolves the provider's
@@ -153,7 +153,7 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    CLI credential profile's default NetworkProfile, if one is configured.
    OpenCode can use a CLI profile or a run-scoped ModelProvider binding. It runs
    through the ACP stdio protocol with a sandbox `--cwd` and a run-scoped
-   `opencode.json` that makes `agent-space-locked` the primary default agent,
+   `opencode.json` that makes `rainver-locked` the primary default agent,
    sets subagent depth to zero, and denies Task and webfetch. Every worktree CLI
    run receives a freshly cleared private `HOME`; login-backed runs copy only
    the adapter credential file. Shared sessions, transcripts, databases, and
@@ -180,7 +180,7 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
 10. The output parser normalizes stdout/stderr, errors, usage estimates, and
     artifacts.
 11. Run events, proposals, artifacts, validation, and audit stay owned by
-    agent-space contexts.
+    Rainver contexts.
 
 Managed tool loops prepare, acknowledge, and finalize a distinct Delivery for
 every physical Runtime Host request, preserving only the tool-loop suffix when
@@ -207,7 +207,7 @@ Vendor CLIs are not installed into backend, server, or sandbox Docker
 images. They are instance runtime state under:
 
 ```
-$AGENT_SPACE_HOME/runtime-tools/
+$RAINVER_HOME/runtime-tools/
   claude_code/
     versions/<version>/
       tool.json
@@ -236,8 +236,8 @@ code-allowlisted runtime/package mappings:
 | `opencode` | `opencode-ai` | `opencode` |
 
 It invokes `npm` with argv (`shell=false`) and writes into
-`$AGENT_SPACE_HOME/runtime-tools`; npm cache is under
-`$AGENT_SPACE_HOME/cache/npm`. API callers cannot provide arbitrary package
+`$RAINVER_HOME/runtime-tools`; npm cache is under
+`$RAINVER_HOME/cache/npm`. API callers cannot provide arbitrary package
 names or shell commands. The installer passes through only npm network
 configuration such as proxy, registry, strict-ssl, cafile, and fetch retry env
 vars; provider/API tokens are not inherited. Codex CLI and Claude Code validate

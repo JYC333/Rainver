@@ -301,7 +301,7 @@ proposal-envelope fields.
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
   `adapter_type="capability"`; that adapter spec remains disabled until a native
   executor exists.
-- External capabilities default **disabled**; enable state persists in `$AGENT_SPACE_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
+- External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
 - Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
   separate container with deny-by-default networking, read-only root, dropped

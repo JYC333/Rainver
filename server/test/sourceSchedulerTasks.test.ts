@@ -4,7 +4,7 @@ import { buildSourceSchedulerTasks } from "../src/modules/scheduler/sourceTasks.
 import type { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 
 const config = loadConfig({
-  SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+  SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
 });
 
 const fakeQueue = {} as PgJobQueueRepository;
@@ -36,7 +36,7 @@ describe("buildSourceSchedulerTasks", () => {
 
   it("registers nothing when the source scheduler is disabled", () => {
     const disabled = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@db:5432/agent_space",
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       SERVER_SOURCE_EXTRACTION_SCHEDULER_ENABLED: "false",
     });
     expect(buildSourceSchedulerTasks(disabled, { queue: fakeQueue })).toEqual([]);

@@ -8,8 +8,8 @@ import type {
   RuntimeSemanticEvent,
   ExecutionControlSnapshot,
   TurnContextRequest,
-} from "@agent-space/protocol";
-import { RETRIEVAL_INTENT_MAX_CHARS } from "@agent-space/protocol";
+} from "@rainver/protocol";
+import { RETRIEVAL_INTENT_MAX_CHARS } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import {
@@ -2113,7 +2113,7 @@ export class RunOrchestrationService {
         prepared.cli_execution_lease = { binding_id: cliBinding.id, lease_id: cliLeaseId };
         cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLeaseId);
         let state = await prepareConversationRuntimeState({
-          agent_space_home: this.config.agentSpaceHome,
+          rainver_home: this.config.rainverHome,
           sandbox_root: this.config.sandboxRoot,
           state_key: cliBinding.runtime_state_key,
           resume_requested: Boolean(cliBinding.vendor_session_id),
@@ -2122,7 +2122,7 @@ export class RunOrchestrationService {
           cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id);
           prepared.cli_execution_lease.binding_id = cliBinding.id;
           state = await prepareConversationRuntimeState({
-            agent_space_home: this.config.agentSpaceHome,
+            rainver_home: this.config.rainverHome,
             sandbox_root: this.config.sandboxRoot,
             state_key: cliBinding.runtime_state_key,
             resume_requested: false,
@@ -2325,8 +2325,8 @@ export class RunOrchestrationService {
     prepared.prompt = [
       prepared.prompt,
       "Run Exchange: read the runtime-neutral input manifest at " +
-        "$AGENT_SPACE_EXCHANGE_INPUT. Write declared file outputs only beneath " +
-        "$AGENT_SPACE_EXCHANGE_OUTPUT. Do not modify the input manifest.",
+        "$RAINVER_EXCHANGE_INPUT. Write declared file outputs only beneath " +
+        "$RAINVER_EXCHANGE_OUTPUT. Do not modify the input manifest.",
     ].filter((part): part is string => Boolean(part)).join("\n\n");
   }
 
@@ -2740,7 +2740,7 @@ export class RunOrchestrationService {
     if (!conversation.keep_session) {
       try {
         await removeConversationRuntimeState({
-          agent_space_home: this.config.agentSpaceHome,
+          rainver_home: this.config.rainverHome,
           sandbox_root: this.config.sandboxRoot,
           state_key: conversation.runtime_state_key,
         });
@@ -2772,7 +2772,7 @@ export class RunOrchestrationService {
     if (!conversation.keep_session) {
       try {
         await removeConversationRuntimeState({
-          agent_space_home: this.config.agentSpaceHome,
+          rainver_home: this.config.rainverHome,
           sandbox_root: this.config.sandboxRoot,
           state_key: conversation.runtime_state_key,
         });
@@ -2852,7 +2852,7 @@ export class RunOrchestrationService {
       });
       if (invalidated) {
         await removeConversationRuntimeState({
-          agent_space_home: this.config.agentSpaceHome,
+          rainver_home: this.config.rainverHome,
           sandbox_root: this.config.sandboxRoot,
           state_key: stateKey,
         });

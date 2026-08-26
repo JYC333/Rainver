@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import type {
   CustomSourcePipelineDefinition,
   SourceRecipeDefinition,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import {
   recipeFromPipelineDefinition,
   runSourceRecipe,

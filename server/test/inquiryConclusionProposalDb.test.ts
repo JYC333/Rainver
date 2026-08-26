@@ -18,7 +18,7 @@ import { HttpError } from "../src/modules/routeUtils/common.js";
 import { loadConfig } from "../src/config.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
-import type { CanonicalToolCall, RuntimeHostExecuteRequest } from "@agent-space/protocol";
+import type { CanonicalToolCall, RuntimeHostExecuteRequest } from "@rainver/protocol";
 
 // Real-Postgres coverage for `inquiry.record_conclusion` (plan:
 // `.agent/plans/project-conversational-advancement-plan.md`, Phase A): an

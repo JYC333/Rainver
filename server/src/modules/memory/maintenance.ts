@@ -1,4 +1,4 @@
-import type { MemoryMaintenanceFinding, MemoryMaintenanceReport } from "@agent-space/protocol";
+import type { MemoryMaintenanceFinding, MemoryMaintenanceReport } from "@rainver/protocol";
 import {
   canReadMemory,
   shouldRedactMemoryContent,

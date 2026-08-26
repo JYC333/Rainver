@@ -101,12 +101,12 @@ export function decryptModelProviderApiKeySecretRefV1(
 }
 
 export async function loadOrCreateModelProviderApiKeyMasterKey(
-  agentSpaceHome: string,
+  rainverHome: string,
 ): Promise<Buffer> {
-  if (!agentSpaceHome || !agentSpaceHome.startsWith("/")) {
+  if (!rainverHome || !rainverHome.startsWith("/")) {
     throw new SecretRefCompatibilityError("invalid_key_path");
   }
-  const keyPath = join(agentSpaceHome, "secrets", "provider_keys.key");
+  const keyPath = join(rainverHome, "secrets", "provider_keys.key");
   try {
     const key = await readFile(keyPath);
     if (key.length !== MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES) {
@@ -120,7 +120,7 @@ export async function loadOrCreateModelProviderApiKeyMasterKey(
   }
 
   const key = randomBytes(MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES);
-  await mkdir(join(agentSpaceHome, "secrets"), { recursive: true });
+  await mkdir(join(rainverHome, "secrets"), { recursive: true });
   await writeFile(keyPath, key, { mode: 0o600 });
   await chmod(keyPath, 0o600);
   return key;

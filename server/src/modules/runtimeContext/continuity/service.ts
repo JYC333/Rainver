@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import * as protocol from "@agent-space/protocol";
+import * as protocol from "@rainver/protocol";
 import type {
   ContextEvent,
   MicroCheckpoint,
   RuntimeContextEventIngress,
   SemanticCheckpoint,
   SemanticCheckpointExtraction,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../../routeUtils/common.js";

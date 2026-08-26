@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchPreviewObservation } from "@agent-space/protocol";
+import type { ResearchPreviewObservation } from "@rainver/protocol";
 import { AdaptiveQueryEvaluator } from "../src/modules/research/queryPlanning/adaptiveQueryEvaluator.js";
 import { researchQueryPolicy } from "../src/modules/research/queryPlanning/queryPolicy.js";
 

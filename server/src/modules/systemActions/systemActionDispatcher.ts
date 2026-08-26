@@ -3,13 +3,13 @@ import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
   RuntimeHostExecuteResponse,
-} from "@agent-space/protocol";
-import { systemActionInputJsonSchema } from "@agent-space/protocol";
+} from "@rainver/protocol";
+import { systemActionInputJsonSchema } from "@rainver/protocol";
 import type {
   SystemActionDefinition,
   SystemActionId,
   SystemActionPolicyResource,
-} from "@agent-space/protocol";
+} from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   resolveAgentDelegationToolBinding,

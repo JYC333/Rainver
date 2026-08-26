@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import type { GraphProjection } from '@agent-space/protocol'
+import type { GraphProjection } from '@rainver/protocol'
 import { createGraphTheme } from '../core/graphTheme'
 import { graphViewReducer, normalizeGraphViewState, persistentGraphViewState } from '../core/graphViewState'
 import { mapProjectionToRenderData, buildElementStateMap, buildInteractionLabelVisibility } from '../core/mapProjectionToRenderData'

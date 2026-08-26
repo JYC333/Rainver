@@ -65,12 +65,12 @@ is narrowed with it**, not only what is drawn.
 - Searching in the header searches the **whole surface** — the hoisted subtree,
   or the Space when not hoisted — rather than only the selected folder, and
   results carry the folder they live in.
-- Open-note tabs are keyed by hoist root (`agent-space:notes-tabs:<scope>:<root>`),
+- Open-note tabs are keyed by hoist root (`rainver:notes-tabs:<scope>:<root>`),
   so tabs opened inside one root do not follow the user into another.
 - `system_role = 'project'` folders are marked in the tree as workspace roots,
   so it is visible where hoisting is meaningful.
 - Hoist state is **session-scoped, per surface**
-  (`agent-space:notes-hoist:<scope>`, `sessionStorage`) — it is a working
+  (`rainver:notes-hoist:<scope>`, `sessionStorage`) — it is a working
   posture like the open tabs, not a durable preference, and it is deliberately
   not synced across devices.
 

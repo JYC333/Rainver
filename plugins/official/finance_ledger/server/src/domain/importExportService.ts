@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Queryable } from "@agent-space/protocol";
+import type { Queryable } from "@rainver/protocol";
 import type {
   DatedEntry,
   LedgerEntry,
