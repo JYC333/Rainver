@@ -3,11 +3,15 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { AmbientSessionCountSchema } from "@rainver/protocol";
+import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
-import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { HttpError, withDbTransaction,
+  dbPool,
+} from "../routeUtils/common.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
@@ -187,7 +191,14 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
         }];
       })
     : null;
+  const ambientSessions = Array.isArray(payload.ambient_sessions)
+    ? payload.ambient_sessions.flatMap((value) => {
+        const parsed = AmbientSessionCountSchema.safeParse(value);
+        return parsed.success ? [parsed.data] : [];
+      })
+    : null;
   return {
+    ambient_sessions: ambientSessions,
     platform: typeof payload.platform === "string" ? payload.platform : null,
     arch: typeof payload.arch === "string" ? payload.arch : null,
     daemon_version: typeof payload.daemon_version === "string" ? payload.daemon_version : null,
@@ -996,6 +1007,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           if (frame.type === "heartbeat") {
             await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
             socket.send(JSON.stringify({ type: "heartbeat_ack" }));
+            // Standing consent on a Location is what makes a new terminal
+            // conversation arrive without anyone pressing a button, and a
+            // heartbeat is when this host is known reachable. Deliberately not
+            // awaited: an import replays sessions and takes minutes, while an
+            // acknowledged heartbeat must not wait for anything.
+            scheduleAmbientSyncs(dbPool(context.config), context.config, authenticatedHostId);
             return;
           }
           if (frame.type === "launched") {
@@ -1034,6 +1051,25 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, sessionId, frame.type === "login_output"
                 ? { type: "output", data: typeof frame.data === "string" ? frame.data : "" }
                 : { type: "exit", exit_code: typeof frame.exit_code === "number" ? frame.exit_code : -1, logged_in: typeof frame.logged_in === "boolean" ? frame.logged_in : null });
+            }
+            return;
+          }
+          if (frame.type === "ambient_import_session") {
+            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+            if (requestId) sharedHostConnectionRegistry.receiveAmbientImportSession(authenticatedHostId, requestId, frame.session);
+            return;
+          }
+          if (frame.type === "ambient_import_result") {
+            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+            if (requestId) {
+              sharedHostConnectionRegistry.receiveAmbientImportResult(authenticatedHostId, requestId, {
+                ok: frame.ok === true,
+                error: typeof frame.error === "string" ? frame.error : null,
+                session_count: typeof frame.session_count === "number" ? frame.session_count : 0,
+                listed_session_ids: Array.isArray(frame.listed_session_ids)
+                  ? frame.listed_session_ids.filter((value): value is string => typeof value === "string")
+                  : null,
+              });
             }
             return;
           }

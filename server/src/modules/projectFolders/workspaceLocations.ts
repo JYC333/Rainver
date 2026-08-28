@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { isStale } from "../hosts/repository.js";
+import type { AmbientSessionCount } from "@rainver/protocol";
 import { isGitRepo, runGit } from "./git.js";
 
 /**
@@ -275,6 +276,29 @@ export class PgWorkspaceLocationRepository {
     );
     for (const location of result.rows) {
       await this.refreshGitStatus(location, workspaceRoot);
+    }
+  }
+
+  /**
+   * Records what the daemon observed about each Location's ambient CLI
+   * history. Counts only — no content ever reaches this path, and nothing
+   * here decides whether an import may happen; that is the Location's
+   * `ambient_import_policy_json`, which only a person writes.
+   */
+  async recordAmbientSessionCounts(hostId: string, counts: readonly AmbientSessionCount[]): Promise<void> {
+    const byLocation = new Map<string, AmbientSessionCount[]>();
+    for (const count of counts) {
+      const existing = byLocation.get(count.location_id);
+      if (existing) existing.push(count);
+      else byLocation.set(count.location_id, [count]);
+    }
+    for (const [locationId, locationCounts] of byLocation) {
+      await this.db.query(
+        `UPDATE workspace_locations
+            SET ambient_session_counts_json = $3::jsonb, updated_at = now()
+          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status = 'active'`,
+        [locationId, hostId, JSON.stringify(locationCounts)],
+      );
     }
   }
 

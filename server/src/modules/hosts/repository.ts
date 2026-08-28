@@ -4,6 +4,7 @@ import { getDbPool } from "../../db/pool.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { applyRunArtifactDeclarations } from "../projectWork/artifactDeclarations.js";
 import { PgMachineRepository } from "./machineRepository.js";
+import type { AmbientSessionCount } from "@rainver/protocol";
 import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 
 /**
@@ -84,6 +85,8 @@ export interface DaemonHelloInfo {
    */
   environment_kind?: string | null;
   workspace_reports?: WorkspaceLocationHeartbeat[] | null;
+  /** Counts and date ranges of this machine's own ambient CLI history, per Location. */
+  ambient_sessions?: AmbientSessionCount[] | null;
 }
 
 /** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
@@ -296,9 +299,11 @@ export class PgHostRepository {
         info.server_url ?? null,
       ],
     );
-    if (info.workspace_reports) {
+    if (info.workspace_reports || info.ambient_sessions) {
       const { PgWorkspaceLocationRepository } = await import("../projectFolders/workspaceLocations.js");
-      await new PgWorkspaceLocationRepository(this.pool).recordDaemonHeartbeat(hostId, info.workspace_reports);
+      const locations = new PgWorkspaceLocationRepository(this.pool);
+      if (info.workspace_reports) await locations.recordDaemonHeartbeat(hostId, info.workspace_reports);
+      if (info.ambient_sessions) await locations.recordAmbientSessionCounts(hostId, info.ambient_sessions);
     }
   }
 

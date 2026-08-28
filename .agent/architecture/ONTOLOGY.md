@@ -24,7 +24,7 @@ Registered today:
 | Shape | Entities |
 |---|---|
 | Ontology objects | `space_object` (root) and its subtypes: knowledge item, note, source, claim, `inquiry_thread`, `experiment`, `decision_case`, `research_workflow`, `project_public_summary` |
-| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event` |
+| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event`, `imported_session` |
 
 `ontologyRegistry.test.ts` asserts that every registered Entity implements
 every interface it declares, and that no per-mechanism type list exists in

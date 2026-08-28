@@ -57,12 +57,13 @@ export type ContentResourceType =
   | "source_snapshot"
   | "extracted_evidence"
   | "token_usage_event"
-  | "reader_annotation";
+  | "reader_annotation"
+  | "imported_session";
 
 export const CONTENT_RESOURCE_TYPES: readonly ContentResourceType[] = [
   "space_object", "memory", "task", "artifact", "run", "proposal", "activity",
   "agent", "source_connection", "source_item", "source_snapshot",
-  "extracted_evidence", "token_usage_event", "reader_annotation",
+  "extracted_evidence", "token_usage_event", "reader_annotation", "imported_session",
 ];
 
 export function contentResourceDefinitions(): readonly ContentResourceDefinition[] {

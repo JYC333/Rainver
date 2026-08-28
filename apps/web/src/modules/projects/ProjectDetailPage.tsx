@@ -30,6 +30,7 @@ import {
 } from '../../components/ui/dialog'
 import EditProjectBriefGoalDialog from './EditProjectBriefGoalDialog'
 import ProjectPulse from './ProjectPulse'
+import { AmbientImportBanner } from './AmbientImportBanner'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 
 function fmt(dt: string | null | undefined) {
@@ -334,6 +335,11 @@ export default function ProjectDetailPage() {
           </div>
         </div>
       </Card>
+
+      {/* Made once, on the first visit after a folder is bound: a person's own
+             terminal history becoming Project content is a decision, not a
+             consequence of binding a folder. */}
+      {projectId && <AmbientImportBanner projectId={projectId} />}
 
       {/* The situation, before anyone opens the Board: what is waiting on this
              person, what is moving, and what has been reported lately. */}

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectCapabilities, type AskRuntimeOptions, type DaemonCapabilities, type RuntimeLookup } from "./capabilities.js";
+import { ambientSessionCounts, type AmbientSessionCount } from "./ambientCounts.js";
 import { probeAcpOptions } from "./acpProbe.js";
 import { resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus, type WorkspaceStatusReport } from "./workspaceStatus.js";
@@ -124,6 +125,12 @@ async function helloInfo(
   capabilities_json: DaemonCapabilities;
   workspace_reports: WorkspaceStatusReport[];
   /**
+   * How much ambient CLI history each registered workspace holds, from the
+   * slow-refresh cache. Counts only, never content: the server uses them to
+   * decide whether to offer an import at all.
+   */
+  ambient_sessions: AmbientSessionCount[];
+  /**
    * The address this daemon actually reaches the control plane at. Reported so
    * the server can work out an address for its provider proxy that this
    * machine can resolve — a Compose service name cannot be guessed from the
@@ -144,6 +151,7 @@ async function helloInfo(
     environment_kind,
     capabilities_json: capabilities,
     workspace_reports: await collectWorkspaceStatus(workspaces),
+    ambient_sessions: ambientSessionCounts(),
     ...(serverUrl ? { server_url: serverUrl } : {}),
   };
 }

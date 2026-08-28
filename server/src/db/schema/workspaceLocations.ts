@@ -1,4 +1,4 @@
-import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, boolean, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { hosts } from "./hosts.js";
 import { projectFolders } from "./projectFolders.js";
@@ -44,6 +44,22 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	status: varchar({ length: 32 }).default('active').notNull(),
 	preferred: boolean().default(false).notNull(),
 	lastSeenAt: timestamp("last_seen_at", { withTimezone: true, mode: 'string' }),
+	/**
+	 * Standing consent to import this folder's ambient CLI history, per
+	 * runtime copy, plus whether the offer has been made
+	 * (`AmbientImportPolicy`). Absent or empty means never offered and never
+	 * synced: continuous sync without an explicit per-Location policy is a
+	 * non-goal, because a person typing in their own terminal has not thereby
+	 * agreed to publish it to a Project.
+	 */
+	ambientImportPolicyJson: jsonb("ambient_import_policy_json").default({}).notNull(),
+	/**
+	 * What the owning daemon last observed about this folder's ambient CLI
+	 * history: `AmbientSessionCount[]`, counts and date ranges only, never
+	 * content. Persisted rather than held in server memory so the banner can
+	 * be rendered on a cold start instead of waiting a heartbeat.
+	 */
+	ambientSessionCountsJson: jsonb("ambient_session_counts_json").default([]).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

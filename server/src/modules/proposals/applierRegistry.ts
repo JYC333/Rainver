@@ -27,6 +27,7 @@ import { registerEvolutionBundleProposalApplier } from "../evolution/bundlePropo
 import { registerResearchProposalAppliers } from "../research/proposalApplier.js";
 import { registerEgressReviewProposalApplier } from "./egressReviewApplier.js";
 import { registerProjectDefinitionProposalAppliers } from "../projects/projectDefinitionProposalApplier.js";
+import { registerImportedHistoryProposalAppliers } from "../importedSessions/extractionApplier.js";
 import { registerResearchHistoryExtendApplier } from "../projectResearch/researchHistoryExtendApplier.js";
 import {
   PgMemoryApplyRepository,
@@ -113,6 +114,7 @@ export function createDefaultProposalApplierRegistry(
   registerRetrievalDiagnosticsProposalAppliers(registry);
   registerRetrievalMaintenanceProposalAppliers(registry);
   registerMemoryMaintenanceProposalAppliers(registry);
+  registerImportedHistoryProposalAppliers(registry);
   registerTaskProposalAppliers(registry);
   registerProjectFolderProposalAppliers(registry);
   registerCustomSourceProposalAppliers(registry);

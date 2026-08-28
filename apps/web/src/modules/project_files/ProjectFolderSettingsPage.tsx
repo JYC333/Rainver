@@ -11,6 +11,7 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { AmbientSessionImportPanel } from './AmbientSessionImportPanel'
 
 function canManageSpace(role: MemberRole | undefined): boolean {
   return role === 'owner' || role === 'admin'
@@ -190,6 +191,10 @@ export default function ProjectFolderSettingsPage() {
               </form>
             )}
           </Card>
+
+          {locations.map(location => (
+            <AmbientSessionImportPanel key={location.id} location={location} />
+          ))}
         </>
       )}
     </div>

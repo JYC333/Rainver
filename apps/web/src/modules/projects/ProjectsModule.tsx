@@ -21,6 +21,7 @@ const ResearchAreaPage = lazy(() => import('./ResearchAreaPage'))
 const ProjectAreaLayout = lazy(() => import('./ProjectAreaLayout'))
 const ProjectBoardPage = lazy(() => import('./board/ProjectBoardPage'))
 const ProjectConversationsPage = lazy(() => import('./ProjectConversationsPage'))
+const ImportedSessionView = lazy(() => import('./ImportedSessionView'))
 const TaskDetailPage = lazy(() => import('../tasks/TaskDetailPage'))
 const ProjectUpdatesPage = lazy(() => import('./ProjectUpdatesPage'))
 const ProjectRoomsPage = lazy(() => import('../agent_groups/AgentGroupsPage'))
@@ -65,6 +66,10 @@ export default function ProjectsModule() {
         <Route path="tasks/:taskId" element={<Suspense fallback={<PageFallback />}><TaskDetailPage /></Suspense>} />
         <Route path="updates" element={<Suspense fallback={<PageFallback />}><ProjectUpdatesPage /></Suspense>} />
         <Route path="conversations" element={<Suspense fallback={<PageFallback />}><ProjectConversationsPage /></Suspense>} />
+        {/* An imported CLI session opens read-only beside the Project's own
+            conversations; it is a transcript of work done elsewhere, never a
+            conversation this app continues in place. */}
+        <Route path="imported-sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><ImportedSessionView /></Suspense>} />
         {/* Delivery was a second, flatter task list over the same rows. The
             Board replaced it; the old link keeps working. */}
         <Route path="delivery" element={<Navigate to="../board" replace />} />

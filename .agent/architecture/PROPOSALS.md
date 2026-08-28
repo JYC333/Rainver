@@ -20,6 +20,7 @@ Proposals are the product review and application boundary for durable mutations.
   `knowledge_update`, `knowledge_archive`, `claim_create`, `claim_update`,
   `claim_archive`, `object_relation_create`, `object_relation_delete`,
   `claim_candidate_packet`, `memory_maintenance_packet`,
+  `imported_history_memory_packet`,
   `retrieval_maintenance_packet`, `retrieval_diagnostics_packet`,
   `custom_source_policy_delta`, `custom_source_credentialed_source`, and
   `custom_source_repair_activation`.

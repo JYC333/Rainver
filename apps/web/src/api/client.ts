@@ -1,4 +1,10 @@
 import type {
+  AmbientImportPolicy,
+  AmbientSessionCount,
+  AmbientSyncReport,
+  ExtractionOutcome,
+  ImportedSession,
+  ImportedSessionRecord,
   AcademicPaper,
   ProjectBoard,
   ProjectMainlineRoomResponse,
@@ -1860,6 +1866,40 @@ export const projectFoldersApi = {
     get<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }>(
       `/projects/${projectId}/folders/${folderId}/git/diff` + (path ? `?path=${encodeURIComponent(path)}` : ''),
     ),
+}
+
+/**
+ * Ambient CLI history a paired host holds for a folder, and the consent that
+ * governs importing it. Consent hangs off the Location because it is about
+ * one folder on one machine; the sessions themselves belong to the Project.
+ */
+export const ambientSessionsApi = {
+  offer: (locationId: string) =>
+    get<{ policy: AmbientImportPolicy; counts: AmbientSessionCount[] }>(
+      `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/offer`,
+    ),
+  setPolicy: (locationId: string, body: { adapter_type: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }) =>
+    put<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/policy`, body),
+  dismiss: (locationId: string) =>
+    post<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/dismiss`, {}),
+  list: (locationId: string) =>
+    get<{ sessions: ImportedSession[] }>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions`),
+  /** Everything in the Project this viewer may read, gated by the content predicate rather than host ownership. */
+  listForProject: (projectId: string) =>
+    get<{ sessions: ImportedSession[] }>(`/projects/${encodeURIComponent(projectId)}/imported-sessions`),
+  sync: (locationId: string, body: { adapter_type: string; installation?: string; session_ids?: string[] | null; visibility?: 'private' | 'space_shared' }) =>
+    post<AmbientSyncReport>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/sync`, body),
+  records: (sessionId: string) =>
+    get<{ session: ImportedSession; records: ImportedSessionRecord[]; truncated: boolean }>(`/imported-sessions/${encodeURIComponent(sessionId)}`),
+  setVisibility: (sessionId: string, visibility: 'private' | 'space_shared') =>
+    patch<ImportedSession>(`/imported-sessions/${encodeURIComponent(sessionId)}`, { visibility }),
+  remove: (sessionIds: string[]) =>
+    post<{ deleted: number }>('/imported-sessions/delete', { session_ids: sessionIds }),
+  /** What an extraction would read right now — the count behind the "Extract to Brief" button. */
+  pendingExtraction: (projectId: string) =>
+    get<{ records: number; sessions: number }>(`/projects/${encodeURIComponent(projectId)}/imported-sessions/extraction`),
+  extract: (projectId: string) =>
+    post<ExtractionOutcome>(`/projects/${encodeURIComponent(projectId)}/imported-sessions/extraction`, {}),
 }
 
 // ADR 0016: multi-host control center — pairing, dispatch, and the

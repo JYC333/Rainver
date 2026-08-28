@@ -5,14 +5,17 @@ import {
   handleStdin,
   handleStdinClose,
   handleTerminate,
+  resolveAcpLaunch,
   sweepStaleRunProfiles,
   type LaunchFrame,
   type ProviderBindingFrame,
   type TerminateFrame,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
-import { installTool, managedInstallationId, parseInstallToolFrame, parseUninstallToolFrame, uninstallTool } from "../tools.js";
+import { OWN_INSTALLATION, installTool, managedInstallationId, parseInstallToolFrame, parseUninstallToolFrame, uninstallTool } from "../tools.js";
 import { loginSession, openLoginSession, parseLoginOpenFrame } from "../login.js";
+import { refreshAmbientSessionCounts } from "../ambientCounts.js";
+import { DEFAULT_LIMITS, importAmbientSessions, sanitizeFailure, type AmbientImportRequest, type AmbientTrimLimits } from "../ambientSessions.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -32,6 +35,67 @@ function wsUrl(serverUrl: string): string {
  * until the process is killed, exactly like a systemd/launchd-managed
  * service is expected to.
  */
+/**
+ * Reads an `ambient_import` frame and resolves the runtime it names.
+ *
+ * The argv comes from the server's own runtime probes, cached from
+ * `hello_ack`, never from anything in the frame: which binary implements an
+ * adapter is the server's knowledge (ADR 0016 §5), and a frame that could
+ * name its own command would make this daemon spawn whatever it was told to.
+ */
+export function parseAmbientImportFrame(
+  frame: Record<string, unknown>,
+  probes: readonly RuntimeProbe[],
+  workspaces: Record<string, string>,
+): AmbientImportRequest {
+  const locationId = typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : "";
+  const adapterType = typeof frame.adapter_type === "string" ? frame.adapter_type : "";
+  if (!locationId || !adapterType) {
+    throw new Error("ambient_import frame needs a workspace_location_id and an adapter_type");
+  }
+  // Resolved here, never sent: this file is the only place a workspace's real
+  // path is written down, and the control plane never learns it (ADR 0016 D3).
+  const cwd = workspaces[locationId];
+  if (!cwd) throw new Error(`This host has no registered directory for location ${locationId}`);
+  const probe = probes.find((candidate) => candidate.adapter_type === adapterType);
+  if (!probe) throw new Error(`This host has no probe for ${adapterType}; reconnect to refresh them.`);
+  const unchanged = new Map<string, string>();
+  if (Array.isArray(frame.unchanged)) {
+    for (const entry of frame.unchanged) {
+      const record = entry as Record<string, unknown> | null;
+      if (typeof record?.session_id !== "string" || typeof record.updated_at !== "string") continue;
+      unchanged.set(record.session_id, record.updated_at);
+    }
+  }
+  const positiveInt = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+  const rawLimits = (frame.limits ?? {}) as Record<string, unknown>;
+  const limits: AmbientTrimLimits = {
+    text_max_bytes: positiveInt(rawLimits.text_max_bytes, DEFAULT_LIMITS.text_max_bytes),
+    tool_input_max_bytes: positiveInt(rawLimits.tool_input_max_bytes, DEFAULT_LIMITS.tool_input_max_bytes),
+    tool_output_max_bytes: positiveInt(rawLimits.tool_output_max_bytes, DEFAULT_LIMITS.tool_output_max_bytes),
+    raw_max_bytes: positiveInt(rawLimits.raw_max_bytes, DEFAULT_LIMITS.raw_max_bytes),
+  };
+  return {
+    cwd,
+    target: {
+      adapter_type: adapterType,
+      installation: typeof frame.installation === "string" && frame.installation ? frame.installation : OWN_INSTALLATION,
+      argv: probe.argv,
+    },
+    session_ids: Array.isArray(frame.session_ids)
+      ? frame.session_ids.filter((value): value is string => typeof value === "string")
+      : null,
+    retry_session_ids: Array.isArray(frame.retry_session_ids)
+      ? frame.retry_session_ids.filter((value): value is string => typeof value === "string")
+      : [],
+    unchanged,
+    window_days: positiveInt(frame.window_days, 30),
+    max_sessions: positiveInt(frame.max_sessions, 50),
+    limits,
+  };
+}
+
 export function parseProviderBinding(value: unknown): ProviderBindingFrame | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -116,6 +180,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
     const sendHeartbeat = () => {
       void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
+      // Fire-and-forget, and deliberately after the heartbeat is already on
+      // its way: counting starts an agent process per runtime, so it must
+      // never be something a heartbeat waits for. Whatever it measures is
+      // reported by the next heartbeat.
+      void currentWorkspaces()
+        .then((ws) => refreshAmbientSessionCounts(ws, runtimeProbes ?? [], resolveAcpLaunch))
+        .catch(() => undefined);
     };
 
     socket.addEventListener("open", () => {
@@ -258,6 +329,42 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       }
       if (frame.type === "login_close" && typeof frame.session_id === "string") {
         loginSession(frame.session_id)?.close();
+        return;
+      }
+      if (frame.type === "ambient_import") {
+        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+        if (!requestId) return;
+        void (async () => {
+          try {
+            const request = parseAmbientImportFrame(frame, runtimeProbes ?? [], await currentWorkspaces());
+            log(`ambient import ${request.target.adapter_type} in ${request.cwd}`);
+            const { sessions, enumeration } = await importAmbientSessions(request, resolveAcpLaunch, log);
+            for (const session of sessions) {
+              // One frame per session rather than one for the whole import:
+              // a folder's history is megabytes even after trimming, and a
+              // single frame would have to be buffered whole on both ends.
+              sink.send({ type: "ambient_import_session", request_id: requestId, session });
+            }
+            // What the runtime still holds for this folder, before any
+            // Rainver-side narrowing — the server needs it to decide which of
+            // its own imports the machine no longer has, a question its own
+            // records cannot answer. Null when the enumeration was
+            // inconclusive, because "I found nothing" and "I could not tell"
+            // must not both read as "everything here is gone".
+            sink.send({
+              type: "ambient_import_result",
+              request_id: requestId,
+              ok: true,
+              error: null,
+              session_count: sessions.length,
+              listed_session_ids: enumeration.conclusive ? enumeration.held : null,
+            });
+          } catch (error) {
+            const message = sanitizeFailure(error);
+            log(`ambient import failed: ${message}`);
+            sink.send({ type: "ambient_import_result", request_id: requestId, ok: false, error: message, session_count: 0, listed_session_ids: null });
+          }
+        })();
         return;
       }
       if (frame.type === "terminate" && typeof frame.run_id === "string") {

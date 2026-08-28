@@ -40,6 +40,9 @@ export * from "./credentials.js";
 export * from "./networkProfiles.js";
 export * from "./hosts.js";
 
+// Ambient CLI session import contracts
+export * from "./ambientSessions.js";
+
 // Identity introspection contract
 export * from "./auth.js";
 

@@ -284,6 +284,7 @@ const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
   object_profile_deprecate: "high",
   object_profile_archive: "high",
   claim_candidate_packet: "medium",
+  imported_history_memory_packet: "medium",
   memory_maintenance_packet: "medium",
   retrieval_diagnostics_packet: "medium",
   retrieval_maintenance_packet: "medium",

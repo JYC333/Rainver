@@ -200,6 +200,13 @@ const memoryMaintenancePacket = z
   .object({ proposal_type: z.literal("memory_maintenance_packet") })
   .passthrough();
 
+const importedHistoryMemoryPacket = z
+  .object({
+    proposal_type: z.literal("imported_history_memory_packet"),
+    project_id: z.string().min(1),
+  })
+  .passthrough();
+
 const customSourcePolicyEnvelope = z
   .object({
     allowed_network_origins: z.array(z.string()),
@@ -425,6 +432,7 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   retrievalDiagnosticsPacket,
   retrievalMaintenancePacket,
   memoryMaintenancePacket,
+  importedHistoryMemoryPacket,
   customSourcePolicyDelta,
   customSourceCredentialedSource,
   customSourceRepairActivation,

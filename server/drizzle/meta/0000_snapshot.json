@@ -1,5 +1,5 @@
 {
-  "id": "7bb32e05-2c22-4968-9eb3-8fe579b4a818",
+  "id": "542d757c-b5cf-45af-a668-98fcf715e831",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -20179,6 +20179,567 @@
         "ck_graph_view_states_state_object": {
           "name": "ck_graph_view_states_state_object",
           "value": "jsonb_typeof(state_json) = 'object'::text"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.imported_session_records": {
+      "name": "imported_session_records",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "imported_session_id": {
+          "name": "imported_session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "record_key": {
+          "name": "record_key",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conflict_hash": {
+          "name": "conflict_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_name": {
+          "name": "tool_name",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_status": {
+          "name": "tool_status",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_input": {
+          "name": "tool_input",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tool_output": {
+          "name": "tool_output",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "raw_json": {
+          "name": "raw_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "truncated": {
+          "name": "truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "parser_version": {
+          "name": "parser_version",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "extracted_in": {
+          "name": "extracted_in",
+          "type": "varchar(48)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extracted_at": {
+          "name": "extracted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_imported_session_records_session_sequence": {
+          "name": "ix_imported_session_records_session_sequence",
+          "columns": [
+            {
+              "expression": "imported_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_imported_session_records_unextracted": {
+          "name": "ix_imported_session_records_unextracted",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "imported_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "extracted_in IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "imported_session_records_space_id_fkey": {
+          "name": "imported_session_records_space_id_fkey",
+          "tableFrom": "imported_session_records",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "imported_session_records_imported_session_id_fkey": {
+          "name": "imported_session_records_imported_session_id_fkey",
+          "tableFrom": "imported_session_records",
+          "tableTo": "imported_sessions",
+          "columnsFrom": [
+            "imported_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_imported_session_records_key": {
+          "name": "uq_imported_session_records_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "imported_session_id",
+            "record_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_imported_session_records_kind": {
+          "name": "ck_imported_session_records_kind",
+          "value": "(kind)::text = ANY (ARRAY[('user_message'::character varying)::text, ('agent_message'::character varying)::text, ('tool_call'::character varying)::text, ('plan'::character varying)::text, ('unknown'::character varying)::text])"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.imported_sessions": {
+      "name": "imported_sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_folder_id": {
+          "name": "project_folder_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_location_id": {
+          "name": "workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_host_id": {
+          "name": "execution_host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "adapter_type": {
+          "name": "adapter_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "installation": {
+          "name": "installation",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vendor_session_id": {
+          "name": "vendor_session_id",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cwd": {
+          "name": "cwd",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "visibility": {
+          "name": "visibility",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'space_shared'"
+        },
+        "access_level": {
+          "name": "access_level",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'full'"
+        },
+        "source_state": {
+          "name": "source_state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'present'"
+        },
+        "load_state": {
+          "name": "load_state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'complete'"
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "record_count": {
+          "name": "record_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "first_record_at": {
+          "name": "first_record_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_record_at": {
+          "name": "last_record_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "vendor_updated_at": {
+          "name": "vendor_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_synced_at": {
+          "name": "last_synced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_seen_on_host_at": {
+          "name": "last_seen_on_host_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_imported_sessions_project_id": {
+          "name": "ix_imported_sessions_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_imported_sessions_location_id": {
+          "name": "ix_imported_sessions_location_id",
+          "columns": [
+            {
+              "expression": "workspace_location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_imported_sessions_owner_user_id": {
+          "name": "ix_imported_sessions_owner_user_id",
+          "columns": [
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_imported_sessions_space_last_record": {
+          "name": "ix_imported_sessions_space_last_record",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_record_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "imported_sessions_space_id_fkey": {
+          "name": "imported_sessions_space_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "imported_sessions_project_id_fkey": {
+          "name": "imported_sessions_project_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "imported_sessions_project_folder_id_fkey": {
+          "name": "imported_sessions_project_folder_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "project_folders",
+          "columnsFrom": [
+            "project_folder_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "imported_sessions_workspace_location_id_fkey": {
+          "name": "imported_sessions_workspace_location_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "imported_sessions_execution_host_id_fkey": {
+          "name": "imported_sessions_execution_host_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "imported_sessions_owner_user_id_fkey": {
+          "name": "imported_sessions_owner_user_id_fkey",
+          "tableFrom": "imported_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_imported_sessions_source": {
+          "name": "uq_imported_sessions_source",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_location_id",
+            "adapter_type",
+            "installation",
+            "vendor_session_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_imported_sessions_visibility": {
+          "name": "ck_imported_sessions_visibility",
+          "value": "(visibility)::text = ANY (ARRAY[('private'::character varying)::text, ('space_shared'::character varying)::text, ('selected_users'::character varying)::text])"
+        },
+        "ck_imported_sessions_access_level": {
+          "name": "ck_imported_sessions_access_level",
+          "value": "(access_level)::text = ANY (ARRAY[('full'::character varying)::text, ('summary'::character varying)::text])"
+        },
+        "ck_imported_sessions_source_state": {
+          "name": "ck_imported_sessions_source_state",
+          "value": "(source_state)::text = ANY (ARRAY[('present'::character varying)::text, ('gone'::character varying)::text])"
+        },
+        "ck_imported_sessions_load_state": {
+          "name": "ck_imported_sessions_load_state",
+          "value": "(load_state)::text = ANY (ARRAY[('complete'::character varying)::text, ('partial'::character varying)::text])"
         }
       },
       "isRLSEnabled": false
@@ -67585,7 +68146,7 @@
       "checkConstraints": {
         "ck_token_usage_events_source_type": {
           "name": "ck_token_usage_events_source_type",
-          "value": "(source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])"
+          "value": "(source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('ambient_host_history'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])"
         },
         "ck_token_usage_events_event_type": {
           "name": "ck_token_usage_events_event_type",
@@ -69369,6 +69930,20 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "ambient_import_policy_json": {
+          "name": "ambient_import_policy_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "ambient_session_counts_json": {
+          "name": "ambient_session_counts_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",

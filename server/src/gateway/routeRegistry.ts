@@ -78,6 +78,7 @@ import { projectWorkModule } from "../modules/projectWork/index.js";
 import { projectFolderExecutionConfigsModule } from "../modules/projectFolderExecutionConfigs/index.js";
 import { projectFoldersModule } from "../modules/projectFolders/index.js";
 import { hostsModule } from "../modules/hosts/index.js";
+import { importedSessionsModule } from "../modules/importedSessions/index.js";
 import { deploymentModule } from "../modules/deployment/index.js";
 import { frontendSupportModule } from "../modules/frontendSupport/index.js";
 // Official optional module control plane — registered before optional product modules.
@@ -167,6 +168,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   projectFolderExecutionConfigsModule,
   projectFoldersModule,
   hostsModule,
+  importedSessionsModule,
   acpAgentsModule,
   jobsModule,
   autonomyModule,

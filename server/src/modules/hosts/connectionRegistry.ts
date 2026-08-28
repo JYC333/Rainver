@@ -66,6 +66,20 @@ interface HostConnection {
 }
 
 /** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
+/** Terminal report of one ambient-session import; sessions arrive before it, one frame each. */
+export interface AmbientImportResult {
+  ok: boolean;
+  error: string | null;
+  session_count: number;
+  /**
+   * Every session the host still holds for the folder, as it enumerated them.
+   * Null when the enumeration itself failed — the difference matters, because
+   * an empty list is evidence that the history is gone and a failed one is
+   * evidence of nothing.
+   */
+  listed_session_ids: string[] | null;
+}
+
 export interface ToolInstallResult {
   ok: boolean;
   error: string | null;
@@ -85,11 +99,47 @@ interface PendingLogin {
 
 /** An install is a download plus an `npm install`; minutes, not seconds. */
 const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * An import replays every changed session, and each replay starts an agent
+ * process on the host. A folder with a month of history can take minutes; the
+ * ceiling exists so a wedged runtime eventually frees the request, not to
+ * bound normal work.
+ */
+const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly pendingInstalls = new Map<string, { hostId: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pendingImports = new Map<string, {
+    hostId: string;
+    onSession: (session: unknown) => void;
+    resolve: (result: AmbientImportResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+
+  /**
+   * Settles everything waiting on a host that has gone.
+   *
+   * Unlike a run, an import and an install have no reconnect grace: the
+   * request behind them is an HTTP call someone is waiting on, and holding it
+   * open for the full timeout after the host is already known to be gone is
+   * a hang, not patience.
+   */
+  private failPendingRequests(hostId: string): void {
+    for (const [requestId, pending] of this.pendingInstalls) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingInstalls.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, error: "host_disconnected", installation: null });
+    }
+    for (const [requestId, pending] of this.pendingImports) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingImports.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, error: "host_disconnected", session_count: 0, listed_session_ids: null });
+    }
+  }
   private readonly logins = new Map<string, PendingLogin>();
 
   registerConnection(hostId: string, sink: HostFrameSink): void {
@@ -128,6 +178,7 @@ export class HostConnectionRegistry {
       }, RECONNECT_GRACE_MS);
       pendingRun.graceTimer.unref?.();
     }
+    this.failPendingRequests(hostId);
   }
 
   isOnline(hostId: string): boolean {
@@ -219,6 +270,48 @@ export class HostConnectionRegistry {
       this.pendingInstalls.set(requestId, { hostId, resolve, timer });
       connection.sink!.send({ ...frame, type, request_id: requestId });
     });
+  }
+
+  /**
+   * Asks a daemon to replay a folder's ambient CLI sessions.
+   *
+   * Sessions stream back one frame each rather than as one reply: a folder's
+   * history is megabytes even after trimming, and a single frame would have to
+   * be buffered whole on both ends. The promise settles on the daemon's
+   * terminal report, or on the timeout — replaying a session starts an agent
+   * process, so the ceiling is minutes rather than the seconds an install gets.
+   */
+  requestAmbientImport(
+    hostId: string,
+    frame: Record<string, unknown>,
+    onSession: (session: unknown) => void,
+  ): Promise<AmbientImportResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", session_count: 0, listed_session_ids: null });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingImports.delete(requestId);
+        resolve({ ok: false, error: "ambient_import_timed_out", session_count: 0, listed_session_ids: null });
+      }, AMBIENT_IMPORT_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingImports.set(requestId, { hostId, onSession, resolve, timer });
+      connection.sink!.send({ ...frame, type: "ambient_import", request_id: requestId });
+    });
+  }
+
+  receiveAmbientImportSession(hostId: string, requestId: string, session: unknown): void {
+    const pending = this.pendingImports.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    pending.onSession(session);
+  }
+
+  receiveAmbientImportResult(hostId: string, requestId: string, result: AmbientImportResult): void {
+    const pending = this.pendingImports.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    this.pendingImports.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(result);
   }
 
   /**

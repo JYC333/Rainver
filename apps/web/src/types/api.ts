@@ -3443,6 +3443,25 @@ export interface WorkspaceLocation {
   updated_at: string
 }
 
+/**
+ * Ambient CLI history on a paired host: sessions a person had with their own
+ * Claude Code / Codex / OpenCode in this folder, outside Rainver.
+ * See `.agent/modules/imported-sessions.md`.
+ *
+ * The consent and count shapes are wire contracts the protocol package owns,
+ * so they are forwarded rather than restated — a second declaration is a
+ * second definition that drifts.
+ */
+export type {
+  AmbientImportPolicy,
+  AmbientImportPolicyEntry,
+  AmbientSessionCount,
+  AmbientSyncReport,
+  ExtractionOutcome,
+  ImportedSession,
+  ImportedSessionRecord,
+} from '@rainver/protocol'
+
 export interface ProjectFolderCreateBody {
   name: string
   description?: string

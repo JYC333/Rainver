@@ -159,6 +159,19 @@ project-folder-artifact:
     - server/src/modules/runtimeAdapters
     - sandbox
 
+imported-cli-history:
+  docs:
+    - .agent/modules/imported-sessions.md
+    - .agent/modules/hosts.md
+    - .agent/decisions/0016-control-plane-execution-hosts.md
+    - .agent/decisions/0013-personal-team-content-boundary.md
+    - .agent/decisions/0003-memory-proposal-flow.md
+    - .agent/architecture/SECURITY_AND_ACCESS_BOUNDARIES.md
+  code_roots:
+    - server/src/modules/importedSessions
+    - packages/host-daemon/src
+    - packages/protocol/src/ambientSessions.ts
+
 local-first-compatibility:
   docs:
     - .agent/architecture/LOCAL_FIRST_COMPATIBILITY.md

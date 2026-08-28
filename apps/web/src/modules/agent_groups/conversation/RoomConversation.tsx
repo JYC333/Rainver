@@ -77,6 +77,13 @@ export interface RoomConversationProps {
   runSettings?: ReactNode
   isOwner?: boolean
   emptyHint?: ReactNode
+  /**
+   * Text to put in the composer once when this conversation opens, so a caller
+   * elsewhere can seed a conversation without building a second composer and a
+   * second dispatch path beside this one. It is a draft, never a send: the
+   * person still chooses recipients and presses the button.
+   */
+  seedText?: string | null
 }
 
 export function RoomConversation({
@@ -94,6 +101,7 @@ export function RoomConversation({
   runSettings,
   isOwner = false,
   emptyHint,
+  seedText,
 }: RoomConversationProps) {
   const { userId } = useSpace()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
@@ -110,12 +118,19 @@ export function RoomConversation({
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const [composer, setComposer] = useState(emptyRoomMessageComposerValue)
+  const seededRef = useRef<string | null>(null)
   const [resetToken, setResetToken] = useState(0)
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
   const [continuation, setContinuation] = useState<PendingProposalContinuation | null>(null)
 
   useEffect(() => { runsRef.current = runs }, [runs])
+  // Once per conversation, and never over something already typed.
+  useEffect(() => {
+    if (!seedText || seededRef.current === conversationId) return
+    seededRef.current = conversationId
+    setComposer(current => (current.text.trim() ? current : { ...current, text: seedText }))
+  }, [conversationId, seedText])
   useEffect(() => { if (suppliedDetail !== undefined) setDetail(suppliedDetail) }, [suppliedDetail])
   useEffect(() => {
     if (suppliedDetail !== undefined) return

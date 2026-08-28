@@ -14,7 +14,15 @@ import {
 } from "../../retrieval/sourcePolicy.js";
 
 const TASK = "context.checkpoint.extract";
-const SYSTEM = `You extract a complete Runtime Context semantic checkpoint.
+/**
+ * The one definition of what extracting a checkpoint means.
+ *
+ * Exported because imported CLI history is extracted with the same contract
+ * (`modules/importedSessions/extraction.ts`) — a second prompt for the same
+ * job would be a second, drifting definition of the output every consumer
+ * downstream is written against.
+ */
+export const SEMANTIC_CHECKPOINT_SYSTEM_PROMPT = `You extract a complete Runtime Context semantic checkpoint.
 Return only strict JSON with arrays: goals, user_intent, decisions, constraints,
 facts, open_questions, tasks, artifact_refs, tool_refs, correction_refs.
 Every semantic entry must cite one or more supplied canonical refs and must use
@@ -57,7 +65,7 @@ export class ManagedSemanticCheckpointProvider implements SemanticCheckpointProv
     const completion = await completeProviderText(resolveProviderCommandStore(this.config), input.spaceId, {
       provider_id: "",
       model: null,
-      system: SYSTEM,
+      system: SEMANTIC_CHECKPOINT_SYSTEM_PROMPT,
       user: JSON.stringify({
         previous_checkpoint: input.previous,
         selected_event_delta: material,

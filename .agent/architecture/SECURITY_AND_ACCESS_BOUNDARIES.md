@@ -271,6 +271,33 @@ filter-difference inference. Space owner/admin and instance-admin roles do not
 bypass this predicate. The instance-admin operations endpoint returns only
 aggregate totals and no user, prompt, run, session, or source-resource dimensions.
 
+### Imported CLI history
+
+`imported_sessions` is registered as `imported_session` in the canonical
+content resource registry. A session imported from a paired host lands with the
+visibility its owner chose at import time and is read through the canonical
+predicate like any other Project content — a shared one by Project members, a
+private one by its owner alone, with a fail-closed 404 and no existence oracle
+either way.
+
+Two rules are specific to it and are load-bearing:
+
+- **A transcript requires effective `full` access, not merely a non-deny
+  decision.** `summary`, which oversight grants an admin over a colleague's
+  private content, does not open one: the transcript *is* the content, and this
+  is someone's own terminal history.
+- **Only sessions at `space_shared` can be extracted from.** A Project Brief has
+  no per-object visibility, so a private session feeding extraction would
+  publish its content to every Project member through the Brief. This is
+  enforced in the extraction query, not by the caller.
+
+Mutating paths — importing, changing a Location's import policy, changing a
+session's visibility, deleting — additionally require the host's registered
+owner ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)'s hard
+rule), except that a session whose Location has since been unregistered stays
+administrable by its owner so unbinding a folder cannot strand its history.
+See [modules/imported-sessions.md](../modules/imported-sessions.md).
+
 ---
 
 ## 4. Session Access Policy

@@ -1751,6 +1751,64 @@ CREATE TABLE "graph_view_states" (
 	CONSTRAINT "ck_graph_view_states_state_object" CHECK (jsonb_typeof(state_json) = 'object'::text)
 );
 --> statement-breakpoint
+CREATE TABLE "imported_session_records" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"imported_session_id" varchar(36) NOT NULL,
+	"record_key" varchar(256) NOT NULL,
+	"content_hash" varchar(128) NOT NULL,
+	"conflict_hash" varchar(128),
+	"kind" varchar(32) NOT NULL,
+	"sequence" integer NOT NULL,
+	"occurred_at" timestamp with time zone,
+	"text" text,
+	"tool_name" varchar(256),
+	"tool_status" varchar(64),
+	"tool_input" text,
+	"tool_output" text,
+	"raw_json" jsonb,
+	"truncated" boolean DEFAULT false NOT NULL,
+	"parser_version" varchar(64) NOT NULL,
+	"extracted_in" varchar(48),
+	"extracted_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_imported_session_records_key" UNIQUE("imported_session_id","record_key"),
+	CONSTRAINT "ck_imported_session_records_kind" CHECK ((kind)::text = ANY (ARRAY[('user_message'::character varying)::text, ('agent_message'::character varying)::text, ('tool_call'::character varying)::text, ('plan'::character varying)::text, ('unknown'::character varying)::text]))
+);
+--> statement-breakpoint
+CREATE TABLE "imported_sessions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"project_folder_id" varchar(36),
+	"workspace_location_id" varchar(36),
+	"execution_host_id" varchar(36),
+	"owner_user_id" varchar(36) NOT NULL,
+	"adapter_type" varchar(64) NOT NULL,
+	"installation" varchar(64) NOT NULL,
+	"vendor_session_id" varchar(256) NOT NULL,
+	"cwd" varchar(1024),
+	"title" varchar(512),
+	"visibility" varchar(32) DEFAULT 'space_shared' NOT NULL,
+	"access_level" varchar(16) DEFAULT 'full' NOT NULL,
+	"source_state" varchar(16) DEFAULT 'present' NOT NULL,
+	"load_state" varchar(16) DEFAULT 'complete' NOT NULL,
+	"last_error" text,
+	"record_count" integer DEFAULT 0 NOT NULL,
+	"first_record_at" timestamp with time zone,
+	"last_record_at" timestamp with time zone,
+	"vendor_updated_at" timestamp with time zone,
+	"last_synced_at" timestamp with time zone,
+	"last_seen_on_host_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_imported_sessions_source" UNIQUE("workspace_location_id","adapter_type","installation","vendor_session_id"),
+	CONSTRAINT "ck_imported_sessions_visibility" CHECK ((visibility)::text = ANY (ARRAY[('private'::character varying)::text, ('space_shared'::character varying)::text, ('selected_users'::character varying)::text])),
+	CONSTRAINT "ck_imported_sessions_access_level" CHECK ((access_level)::text = ANY (ARRAY[('full'::character varying)::text, ('summary'::character varying)::text])),
+	CONSTRAINT "ck_imported_sessions_source_state" CHECK ((source_state)::text = ANY (ARRAY[('present'::character varying)::text, ('gone'::character varying)::text])),
+	CONSTRAINT "ck_imported_sessions_load_state" CHECK ((load_state)::text = ANY (ARRAY[('complete'::character varying)::text, ('partial'::character varying)::text]))
+);
+--> statement-breakpoint
 CREATE TABLE "inquiry_hypothesis_states" (
 	"thread_id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -5676,7 +5734,7 @@ CREATE TABLE "token_usage_events" (
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_token_usage_events_space_idempotency" UNIQUE("space_id","idempotency_key"),
-	CONSTRAINT "ck_token_usage_events_source_type" CHECK ((source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])),
+	CONSTRAINT "ck_token_usage_events_source_type" CHECK ((source_type)::text = ANY (ARRAY[('local_run'::character varying)::text, ('provider_proxy'::character varying)::text, ('cli_history_import'::character varying)::text, ('ambient_host_history'::character varying)::text, ('cross_instance_import'::character varying)::text, ('manual_import'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_event_type" CHECK ((event_type)::text = ANY (ARRAY[('llm.generation'::character varying)::text, ('llm.embedding'::character varying)::text, ('llm.rerank'::character varying)::text, ('cli.history_usage'::character varying)::text, ('usage.adjustment'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_execution_channel" CHECK ((execution_channel)::text = ANY (ARRAY[('managed_api'::character varying)::text, ('provider_proxy'::character varying)::text, ('local_cli'::character varying)::text, ('local_cli_transcript'::character varying)::text, ('manual_import'::character varying)::text, ('cross_instance_import'::character varying)::text, ('unknown'::character varying)::text])),
 	CONSTRAINT "ck_token_usage_events_total_tokens_source" CHECK ((total_tokens_source)::text = ANY (ARRAY[('provider_total'::character varying)::text, ('sum_of_buckets'::character varying)::text, ('estimated'::character varying)::text, ('unknown'::character varying)::text])),
@@ -5873,6 +5931,8 @@ CREATE TABLE "workspace_locations" (
 	"status" varchar(32) DEFAULT 'active' NOT NULL,
 	"preferred" boolean DEFAULT false NOT NULL,
 	"last_seen_at" timestamp with time zone,
+	"ambient_import_policy_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"ambient_session_counts_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_workspace_locations_id_folder" UNIQUE("id","project_folder_id"),
@@ -6232,6 +6292,14 @@ ALTER TABLE "experiment_versions" ADD CONSTRAINT "experiment_versions_space_id_f
 ALTER TABLE "experiment_versions" ADD CONSTRAINT "experiment_versions_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "graph_view_states" ADD CONSTRAINT "graph_view_states_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "graph_view_states" ADD CONSTRAINT "graph_view_states_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_session_records" ADD CONSTRAINT "imported_session_records_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_session_records" ADD CONSTRAINT "imported_session_records_imported_session_id_fkey" FOREIGN KEY ("imported_session_id") REFERENCES "public"."imported_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_project_folder_id_fkey" FOREIGN KEY ("project_folder_id") REFERENCES "public"."project_folders"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_execution_host_id_fkey" FOREIGN KEY ("execution_host_id") REFERENCES "public"."hosts"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "imported_sessions" ADD CONSTRAINT "imported_sessions_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_hypothesis_states" ADD CONSTRAINT "inquiry_hypothesis_states_thread_fkey" FOREIGN KEY ("thread_id","space_id") REFERENCES "public"."inquiry_threads"("object_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_thread_fkey" FOREIGN KEY ("thread_id","project_id","space_id") REFERENCES "public"."inquiry_threads"("object_id","project_id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inquiry_iterations" ADD CONSTRAINT "inquiry_iterations_project_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -7296,6 +7364,12 @@ CREATE INDEX "ix_experiment_versions_definition_id" ON "experiment_versions" USI
 CREATE UNIQUE INDEX "uq_experiment_versions_definition_version" ON "experiment_versions" USING btree ("definition_id","version");--> statement-breakpoint
 CREATE INDEX "ix_graph_view_states_scope_key" ON "graph_view_states" USING btree ("scope_key");--> statement-breakpoint
 CREATE INDEX "ix_graph_view_states_space_user" ON "graph_view_states" USING btree ("space_id","user_id");--> statement-breakpoint
+CREATE INDEX "ix_imported_session_records_session_sequence" ON "imported_session_records" USING btree ("imported_session_id","sequence");--> statement-breakpoint
+CREATE INDEX "ix_imported_session_records_unextracted" ON "imported_session_records" USING btree ("space_id","imported_session_id") WHERE extracted_in IS NULL;--> statement-breakpoint
+CREATE INDEX "ix_imported_sessions_project_id" ON "imported_sessions" USING btree ("project_id");--> statement-breakpoint
+CREATE INDEX "ix_imported_sessions_location_id" ON "imported_sessions" USING btree ("workspace_location_id");--> statement-breakpoint
+CREATE INDEX "ix_imported_sessions_owner_user_id" ON "imported_sessions" USING btree ("owner_user_id");--> statement-breakpoint
+CREATE INDEX "ix_imported_sessions_space_last_record" ON "imported_sessions" USING btree ("space_id","last_record_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_inquiry_iterations_thread_id" ON "inquiry_iterations" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "ix_inquiry_iterations_project_id" ON "inquiry_iterations" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_inquiry_thread_lifecycle_events_thread_id" ON "inquiry_thread_lifecycle_events" USING btree ("thread_id","created_at" DESC NULLS LAST);--> statement-breakpoint

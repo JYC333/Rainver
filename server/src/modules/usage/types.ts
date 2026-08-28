@@ -9,6 +9,8 @@ export type UsageSourceType =
   | "local_run"
   | "provider_proxy"
   | "cli_history_import"
+  /** A paired host's own CLI history, replayed over ACP and imported into a Project. */
+  | "ambient_host_history"
   | "cross_instance_import"
   | "manual_import";
 

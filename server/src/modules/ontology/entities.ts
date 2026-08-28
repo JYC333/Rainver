@@ -520,6 +520,25 @@ function registerCoreEntities(): void {
       },
     },
     {
+      // A session a person had with their own CLI, imported from a host they
+      // own. An independent root, not a `space_objects` subtype: it takes part
+      // in no cross-domain semantic relation and is only ever cited as
+      // provenance for what was extracted from it.
+      entityType: "imported_session",
+      owner: "importedSessions",
+      contentAccessible: {
+        tableName: "imported_sessions",
+        ownerColumn: "owner_user_id",
+        projectColumn: "project_id",
+        projectFolderColumn: "project_folder_id",
+        publishable: false,
+      },
+      // A memory extracted from imported history says where it came from, and
+      // without this declaration that provenance is silently dropped and the
+      // memory is then rejected for having none.
+      provenanceSourceable: { sourceType: "imported_session" },
+    },
+    {
       entityType: "token_usage_event",
       owner: "usage",
       contentAccessible: {

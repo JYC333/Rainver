@@ -40,8 +40,10 @@ selected by task shape rather than by a universal API-first rule
   independently disableable, and no core workbench authority depends on any
   of them.
 - A subscription is spent only through the vendor's own CLI (Claude Pro/Max
-  through Claude Code, ChatGPT plans through Codex), reached via its ACP
-  wrapper; it is never routed through another vendor's runtime.
+  through Claude Code, ChatGPT plans through Codex, each reached via its ACP
+  wrapper) or through Rainver's in-process managed subscription OAuth channel
+  ([ADR 0008](0008-credential-channel-isolation.md)); it is never routed
+  through another vendor's runtime.
 - Managed API work continues through `model_api` / `ts_agent_host` and the
   provider invocation architecture; nothing routes API calls through a CLI.
 - Provider capability, remaining subscription allowance, API cost, latency,
@@ -78,3 +80,6 @@ selected by task shape rather than by a universal API-first rule
   dogfooding checkpoint (a 30-day usage test with no recorded review) both
   removed — a point-in-time terms survey and a validation exercise are not
   architectural decisions.
+- **2026-08-28** — the subscription bullet corrected to admit the managed
+  subscription OAuth channel that ADR 0008 already defines; the 08-27
+  wording had contradicted it.

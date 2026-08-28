@@ -38,6 +38,31 @@ export default function AgentGroupsPage() {
   const { activeSpaceId, userId } = useSpace()
   const { projectId: projectRouteId } = useParams()
   const [search, setSearch] = useSearchParams()
+  /**
+   * A draft handed over by another page (an imported session's "Continue in
+   * Rainver"), bound to the conversation it was meant for.
+   *
+   * Passed through session storage rather than the URL because it is a
+   * paragraph, not an id, and read once so a reload does not resurrect a draft
+   * the person cleared. The conversation id is part of it because this state
+   * outlives every conversation switch on the page, and without it the next
+   * conversation someone opens would be filled with the previous one's seed.
+   */
+  const [seed] = useState<{ conversationId: string; text: string } | null>(() => {
+    const conversationId = search.get('conversation')
+    if (search.get('seed') !== '1' || !conversationId) return null
+    try {
+      // The key is derived here from the conversation the URL names, never
+      // taken from the URL: a crafted link could otherwise name any
+      // same-origin stored value and have it pasted into the composer.
+      const key = `rainver.seed.${conversationId}`
+      const text = sessionStorage.getItem(key)
+      sessionStorage.removeItem(key)
+      return text ? { conversationId, text } : null
+    } catch {
+      return null
+    }
+  })
   const roomId = search.get('room')
   const conversationId = search.get('conversation')
   const projectFilter = projectRouteId || search.get('project') || undefined
@@ -664,6 +689,7 @@ export default function AgentGroupsPage() {
                     routingMode={routingMode}
                     backendsFor={backendsFor}
                     isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
+                    seedText={seed?.conversationId === currentConversation.id ? seed.text : null}
                     onConversationUpdated={upsertConversation}
                     onBeforeContinue={async () => {
                       const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)

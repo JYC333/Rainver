@@ -18,6 +18,18 @@ export interface ProjectDefinitionProposalActor {
   runId?: string | null;
   idempotencyKey?: string | null;
   visibility?: "private" | "space_shared" | "selected_users";
+  /**
+   * Replaces the active Brief's decisions and source references, for a caller
+   * that has computed them.
+   *
+   * Deliberately here and not in `body`: the same service backs the
+   * agent-callable `project.propose_definition` action, whose input schema is
+   * passthrough, so a body key would let an agent silently replace — or empty
+   * — a Project's confirmed decisions as a side effect of proposing a goal.
+   * An argument is reachable only from server code that meant to set it.
+   */
+  confirmedDecisions?: unknown[];
+  sourceRefs?: unknown[];
 }
 
 const TEXT_FIELDS = [
@@ -58,10 +70,10 @@ export class ProjectDefinitionProposalService {
     const active = await new ProjectKernelService(this.db).getActiveBriefVersion(identity, projectId);
     const definition: Record<string, unknown> = {
       goal,
-      confirmed_decisions: active?.confirmed_decisions ?? [],
+      confirmed_decisions: actor.confirmedDecisions ?? active?.confirmed_decisions ?? [],
       workspace_identity: active?.workspace_identity ?? {},
       workspace_boundary: active?.workspace_boundary ?? {},
-      source_refs: active?.source_refs ?? [],
+      source_refs: actor.sourceRefs ?? active?.source_refs ?? [],
     };
     for (const field of TEXT_FIELDS) {
       const supplied = optionalString(body[field]);

@@ -23,6 +23,7 @@ export * from "./focusAreas.js";
 export * from "./evolvableAssets.js";
 export * from "./experiments.js";
 export * from "./graph.js";
+export * from "./importedSessions.js";
 export * from "./inquiry.js";
 export * from "./inquiryAdvice.js";
 export * from "./inquirySignals.js";

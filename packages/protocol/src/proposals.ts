@@ -88,6 +88,7 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "retrieval_maintenance_packet",
   "retrieval_diagnostics_packet",
   "relation_discovery_packet",
+  "imported_history_memory_packet",
   "custom_source_handler_version",
   "source_recipe_version",
   "source_connection",

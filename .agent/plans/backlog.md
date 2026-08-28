@@ -458,6 +458,25 @@ Constraint: keep the honesty boundary — do not describe the runner as
 OS-sandboxed until one of the above is in place. Do the ESM port, if ever,
 only as part of such a rewrite, never on its own.
 
+## 9. Imported CLI History
+
+From the ambient-session-import integration gate (2026-08-28); the feature
+shipped in `293023c3` / `d162aabf` and neither item blocks it.
+
+- [ ] Render an extracted statement's citations as links back to the imported
+  record they came from. The refs are stored — on the Brief version's
+  `source_refs` and inside the memory packet's candidates — but nothing opens
+  them, which is the one part of the plan's Phase 2 acceptance condition 2 that
+  is not built.
+- [ ] Make the four read-side wire shapes (`ImportedSession`,
+  `ImportedSessionRecord`, `AmbientSyncReport`, `ExtractionOutcome`) actually
+  enforced rather than merely declared. They now live in
+  `packages/protocol/src/ambientSessions.ts` and the web forwards them, but the
+  server still declares its own row and report types independently and the web
+  client's `get<T>` is an assertion, so a future server change would not be
+  caught by typecheck. The declaration that had already drifted is gone; the
+  mechanism that let it drift is not.
+
 ## Completion and retirement
 
 Remove an item once it is implemented and recorded in current-state

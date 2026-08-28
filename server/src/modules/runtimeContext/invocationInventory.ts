@@ -44,6 +44,10 @@ export const MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY = [
  */
 export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("dailyReports/service.ts", "completeProviderText", 1, "bounded_provider_task", "dailyReports", "provider_task"),
+  // A bounded one-shot over imported CLI history, owned by its module: it
+  // reads records the person already imported and produces proposals, and it
+  // is not an Agent task-context entrypoint (ADR 0014 decision 1).
+  providerCall("importedSessions/extraction.ts", "completeProviderText", 1, "bounded_provider_task", "importedSessions", "provider_task"),
   providerCall("inquiry/adviceService.ts", "completeProviderMessages", 1, "bounded_provider_task", "inquiry", "provider_task"),
   providerCall("projectResearch/questionRefineService.ts", "completeProviderMessages", 1, "bounded_provider_task", "projectResearch", "provider_task"),
   providerCall("projects/publicSummaryGenerator.ts", "completeProviderText", 1, "bounded_provider_task", "projects", "provider_task"),
