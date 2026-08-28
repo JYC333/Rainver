@@ -8,6 +8,8 @@ import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 import { hostInstallationIds } from "./capabilities.js";
 import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
+import { dispatchToolAllowance } from "../systemActions/scenarioToolAllowance.js";
 import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { assertBudgetSourcesAvailable, RunBudgetExceededError } from "../runs/budgetEnforcement.js";
@@ -297,15 +299,28 @@ async function createAndQueueRun(db: Queryable, params: {
   const runId = randomUUID();
   const now = new Date().toISOString();
   const contractSnapshot = createRunContractSnapshot(params.contractSnapshot, now);
+  // What a dispatched agent may call back with. The same fail-closed
+  // intersection every other Run gets, with the allowance belonging to the
+  // dispatch scenario rather than to whichever Agent the thread names — the
+  // reasoning `scenarioToolAllowance.ts` gives for Rooms applies here for the
+  // same reason. Without it a dispatched Run carries no grants at all and is
+  // offered no way to say what it did.
+  const allowance = dispatchToolAllowance(params.trustMode);
+  const toolGrants = await buildRunToolGrants(
+    [...allowance],
+    { allowed_tools: [...allowance] },
+  );
   await db.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
        project_id, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, adapter_type, required_sandbox_level, contract_snapshot_json,
-       prompt, owner_user_id, instructed_by_user_id, model_provider_id, model_override_json, created_at, updated_at
+       prompt, owner_user_id, instructed_by_user_id, model_provider_id, model_override_json, created_at, updated_at,
+       capabilities_json, permission_snapshot_json
      ) VALUES (
        $1, $2, $3, $4, 'system', 'manual', 'queued', 'live',
        $5, $6, $7, $8, $9, $10, 'none', $11::jsonb,
-       $12, $13, $13, $15, $16::jsonb, $14, $14
+       $12, $13, $13, $15, $16::jsonb, $14, $14,
+       $17::jsonb, $18::jsonb
      )`,
     [
       runId,
@@ -341,6 +356,13 @@ async function createAndQueueRun(db: Queryable, params: {
             source: "request",
           })
         : null,
+      JSON.stringify([...allowance]),
+      // The allowance is snapshotted beside the grants, not just applied to
+      // them: `bindRunToWorkContext` recomputes grants when a Run acquires a
+      // Work Context binding, and without the snapshot it would fall back to
+      // the dispatch Agent's own standing permissions — which are empty, so
+      // the Run would silently lose every tool mid-flight.
+      JSON.stringify({ tool_grants: toolGrants, scenario_tool_allowance: [...allowance] }),
     ],
   );
   // D4: the Run this thread just produced belongs to whichever Task its

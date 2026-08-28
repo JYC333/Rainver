@@ -476,14 +476,14 @@ changes. The server service process does not auto-migrate on startup.
 DB-persisted API-key storage remains disabled/deferred until the canonical
 schema adds that table.
 
-**B66** — A new Agent entry point (HTTP route, MCP transport, managed-loop
+**B66** — A new Agent entry point (HTTP route, tool surface, managed-loop
 surface, or any future host) is a thin adapter over `SystemActionDispatcher`
 (`server/src/modules/systemActions/systemActionDispatcher.ts`). It may
 translate transport-specific request/response shapes and assemble which
 actions to expose, but it must not itself decide grants, evaluate policy,
 mutate a domain table, or otherwise define action semantics — that belongs to
 the single `SystemActionGateway`/`SystemActionDispatcher` path
-(`CliAgentToolTransport`'s Run-scoped MCP transport and
+(`CliAgentToolTransport`'s Run-scoped REST tool surface and
 `ManagedAgentToolSurface`'s managed model loop both call it directly).
 Runtime delegation materialization
 (`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a

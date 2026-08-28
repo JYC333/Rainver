@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedProfiles } from "../src/providerBinding.js";
+import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "../src/providerBinding.js";
 import type { ProviderBindingFrame } from "../src/execution.js";
 
 // This machine is a trusted host: its own login state sits in its environment
@@ -157,8 +157,8 @@ describe("materializing a provider binding", () => {
   });
 });
 
-describe("sweeping per-run profiles left by an older daemon", () => {
-  it("removes an orphaned profile but leaves an active run's alone", async () => {
+describe("sweeping run directories left behind", () => {
+  it("removes an orphaned run directory but leaves an active run's alone", async () => {
     const runsRoot = await tempDir();
     for (const runId of ["dead-run", "live-run"]) {
       await materializeProviderBinding(
@@ -169,12 +169,12 @@ describe("sweeping per-run profiles left by an older daemon", () => {
 
     // A daemon killed mid-run leaves a live lease token on disk; nothing else
     // ever removes it, since the same run id never comes back.
-    expect(await sweepOrphanedProfiles(runsRoot, new Set(["live-run"]))).toBe(1);
+    expect(await sweepOrphanedRunDirectories(runsRoot, new Set(["live-run"]))).toBe(1);
     await expect(stat(join(runsRoot, "dead-run", "profile"))).rejects.toThrow();
     await expect(stat(join(runsRoot, "live-run", "profile"))).resolves.toBeDefined();
   });
 
   it("is silent when there is nothing to sweep", async () => {
-    await expect(sweepOrphanedProfiles(join(await tempDir(), "missing"), new Set())).resolves.toBe(0);
+    await expect(sweepOrphanedRunDirectories(join(await tempDir(), "missing"), new Set())).resolves.toBe(0);
   });
 });

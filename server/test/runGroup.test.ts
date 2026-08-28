@@ -146,7 +146,7 @@ describe("runContractSnapshot", () => {
 
 describe("runDelegationIdempotencyDb", () => {
   // Real-Postgres coverage for the run_delegations idempotency guarantee added
-  // for the Runtime I/O Convergence "Governed CLI tools" requirement: a CLI/MCP
+  // for the Runtime I/O Convergence "Governed CLI tools" requirement: a
   // reconnect or retry of agent.delegate with the same tool_call_id must not
   // duplicate the durable delegation/child-run side effect. This exercises the
   // actual partial UNIQUE INDEX (uq_run_delegations_parent_tool_call), which a

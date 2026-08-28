@@ -947,6 +947,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       };
 
       socket.on("message", (raw: Buffer) => {
+        // Every frame from every paired host lands here, and each one awaits
+        // the database. An unhandled rejection terminates the process under
+        // Node's default, so a pool exhausted or a failover mid-heartbeat
+        // would take the whole control plane down with it: the connection is
+        // closed instead, and the daemon reconnects.
         void (async () => {
           if (!hosts) {
             socket.close(1011, "database_unavailable");
@@ -1044,14 +1049,21 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             return;
           }
           socket.send(JSON.stringify({ type: "error", detail: "unknown_frame_type" }));
-        })();
+        })().catch(() => {
+          socket.close(1011, "host_frame_failed");
+        });
       });
 
       socket.on("close", () => {
         if (!authenticatedHostId) return;
         sharedHostConnectionRegistry.unregisterConnection(authenticatedHostId, frameSink);
         const hostsOnClose = hostRepositoryFromConfig(context.config);
-        void hostsOnClose?.markOffline(authenticatedHostId);
+        // Caught, not just fired: this is the last write of a connection that
+        // is already gone, and an unhandled rejection terminates the process
+        // under Node's default. A database that cannot take the write leaves
+        // the Host looking online until the next heartbeat sweep, which is
+        // what that sweep is for.
+        void hostsOnClose?.markOffline(authenticatedHostId).catch(() => undefined);
       });
     });
   });

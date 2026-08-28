@@ -129,13 +129,14 @@ function resolveInsideProfile(root: string, relativePath: string): string {
 }
 
 /**
- * Removes per-run profiles written by an earlier version of this daemon, which
- * scoped a profile to one run and deleted it when the run ended. Nothing
- * writes that layout any more, so on a machine that never ran the old daemon
- * this finds nothing; on one that did, it reclaims directories no run will
- * come back for.
+ * Removes the directories of runs that are not running here any more.
+ *
+ * A run directory holds this run's outputs and its work surface — the Skill it
+ * was given — and an earlier daemon also scoped a provider profile into it.
+ * The same run id never comes back, so nothing else would ever remove one: a
+ * daemon killed mid-run would otherwise leave it forever.
  */
-export async function sweepOrphanedProfiles(runsRoot: string, activeRunIds: Set<string>): Promise<number> {
+export async function sweepOrphanedRunDirectories(runsRoot: string, activeRunIds: Set<string>): Promise<number> {
   const { readdir } = await import("node:fs/promises");
   let removed = 0;
   let entries: string[];
@@ -146,14 +147,11 @@ export async function sweepOrphanedProfiles(runsRoot: string, activeRunIds: Set<
   }
   for (const runId of entries) {
     if (activeRunIds.has(runId)) continue;
-    const profile = join(runsRoot, runId, "profile");
     try {
-      const { stat } = await import("node:fs/promises");
-      await stat(profile);
-      await rm(profile, { recursive: true, force: true });
+      await rm(join(runsRoot, runId), { recursive: true, force: true });
       removed += 1;
     } catch {
-      // A profile we cannot remove is worth neither crashing nor retrying.
+      // A directory we cannot remove is worth neither crashing nor retrying.
     }
   }
   return removed;

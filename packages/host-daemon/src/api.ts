@@ -218,7 +218,9 @@ export async function uploadRunOutputs(
   runId: string,
   files: Array<{ name: string; content: string }>,
 ): Promise<void> {
-  if (files.length === 0) return;
+  // Sent even when empty: the control plane applies this run's artifact
+  // declarations here, and a run that declared a deliverable and wrote nothing
+  // is exactly the case a person needs told about.
   await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/outputs`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },

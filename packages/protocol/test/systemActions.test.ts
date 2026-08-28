@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 

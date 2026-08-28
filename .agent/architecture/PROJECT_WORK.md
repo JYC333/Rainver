@@ -356,8 +356,11 @@ which turn" is a query rather than a search through prompt text.
 
 ## 8. What an Agent may do
 
-Five System Actions (`projectWork/taskActions.ts`,
-`projectWorkSystemActionExecutors.ts`), on the Room conversation tool surface:
+Six System Actions (`projectWork/taskActions.ts`,
+`projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`).
+The first five are on the Room conversation tool surface and on a dispatched
+Run's; `artifact.submit` is on a dispatched Run's only, for the reason its
+own paragraph below gives:
 
 | Action | Writes | Records |
 |---|---|---|
@@ -366,10 +369,22 @@ Five System Actions (`projectWork/taskActions.ts`,
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
 | `task.advance_stage` | the Loop fold | `task.stage_changed` |
 | `task.request_review` | `status = waiting_for_review` | `task.flow_changed` + `task.reported` |
+| `artifact.submit` | a `run_artifact_declarations` row | `task.reported` |
+
+`artifact.submit` (`projectWork/artifactDeclarations.ts`) is what lets a Task
+with declared required outputs close at all when an Agent did the work.
+Settlement matches `required_outputs_json` against the `artifact_type` of the
+Task's `role = 'output'` artifacts, and everything a dispatched CLI Run leaves
+behind arrives anonymous — so before it, such a Task parked for review after
+every successful Run however well the work went. The declaration names what a
+file *is*; the file itself is still collected afterwards, and a declaration
+whose file never arrived is reported into the Task's stream rather than
+dropped. It is granted only where a declaration is applied, which today is the
+remote-host path (`SYSTEM_ACTIONS.md`).
 
 They are the smallest set that lets an Agent advance work at all: name a piece
 of it, say what happened, give it to someone else, move it through its Loop,
-and stop to ask. Without them an Agent could describe a decomposition in a
+stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
 reply but not create it — the gap between sounding like it advanced the work
 and having advanced it.
 
@@ -388,9 +403,9 @@ the Tasks that follow; the identical call from an unattended wake-up is a
 commitment made on the Project's behalf that nobody asked for, and a Loop stage
 skipped or reversed without a person seeing it is a claim about the work.
 
-The other three are ungated at any origin. A report only records, a handoff can
-only give work away, and a review request can only stop work — none can take
-ground. Gating them would mean an Agent advancing work unattended could not say
+The others are ungated at any origin. A report only records, a handoff can
+only give work away, a review request can only stop work, and a declaration
+only says what a file is — none can take ground. Gating them would mean an Agent advancing work unattended could not say
 what it had done, which is the opposite of what the origin gate is for.
 
 The origin the rule reads is the **root** Run's: a delegated child carries

@@ -97,6 +97,56 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "proposal.decide",
 ];
 
+/**
+ * What an Agent may do because Rainver dispatched it to work on a Task.
+ *
+ * A dispatched Run is not a conversation, which is what decides the shape of
+ * this list. It carries the Project write surface, because advancing a Task is
+ * the whole point of dispatching one, and `artifact.submit`, without which a
+ * Task with a declared required output can never be satisfied by an agent.
+ *
+ * `memory.remember` / `memory.revise` are deliberately absent even though
+ * `CONVERSATION_TOOL_ALLOWANCE` carries them: remembering what someone told
+ * you is a property of talking with them, and nobody is talking here — a
+ * dispatched Run has no speaker whose entry it would be writing.
+ *
+ * Retrieval is present in its read-only forms only, and reads execute under
+ * `instructed_by_user_id` exactly as they do everywhere else: an agent
+ * dispatched by a person reaches what that person reaches, never more.
+ */
+const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+  "task.list",
+  "task.create",
+  "task.report",
+  "task.handoff",
+  "task.advance_stage",
+  "task.request_review",
+  "inquiry.list_threads",
+  "research.list_operations",
+  "retrieval.brief",
+  "retrieval.search",
+];
+
+/**
+ * What a dispatched Run may call, given where it executes.
+ *
+ * `artifact.submit` is offered only on a remote host, because that is the only
+ * path that applies a declaration today: the executing host uploads its output
+ * directory and `recordOutputArtifacts` gives those files the type and Task
+ * link the Run declared. A server-host Run's artifacts come through
+ * `materializationService` instead, which does not consume declarations yet
+ * (`agent-work-surface-plan.md` P2). Granting it there would let an agent be
+ * told its deliverable was recorded when nothing would ever act on it, which
+ * is worse than not offering the action at all.
+ */
+export function dispatchToolAllowance(
+  trustMode: "sandboxed" | "trusted_host",
+): readonly SystemActionId[] {
+  return trustMode === "trusted_host"
+    ? [...DISPATCH_BASE_TOOL_ALLOWANCE, "artifact.submit"]
+    : DISPATCH_BASE_TOOL_ALLOWANCE;
+}
+
 export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   ...ROOM_PROJECT_TOOL_ALLOWANCE,
   ...CONVERSATION_TOOL_ALLOWANCE,

@@ -72,6 +72,23 @@ Focus areas ([ADR 0015](../decisions/0015-focus-area-classification.md)) are
 independent of this plan and do not overlap it: a focus area is a
 classification that touches no access path and no capability surface.
 
+**First real consumer (recorded 2026-08-28).**
+The agent work surface plan (shipped and retired 2026-08-28; commits
+`fd3d8358`, `da0af91e`, `9239d1c2`) delivers one builtin
+skill — the Rainver Work Skill — as a file to a real CLI runtime on a paired
+host. It ships as a code module (`capabilities/workSkill.ts`) rather than a
+`SkillPackage` row: this plan's target shape is what it was written against —
+content Rainver owns, no `SkillPolicy`, delivery decided by scope rather than
+by an enablement — but none of it is persisted, and `runtimeSkillProvider` was
+not touched, because the Runtime Context gateway flattens a rendered skill's
+files into prompt text and this Skill has to arrive as a file. Modelling it as
+one builtin `SkillPackage` with a `runtime`-scoped `SkillBinding`, and giving
+`runtimeSkillProvider` the implicit-binding path that would resolve it, is
+therefore **carried into this plan** rather than done ahead of it: it is the
+concrete first case for items 1 and 5, and the second builtin skill — the
+research procedures item 2 reclassifies — needs only a narrower binding scope
+on the same mechanism.
+
 ## Current implemented baseline
 
 Verified against `4b0adfe4` on 2026-08-14, then narrowed by the workflow
@@ -169,6 +186,13 @@ and approval state.
 
 The skill's own files remain the content of record. A run receives the package,
 not a regenerated description of it.
+
+Before extending the importer (today: GitHub only, hand-written fetch against
+`raw.githubusercontent.com`), evaluate the Agent Skills ecosystem's own
+tooling — the skills.sh directory and its installer, and the reference tooling
+of the `SKILL.md` standard — as the fetch and inventory layer, per
+`architecture/REUSE_AND_DEPENDENCY_POLICY.md`. What stays Rainver's either
+way is provenance, hash, risk scan, approval and binding. (Noted 2026-08-28.)
 
 ### 4. Demote the renderers to adapter glue
 

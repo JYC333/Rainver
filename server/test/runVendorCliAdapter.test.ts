@@ -14,7 +14,9 @@ import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease
 import { materializeRunCredentialHome } from "../src/modules/providers/cli/credentialBroker.js";
 import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
+import { existsSync } from "node:fs";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope.js";
+import { renderWorkSkill } from "../src/modules/capabilities/workSkill.js";
 import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
 import type { InvocationDelivery } from "@rainver/protocol";
 import type { RunInvocationAttemptLifecycle } from "../src/modules/runs/runtimeContextAttempts.js";
@@ -69,8 +71,18 @@ class FakeBroker implements CliCredentialBrokerPort {
   granted = true;
   liveQuotas: Array<{ runtime: string; profileId: string; quota: Record<string, unknown> }> = [];
 
+  /**
+   * A real directory, because the work surface is staged into the Run's own
+   * HOME. The path stays the deterministic one the other assertions name.
+   */
+  async runHome(runId: string): Promise<string> {
+    const home = join(tmpdir(), "runtime-home", runId);
+    await mkdir(home, { recursive: true });
+    return home;
+  }
+
   async prepareRunHome(runId: string): Promise<string> {
-    return `/tmp/runtime-home/${runId}`;
+    return this.runHome(runId);
   }
 
   async grantForRun(
@@ -81,11 +93,9 @@ class FakeBroker implements CliCredentialBrokerPort {
     profileId?: string | null,
   ) {
     this.grants.push({ runId, spaceId, runtime, executorMode, profileId });
-    const env: Record<string, string> = this.granted
-      ? {
-          HOME: `/tmp/runtime-home/${runId}`,
-          SHOULD_NOT_PASS: "no",
-        }
+    const home = this.granted ? await this.runHome(runId) : null;
+    const env: Record<string, string> = home
+      ? { HOME: home, SHOULD_NOT_PASS: "no" }
       : {};
     return {
       granted: this.granted,
@@ -93,7 +103,7 @@ class FakeBroker implements CliCredentialBrokerPort {
       runtime,
       executor_mode: executorMode,
       readonly: false,
-      temp_home: this.granted ? `/tmp/runtime-home/${runId}` : null,
+      temp_home: home,
       host_source_path: null,
       target_path: null,
       env,
@@ -428,7 +438,7 @@ describe("executeVendorCliAdapter", () => {
       stdin: null,
     });
     expect(executor.calls[0].env.OPENAI_API_KEY).toBeUndefined();
-    expect(executor.calls[0].env.CODEX_HOME).toBe("/tmp/runtime-home/run-1/.codex");
+    expect(executor.calls[0].env.CODEX_HOME).toBe(join(tmpdir(), "runtime-home", "run-1", ".codex"));
     expect(executor.calls[0].env.SHOULD_NOT_PASS).toBeUndefined();
     expect(result).toMatchObject({
       adapter_type: "codex_cli",
@@ -1278,7 +1288,7 @@ describe("executeVendorCliAdapter", () => {
     });
   });
 
-  it("configures and revokes a short-lived MCP identity for granted CLI tools", async () => {
+  it("stages one vendor-neutral work surface for granted CLI tools", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "rainver-cli-tools-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
@@ -1301,22 +1311,41 @@ describe("executeVendorCliAdapter", () => {
         run_input: assembleRunInputEnvelope(toolRun),
         sandbox_cwd: sandbox,
       },
-      { credentialBroker: broker, executor, toolRegistry: new FakeTools() },
+      {
+        credentialBroker: broker,
+        executor,
+        toolRegistry: new FakeTools(),
+        // The identity is a collaborator here, like the broker and the
+        // executor: this test is about how the surface is staged, and the
+        // repository's own SQL has real-Postgres coverage of its own.
+        toolIdentities: {
+          async issue() { return "tool-token-1"; },
+          async revoke() {},
+        },
+      },
     );
+
     expect(result.success).toBe(true);
-    expect(executor.calls[0].env.RAINVER_MCP_URL)
-      .toBe("http://server:8010/internal/runs/run-1/mcp");
+    // Environment, not vendor configuration: nothing here is keyed on which
+    // CLI is running, which is the point of what this replaced.
+    expect(executor.calls[0].env).toMatchObject({
+      RAINVER_API_URL: "http://server:8010",
+      RAINVER_RUN_ID: "run-1",
+      RAINVER_CLI: "/home/sandbox/.rainver/rainver",
+      RAINVER_SKILL_PATH: "/home/sandbox/.rainver/SKILL.md",
+    });
     expect(executor.calls[0].env.RAINVER_TOOL_TOKEN).toBeTruthy();
-    expect(executor.calls[0].command).toContain("--mcp-config");
-    const configPath = executor.calls[0].command[
-      executor.calls[0].command.indexOf("--mcp-config") + 1
-    ]!;
-    const mcpConfig = JSON.parse(await readFile(configPath, "utf8")) as {
-      mcpServers: { "rainver": { url: string; headers: { Authorization: string } } };
-    };
-    expect(mcpConfig.mcpServers["rainver"].url).toBe(executor.calls[0].env.RAINVER_MCP_URL);
-    expect(mcpConfig.mcpServers["rainver"].headers.Authorization)
-      .toBe(`Bearer ${executor.calls[0].env.RAINVER_TOOL_TOKEN}`);
+    expect(executor.calls[0].command).not.toContain("--mcp-config");
+
+    // The Skill is staged in the Run's HOME, never in its worktree: an
+    // untracked directory there is reported as a skipped change in the Run's
+    // own code patch.
+    const home = await broker.runHome("run-1");
+    tmpPaths.push(home);
+    expect(await readFile(join(home, ".rainver", "SKILL.md"), "utf8"))
+      .toBe(renderWorkSkill({ deliverOutputs: false }));
+    expect(existsSync(join(sandbox, ".rainver"))).toBe(false);
+
   });
 
   it("fails closed when the credential profile is missing", async () => {
@@ -1408,7 +1437,7 @@ describe("executeVendorCliAdapter", () => {
       "--cwd",
       sandbox,
     ]);
-    expect(executor.calls[0]?.env.HOME).toBe("/tmp/runtime-home/run-1");
+    expect(executor.calls[0]?.env.HOME).toBe(join(tmpdir(), "runtime-home", "run-1"));
     expect(broker.cleanups).toEqual(["run-1"]);
     const configJson = JSON.parse(await readFile(join(sandbox, "opencode.json"), "utf8")) as Record<string, unknown>;
     expect(configJson).toMatchObject({

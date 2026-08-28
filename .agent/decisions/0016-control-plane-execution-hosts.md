@@ -94,6 +94,22 @@ invocation using whatever the machine is already logged into; the control
 plane supplies the rendered task prompt and an approval preset (headless
 mode requires one).
 
+**A Run-scoped tool surface does.** A remote Run that carries tool grants
+receives a bearer identity for itself, the address this host reaches the
+control plane at, and the `rainver` command with the Skill that explains it —
+materialized by the daemon into the Run's own directory and removed with the
+Run. It is what makes a dispatched agent able to say what it did; without it a
+remote Run is a black box until it exits, which is not an execution-host
+property but an absence of one.
+
+This is reachability, not a trust-model change, for the same reason the
+binding below is. The identity authorizes one Run's calls against Rainver's
+own API. It is not a provider credential, selects no model backend, and is
+therefore outside ADR 0008's channel isolation and B67's mutual exclusion,
+which both govern what the *upstream* sees. Login state remains host-owned and
+ambient for an unbound Run, exactly as before. Nothing is installed onto
+`PATH` (§6): the command is named by absolute path in the Run's environment.
+
 **An explicit ModelProvider binding does.** A remote Run may carry a binding
 chosen by the control plane, in which case the server-side provider proxy and
 its short-lived leases serve it. This costs reachability, not a trust-model
@@ -219,3 +235,9 @@ probing, and full local-first replication are likewise out of scope.
 - **2026-08-27** — rewritten. Four amendments folded into decisions 4–6;
   the amended-documents ledger reduced to the Consequences list and extended
   to ADRs 0005 and 0014, which the original sweeps had missed.
+- **2026-08-28** — §4 gains the Run-scoped tool surface: a dispatched Run
+  receives an identity for calling Rainver back, and the command and Skill to
+  do it with, materialized into its own directory on the host. Reachability,
+  not a trust-model change — the identity is not a provider credential and
+  selects no backend, so ADR 0008 and B67 are untouched, and nothing goes onto
+  `PATH`.

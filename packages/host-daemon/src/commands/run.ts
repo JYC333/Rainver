@@ -120,11 +120,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
 
     socket.addEventListener("open", () => {
       void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => {
-        // Reclaims per-run profiles written by an older daemon, which no run
-        // will ever come back for. Profiles are shared per adapter and
-        // provider now, and are not swept.
+        // Reclaims the directories of runs this daemon is no longer executing
+        // — their outputs, their work surface, and the per-run profile an
+        // older layout put there. A run still launching, running, or uploading
+        // is held out of the sweep by `execution.ts`; a vendor profile is
+        // shared per adapter and provider and lives elsewhere, untouched.
         void sweepStaleRunProfiles().then((removed) => {
-          if (removed > 0) log(`removed ${removed} profile(s) from a previous daemon layout`);
+          if (removed > 0) log(`removed ${removed} finished run director${removed === 1 ? "y" : "ies"}`);
         }).catch(() => {});
         socket.send(JSON.stringify({ type: "hello", token, ...info }));
       });

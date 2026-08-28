@@ -26,6 +26,12 @@ run_package packages/protocol pnpm run typecheck
 run_package packages/protocol pnpm test
 run_package packages/protocol pnpm run build
 
+# The command a dispatched agent reaches Rainver through. Built as well as
+# tested: the server stages the built entry into a Run's own directory.
+run_package packages/agent-cli pnpm run typecheck
+run_package packages/agent-cli pnpm test
+run_package packages/agent-cli pnpm run build
+
 echo "==> Database schema"
 run_package server pnpm run schema:check
 

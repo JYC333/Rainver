@@ -226,6 +226,17 @@ const proposalInputs:Record<string,z.ZodType>={
       id: z.string().min(1),
     })).max(20).optional(),
   }).strict(),
+  // Settlement matches `artifact_type` against the Task's declared
+  // `required_outputs_json`, so this is the field that decides whether a
+  // finished Run closes its Task or parks it for review.
+  "artifact.submit": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    path: z.string().trim().min(1).max(1000).describe("Path to the file relative to $RAINVER_OUTPUT_DIR — write the deliverable there, then declare it. A file anywhere else is not collected as a deliverable. The file is read from disk after the run, so declaring it does not upload it and it must be left in place."),
+    artifact_type: z.string().trim().min(1).max(64).describe("What this file is, matched case-insensitively against the Task's required outputs. Use exactly the name the Task declares when it declares one."),
+    role: z.enum(["output", "evidence", "draft"]).default("output")
+      .describe("output is a deliverable the Task asked for; evidence supports a conclusion; draft is working material kept for the record."),
+    note: z.string().trim().max(2000).optional(),
+  }).strict(),
   "task.handoff": z.object({
     task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     /** Null releases the Task back to its assignment chain. */
@@ -411,6 +422,10 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.advance_stage", "Move a Task's Loop stage", "projectWork", "ProjectWorkTaskActions.advanceStage", "task.stage.advance", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  // Append-only like `task.report`, and ungated at any origin for the same
+  // reason: it says what a file is, and a Task closes on the file existing
+  // with the declared type — never on the declaration alone.
+  agentAction("artifact.submit", "Declare a file this Run produced as a Task's output", "projectWork", "ProjectWorkArtifactDeclarations.submit", "artifact.declare", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   action("proposal.list_pending", "List this conversation's pending Proposals with their ids", "proposals", "PgProposalRepository.listVisible", "proposal.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["proposal.list_pending"] }),
   agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
@@ -643,9 +658,9 @@ export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
 
 /**
  * The model-facing JSON Schema for an action's `input_schema`, derived from
- * the same Zod that validates it. One source: MCP `tools/list`, the managed
- * loop's tool assembly, and any future thin CLI all read this rather than a
- * hand-maintained literal that can drift from what actually validates.
+ * the same Zod that validates it. One source: the Run-scoped tool surface's
+ * `list`/`describe` and the managed loop's tool assembly both read this rather
+ * than a hand-maintained literal that can drift from what actually validates.
  *
  * `$schema` is stripped — a meta-schema pointer is Draft-7 tooling noise on a
  * tool-call payload, and the hand-written schemas it replaces never carried

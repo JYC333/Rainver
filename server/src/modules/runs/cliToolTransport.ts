@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from "node:crypto";
 import type {
   CanonicalToolDefinition,
   RuntimeHostExecuteRequest,
@@ -11,44 +10,6 @@ import {
 } from "../systemActions/systemActionDispatcher.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import type { RunRecord } from "./repository.js";
-
-interface RunToolIdentity {
-  run_id: string;
-  space_id: string;
-  expires_at: number;
-}
-
-export class CliRunToolIdentityRegistry {
-  private readonly identities = new Map<string, RunToolIdentity>();
-
-  issue(run: Pick<RunRecord, "id" | "space_id">, ttlMs: number): string {
-    const token = randomBytes(32).toString("base64url");
-    this.identities.set(tokenDigest(token), {
-      run_id: run.id,
-      space_id: run.space_id,
-      expires_at: Date.now() + Math.max(1, ttlMs),
-    });
-    return token;
-  }
-
-  resolve(token: string, runId: string): RunToolIdentity | null {
-    const key = tokenDigest(token);
-    const identity = this.identities.get(key);
-    if (!identity) return null;
-    if (identity.expires_at <= Date.now()) {
-      this.identities.delete(key);
-      return null;
-    }
-    if (identity.run_id !== runId) return null;
-    return { ...identity };
-  }
-
-  revoke(token: string): void {
-    this.identities.delete(tokenDigest(token));
-  }
-}
-
-export const cliRunToolIdentities = new CliRunToolIdentityRegistry();
 
 export class CliAgentToolTransport {
   constructor(
@@ -107,8 +68,4 @@ function transportRequest(run: RunRecord): RuntimeHostExecuteRequest {
     tool_mode: "disabled",
     tool_bindings: [],
   };
-}
-
-function tokenDigest(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
 }

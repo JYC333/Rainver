@@ -39,10 +39,14 @@ complete line as it arrives, so supported tool lifecycle events are appended
 before process exit. Text/token deltas, stderr/stdout chunks, and unknown
 vendor payloads are not persisted as RunEvent rows.
 
-Local CLI runtimes receive an opaque, short-lived, Run-scoped MCP identity and
-only the intersection of the Run's declared grants and the System Action
-Registry. The MCP endpoint re-loads the Run and space boundary for every call;
-the canonical JSON-RPC call id is the action idempotency key. A
+Local CLI runtimes receive an opaque, short-lived, Run-scoped bearer identity
+(`run_tool_identities`) and only the intersection of the Run's declared grants
+and the System Action Registry. The Run-scoped REST tool surface
+(`/internal/runs/:runId/tools`) re-loads the Run and space boundary for every
+call; the caller's `Idempotency-Key` header is the action idempotency key, and
+a caller that sends none gets a fresh one per request. See
+[`SYSTEM_ACTIONS.md`](SYSTEM_ACTIONS.md) for the surface and how it is
+delivered. A
 `require_approval` policy result moves the Run and current Attempt to
 `waiting_for_review`. The adapter completion path re-checks CLI Run state and
 does not overwrite that pause with a terminal result.

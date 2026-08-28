@@ -19,8 +19,11 @@ const RUNTIME_ENV_KEYS = new Set([
   "no_proxy",
   "RAINVER_EXCHANGE_INPUT",
   "RAINVER_EXCHANGE_OUTPUT",
-  "RAINVER_MCP_URL",
+  "RAINVER_API_URL",
+  "RAINVER_RUN_ID",
   "RAINVER_TOOL_TOKEN",
+  "RAINVER_CLI",
+  "RAINVER_SKILL_PATH",
 ]);
 
 export function buildSubprocessEnv(

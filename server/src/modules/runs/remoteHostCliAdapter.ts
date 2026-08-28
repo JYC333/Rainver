@@ -1,6 +1,10 @@
 import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
+import { WORK_SURFACE_SKILL_PATH_ENV, buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
+import { workSkillPromptPointer } from "../capabilities/workSkill.js";
+import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
+import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
 import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution.js";
 import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
@@ -26,11 +30,14 @@ import {
 /**
  * ADR 0016 P3: the remote-host counterpart to `executeVendorCliAdapter` —
  * deliberately a separate, much smaller function rather than a branch
- * inside it. `executeVendorCliAdapter` is credential/provider/MCP-coupled
- * throughout (grant → sandbox config → provider binding → tool transport,
- * each with its own cleanup-on-failure path); a trusted remote host gets
- * none of that (D1: no server-brokered credentials, no provider binding, no
- * delivery, no MCP — it uses whatever the machine is already logged into).
+ * inside it. `executeVendorCliAdapter` is credential- and provider-coupled
+ * throughout (grant → sandbox config → provider binding, each with its own
+ * cleanup-on-failure path); a trusted remote host gets none of that (D1: no
+ * server-brokered credentials, no Runtime Context Delivery — it uses whatever
+ * the machine is already logged into). What the two *do* share is the tool
+ * surface: both stage the same `rainver` command and Skill and issue the same
+ * Run-scoped identity, by design, since a dispatched agent must report back
+ * the same way wherever it runs.
  * Forking that function's internals would risk the credential-sensitive
  * server-host path for a feature that shares almost none of its logic. The
  * two functions share only genuinely pure pieces: spec lookup and argv
@@ -171,6 +178,15 @@ export async function executeRemoteHostCliAdapter(
     return await runRemoteHostCliAdapter(input, hostId, workspaceLocationId, deps, leases);
   } finally {
     for (const revoke of leases) revoke();
+    // Unconditional, and by Run rather than by token: every path out of this
+    // function is a Run that has stopped executing, and a Run that was never
+    // issued an identity simply matches no row. The tool surface must not
+    // outlive the process that was allowed to use it.
+    if (deps.config?.databaseUrl) {
+      await new PgRunToolIdentityRepository(getDbPool(deps.config.databaseUrl))
+        .revoke(input.run.id)
+        .catch(() => undefined);
+    }
   }
 }
 
@@ -220,7 +236,7 @@ async function runRemoteHostCliAdapter(
   // rainver-information channel, distinct from workspace file
   // changes, is a real open design question logged in
   // `tasks/deferred-register.md`, not decided here).
-  const prompt = input.prompt ?? input.run.prompt ?? "";
+  let prompt = input.prompt ?? input.run.prompt ?? "";
 
   let rendered;
   try {
@@ -370,6 +386,50 @@ async function runRemoteHostCliAdapter(
     }
   }
 
+  // How this run reports back. Offered whenever the Run was granted any tool
+  // at all: an agent dispatched with a tool surface and no way to reach it is
+  // exactly the gap that per-vendor MCP configuration used to fill on the
+  // server host and never filled here. A Run granted nothing gets no command
+  // rather than one that would refuse everything.
+  //
+  // The grants come from the Run's own persisted snapshot, the same source
+  // `SystemActionDispatcher` enforces against — never from the dispatch
+  // request, which does not carry one on this path.
+  let workSurface: RunWorkSurface | null = null;
+  if (assembleRunInputEnvelope(input.run).tool_grants.length > 0 && config?.databaseUrl) {
+    try {
+      workSurface = await buildRunWorkSurface({
+        db: deps.db ?? getDbPool(config.databaseUrl),
+        run: input.run,
+        hostId,
+        timeoutSeconds,
+      });
+    } catch (error) {
+      return remoteFailureWithEvent(
+        input,
+        spec.adapter_type,
+        "work_surface_unavailable",
+        `Could not prepare this run's Rainver work surface: ${error instanceof Error ? error.message : String(error)}`,
+        startedAt,
+      );
+    }
+  }
+  if (workSurface) {
+    // An empty prompt stays empty: a pointer on its own would start a turn
+    // nobody asked for, the same guard the server-host path makes.
+    if (prompt) prompt = `${prompt}\n\n${workSkillPromptPointer(`$${WORK_SURFACE_SKILL_PATH_ENV}`)}`;
+  } else if (assembleRunInputEnvelope(input.run).tool_grants.length > 0) {
+    // Granted tools with no way to reach them. It is not worth failing the Run
+    // — the work may still be worth doing — but it must not be silent: the
+    // agent will finish without reporting anything and the Task will park with
+    // no visible cause. The usual reason is a Host that never reported the
+    // address its daemon reaches the control plane at.
+    void input.thread_event_sink?.([{
+      event_type: "diagnostic",
+      text: "This run was granted Rainver actions but could not be given a way to call them, so nothing it does will be reported back. The Host has no reachable control-plane address recorded.",
+    }]);
+  }
+
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -378,6 +438,7 @@ async function runRemoteHostCliAdapter(
     providerBinding?.frame ?? null,
     runOverrideField(input.run.model_override_json, "installation") ?? "own",
     spec.adapter_type,
+    workSurface?.frame ?? null,
   );
   let stdoutText = "";
   // A caller sends the pair the way both CLIs write it, in the one field a
@@ -544,6 +605,11 @@ async function runRemoteHostCliAdapter(
       adapter_type: spec.adapter_type,
       external_session_id: measurement.external_session_id,
       subscription_quota: measurement.subscription_quota,
+      // Which Skill text this run was given. The Skill changes what an agent
+      // does the way a prompt does, so explaining the run later needs to name
+      // the exact text it saw; the content is code, so a hash identifies it
+      // without storing a copy per run.
+      ...(workSurface ? { work_skill_content_hash: workSurface.skill_content_hash } : {}),
     },
     exit_code: result.returncode,
     error_code: success ? null : resumedSessionInvalid ? "runtime_session_invalid" : "runtime_nonzero_exit",
@@ -625,6 +691,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly installation: string = "own",
     /** The adapter the copy belongs to — managed copies are keyed by it, not by the command name. */
     private readonly adapterType: string | null = null,
+    /** Null when this Run was granted no tool and needs no way to call back. */
+    private readonly workSurface: RunWorkSurfaceFrame | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -701,6 +769,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         provider_binding: this.providerBinding ?? undefined,
         installation: this.installation,
         adapter_type: this.adapterType ?? undefined,
+        work_surface: this.workSurface ?? undefined,
       },
       onOutput,
       input.on_stderr_chunk,

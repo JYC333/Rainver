@@ -405,8 +405,9 @@ owner's capacity.
   text server-side.
 
 General MCP/tool scheduling is deferred to the extended server runtime stage.
-Local CLI adapters use the same `AgentToolGateway` through the Run-scoped MCP
-transport rather than a separate tool authority.
+Local CLI adapters use the same `AgentToolGateway` through the Run-scoped REST
+tool surface — reached with the `rainver` command the executing side puts in
+front of the Run — rather than a separate tool authority.
 
 ## Permission Bypass
 

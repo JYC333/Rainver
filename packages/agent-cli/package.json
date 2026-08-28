@@ -1,0 +1,34 @@
+{
+  "name": "@rainver/agent-cli",
+  "version": "0.1.0",
+  "description": "The `rainver` command a dispatched agent calls Rainver back with: list, describe, call. One file, no runtime dependencies, so whoever delivers it to a runtime \u2014 the host daemon on a paired machine, the server for a sandboxed run \u2014 delivers the same copy.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "bin": {
+    "rainver": "./dist/rainver.js"
+  },
+  "main": "./dist/rainver.js",
+  "types": "./dist/rainver.d.ts",
+  "exports": {
+    ".": "./dist/rainver.js",
+    "./source": "./src/rainver.ts"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.0",
+    "vitest": "^4.1.11"
+  }
+}

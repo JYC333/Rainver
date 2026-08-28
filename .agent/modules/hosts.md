@@ -9,7 +9,14 @@ document retired 2026-08-23): every conversation runtime — `claude_code`,
 `codex_cli`, `opencode` — now speaks the Agent Client Protocol exclusively on
 both the server-host and remote-host execution paths; the self-maintained
 vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
-replaced are deleted. **This document describes the ACP-based system as it
+replaced are deleted. So is the remote-host provider-binding plan
+(`remote-host-provider-binding-plan.md`, P1–P2 shipped in `404b1b87` and the
+commits that followed, retired 2026-08-28): its shipped state is the
+"Model-backend binding" material below (host×adapter defaults, the
+`provider_binding` launch frame, host-side profile materialization, the B67
+allowlist at spawn); its open real-host acceptance items are in the deferred
+register's multi-host section and its two actionable leftovers in
+`plans/backlog.md` §8. **This document describes the ACP-based system as it
 stands today.**
 
 ## Purpose
@@ -850,11 +857,50 @@ during P1 discovery review and is recorded here as a conscious, accepted gap
 rather than an oversight — a redaction-tier column is deferred, not built,
 since a real redaction system is disproportionate for what P1 needs.
 
+## The work surface a dispatched Run reports back through
+
+A remote Run that carries tool grants is given a way to call Rainver back, and
+it is the same one a server-host Run gets: two files and a few environment
+variables, with no branch on which runtime is executing.
+
+The launch frame gains `work_surface` — `{ env, files, dir_env }`, the same
+shape `provider_binding` uses and for the same reason (the control plane names
+relative paths; only the machine knows absolute ones). The daemon materializes
+it under `<config dir>/runs/<run_id>/`, exports the resulting environment over
+the binding's and the machine's, and removes the directory when the Run ends.
+`RAINVER_CLI` names a launcher the daemon generates there, pointing at the
+`rainver` command in `@rainver/agent-cli` through the same Node the daemon
+runs — the command is a script, not an executable, and nothing is installed
+onto `PATH` (ADR 0016 §6).
+
+The Run's identity is a `run_tool_identities` row, issued with the surface and
+revoked on every exit path from the adapter. It is durable rather than
+in-process because a remote CLI keeps running across a server restart, and it
+carries the content hash of the Skill that Run was given, so explaining the
+Run later can name the exact text it saw. The token is not a provider
+credential and selects no model backend, so ADR 0008 and B67 — both about
+upstream credentials — are untouched by it.
+
+`RAINVER_API_URL` is the address *this host* reaches the control plane at,
+derived from `hosts.daemon_server_url` (its origin and path, so a control
+plane behind a path prefix is not truncated). The server cannot guess it: its
+own hostname is a Compose service name no paired machine resolves. A host that
+reported none is offered no surface at all rather than one pointing somewhere
+unreachable.
+
+A remote Run is also the only path where `artifact.submit` is granted. The
+daemon uploads whatever the Run left in `$RAINVER_OUTPUT_DIR`, and
+`recordOutputArtifacts` applies the Run's declarations to those uploads —
+giving each file the declared `artifact_type` and linking it to its Task with
+the declared role, which is what lets settlement match
+`tasks.required_outputs_json` and close the Task. A declaration whose file
+never arrived is reported into the Task's own stream rather than dropped.
+
 ## No server-brokered Runtime Context for a remote run (D1)
 
 `RunOrchestrationService.prepareRuntimeContext` and `enforceRuntimePolicy`
 both branch on `hostKind`: a remote run skips the Runtime Context Gateway
-entirely (no retrieval, no provider/model resolution, no MCP — planning a
+entirely (no retrieval, no provider/model resolution — planning a
 Delivery would fail outright anyway, since there is no bound provider to
 resolve a default model from), skips CLI credential-profile/tool-version
 resolution, and never has its `required_sandbox_level` escalated past the

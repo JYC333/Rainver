@@ -3,7 +3,7 @@ import { createConnection } from "node:net";
 const terminalMode = process.env.PROBE_TERMINAL_MODE === "pty" ? "pty" : "pipe";
 
 const request = {
-  protocol_version: 1,
+  protocol_version: 2,
   run_id: "boundary-probe",
   scope_id: "selected",
   runtime: "codex_cli",

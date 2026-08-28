@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { configDir, requireConfig } from "./config.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
-import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedProfiles } from "./providerBinding.js";
+import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 
 export interface LaunchFrame {
@@ -39,6 +39,27 @@ export interface LaunchFrame {
    * inside its own process.
    */
   provider_binding?: ProviderBindingFrame;
+  /**
+   * How this run calls back into Rainver: its identity, the control-plane
+   * address to use it at, and the Skill that says how. Materialized under
+   * this run's own directory and removed with it.
+   *
+   * Runtime-agnostic on purpose — environment and one file, with no branch on
+   * which agent is running. It is what replaced per-vendor tool configuration,
+   * so a newly registered ACP agent needs nothing added here.
+   */
+  work_surface?: WorkSurfaceFrame;
+}
+
+export interface WorkSurfaceFrame {
+  /** Literal values: the API base URL, the run id, and the run's tool token. */
+  env: Record<string, string>;
+  files: Array<{ relative_path: string; contents: string }>;
+  /**
+   * Variables whose value is a path inside this run's directory. The control
+   * plane names the relative path; only this machine knows the absolute one.
+   */
+  dir_env: Record<string, string>;
 }
 
 export interface ProviderBindingFrame {
@@ -210,25 +231,140 @@ export function resolveAcpLaunch(
 const activeRuns = new Map<string, ActiveRun>();
 /** Runs whose launch frame has arrived but whose child is not registered yet. */
 const launchingRuns = new Set<string>();
+/**
+ * Runs whose child has exited but whose directory is still being read.
+ *
+ * The diff and output uploads happen after the child is gone and take as long
+ * as the network does. A reconnect in that window would otherwise let
+ * `sweepStaleRunProfiles` — which now removes the whole run directory — delete
+ * the outputs out from under `collectOutputFiles`, losing the deliverables
+ * silently and turning every `artifact.submit` declaration into "declared but
+ * not delivered".
+ */
+const finishingRuns = new Set<string>();
 
 /**
- * Removes run profiles left behind by a daemon that was killed mid-run. Each
- * holds a live lease token, and nothing else would ever remove it — the same
- * run id never comes back.
+ * Removes run directories left behind by a daemon that was killed mid-run.
+ * Each holds that run's outputs and work surface, and an older layout also put
+ * a live lease token there; nothing else would ever remove one, because the
+ * same run id never comes back.
  */
 export async function sweepStaleRunProfiles(): Promise<number> {
   // `launchingRuns` as well as `activeRuns`: a reconnect can land between a
   // launch frame arriving and its child being registered, and deleting that
   // run's profile mid-launch is the exact silent-unbinding this phase exists
   // to prevent.
-  return sweepOrphanedProfiles(
+  return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
-    new Set([...activeRuns.keys(), ...launchingRuns]),
+    new Set([...activeRuns.keys(), ...launchingRuns, ...finishingRuns]),
   );
 }
 
 function runOutputsDir(runId: string): string {
-  return join(configDir(), "runs", runId, "outputs");
+  return join(runDir(runId), "outputs");
+}
+
+/**
+ * This run's own directory. Already swept for orphans by
+ * `sweepOrphanedRunDirectories`, so anything materialized here is removed with
+ * the run — including a work surface carrying its tool token.
+ */
+function runDir(runId: string): string {
+  return join(configDir(), "runs", runId);
+}
+
+/**
+ * Writes the run's work surface and returns the environment it contributes.
+ *
+ * `RAINVER_CLI` is resolved here, not sent by the control plane: it is a path
+ * on this machine, and the command ships with this daemon so the two versions
+ * cannot disagree. It is passed by absolute path rather than installed onto
+ * `PATH` — the daemon puts nothing into the machine's global tool space
+ * (ADR 0016 §6).
+ */
+async function materializeWorkSurface(
+  surface: WorkSurfaceFrame,
+  runId: string,
+): Promise<Record<string, string>> {
+  const root = runDir(runId);
+  for (const file of surface.files) {
+    const target = resolveInsideDir(root, file.relative_path);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(target, file.contents, { encoding: "utf8", mode: 0o600 });
+  }
+  const env: Record<string, string> = { ...surface.env };
+  for (const [key, relativePath] of Object.entries(surface.dir_env)) {
+    env[key] = relativePath === "." ? root : resolveInsideDir(root, relativePath);
+  }
+  env.RAINVER_CLI = await writeCliLauncher(root);
+  return env;
+}
+
+/**
+ * A launcher for the `rainver` command, written into this run's directory.
+ *
+ * The command itself is a `.js` file inside this package, and `tsc` emits it
+ * without an executable bit — so pointing `RAINVER_CLI` straight at it makes
+ * `$RAINVER_CLI list` fail with `EACCES` on any host running the daemon from a
+ * checkout, and fail on Windows regardless. A generated launcher settles both:
+ * it runs under the same Node that runs this daemon, needs nothing on `PATH`
+ * (ADR 0016 §6), and is removed with the run.
+ */
+async function writeCliLauncher(root: string): Promise<string> {
+  const cli = rainverCliPath();
+  const windows = process.platform === "win32";
+  // Inside `rainver/`, beside the Skill: the run directory also holds
+  // `outputs/`, and a launcher named for the directory it sits next to would
+  // collide with it.
+  const target = join(root, "rainver", windows ? "rainver.cmd" : "rainver");
+  const contents = windows
+    ? `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`
+    : `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cli)} "$@"\n`;
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  await writeFile(target, contents, { encoding: "utf8", mode: 0o700 });
+  return target;
+}
+
+/** Single-quoted for `sh`, so a path containing spaces survives. */
+function shellQuote(value: string): string {
+  return `'${value.split("'").join(`'\\''`)}'`;
+}
+
+/** Refuses a control-plane path that would write outside the run directory. */
+function resolveInsideDir(root: string, relativePath: string): string {
+  const target = resolve(root, relativePath);
+  const prefix = resolve(root) + sep;
+  if (target !== resolve(root) && !target.startsWith(prefix)) {
+    throw new Error(`work surface path escapes the run directory: ${relativePath}`);
+  }
+  return target;
+}
+
+/**
+ * The `rainver` command, from the package that owns it.
+ *
+ * `@rainver/agent-cli` is a workspace package with no runtime dependencies,
+ * consumed by whoever has to put the command in front of a runtime — this
+ * daemon for a paired machine, the server for a sandboxed run. One copy, so
+ * the two paths cannot hand an agent different commands.
+ *
+ * The built entry is preferred; the source is the fallback for running this
+ * daemon from a checkout under a TypeScript loader, where nothing is built.
+ */
+function rainverCliPath(): string {
+  // `createRequire`, not `import.meta.resolve`: the ESM resolver maps the
+  // export without checking the file is there, so a checkout with nothing
+  // built would get a `dist/` path that does not exist — and Vitest's module
+  // runner does not implement it at all. `require.resolve` honours the same
+  // `exports` map and fails when the target is missing, which is what makes
+  // the fallback correct. Same choice, same reason, as the ACP entrypoint
+  // resolution above.
+  const require = createRequire(import.meta.url);
+  try {
+    return require.resolve("@rainver/agent-cli");
+  } catch {
+    return require.resolve("@rainver/agent-cli/source");
+  }
 }
 
 /**
@@ -314,6 +450,24 @@ async function launchRun(
   // A run with no binding keeps the machine's own environment untouched.
   let baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
   let bindingEnv: Record<string, string> = {};
+  let workSurfaceEnv: Record<string, string> = {};
+  if (frame.work_surface) {
+    try {
+      workSurfaceEnv = await materializeWorkSurface(frame.work_surface, frame.run_id);
+    } catch (error) {
+      // Without its work surface the agent cannot report anything back, and a
+      // run whose result never reaches Rainver is worse than one that did not
+      // start: it looks finished and advanced nothing.
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        exit_code: 1,
+        timed_out: false,
+        error: `Could not prepare this run's Rainver work surface: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+  }
   if (frame.provider_binding) {
     try {
       bindingEnv = await materializeProviderBinding(
@@ -335,7 +489,11 @@ async function launchRun(
 
   const child: ChildProcess = spawn(command, spawnArgs, {
     cwd,
-    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv },
+    // The work surface is applied after the binding for the same reason the
+    // binding is applied after the ambient environment: it is control-plane
+    // authority, and this machine does not get to override which Rainver a run
+    // reports to.
+    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv },
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });
@@ -377,6 +535,9 @@ async function launchRun(
     void (async () => {
       if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
       activeRuns.delete(frame.run_id);
+      // Held until the directory is gone, so a reconnect mid-upload cannot
+      // sweep the outputs this block is still reading.
+      finishingRuns.add(frame.run_id);
 
       try {
         const diff = await captureWorkspaceDiff(cwd);
@@ -392,7 +553,15 @@ async function launchRun(
       } catch (error) {
         log(`run ${frame.run_id}: output upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      await rm(outputsDir, { recursive: true, force: true });
+      // The whole directory: its work surface carried this run's Skill, and
+      // the run id never comes back to reclaim it. A failure here must not
+      // swallow the `complete` frame or pin the run id in `finishingRuns` for
+      // this daemon's lifetime — a directory the sweep may never touch again
+      // is worse than one removed a reconnect later.
+      await rm(runDir(frame.run_id), { recursive: true, force: true }).catch((error: unknown) => {
+        log(`run ${frame.run_id}: run directory cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      finishingRuns.delete(frame.run_id);
 
       send({
         type: "complete",

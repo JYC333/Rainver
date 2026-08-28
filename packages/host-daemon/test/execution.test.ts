@@ -37,9 +37,16 @@ afterEach(async () => {
   await rm(workspaceDir, { recursive: true, force: true });
 });
 
+/** Everything the run wrote to stdout, as the daemon streamed it back. */
+function frames(send: (frame: Record<string, unknown>) => void): string[] {
+  const collected = (send as unknown as { collected?: Record<string, unknown>[] }).collected ?? [];
+  return collected.filter((f) => f.type === "output").map((f) => String(f.chunk));
+}
+
 function collectSend() {
   const frames: Record<string, unknown>[] = [];
   const send = (frame: Record<string, unknown>) => frames.push(frame);
+  (send as unknown as { collected: Record<string, unknown>[] }).collected = frames;
   const complete = () => new Promise<Record<string, unknown>>((resolve) => {
     const check = () => {
       const found = frames.find((f) => f.type === "complete");
@@ -378,5 +385,90 @@ describe("handleLaunch with a provider binding", () => {
       expect(String(completion?.error), profile_key).toContain("profile key");
       expect(frames.some((f) => f.type === "output"), profile_key).toBe(false);
     }
+  });
+});
+
+describe("the work surface a dispatched run is given", () => {
+  it("writes the Skill, sets the environment, and hands the agent a runnable command", async () => {
+    const { send, complete } = collectSend();
+
+    await handleLaunch(
+      {
+        run_id: "run-surface-1",
+        project_folder_id: "folder-1",
+        // The child reports back what it was given, which is the whole
+        // contract: an agent that cannot see these has no way to reach Rainver.
+        argv: ["sh", "-c", 'printf "%s|%s|%s\\n" "$RAINVER_API_URL" "$RAINVER_TOOL_TOKEN" "$RAINVER_SKILL_PATH"; cat "$RAINVER_SKILL_PATH"; "$RAINVER_CLI" --help 2>&1'],
+        work_surface: {
+          env: {
+            RAINVER_API_URL: "https://control.example.test",
+            RAINVER_RUN_ID: "run-surface-1",
+            RAINVER_TOOL_TOKEN: "token-surface-1",
+          },
+          files: [{ relative_path: "rainver/SKILL.md", contents: "# Working for Rainver\n" }],
+          dir_env: { RAINVER_SKILL_PATH: "rainver/SKILL.md" },
+        },
+      },
+      send,
+      () => {},
+    );
+
+    const done = await complete();
+    expect(done.exit_code).toBe(0);
+    const output = frames(send).join("");
+    expect(output).toContain("https://control.example.test|token-surface-1|");
+    expect(output).toContain("# Working for Rainver");
+    // The launcher must actually run: pointing at a `.js` file that `tsc`
+    // emitted without an executable bit fails with EACCES here.
+    expect(output).toContain("rainver — report to Rainver");
+  });
+
+  it("removes the run directory, and with it the Skill, once the run ends", async () => {
+    const { send, complete } = collectSend();
+
+    await handleLaunch(
+      {
+        run_id: "run-surface-2",
+        project_folder_id: "folder-1",
+        argv: ["sh", "-c", "true"],
+        work_surface: {
+          env: { RAINVER_TOOL_TOKEN: "token-surface-2" },
+          files: [{ relative_path: "rainver/SKILL.md", contents: "skill" }],
+          dir_env: {},
+        },
+      },
+      send,
+      () => {},
+    );
+    await complete();
+
+    expect(existsSync(join(configDir, "runs", "run-surface-2"))).toBe(false);
+  });
+
+  it("refuses a work-surface path that would escape the run directory", async () => {
+    const { send, complete } = collectSend();
+
+    await handleLaunch(
+      {
+        run_id: "run-surface-3",
+        project_folder_id: "folder-1",
+        argv: ["sh", "-c", "true"],
+        work_surface: {
+          env: {},
+          files: [{ relative_path: "../../escaped.md", contents: "nope" }],
+          dir_env: {},
+        },
+      },
+      send,
+      () => {},
+    );
+
+    const done = await complete();
+    // Failing the run is the point: a run with no work surface cannot report
+    // anything back, and one that looks finished but advanced nothing is worse
+    // than one that never started.
+    expect(done.exit_code).toBe(1);
+    expect(String(done.error)).toContain("work surface");
+    expect(existsSync(join(configDir, "escaped.md"))).toBe(false);
   });
 });

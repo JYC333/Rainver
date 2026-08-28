@@ -48,7 +48,7 @@ interface TaskRow {
  * in any Room could name a private Task's id and report on it, move its Loop,
  * or reassign it — reading its title back in the process.
  */
-async function requireProjectTask(
+export async function requireProjectTask(
   db: Queryable,
   spaceId: string,
   taskId: string,

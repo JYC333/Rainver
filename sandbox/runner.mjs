@@ -95,7 +95,7 @@ createServer((socket) => {
 }).listen(PORT, "0.0.0.0");
 
 function validateRequest(value) {
-  if (!value || value.protocol_version !== 1) throw new Error("Unsupported Sandbox Runner protocol.");
+  if (!value || value.protocol_version !== 2) throw new Error("Unsupported Sandbox Runner protocol.");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value.run_id) || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value.scope_id)) throw new Error("Invalid run or scope id.");
   if (!["claude_code", "codex_cli", "opencode", "verification"].includes(value.runtime)) throw new Error("Unknown runtime adapter.");
   if (!["read_only", "read_write"].includes(value.sandbox_mode)) throw new Error("Unknown sandbox mode.");
@@ -219,7 +219,14 @@ function environmentMap(env = {}) {
   for (const [field, key] of [["base_url", "ANTHROPIC_BASE_URL"], ["auth_token", "ANTHROPIC_AUTH_TOKEN"], ["model", "ANTHROPIC_MODEL"], ["default_sonnet_model", "ANTHROPIC_DEFAULT_SONNET_MODEL"], ["default_opus_model", "ANTHROPIC_DEFAULT_OPUS_MODEL"], ["default_haiku_model", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]]) if (typeof anthropic[field] === "string") result[key] = anthropic[field];
   const proxy = env.proxy ?? {};
   for (const [field, keys] of [["http", ["HTTP_PROXY", "http_proxy"]], ["https", ["HTTPS_PROXY", "https_proxy"]], ["all", ["ALL_PROXY", "all_proxy"]], ["no_proxy", ["NO_PROXY", "no_proxy"]]]) if (typeof proxy[field] === "string") for (const key of keys) result[key] = proxy[field];
-  if (env.tool_channel && typeof env.tool_channel.url === "string" && typeof env.tool_channel.token === "string") { result.RAINVER_MCP_URL = env.tool_channel.url; result.RAINVER_TOOL_TOKEN = env.tool_channel.token; }
+  const tools = env.tool_channel;
+  if (tools && typeof tools.url === "string" && typeof tools.token === "string") {
+    result.RAINVER_API_URL = tools.url;
+    result.RAINVER_TOOL_TOKEN = tools.token;
+    if (typeof tools.run_id === "string") result.RAINVER_RUN_ID = tools.run_id;
+    if (typeof tools.cli_path === "string") result.RAINVER_CLI = tools.cli_path;
+    if (typeof tools.skill_path === "string") result.RAINVER_SKILL_PATH = tools.skill_path;
+  }
   if (env.exchange) { result.RAINVER_EXCHANGE_INPUT = "/run-exchange/input/run_input.json"; result.RAINVER_EXCHANGE_OUTPUT = "/run-exchange/output"; }
   return result;
 }

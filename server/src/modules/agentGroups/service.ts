@@ -120,9 +120,11 @@ export interface SpawnChildRunInput {
   /**
    * The originating tool call's canonical id. When set, a delegation request
    * carrying the same (space, parent_run, tool_call_id) replays the prior
-   * result instead of spawning a second child Run — required so a CLI/MCP
-   * reconnect or retry of `agent.delegate` cannot duplicate the durable
-   * delegation. See uq_run_delegations_parent_tool_call.
+   * result instead of spawning a second child Run — required so a retried
+   * `agent.delegate` tool call cannot duplicate the durable delegation. A CLI
+   * Run's calls carry the caller's `Idempotency-Key`, so a reconnect or a
+   * retry of the same call arrives with the same id. See
+   * uq_run_delegations_parent_tool_call.
    */
   tool_call_id?: string | null;
 }

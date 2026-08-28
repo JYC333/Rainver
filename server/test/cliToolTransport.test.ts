@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import {
-  CliAgentToolTransport,
-  CliRunToolIdentityRegistry,
-} from "../src/modules/runs/cliToolTransport.js";
+import { CliAgentToolTransport } from "../src/modules/runs/cliToolTransport.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import type { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 
@@ -48,34 +45,6 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     ...overrides,
   } as RunRecord;
 }
-
-describe("CLI Run tool identity", () => {
-  it("is short-lived, Run-scoped, cross-space opaque, and revocable", () => {
-    const registry = new CliRunToolIdentityRegistry();
-    const token = registry.issue({ id: "run-1", space_id: "space-1" }, 60_000);
-    expect(registry.resolve(token, "run-1")).toMatchObject({
-      run_id: "run-1",
-      space_id: "space-1",
-    });
-    expect(registry.resolve(token, "run-2")).toBeNull();
-    expect(registry.resolve(token, "run-1")).toMatchObject({ run_id: "run-1" });
-
-    const revoked = registry.issue({ id: "run-1", space_id: "space-1" }, 60_000);
-    registry.revoke(revoked);
-    expect(registry.resolve(revoked, "run-1")).toBeNull();
-  });
-
-  it("rejects expired identities", () => {
-    const registry = new CliRunToolIdentityRegistry();
-    const token = registry.issue({ id: "run-1", space_id: "space-1" }, 1);
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        expect(registry.resolve(token, "run-1")).toBeNull();
-        resolve();
-      }, 5);
-    });
-  });
-});
 
 describe("CliAgentToolTransport", () => {
   // No database URL: with no SERVER_DATABASE_URL configured,

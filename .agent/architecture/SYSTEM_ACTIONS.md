@@ -27,9 +27,12 @@ Every system action declares:
   policy adapter (`declared_resource`, `retrieval`, or `agent_delegate`) when
   the action is Agent-callable.
 
-There are currently no public `external_mcp` actions. The private Run-scoped
-MCP transport is not a public registration surface and does not change action
-visibility.
+There are currently no public `external_mcp` actions, and no MCP surface at
+all: the Run-scoped one this repository used to mount was deleted with the
+`rainver` command that replaced it. `external_mcp` stays in the enum because
+its trigger is real and recorded — an external MCP client becoming a
+requirement, which is a different question from how Rainver's own dispatched
+agents call back.
 
 ## Dispatch boundary
 
@@ -52,7 +55,7 @@ plan):
   tool-call shape. `dispatch()` and `listGrantedDefinitions()` are its call
   surface; `ManagedAgentToolSurface` also reads its already-resolved
   retrieval/delegation/generic/research bindings directly to assemble the
-  managed loop's tool set. The CLI MCP transport and the managed loop both
+  managed loop's tool set. The CLI tool surface and the managed loop both
   call `dispatch`/`listGrantedDefinitions` directly and neither recomputes
   grants or re-runs policy itself. Runtime delegation
   materialization (Path B, below) is the one deliberate exception: it runs
@@ -71,18 +74,28 @@ HTTP routes continue to call their owning application services and
 `PolicyGateway` enforcement points directly; they do not go through
 `SystemActionDispatcher`. Server jobs may use internal/system-job actions.
 
-Local CLI Runs reach `SystemActionDispatcher` through a Run-scoped MCP
-transport (`runs/cliToolTransport.ts`'s `CliAgentToolTransport`, mounted by
-the JSON-RPC route in `runs/routes.ts`). The server issues an opaque,
-in-memory, short-lived identity only for the executing Run, exposes
-`initialize`, `tools/list`, and `tools/call`, and revokes the identity when
-the CLI exits. The route (`runs/routes.ts`) reloads the Run and rejects
-unless it is `running`; the transport (`cliToolTransport.ts`'s
-`assertActive()`) repeats that same check before every `list`/`call`, then
-only builds a dispatcher and forwards to it — neither adapter computes tool
-permissions itself, that intersection is `SystemActionDispatcher`'s grant
-computation. It never gives the CLI database credentials or an internal
-service token.
+Local CLI Runs reach `SystemActionDispatcher` through a Run-scoped REST
+surface: `GET /internal/runs/:runId/tools`, `GET
+/internal/runs/:runId/tools/:actionId` and `POST
+/internal/runs/:runId/tools/:actionId` (`runs/routes.ts`), in front of
+`runs/cliToolTransport.ts`'s `CliAgentToolTransport`. The agent calls them
+with the `rainver` command (`packages/agent-cli`), which the executing side
+puts in front of it — the host daemon on a paired machine, the server for a
+sandboxed Run — as an absolute path in `RAINVER_CLI`, never on `PATH`
+(ADR 0016 §6). The command is a pass-through (`list`, `describe`, `call`):
+action names and input schemas come from the server at run time, so a new
+System Action needs nothing added to it.
+
+The identity is a `run_tool_identities` row: a bearer token stored only as a
+digest, issued for one Run, matched against the Run id rather than trusted
+from the token, expiring, and revoked when the Run stops. Durable rather than
+in-process because the caller outlives the process — a remote Run's CLI keeps
+working across a server restart. The route reloads the Run and rejects unless
+it is `running`; the transport (`assertActive()`) repeats that check before
+every `list`/`call`, then only builds a dispatcher and forwards to it —
+neither computes tool permissions itself, that intersection is
+`SystemActionDispatcher`'s grant computation. The CLI never receives database
+credentials or an internal service token.
 
 Run creation computes that intersection from the Run's declared
 `capabilities_json`, its immutable AgentVersion
@@ -98,11 +111,43 @@ actually call. Tool-free Runs remain tool-free (including network-isolated
 Docker CLI execution). The action does not grant authority; it can only create
 a bounded `authorization_requests` row.
 
-Codex, Claude Code, and OpenCode receive generated sandbox-only MCP
-configuration. Side-effecting calls use the MCP JSON-RPC request id as the
-canonical tool-call/idempotency key. Network-isolated one-shot Docker execution
-fails closed when a Run requests tools because it cannot reach the loopback
-broker.
+**Delivery carries no runtime name.** A Run is given a handful of environment
+variables and the files behind them — the command, reachable at `RAINVER_CLI`
+(the daemon resolves its own copy and generates a launcher; the server, whose
+sandbox mounts nothing of its own, stages the file itself), the Rainver Work
+Skill
+(`capabilities/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
+constants the conversational surfaces share),
+and a pointer to the Skill appended to the prompt the runtime is actually
+sent. There is no per-vendor branch anywhere in that path, which is what the
+three generated MCP configuration files it replaced each required. A newly
+registered ACP agent needs nothing added.
+
+Side-effecting calls use the caller's `Idempotency-Key` header as the
+canonical tool-call/idempotency key; a caller that sends none gets a fresh one
+per request rather than a constant, so a second call of the same action in one
+attempt is not swallowed by the event writer. Network-isolated one-shot Docker
+execution fails closed when a Run requests tools because it cannot reach the
+server.
+
+There are two delivery sites, one per execution host kind, and they differ
+only in where the files land: the daemon writes them into the Run's own
+directory under its config root and removes them with the Run
+(`packages/host-daemon/src/execution.ts`); the server writes them into the
+Run's isolated HOME, which the sandbox runner mounts at `/home/sandbox`
+(`runs/sandboxWorkSurface.ts`). Neither writes into the workspace — on the
+server host a staged directory there would be collected as an untracked change
+in the Run's own code patch, and on a paired machine the workspace is the
+user's checkout.
+
+`artifact.submit` is granted only on the remote-host path. It declares that a
+file the Run leaves behind is a Task's output, and only that path applies a
+declaration today (the executing host uploads its output directory and
+`hosts/repository.ts` gives those files the declared type and Task link, which
+is what lets settlement match `tasks.required_outputs_json`). A sandboxed
+Run's artifacts come through `materializationService` instead, which does not
+consume declarations, so the action is withheld rather than accepted and
+ignored.
 
 ## Declarative policy resources and derived schemas
 

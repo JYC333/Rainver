@@ -2218,8 +2218,10 @@ export class RunOrchestrationService {
       }
 
       // ADR 0016 P3: a remote host gets no server-brokered Runtime Context —
-      // no retrieval, no provider/model resolution, no MCP. It runs the
-      // vendor CLI bare, using whatever the machine is already logged into.
+      // no retrieval, no provider/model resolution. It runs the vendor CLI
+      // bare, using whatever the machine is already logged into. (It does get
+      // a Run-scoped tool surface, which the adapter builds separately; that
+      // is not Runtime Context.)
       // Planning a Delivery here would also fail outright for any remote run
       // with no model_override/model_config, since there is no bound
       // provider to resolve a default model from.

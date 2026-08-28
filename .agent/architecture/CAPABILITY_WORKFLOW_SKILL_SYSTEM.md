@@ -41,6 +41,40 @@ permission grant.
 
 ## Concepts
 
+### The builtin Work Skill
+
+The Rainver Work Skill (`capabilities/workSkill.ts`) is the harness contract a
+dispatched agent works under: how to reach the tool surface, when to report,
+how to hand a decision back. It is builtin in the sense `SkillSourceType`'s
+`"builtin"` already means — content Rainver owns and versions with the server,
+with no provenance, risk or approval state, because there is no third party to
+trust. It is not an enablement: a Run that has tool grants gets it, with nothing to
+turn on and nothing that can turn it off, because a Run that can act and
+cannot report is an error state rather than a configuration. A Run with no
+grants gets no Skill and no surface, which is the same fail-closed answer
+`SYSTEM_ACTIONS.md` states as "tool-free Runs remain tool-free".
+
+Its judgement rules come from `systemActions/conversationPolicy.ts`, the same
+constants the conversational surfaces assemble — `IDENTIFIER_POLICY`,
+`DURABLE_ACTION_CLAIM_POLICY` and `ACTION_RESULT_REPORTING_POLICY`, which is
+the set the Room dispatch prompt uses (`agentGroups/service.ts`); the managed
+loop assembles an overlapping subset. Editing one of those constants changes
+what every surface that includes it tells an agent, which is the point. What
+is Skill-specific and hand-written is the command mechanics and the ADR 0017
+§2 paragraph on direct writes and bounds — the latter restates substance
+`QUESTION_DECOMPOSITION_ACTION_POLICY` also carries, and is the one place this
+arrangement still has two copies of a rule. What an agent may actually call is
+unchanged by it — the Run's
+`permission_snapshot_json.tool_grants`, enforced call by call — and the Skill
+points at `list` rather than naming a fixed set. Each Run records the content
+hash of the Skill it was given.
+
+It is delivered as a file, which nothing else in this module does yet: an
+imported Open Skill is still flattened into prompt text by the Runtime Context
+gateway. Modelling it as a `SkillPackage` with a `runtime`-scoped
+`SkillBinding` is carried in [`plans/capability-shrink-plan.md`](../plans/capability-shrink-plan.md),
+whose target shape it was written against.
+
 ### Open Skill
 
 An Open Skill is an external, portable skill source package. It may come from

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -18,10 +19,8 @@ import {
   canonicalRunOutput,
   isHardTerminalRunStatus,
 } from "./orchestrationResults.js";
-import {
-  CliAgentToolTransport,
-  cliRunToolIdentities,
-} from "./cliToolTransport.js";
+import { CliAgentToolTransport } from "./cliToolTransport.js";
+import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope.js";
 import {
   NonTerminalRunError,
@@ -139,82 +138,96 @@ export function commandServices(context: ModuleContext): RunsCommandServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.post("/internal/runs/:runId/mcp", async (request, reply) => {
+  /**
+   * The tool surface a dispatched agent calls back on.
+   *
+   * One vendor-neutral surface for every runtime: the agent holds this Run's
+   * bearer token and reaches `SystemActionDispatcher` — the same grant
+   * computation, the same policy enforcement, the same executors the managed
+   * loop uses. Nothing here decides what an agent may do; the Run's persisted
+   * `permission_snapshot_json.tool_grants` did that at creation, and the
+   * dispatcher enforces it call by call.
+   *
+   * `runToolRequest` repeats the transport's own liveness check before every
+   * call: a Run that stopped running has no tool surface, whatever token the
+   * caller still holds.
+   */
+  async function runToolRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<{ run: RunRecord; transport: CliAgentToolTransport } | null> {
     const runId = params(request).runId ?? "";
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const identity = token ? cliRunToolIdentities.resolve(token, runId) : null;
-    if (!identity) return reply.code(401).send({ detail: "Invalid or expired Run tool identity" });
-    const repository = PgRunRepository.fromConfig(context.config);
-    const run = await repository.getRun(identity.space_id, runId);
-    if (!run || run.space_id !== identity.space_id || run.status !== "running") {
-      return reply.code(403).send({ detail: "Run tool identity is no longer active" });
+    const identity = await new PgRunToolIdentityRepository(dbPool(context.config))
+      .resolve(token, runId);
+    if (!identity) {
+      await reply.code(401).send({ detail: "Invalid or expired Run tool identity" });
+      return null;
     }
-    const body = jsonBody(request);
-    const id = body.id ?? null;
-    const method = stringValue(body.method);
-    const transport = new CliAgentToolTransport(context.config);
+    const run = await PgRunRepository.fromConfig(context.config)
+      .getRun(identity.space_id, runId);
+    if (!run || run.space_id !== identity.space_id || run.status !== "running") {
+      await reply.code(403).send({ detail: "Run tool identity is no longer active" });
+      return null;
+    }
+    return { run, transport: new CliAgentToolTransport(context.config) };
+  }
+
+  app.get("/internal/runs/:runId/tools", async (request, reply) => {
+    const scope = await runToolRequest(request, reply);
+    if (!scope) return reply;
+    const tools = await scope.transport.list(scope.run);
+    return reply.send({
+      run_id: scope.run.id,
+      tools: tools.map((tool) => ({ name: tool.name, description: tool.description })),
+    });
+  });
+
+  app.get("/internal/runs/:runId/tools/:actionId", async (request, reply) => {
+    const scope = await runToolRequest(request, reply);
+    if (!scope) return reply;
+    const actionId = params(request).actionId ?? "";
+    const tool = (await scope.transport.list(scope.run)).find((entry) => entry.name === actionId);
+    // Same answer for "no such action" and "granted to some other Run": the
+    // token holder learns only about its own surface.
+    if (!tool) {
+      return reply.code(404).send({ detail: `This Run has no action '${actionId}'` });
+    }
+    return reply.send({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema ?? { type: "object" },
+    });
+  });
+
+  app.post("/internal/runs/:runId/tools/:actionId", async (request, reply) => {
+    const scope = await runToolRequest(request, reply);
+    if (!scope) return reply;
+    const actionId = params(request).actionId ?? "";
+    // The caller's own key for this call. Side-effecting actions dedupe on it,
+    // so a retried POST advances the work once. A caller that sends none gets a
+    // fresh one rather than the action id: a constant per action would make a
+    // second `task.report` in the same attempt collide with the first and be
+    // swallowed by the event writer's `ON CONFLICT DO NOTHING`, losing a report
+    // while answering `ok: true`.
+    const idempotencyKey = stringValue(request.headers["idempotency-key"]) ?? randomUUID();
     try {
-      if (method === "initialize") {
-        return reply.send({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "rainver-run-tools", version: "1" },
-          },
-        });
-      }
-      if (method === "notifications/initialized") return reply.code(202).send();
-      if (method === "tools/list") {
-        const tools = await transport.list(run);
-        return reply.send({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            tools: tools.map((tool) => ({
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.input_schema ?? { type: "object" },
-            })),
-          },
-        });
-      }
-      if (method === "tools/call") {
-        if (id === null || (typeof id !== "string" && typeof id !== "number")) {
-          throw new Error("tools/call requires a stable JSON-RPC id");
-        }
-        const callParams = recordValue(body.params);
-        const name = stringValue(callParams.name);
-        if (!name) throw new Error("tools/call requires params.name");
-        const result = await transport.call(run, {
-          id: String(id),
-          name,
-          arguments: recordValue(callParams.arguments),
-        });
-        return reply.send({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            content: [{ type: "text", text: JSON.stringify(result) }],
-            isError: recordValue(result).ok === false,
-          },
-        });
-      }
-      return reply.send({
-        jsonrpc: "2.0",
-        id,
-        error: { code: -32601, message: `Unsupported MCP method '${method ?? ""}'` },
+      const result = await scope.transport.call(scope.run, {
+        id: idempotencyKey,
+        name: actionId,
+        arguments: jsonBody(request),
       });
+      return reply.send(result);
     } catch (error) {
-      return reply.send({
-        jsonrpc: "2.0",
-        id,
-        error: {
-          code: -32000,
-          message: error instanceof Error ? error.message : "Run tool transport failed",
-        },
+      // A failing action is a result the agent must be able to read and act
+      // on, not a transport fault: the dispatcher already returns refusals as
+      // `ok: false` bodies, and this covers what it throws instead.
+      return reply.code(422).send({
+        ok: false,
+        tool: actionId,
+        error_code: "system_action_failed",
+        error: error instanceof Error ? error.message : "Run tool call failed",
       });
     }
   });

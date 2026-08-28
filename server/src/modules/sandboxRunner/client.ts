@@ -207,7 +207,15 @@ function typedEnvironment(env: Record<string, string>, exchange: boolean): Sandb
       default_opus_model: env.ANTHROPIC_DEFAULT_OPUS_MODEL, default_haiku_model: env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
     }),
     proxy: compact({ http: env.HTTP_PROXY ?? env.http_proxy, https: env.HTTPS_PROXY ?? env.https_proxy, all: env.ALL_PROXY ?? env.all_proxy, no_proxy: env.NO_PROXY ?? env.no_proxy }),
-    tool_channel: env.RAINVER_MCP_URL && env.RAINVER_TOOL_TOKEN ? { url: env.RAINVER_MCP_URL, token: env.RAINVER_TOOL_TOKEN } : undefined,
+    tool_channel: env.RAINVER_API_URL && env.RAINVER_TOOL_TOKEN
+      ? {
+          url: env.RAINVER_API_URL,
+          token: env.RAINVER_TOOL_TOKEN,
+          run_id: env.RAINVER_RUN_ID,
+          cli_path: env.RAINVER_CLI,
+          skill_path: env.RAINVER_SKILL_PATH,
+        }
+      : undefined,
     exchange,
   };
 }

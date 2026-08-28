@@ -17,7 +17,6 @@ checked against the code; verify before scheduling.
 | Item | Current | Target | Priority | Trigger | Status |
 | --- | --- | --- | --- | --- | --- |
 | Credential / CLI multi-account | Self-built login engine + usage probes (`server/src/modules/providers/cli/loginEngine.ts`, `usageProbe.ts`) | Official CLI login owns OAuth; Rainver owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
-| CLI tool surface | MCP shim `/internal/runs/:runId/mcp` (`runs/routes.ts`) + MCP config injection in `runs/vendorCliAdapter.ts`; thin JSON-RPC over `CliAgentToolTransport` → `SystemActionDispatcher` | Thin CLI + Skill over REST, reusing the per-run TTL token from `runs/cliToolTransport.ts`; then **delete** the MCP route. Official MCP SDK only revives if external MCP clients become a requirement | P0/P1 | None | Not started |
 | Multipart upload parsing | Hand-written `parseMultipartUpload` (`activity/routes.ts`, single site) | `@fastify/multipart` | P1 | None — low-risk commodity cleanup | Not started |
 | HTML → article extraction | Self-built `stripHtml` / `htmlToReaderPmDoc` (`sources/contentParsing.ts`) | `@mozilla/readability` + DOM parser + sanitizer; Rainver keeps reading objects, highlights, Source, AI analysis | P1 | None | Not started |
 | Custom Source pseudo-sandbox | Child-process monkey-patch runner (`sources/customSources/customSourceRunner.ts`; its own header admits it is not OS-sandboxed) | Reuse the existing namespace-based `sandboxRunner` (NOT Bubblewrap — none exists in this repo) | P1 | None | Not started |
@@ -83,11 +82,9 @@ mechanisms.
    + hosts). Nothing else in this file blocks that testing.
 2. **Commodity cleanups** — multipart, readability, custom-source sandbox.
    Small, independent; interleave freely.
-3. **Thin CLI + Skill, then delete the MCP route.** Transport swap only; the
-   gateway boundary means authority code does not move.
-4. **Project real-usage testing runs on the current job queue.** pg-boss comes
+3. **Project real-usage testing runs on the current job queue.** pg-boss comes
    after the queue/domain boundary cleanup and before unattended execution
    scales up — swapping queue infra immediately before first acceptance
    testing would make every failure ambiguous (product bug vs migration bug).
    Let real usage surface actual queue pain first.
-5. **restic, Crawlee, and the P2/conditional rows** follow their triggers.
+4. **restic, Crawlee, and the P2/conditional rows** follow their triggers.

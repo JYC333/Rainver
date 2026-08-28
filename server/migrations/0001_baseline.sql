@@ -4626,6 +4626,32 @@ CREATE TABLE "verification_results" (
 	CONSTRAINT "ck_verification_results_status" CHECK ((status)::text = ANY (ARRAY[('passed'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('error'::character varying)::text]))
 );
 --> statement-breakpoint
+CREATE TABLE "run_artifact_declarations" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"run_id" varchar(36) NOT NULL,
+	"task_id" varchar(36) NOT NULL,
+	"path" varchar(1024) NOT NULL,
+	"artifact_type" varchar(64) NOT NULL,
+	"role" varchar(32) NOT NULL,
+	"note" text,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_run_artifact_declarations_run_path" UNIQUE("run_id","path"),
+	CONSTRAINT "ck_run_artifact_declarations_role" CHECK (role IN ('output', 'evidence', 'draft'))
+);
+--> statement-breakpoint
+CREATE TABLE "run_tool_identities" (
+	"run_id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"token_digest" varchar(64) NOT NULL,
+	"skill_content_hash" varchar(64),
+	"expires_at" timestamp with time zone NOT NULL,
+	"revoked_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_run_tool_identities_token_digest" UNIQUE("token_digest")
+);
+--> statement-breakpoint
 CREATE TABLE "runtime_tool_bindings" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -6776,6 +6802,11 @@ ALTER TABLE "task_runs" ADD CONSTRAINT "task_runs_space_id_fkey" FOREIGN KEY ("s
 ALTER TABLE "task_runs" ADD CONSTRAINT "task_runs_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "verification_results" ADD CONSTRAINT "verification_results_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "verification_results" ADD CONSTRAINT "verification_results_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_artifact_declarations" ADD CONSTRAINT "run_artifact_declarations_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_artifact_declarations" ADD CONSTRAINT "run_artifact_declarations_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_artifact_declarations" ADD CONSTRAINT "run_artifact_declarations_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_tool_identities" ADD CONSTRAINT "run_tool_identities_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_tool_identities" ADD CONSTRAINT "run_tool_identities_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_tool_bindings" ADD CONSTRAINT "runtime_tool_bindings_project_folder_id_fkey" FOREIGN KEY ("project_folder_id","space_id") REFERENCES "public"."project_folders"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7800,6 +7831,10 @@ CREATE INDEX "ix_verification_results_run_id" ON "verification_results" USING bt
 CREATE INDEX "ix_verification_results_space_id" ON "verification_results" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_verification_results_status" ON "verification_results" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_verification_results_run_status" ON "verification_results" USING btree ("run_id","status");--> statement-breakpoint
+CREATE INDEX "ix_run_artifact_declarations_run_id" ON "run_artifact_declarations" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX "ix_run_artifact_declarations_task_id" ON "run_artifact_declarations" USING btree ("task_id");--> statement-breakpoint
+CREATE INDEX "ix_run_artifact_declarations_space_id" ON "run_artifact_declarations" USING btree ("space_id");--> statement-breakpoint
+CREATE INDEX "ix_run_tool_identities_space_id" ON "run_tool_identities" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_runtime_tool_bindings_agent_id" ON "runtime_tool_bindings" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "ix_runtime_tool_bindings_capability_id" ON "runtime_tool_bindings" USING btree ("capability_id");--> statement-breakpoint
 CREATE INDEX "ix_runtime_tool_bindings_enabled" ON "runtime_tool_bindings" USING btree ("enabled");--> statement-breakpoint

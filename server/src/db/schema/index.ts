@@ -56,6 +56,7 @@ export * from "./roomConversationSummaries.js";
 export * from "./roomCreationIdempotency.js";
 export * from "./retrieval.js";
 export * from "./runs.js";
+export * from "./runToolSurface.js";
 export * from "./runtimeTools.js";
 export * from "./scheduler.js";
 export * from "./sessions.js";

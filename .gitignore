@@ -43,6 +43,7 @@ server/dist/
 apps/web/dist/
 packages/protocol/dist/
 packages/host-daemon/dist/
+packages/agent-cli/dist/
 
 # Rust / Tauri
 apps/web/src-tauri/target/

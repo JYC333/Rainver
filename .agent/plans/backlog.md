@@ -332,6 +332,27 @@ part of what the delivery renders, not a mutation applied after it.
 
 ## 8. Execution Runtime
 
+### A bound remote run's egress snapshot records `local_cli`
+
+Carried out of the retired remote-host provider-binding plan (P2,
+2026-08-28). A bound remote run's model traffic is governed by the Space's
+`externalEgressEnabled` switch (the `local_cli` egress branch) but **not** by
+per-provider egress policy: `runtimeProviderEgressDestination` never runs for
+it, because the provider is resolved after the execution-control snapshot is
+written. The snapshot therefore records `destination_type: "local_cli"` for a
+run whose traffic went to a named ModelProvider through the server proxy. The
+alternative at the time — recording the router's *prediction* — was wrong in
+a worse way. Closing it means either writing the snapshot after binding
+resolution or amending it afterwards; neither was P2-sized.
+
+### Per-dispatch backend override in the Command Center
+
+Carried out of the same plan. The API accepts `model_provider_id` / `model`
+on both dispatch routes and the resolution honors all three request shapes
+(dispatch override > host×adapter default > ambient), but the Command Center
+only sets the Host × adapter default. "Pick a provider on a single dispatch"
+— the second half of that plan's DoD 1 — is reachable by API only.
+
 ### pg-boss for the `jobs` module
 
 Recorded during the execution-topology and Project control-plane plan's P0
@@ -344,6 +365,55 @@ urgency, real payoff. `queueAdvance.ts`'s own pg-advisory-lock serialization
 (the "one active Run per thread" invariant) is a separate concern this
 migration would not remove.
 
+### `server` and `sandbox-runner` must now be deployed together
+
+Recorded 2026-08-28. `SANDBOX_RUNNER_PROTOCOL_VERSION` went to 2 when the
+runner's `tool_channel` stopped naming an MCP endpoint and became the work
+surface, and `validateRequest` accepts only its own version. That is deliberate
+— a stale runner would otherwise hand a Run a live token with no command — but
+it breaks in both directions: a version-1 runner refuses every request from a
+current server, and a version-2 runner refuses every request from a rolled-back
+one, including `verification` runs that have nothing to do with tools. Nothing
+in `ops/compose/*.yml` or `ops/scripts/` records that the two images are now a
+unit. Either write that down where a deploy reads it, or make the runner accept
+a request whose `tool_channel` it fully understands regardless of version.
+
+### A sandboxed Run cannot declare a Task's output
+
+Carried out of the agent work surface plan's P2 (retired 2026-08-28; ledger
+in git history)
+(2026-08-28). `artifact.submit` is granted only on the remote-host path,
+because only that path applies a declaration: the executing host uploads its
+output directory and `hosts/repository.ts` gives those files the declared type
+and Task link. A server-host Run's artifacts come through
+`materializationService` (`produced_artifact_paths`), which does not consume
+declarations, so the action is withheld rather than accepted and ignored —
+telling an agent its deliverable was recorded when nothing would act on it is
+worse than not offering it. Closing this means teaching materialization to
+join declarations to collected paths, with `path` relative to the Run's
+exchange output directory rather than `$RAINVER_OUTPUT_DIR`. Until then a
+sandboxed Run's Task with declared required outputs still parks for review.
+
+### Loose ends from the agent work surface
+
+Recorded 2026-08-28 when `agent-work-surface-plan.md` retired; found by its
+integration gate.
+
+- [ ] Nothing reads `run_tool_identities.skill_content_hash`. Both delivery
+  paths write it, and the remote one also mirrors it into the Run's
+  `metadata_json`, but a sandboxed Run's Skill is only recoverable by direct
+  SQL — which is the use the column was added for.
+- [ ] A paired daemon predating the `work_surface` launch-frame field ignores
+  it silently while the server has already issued the identity and told the
+  agent to use `$RAINVER_CLI`. `hosts.daemon_version` is recorded and never
+  read; either read it, or have the daemon declare the capability in its
+  `hello`.
+- [ ] The work-surface wire shape is declared twice —
+  `runs/runWorkSurface.ts`'s `RunWorkSurfaceFrame` and the daemon's
+  `WorkSurfaceFrame` — with nothing pinning them together. It follows the
+  `provider_binding` precedent, so it is not a regression, but both packages
+  already depend on `@rainver/protocol`, which is where one copy would live.
+
 ### Interactive permission gate for headless dispatch
 
 `RunPermissionPolicy` (`server/src/modules/runs/runPermissionPolicy.ts`,
@@ -352,7 +422,10 @@ path is headless — no human is present mid-run to answer a prompt. A gate
 that can actually suspend a Run for a human decision needs suspend/notify/
 resume machinery this policy does not have, and would change the product
 surface (a Run can sit "waiting for permission" instead of running to
-completion or failing). Not scoped into any current plan.
+completion or failing). Not scoped into any current plan. Until it exists,
+the Rainver Work Skill teaches `task.request_review` as the way an agent hands
+a decision back: it stops the work and asks, which is the whole of what a
+dispatched Run can do about a question only a person can answer.
 
 ### Custom Source handler isolation is application-level, and ESM would not change that
 

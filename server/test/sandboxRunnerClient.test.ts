@@ -74,7 +74,12 @@ describe("SandboxRunnerCliCommandExecutor", () => {
       command: [tool, "exec", "--cwd", workspace, "hello"],
       cwd: workspace,
       timeout_seconds: 30,
-      env: { HOME: home, CODEX_HOME: join(home, ".codex"), RAINVER_TOOL_TOKEN: "lease", RAINVER_MCP_URL: "http://server:8010/internal" },
+      env: {
+        HOME: home, CODEX_HOME: join(home, ".codex"),
+        RAINVER_TOOL_TOKEN: "lease", RAINVER_API_URL: "http://server:8010",
+        RAINVER_RUN_ID: "run-1", RAINVER_CLI: "/workspace/.rainver/rainver",
+        RAINVER_SKILL_PATH: "/workspace/.rainver/SKILL.md",
+      },
       run_id: "run-1",
       stdin: null,
     });
@@ -90,7 +95,14 @@ describe("SandboxRunnerCliCommandExecutor", () => {
         { root: "sandboxes", id: "worktrees/run-1", target: "/workspace", access: "read_write" },
         { root: "run_homes", id: "run-1", target: "/home/sandbox", access: "read_write" },
       ]),
-      environment: { codex_home: "/home/sandbox/.codex", tool_channel: { url: "http://server:8010/internal", token: "lease" } },
+      environment: {
+        codex_home: "/home/sandbox/.codex",
+        tool_channel: {
+          url: "http://server:8010", token: "lease", run_id: "run-1",
+          cli_path: "/workspace/.rainver/rainver",
+          skill_path: "/workspace/.rainver/SKILL.md",
+        },
+      },
     });
     expect(launch).not.toHaveProperty("command");
     expect(launch).not.toHaveProperty("env");

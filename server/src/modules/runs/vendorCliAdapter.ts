@@ -1,4 +1,3 @@
-import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   RunAdapterResultEnvelope,
@@ -51,7 +50,11 @@ import {
   normalizeVendorEvents,
   terminalRuntimeEvents,
 } from "./runtimeEventNormalization.js";
-import { cliRunToolIdentities } from "./cliToolTransport.js";
+import { getDbPool } from "../../db/pool.js";
+import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
+import { renderWorkSkill, workSkillContentHash, workSkillPromptPointer } from "../capabilities/workSkill.js";
+import type { RunToolIdentityPort } from "./runToolIdentityRepository.js";
+import { stageSandboxWorkSurface, type SandboxWorkSurface } from "./sandboxWorkSurface.js";
 import { buildSubprocessEnv } from "./cliSubprocessEnv.js";
 import {
   envForNetworkProfile,
@@ -123,6 +126,7 @@ export interface VendorCliAdapterDeps {
   providerResolver?: RuntimeProviderResolverPort;
   providerLeaseRegistry?: ProviderProxyLeaseRegistry;
   providerProxyBaseUrl?: string;
+  toolIdentities?: RunToolIdentityPort;
 }
 
 const SECRET_COMMAND_KEYS = ["prompt", "context", "api_key", "token", "secret", "password"];
@@ -281,17 +285,40 @@ export async function executeVendorCliAdapter(
     );
   }
 
-  const toolToken = toolGrants.length > 0
-    ? cliRunToolIdentities.issue(input.run, (timeout + 300) * 1000)
+  const toolIdentities = deps.toolIdentities
+    ?? (config.databaseUrl ? new PgRunToolIdentityRepository(getDbPool(config.databaseUrl)) : null);
+  // Deliberately absent from a sandboxed Run's Skill: `artifact.submit` is not
+  // granted here and `$RAINVER_OUTPUT_DIR` is a remote-host variable, so the
+  // delivery workflow would send the agent to write a file nothing collects.
+  const SANDBOX_SKILL_OPTIONS = { deliverOutputs: false } as const;
+  const skill = toolGrants.length > 0 && toolIdentities
+    ? renderWorkSkill(SANDBOX_SKILL_OPTIONS)
     : null;
-  const toolUrl = toolToken
-    ? `http://${config.sandboxRunnerServerHost}:${config.port}/internal/runs/${encodeURIComponent(input.run.id)}/mcp`
-    : null;
-  if (toolToken && toolUrl) {
+  let toolToken: string | null = null;
+  let workSurface: SandboxWorkSurface | null = null;
+  if (skill && toolIdentities) {
     try {
-      await configureCliToolTransport(spec, input, rendered, runtimeBinding, toolUrl, toolToken);
+      toolToken = await toolIdentities.issue(
+        input.run,
+        (timeout + 300) * 1000,
+        workSkillContentHash(skill),
+      );
+      // The Run's own HOME, not its working directory: see
+      // `sandboxWorkSurface.ts` for why the worktree is the wrong place.
+      const runHome = credential.env.HOME ?? credential.temp_home;
+      if (!runHome) throw new Error("Run-scoped CLI tools require an isolated run HOME.");
+      workSurface = await stageSandboxWorkSurface({
+        runHome,
+        // The address the sandbox reaches the control plane at, which is not
+        // the one a browser uses: the runner is a sibling container on the
+        // internal network.
+        apiUrl: `http://${config.sandboxRunnerServerHost}:${config.port}`,
+        runId: input.run.id,
+        token: toolToken,
+        skill,
+      });
     } catch (error) {
-      cliRunToolIdentities.revoke(toolToken);
+      await toolIdentities?.revoke(input.run.id);
       await cleanupRuntimeProviderBinding(runtimeBinding);
       await cleanupCredential(input, credentialBroker);
       return cliFailure(
@@ -326,7 +353,15 @@ export async function executeVendorCliAdapter(
   };
   const stdioController = createCliConversationController({
     adapter_type: spec.adapter_type as VendorCliAdapterType,
-    prompts: deliveryPrompts ?? [input.prompt ?? input.run.prompt ?? ""],
+    // The pointer goes on the prompt the runtime is actually sent, not on
+    // `input.prompt`: a delivery-driven Run sends `deliveryPrompts` instead.
+    // Without it the staged Skill and the environment naming it are invisible
+    // — no runtime discovers a file on its own, which is exactly what the
+    // vendor-specific configuration this replaced was for.
+    prompts: withWorkSurfacePointer(
+      deliveryPrompts ?? [input.prompt ?? input.run.prompt ?? ""],
+      workSurface,
+    ),
     cwd: input.sandbox_cwd!,
     // `supports_model_override: false` in specs.ts gates only the argv
     // `--model`-flag rendering path above, not ACP's independent
@@ -364,9 +399,7 @@ export async function executeVendorCliAdapter(
         // here: server-host uses codex-acp's own bundled codex, driven by
         // the CODEX_HOME the credential broker already prepared).
         ...(spec.adapter_type === "codex_cli" ? { NO_BROWSER: "1" } : {}),
-        ...(toolToken && toolUrl
-          ? { RAINVER_MCP_URL: toolUrl, RAINVER_TOOL_TOKEN: toolToken }
-          : {}),
+        ...(workSurface?.env ?? {}),
       }),
       run_id: input.run.id,
       scope_id: stringValue(
@@ -391,7 +424,7 @@ export async function executeVendorCliAdapter(
     });
     result = await runRendered(rendered, stdioController);
   } finally {
-    if (toolToken) cliRunToolIdentities.revoke(toolToken);
+    if (toolToken) await toolIdentities?.revoke(input.run.id);
     await cleanupRuntimeProviderBinding(runtimeBinding);
     await cleanupCredential(input, credentialBroker);
   }
@@ -464,63 +497,25 @@ function renderCliDeliveryMessages(delivery: InvocationDelivery): string[] {
   ].filter((message) => message.trim());
 }
 
-async function configureCliToolTransport(
-  spec: LocalCliRuntimeAdapterSpec,
-  input: VendorCliAdapterInput,
-  rendered: RenderedCliCommand,
-  runtimeBinding: RuntimeProviderBinding,
-  url: string,
-  token: string,
-): Promise<void> {
-  if (!input.sandbox_cwd) throw new Error("Run-scoped CLI tools require a prepared sandbox.");
-  const contextCwd = vendorContextCwd(input);
-  if (!contextCwd) throw new Error("Run-scoped CLI tools require a writable context directory.");
-  if (spec.adapter_type === "codex_cli") {
-    const codexHome = stringValue(runtimeBinding.env.CODEX_HOME);
-    if (!codexHome) throw new Error("Codex tool transport requires CODEX_HOME.");
-    await appendFile(
-      join(codexHome, "config.toml"),
-      `\n[mcp_servers.rainver]\nurl = ${JSON.stringify(url)}\nbearer_token_env_var = "RAINVER_TOOL_TOKEN"\n`,
-      { encoding: "utf8", mode: 0o600 },
-    );
-    return;
-  }
-  if (spec.adapter_type === "claude_code") {
-    const stagedConfigPath = join(contextCwd, ".rainver-mcp.json");
-    await writeFile(stagedConfigPath, JSON.stringify({
-      mcpServers: {
-        "rainver": {
-          type: "http",
-          url,
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      },
-    }), { encoding: "utf8", mode: 0o600 });
-    const configPath =
-      (input.required_sandbox_level ?? input.run.required_sandbox_level) === "read_only"
-        ? join(input.sandbox_cwd, ".rainver-mcp.json")
-        : stagedConfigPath;
-    const insertAt = Math.max(1, rendered.argv.length - 1);
-    rendered.argv.splice(insertAt, 0, "--mcp-config", configPath);
-    rendered.redacted_argv.splice(insertAt, 0, "--mcp-config", configPath);
-    return;
-  }
-  const configPath = join(contextCwd, "opencode.json");
-  const existing = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
-  const mcp = recordValue(existing.mcp);
-  existing.mcp = {
-    ...mcp,
-    "rainver": {
-      type: "remote",
-      url,
-      enabled: true,
-      headers: { Authorization: "Bearer {env:RAINVER_TOOL_TOKEN}" },
-    },
-  };
-  await writeFile(configPath, JSON.stringify(existing, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+
+/**
+ * Appends the work-surface pointer to the prompt that opens the session.
+ *
+ * Only the first: the pointer is a standing instruction for the run, and
+ * repeating it on every later turn of a delivery-driven Run would spend
+ * context re-teaching what the agent already read.
+ */
+export function withWorkSurfacePointer(
+  prompts: readonly string[],
+  surface: SandboxWorkSurface | null,
+): string[] {
+  // An empty list stays empty: `createCliConversationController` treats it as
+  // "nothing to send" and forms no controller at all, and manufacturing a
+  // prompt out of the pointer alone would start a turn nobody asked for.
+  if (!surface || prompts.length === 0) return [...prompts];
+  const pointer = workSkillPromptPointer(surface.env.RAINVER_SKILL_PATH!, { deliverOutputs: false });
+  const [first = "", ...rest] = prompts;
+  return [[first, pointer].filter(Boolean).join("\n\n"), ...rest];
 }
 
 function runExchangeEnv(config: Record<string, unknown> | undefined): Record<string, string> {

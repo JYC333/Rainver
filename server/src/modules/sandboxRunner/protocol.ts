@@ -1,6 +1,13 @@
 import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
-export const SANDBOX_RUNNER_PROTOCOL_VERSION = 1 as const;
+/**
+ * Bumped to 2 when `tool_channel` stopped naming an MCP endpoint and became
+ * the work surface. A runner that predates it would accept the frame, export
+ * a bare base URL as `RAINVER_MCP_URL` and drop the command and Skill paths —
+ * the Run would start holding a live token with no way to use it. Refusing
+ * the launch is the answer a person can act on.
+ */
+export const SANDBOX_RUNNER_PROTOCOL_VERSION = 2 as const;
 
 export type SandboxAccess = "read_only" | "read_write";
 export type SandboxEgressProfile = "none" | "provider" | "tools" | "provider_and_tools";
@@ -32,7 +39,19 @@ export interface SandboxRuntimeEnvironment {
     all?: string;
     no_proxy?: string;
   };
-  tool_channel?: { url: string; token: string };
+  /**
+   * How this run calls Rainver back: the control-plane address, its own
+   * identity, and the in-sandbox paths of the command and the Skill the server
+   * staged for it. Runtime-agnostic — the runner exports the same variables
+   * whatever CLI is running.
+   */
+  tool_channel?: {
+    url: string;
+    token: string;
+    run_id?: string;
+    cli_path?: string;
+    skill_path?: string;
+  };
   exchange?: boolean;
 }
 

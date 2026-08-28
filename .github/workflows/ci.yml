@@ -33,6 +33,19 @@ jobs:
       - name: Build protocol
         run: pnpm --filter @rainver/protocol build
 
+      # The command a dispatched agent calls Rainver back with. Built as well
+      # as tested: the server stages the built entry, so a green run that only
+      # ever exercised the TypeScript source would not have covered what
+      # production actually copies.
+      - name: Build agent CLI
+        run: pnpm --filter @rainver/agent-cli build
+
+      - name: Typecheck agent CLI
+        run: pnpm --filter @rainver/agent-cli typecheck
+
+      - name: Test agent CLI
+        run: pnpm --filter @rainver/agent-cli test
+
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
 

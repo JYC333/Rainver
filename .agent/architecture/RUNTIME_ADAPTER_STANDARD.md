@@ -25,12 +25,17 @@ same command rendering, credential, accepted-Delivery, scoped-Runner, output par
 usage provider path. The application server never spawns these vendor
 processes. Native adapters are limited to `capability`.
 
-When `run_input.v1` contains tool grants, the generic CLI path configures the
-vendor's MCP client for the private Run tool broker. The broker is only a
-transport over `AgentToolGateway`/`SystemActionGateway`; registry schemas,
-capability and immutable AgentVersion allowlists, policy,
-approval/proposal behavior, idempotency, domain executors, and audit remain
-server-owned.
+**The tool surface is adapter-neutral.** When `run_input.v1` contains tool
+grants, the executing side puts the `rainver` command (`packages/agent-cli`)
+in front of the Run as an absolute path in `RAINVER_CLI`, writes the Rainver
+Work Skill beside it, and appends a pointer to that Skill to the prompt the
+runtime is sent. Nothing in that path is keyed on `adapter_type` — an adapter
+newly registered from the ACP registry gets the surface with no code added,
+which the three per-vendor MCP configuration writers this replaced each
+needed. The surface is only a transport over
+`AgentToolGateway`/`SystemActionGateway`: registry schemas, capability and
+immutable AgentVersion allowlists, policy, approval/proposal behavior,
+idempotency, domain executors, and audit remain server-owned.
 
 Use `/runtime-tools` for CLI binary installation/status, space runtime policy,
 and

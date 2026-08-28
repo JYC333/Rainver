@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { applyRunArtifactDeclarations } from "../projectWork/artifactDeclarations.js";
 import { PgMachineRepository } from "./machineRepository.js";
 import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 
@@ -424,6 +425,7 @@ export class PgHostRepository {
     files: Array<{ name: string; content: string }>,
   ): Promise<{ artifact_ids: string[]; skipped: string[] }> {
     const artifactIds: string[] = [];
+    const uploaded: Array<{ artifact_id: string; name: string }> = [];
     const skipped: string[] = [];
     const now = new Date().toISOString();
     for (const file of files.slice(0, MAX_OUTPUT_FILES)) {
@@ -457,8 +459,18 @@ export class PgHostRepository {
         ],
       );
       artifactIds.push(id);
+      uploaded.push({ artifact_id: id, name: file.name });
     }
     if (files.length > MAX_OUTPUT_FILES) skipped.push(...files.slice(MAX_OUTPUT_FILES).map((f) => f.name));
+    // What the Run said these files are. Without it every uploaded file stays
+    // `remote_output` and belongs to no Task, so a Task with a declared
+    // required output can never be satisfied by a dispatched agent.
+    //
+    // One transaction, because a half-applied batch is worse than an
+    // unapplied one: some outputs would be typed and linked and others not,
+    // the host deletes the run directory immediately afterwards, and nothing
+    // retries. All or nothing keeps the failure legible.
+    await withQueryableTransaction(this.pool, (tx) => applyRunArtifactDeclarations(tx, run, uploaded));
     return { artifact_ids: artifactIds, skipped };
   }
 }

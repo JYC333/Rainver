@@ -14,8 +14,10 @@ import {
   linkTaskEntities,
   reportOnTask,
   requestTaskReview,
+  requireProjectTask,
   type AgentActionContext,
 } from "./taskActions.js";
+import { declareRunArtifact, type RunArtifactRole } from "./artifactDeclarations.js";
 
 /**
  * The Project write surface, as System Actions.
@@ -160,6 +162,38 @@ export function registerProjectWorkSystemActionExecutors(
     return {
       modelResult: { ok: true, ...result },
       summary: { tool_name: "task.report", ok: true, task_id: result.task_id },
+    };
+  });
+
+  executors.set("artifact.submit" as SystemActionId, async (input, dispatch) => {
+    const body = input as {
+      task_id: string; path: string; artifact_type: string;
+      role?: RunArtifactRole; note?: string | null;
+    };
+    const declaration = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) => {
+      const context = await contextFor(tx, dispatch.idempotency_key ?? null);
+      const task = await requireProjectTask(tx, run.space_id, body.task_id, identity.userId);
+      return declareRunArtifact(tx, context, task, body);
+    }));
+    return {
+      // The agent is told what the declaration will and will not do, because
+      // "declared" and "collected" are different facts and only the second
+      // closes a Task.
+      modelResult: {
+        ok: true,
+        task_id: body.task_id,
+        path: declaration.path,
+        artifact_type: declaration.artifact_type,
+        role: declaration.role,
+        note: "Recorded. The file is collected from disk after this run finishes; leave it in place.",
+      },
+      summary: {
+        tool_name: "artifact.submit",
+        ok: true,
+        task_id: body.task_id,
+        artifact_type: declaration.artifact_type,
+        artifact_role: declaration.role,
+      },
     };
   });
 

@@ -53,7 +53,7 @@ export interface SystemActionDispatchResult {
 /**
  * Run-scoped single-call entry point over `SystemActionGateway`: grants,
  * dispatch, and a normalized result. Shared by the managed model loop
- * (`ManagedAgentToolSurface`), the CLI MCP transport, and — by construction,
+ * (`ManagedAgentToolSurface`), the CLI tool surface, and — by construction,
  * since there is only one path — any future thin adapter.
  */
 export class SystemActionDispatcher {
