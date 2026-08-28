@@ -25,8 +25,10 @@ import type { SystemActionId } from "@rainver/protocol";
 /**
  * What an Agent may do because it was spoken to in a Room.
  *
- * The Inquiry entries are proposal-gated: the Agent drafts, and the durable
- * write waits on a human accepting it. `agent.delegate` and
+ * The Inquiry entries are not uniform: `inquiry.create_thread` and
+ * `inquiry.record_conclusion` write directly, bounded and origin-gated, while
+ * `inquiry.promote_knowledge` stays a proposal because it leaves the Project
+ * (ADR 0017 §1/§2). `agent.delegate` and
  * `research.start_acquisition` are both visible, directly-executed
  * coordination actions — `agent.delegate` is independently constrained by
  * the Room's one-level/two-specialist delegation budget, and
@@ -55,12 +57,47 @@ import type { SystemActionId } from "@rainver/protocol";
  * it needs a retrieval path scoped to what the whole Room may read, not the
  * speaker — that is a separate piece of work, not an entry in this array.
  */
-export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+/**
+ * What an Agent may do in *any* conversation with a person, Room or not.
+ *
+ * Remembering what they told you is a capability of talking with someone, not
+ * of the Room: it writes nothing anyone else reads — the entry is private to
+ * the speaker, about the speaker, and carries no Project — so none of the
+ * reasoning that binds the Project writes below to a Room applies to it. An
+ * Agent that only learns when the conversation happens to be in a Room is the
+ * gap ADR 0003 §2 set out to close, not a smaller version of it.
+ */
+export const CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+  "memory.remember",
+  "memory.revise",
+];
+
+const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "project.propose_definition",
-  "inquiry.propose_thread",
+  "inquiry.list_threads",
+  "inquiry.adopt_next_step",
+  "inquiry.create_thread",
   "inquiry.record_conclusion",
   "inquiry.promote_knowledge",
   "agent.delegate",
+  // The Project write surface. Without these an Agent can describe a
+  // decomposition in a reply but not create it, which is the gap between
+  // sounding like it advanced the work and having advanced it.
+  "task.list",
+  "task.create",
+  "task.report",
+  "task.handoff",
+  "task.advance_stage",
+  "task.request_review",
+  "research.list_operations",
   "research.start_acquisition",
   "research.cancel_acquisition",
+  // "Accept it", said to the Assistant, is the same approval as the button.
+  "proposal.list_pending",
+  "proposal.decide",
+];
+
+export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+  ...ROOM_PROJECT_TOOL_ALLOWANCE,
+  ...CONVERSATION_TOOL_ALLOWANCE,
 ];

@@ -49,9 +49,13 @@ only considered after the caller passes the Project membership check.
 
 ## Writes
 
-Memory writes remain proposal-gated. New user-owned memory defaults to
-`private` in personal, household, and team Spaces. Sharing is an explicit
-post-approval policy update. Owner and subject are distinct fields; accepting a
+A write that would widen reach is proposal-gated; an Agent's own private,
+normal-sensitivity write about the person in the turn applies directly and is
+read afterwards ([ADR 0003](../decisions/0003-memory-proposal-flow.md)). Since
+a direct write is private to one person by construction, nothing here changes
+what crosses a Space boundary. New user-owned memory defaults to `private` in
+personal, household, and team Spaces. Sharing is an explicit post-approval
+policy update. Owner and subject are distinct fields; accepting a
 proposal never transfers ownership to the reviewer.
 
 ## Runtime

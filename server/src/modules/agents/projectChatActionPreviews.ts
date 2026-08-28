@@ -74,7 +74,13 @@ export async function loadProjectChatActionPreviews(
       tool_call_id: callId,
       status: failed ? "failed" : "completed",
       title: actionId,
-      summary: failed && typeof metadata.error_code === "string" ? metadata.error_code : null,
+      // The reason before the code: "No active Question Thread has id …" is
+      // something a person can act on; "system_action_failed" is not.
+      summary: !failed
+        ? null
+        : typeof metadata.error_message === "string" && metadata.error_message
+          ? metadata.error_message
+          : typeof metadata.error_code === "string" ? metadata.error_code : null,
       scope: null,
     }];
   });

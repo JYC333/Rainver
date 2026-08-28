@@ -46,6 +46,7 @@ export * from "./researchArea.js";
 export * from "./projectSources.js";
 export * from "./projectOperations.js";
 export * from "./projects.js";
+export * from "./projectWork.js";
 export * from "./proposals.js";
 export * from "./providers.js";
 export * from "./relations.js";

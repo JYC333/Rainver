@@ -17,7 +17,7 @@ Annotation visibility, ownership, and document access are checked
 independently: an annotation takes its document's Project scope, but its
 visibility defaults to `private` even on a shared document and may be widened
 by its author only as far as the document's own visibility (ADR 0013 decision
-3a). Artifact annotations
+5). Artifact annotations
 and `/api/v1/sources/reader/*` do not exist.
 
 The frontend `ReaderWorkspace` owns the document canvas, annotation layer,

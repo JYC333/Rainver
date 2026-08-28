@@ -833,6 +833,72 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
   });
 };
 
+/**
+ * Project writes an Agent makes on its own initiative.
+ *
+ * The same action definition serves both origins, because the write is the
+ * same write — what differs is who wanted it. A person saying "split this into
+ * three tasks" in the turn *is* the authorization for the Tasks that follow;
+ * the identical call from an autonomous wake-up is a commitment made on the
+ * Project's behalf that nobody asked for, and a Loop stage skipped or reversed
+ * without a person seeing it is a claim about the work.
+ *
+ * Reporting, handing off, and asking for review stay ungated at any origin:
+ * they are append-only or self-limiting — they can record, give work away, or
+ * stop, never take ground.
+ *
+ * ADR 0017 §2 widened this from Tasks to every Project-internal write that
+ * stopped being a proposal: opening a question, recording a conclusion,
+ * adopting a recorded next step, starting a bounded acquisition. The gate they
+ * lost was on authorship; this one is on whether anybody asked, which is the
+ * question that was worth asking all along.
+ */
+// `proposal.decide` is the sharpest of these: a decision is a person's, and
+// the only origin on which the Agent can be carrying one is the person's own
+// turn.
+const ORIGIN_GATED_PROJECT_WRITES = new Set([
+  "task.create",
+  "task.stage.advance",
+  "proposal.decide",
+  "inquiry.thread.create",
+  "inquiry.iteration.record",
+  "inquiry.advice.adopt",
+  "research.acquisition.start",
+  // `memory.write` is here and not in `ruleMemoryScope`: what the older rule
+  // gates — scope and operation — ADR 0003 §1 now settles in the applier,
+  // and what remains for policy is the origin.
+  "memory.write",
+]);
+/**
+ * Every origin that is not a person in a conversation. Listed as an allowlist
+ * of the attended ones rather than a denylist, so a new origin is gated until
+ * someone decides it should not be — the safe direction for a write nobody
+ * asked for.
+ */
+/**
+ * Origins that mean a person asked for this in a conversation. Exported so
+ * everything that turns on "did someone ask" reads the same set — a second
+ * copy is how one surface starts treating a scheduled wake-up as attended.
+ */
+export const ATTENDED_TRIGGER_ORIGINS = new Set(["manual"]);
+
+const ruleUnattendedProjectWrite: Rule = (ctx) => {
+  const action = str(ctx.action);
+  if (!ORIGIN_GATED_PROJECT_WRITES.has(action)) return null;
+  // Absent rather than defaulted: a caller that does not say who wanted the
+  // write cannot be assumed to have had a person behind it.
+  const triggerOrigin = str(ctx.trigger_origin);
+  if (triggerOrigin && ATTENDED_TRIGGER_ORIGINS.has(triggerOrigin)) return null;
+  return makeDecision({
+    decision: "require_approval",
+    message: `${action} from an unattended '${triggerOrigin}' run requires approval: nobody asked for this write in a conversation.`,
+    risk_level: "medium",
+    reason_code: "unattended_project_write",
+    policy_rule_id: "unattended_project_write_require_approval",
+    audit_code: "unattended_project_write",
+  });
+};
+
 const BUILTIN_RULES: readonly Rule[] = [
   ruleSpaceBoundary,
   ruleAgentStatus,
@@ -846,6 +912,7 @@ const BUILTIN_RULES: readonly Rule[] = [
   ruleRuntimeSkillRenderEnabled,
   ruleRetrievalToolCall,
   ruleManagedSystemActionGrant,
+  ruleUnattendedProjectWrite,
 ];
 
 // ---------------------------------------------------------------------------

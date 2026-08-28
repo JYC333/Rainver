@@ -185,15 +185,18 @@ mutating transaction, so concurrent member revocation wins deterministically.
 `research` — asking is how research starts and deciding is where it ends, and
 a Project that advances by delivery makes decisions too, which is why neither
 was ever a way of advancing work. Both remain first-class entities with their
-own Areas and their own `entity_summaries` rows, and Inquiry's pending
-Candidates still reach the shell through its attention adapter.
+own surfaces, and Inquiry's pending Candidates reach the shell through its
+attention adapter.
 
 A Primary Mode transition changes Project-shell presentation only — every
 installed Project Area remains reachable independent of `primary_mode`, and
-the transition does not convert, copy, or reclassify domain rows. What it does
-change is which entities hold a placeholder row on the Overview, which is a
-static per-Mode declaration in `overviewRegistry`, not per-Project state:
-switching Mode takes effect immediately and there is nothing to migrate.
+the transition does not convert, copy, or reclassify domain rows. What it
+changes is the Loop's stage wording (`WORK_LOOP_STAGE_LABELS`) and the
+Assistant's framing; nothing else reads it. There used to be a per-Mode
+"projection" (a state summary and next-action links) and a per-Mode set of
+placeholder rows; both were removed once the front page stopped duplicating
+the sidebar, because nothing consumed them. Every Mode is always available:
+there is no adapter to register before one can be chosen.
 
 ### Creation presets nothing but the Mode
 
@@ -206,8 +209,7 @@ not establish that state by itself, and downstream Inquiry Threads, Workflows,
 Runs, Sources, Providers, or Folders are not initialization prerequisites.
 Those records describe readiness or work progress after initialization. The
 Overview exposes this distinction as `definition_status`; a Project may be
-initialized while its Mode projection correctly reports that no work is under
-way yet.
+initialized while nothing is under way yet.
 
 There was a **Project Template** here, and its removal is worth recording
 because the concept was rescued twice before it was retired. It began as a
@@ -1184,37 +1186,38 @@ space.
 
 ## Project Kernel and Inquiry
 
-The Project Shell reads `/projects/{id}/overview` and composes the active Brief
-Version, Primary Mode projection, per-user Attention, and one summary row per
-entity through registered domain adapters (`entity_summaries`). A row appears
-when the Project holds data of that kind, or when the current Mode declares it
-a placeholder so a Project can see where that work would go before any of it
-exists. `entity_summaries` is never a list of Areas: every installed Area stays
-reachable through the navigation shell whatever it contains, independent of
-`primary_mode`.
+The Project Shell reads `/projects/{id}/overview`, which composes the active
+Brief Version, `definition_status`, the four available Modes, per-user
+Attention through registered domain adapters, and `in_progress` — the
+Project's unfinished Operations. A per-Mode projection and per-entity summary
+rows used to ride along, and were removed when the front page stopped
+rendering them — an API field with no reader is the speculative code the repo
+forbids.
 
-Placeholders are declared per Mode in `MODE_PLACEHOLDER_ENTITIES`, in the order
-the rows should read, and `assertPlaceholderEntitiesProvided` fails at startup
-when a Mode names an entity no summary provides — a placeholder nobody supplies
-is a row that silently never appears, which is the omission the entity registry
-exists to prevent. The order is part of the contract: a placeholder must not
-move as data arrives, or the Overview reorders itself under the reader.
+`in_progress` exists because Attention answers "what needs me" and nothing
+answered "what is happening": Pulse's In-progress list read the Task board,
+and an Operation is not a Task, so a research acquisition screening 873
+documents for four hours rendered as "nothing is being worked on right now".
+It carries the fields the Research Area's own `researchOperationDetail` and
+`researchOperationPercent` renderers read, so the front page shows that same
+sentence — "848/873 materials classified" — rather than a second, quieter
+version of it, and reaches it without calling an Area's endpoint.
 
-The same response exposes a readiness checklist for the
-Brief, Provider, Agent, Project Source, and execution-enabled Folder. Checklist
-rows are links to their owning setup surfaces. Whether Provider, Agent and
-Source are *required* follows the Primary Mode: a research Project needs all
-three, a delivery Project does not. This used to be read off the Project's
-creation-time Template, which could not answer the question. Missing inputs do
-not create a starter Workflow or hide an Area.
+There is no readiness checklist. One used to list a Space-level Provider,
+"an Agent" (every Project now has its own), a Source only research work
+wants, and a Folder it called optional — configuration state dressed as a
+to-do and shown from every Area. A Project needs nothing configured before it
+can be talked to or have work put on it. The one Project-level readiness fact
+is whether its goal is defined: `definition_status`, which Pulse states until
+it is true and then stops. Each Area's own empty state offers its first
+action; nothing hides an Area.
 
-The readiness checklist and Attention are rendered by the persistent
-navigation shell, which is on screen from every Area, and by nothing else. The
-Overview page is a thin aggregation layer over Areas: the Brief goal and
-current focus, the current Mode's next actions, the cross-domain Activity
-timeline, and one summary row per entity linking into the Area that owns it.
-All four blocks remain present when empty so changing Mode does not change the
-page skeleton. The Overview can edit the goal and current focus directly;
+Attention is rendered by the persistent navigation shell, which is on screen
+from every Area, and by Pulse. Pulse is the Project's front page — goal and
+current focus, a prompt to define the goal until one exists, what needs
+attention, what is in progress, the latest reported updates — and nothing an
+Area owns. Primary Mode is changed from the Settings dialog.
+Pulse can edit the goal and current focus directly;
 changing the goal appends an immutable Brief draft while preserving the other
 fields, then makes review and publish explicit. Submitted Briefs remain visible
 in that dialog so an authorized Project or Space owner can complete the publish
@@ -1223,13 +1226,12 @@ and resets after publication so another immutable version can be created.
 It hosts no Area's working surface — Project Research, Project Sources, and
 Project Folders are reached through Research, Sources, and Files & Code, each
 of which owns its own creation and configuration actions rather than
-delegating them back to the Overview. Workflow creation
+delegating them back to Pulse. Workflow creation
 remains an explicit user command after its required inputs are ready.
 Mode transitions append history only;
-they do not enable/disable an Area and do not translate domain records. The
-same adapter registry is the availability authority: `available_modes` is
-returned by Overview, the client renders only those Modes, and the transition
-command rejects any Mode without a registered Overview adapter. An Area with
+they do not enable/disable an Area and do not translate domain records. Every
+Mode is always available (`available_modes` is the full list); there is no
+adapter to register before one can be chosen. An Area with
 preserved data remains reachable through grouped navigation regardless of
 `primary_mode`; that does not make its Mode selectable before it has a real
 progress model.
@@ -1411,36 +1413,59 @@ Canonical Knowledge still requires the existing promotion Proposal.
 
 ## Project navigation and review
 
-All Project routes share one persistent grouped navigation shell, and its
-fourteen entries are the same for every Project:
-Project (Overview, Notes, Rooms); Explore (Inquiry, Research, Sources, Digest,
-Files & Code, Experiments); Decide & Learn (Decisions, Learning, Knowledge
-Review); and Execute (Delivery, Operations). Primary Mode does not add, remove,
-or reorder an entry — navigation position carries muscle
-memory, and a sidebar that grows as a Project is used costs more than the
-clutter it saves. An Area with nothing in it is still reachable and opens on an
-empty state offering the first action.
+All Project routes share one persistent navigation shell in two tiers. Four
+promoted destinations are always visible — **Pulse** (the index route),
+**Board**, **Updates**, **Conversations** — because they are what a person
+opens a Project to do, and a Project is pushed forward through conversation,
+so all of it is one list at the first level rather than a Room picker two
+clicks down (`GET /projects/{id}/conversations`: every conversation the viewer
+can see across the Project's Rooms, mainline first, each opening in its Room;
+reading it enrols the viewer in the mainline like opening the Project does).
+Everything else sits under a collapsible **Areas** disclosure whose open state
+is remembered per browser — six entries, flat: Notes, Inquiry, Research,
+Sources, Files & Code, Decisions. The Rooms page (roster, invitations, the
+full conversation surface) is reached from Conversations.
+What used to be thirteen entries in four groups folded without losing a route:
+Raw material and Digest are tabs of Sources (three points on one
+source → corpus pipeline); Knowledge review and Experiments are views of
+Inquiry (a candidate queue that linked back to Inquiry's Review, and a test of
+a hypothesis Thread); Learning and Operations retired to the Space. Every
+previous deep link redirects to its new home. Primary Mode does not add, remove, or reorder an
+entry — navigation position carries muscle memory, and a sidebar that grows as
+a Project is used costs more than the clutter it saves. An Area with nothing in
+it is still reachable and opens on an empty state offering the first action.
+
+A Task that belongs to a Project also opens inside this shell, at
+`/projects/:projectId/tasks/:taskId`. It renders the same page as the
+top-level `/tasks/:taskId` route, which stays for deep links and for the
+cross-Project Tasks list; the difference is that reaching it from the Board
+keeps the Areas and the chat panel on screen.
 
 Changing Primary Mode changes foreground projection, not object ownership or
 visibility.
 
-Delivery Overview/Attention is an ACL-filtered Task projection. Operations
-composes Project Automations, visible Runs, and visible
-`operational_alert` Activity. These adapters register through the Project
-registries and do not create Delivery or Operations tables. The current system
+Board attention is an ACL-filtered Task projection; Automations contribute
+`operational_alert` Activity as attention. These adapters register through
+the attention registry and do not create Board or Operations tables. The current system
 has no Incident aggregate; one must only be introduced with its own demonstrated
 lifecycle. Attention rows retain the owning domain's canonical object id only
 as transport state and expose a concrete URL: Tasks open Task Detail, Inquiry
-Candidates and Decisions open their selected Project-Area records, and
-Project Operations/operational alerts open the Operations Area with an opaque
-query selection. The Overview does not copy the domain action workflow.
-Delivery itself provides compact Task-authority commands for assignment,
-start, completion, and reopen while Task Detail remains the full workflow
-surface. Operations renders Project Operations, alerts, Automations, and Runs;
-it distinguishes active/waiting, review, fallback/degraded, terminal failure,
-and archived-Project states, and routes recovery to the Automation or Run
-authority. Project-scoped Automation fire failures persist `project_id` on
-their operational-alert Activity so the Project projection can surface them.
+Candidates and Decisions open their selected Project-Area records, research
+operations open the Research Area's Runs tab with the row selected, and
+operational alerts open the Space Inbox filtered to the Project (the
+Project-level Operations Area is retired). Pulse does not copy the domain
+action workflow.
+The Board is the Project's Task surface: lanes are flow statuses, a card
+carries its Loop stage and who holds it, and a drag to Done is refused when the
+Task has not met what it declared unless the person acknowledges what they are
+skipping (`architecture/PROJECT_WORK.md`). The flatter Delivery Area it
+replaced is gone and its route redirects. Task Detail remains the full workflow
+surface, and its Work tab is where the Loop, the completion requirements, and
+the responsibility timeline are read. Research operations, with their
+Checkpoint controls, are the Research Area's Runs tab; Automations and Runs
+are read at the Space, and project-scoped Automation fire failures persist
+`project_id` on their operational-alert Activity so the Project's attention
+list can surface them.
 
 A Project Review Session is an ephemeral composition response over one bounded
 Inquiry packet and one bounded Knowledge Promotion packet. The composer stores

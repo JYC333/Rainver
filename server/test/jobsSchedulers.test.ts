@@ -7,6 +7,7 @@ import {
 } from "../src/modules/jobs/handlerRegistry.js";
 import { JobWorker } from "../src/modules/jobs/worker.js";
 import { PgJobQueueRepository, type JobRecord } from "../src/modules/jobs/repository.js";
+import { waitForJobWake, wakeJobWorkers } from "../src/modules/jobs/wakeSignal.js";
 import { jobEventToOut, jobNotFoundForSpace, jobToOut } from "../src/modules/jobs/routes.js";
 import { SchedulerRegistry, startSchedulerRegistry } from "../src/modules/scheduler/registry.js";
 import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
@@ -387,6 +388,63 @@ describe("PgJobQueueRepository", () => {
     expect(calls[0]?.sql).toContain("attempts = GREATEST(0, attempts - 1)");
     expect(calls[0]?.sql).not.toContain("attempts < max_attempts");
     expect(calls[0]?.params[2]).toBe(scheduledAt.toISOString());
+  });
+
+  it("wakes a waiting worker loop when the enqueued job is claimable now", async () => {
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(): Promise<QueryResult<Row>> {
+        return { rows: [{ id: "job-1" } as Row], rowCount: 1 };
+      },
+    };
+    const wake = waitForJobWake(1_000);
+
+    await new PgJobQueueRepository(db).enqueue({
+      job_type: "agent_run",
+      payload: { run_id: "run-1" },
+      space_id: "space-1",
+      user_id: null,
+    });
+
+    await expect(wake).resolves.toBe("signalled");
+  });
+
+  it("does not wake a worker for a job scheduled in the future", async () => {
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(): Promise<QueryResult<Row>> {
+        return { rows: [{ id: "job-1" } as Row], rowCount: 1 };
+      },
+    };
+    const wake = waitForJobWake(20);
+
+    await new PgJobQueueRepository(db).enqueue({
+      job_type: "agent_run",
+      payload: { run_id: "run-1" },
+      space_id: "space-1",
+      user_id: null,
+      scheduled_at: new Date(Date.now() + 60_000),
+    });
+
+    await expect(wake).resolves.toBe("timeout");
+  });
+});
+
+describe("job wake signal", () => {
+  it("times out on its own when no enqueue arrives", async () => {
+    await expect(waitForJobWake(5)).resolves.toBe("timeout");
+  });
+
+  it("wakes every waiting loop and stops holding them afterwards", async () => {
+    const first = waitForJobWake(1_000);
+    const second = waitForJobWake(1_000);
+
+    wakeJobWorkers();
+
+    expect(await first).toBe("signalled");
+    expect(await second).toBe("signalled");
+    // A later wake with nobody waiting must be a no-op, not a queued signal
+    // that the next waiter picks up as a phantom job.
+    wakeJobWorkers();
+    await expect(waitForJobWake(5)).resolves.toBe("timeout");
   });
 });
 

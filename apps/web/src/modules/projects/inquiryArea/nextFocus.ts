@@ -20,7 +20,7 @@ export const NEXT_FOCUS_LABELS: Record<InquiryNextFocusKind, string> = {
   synthesize: 'Synthesize',
   promote_knowledge: 'Promote Knowledge',
   create_decision_case: 'Create a Decision Case',
-  create_delivery_task: 'Create/execute a Delivery Task',
+  create_delivery_task: 'Create a Task',
 }
 
 /**
@@ -58,7 +58,7 @@ export function nextFocusDestination(
   switch (kind) {
     case 'search_acquisition':
       return startedWorkflow
-        ? { kind: 'link', to: `/projects/${projectId}/operations`, cta: 'Watch the running search' }
+        ? { kind: 'link', to: `/projects/${projectId}/research?tab=runs`, cta: 'Watch the running search' }
         : { kind: 'link', to: `/projects/${projectId}/research?research=new&thread=${threadId}`, cta: 'Set up evidence search' }
     case 'read_evidence':
       return { kind: 'tab', tab: 'evidence', cta: 'Review this Thread’s evidence' }
@@ -67,12 +67,12 @@ export function nextFocusDestination(
     case 'clarify_or_decompose':
       return { kind: 'link', to: `/projects/${projectId}/inquiry/${threadId}/assess`, cta: 'Open the assessment workspace' }
     case 'design_run_experiment':
-      return { kind: 'link', to: `/projects/${projectId}/experiments`, cta: 'Go to Experiments' }
+      return { kind: 'link', to: `/projects/${projectId}/inquiry?view=experiments`, cta: 'Go to Experiments' }
     case 'create_decision_case':
       return { kind: 'link', to: `/projects/${projectId}/decisions`, cta: 'Go to Decisions' }
     case 'create_delivery_task':
-      return { kind: 'link', to: `/projects/${projectId}/delivery`, cta: 'Go to Delivery' }
+      return { kind: 'link', to: `/projects/${projectId}/board`, cta: 'Go to the Board' }
     case 'promote_knowledge':
-      return { kind: 'link', to: `/projects/${projectId}/knowledge-review`, cta: 'Go to Knowledge Review' }
+      return { kind: 'link', to: `/projects/${projectId}/inquiry?view=review&tab=candidates`, cta: 'Review Knowledge candidates' }
   }
 }

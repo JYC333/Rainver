@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { Project, ProjectPrimaryMode } from '../../types/api'
+import type { Project } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -35,12 +35,6 @@ const FILTER_OPTIONS = [
 
 /** How a Project advances — the one classification and preset the creator
  * picks. Sources and workflows are configured later in their owning Areas. */
-const PRIMARY_MODE_CHOICES: Array<{ value: ProjectPrimaryMode; label: string; detail: string }> = [
-  { value: 'research', label: 'Research', detail: 'Ask a question, gather and screen material, reach a conclusion' },
-  { value: 'delivery', label: 'Delivery', detail: 'Break a goal into tasks and ship them' },
-  { value: 'operations', label: 'Operations', detail: 'Keep something running, watch it, respond' },
-  { value: 'learning', label: 'Learning', detail: 'Take material in and retain it' },
-]
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
@@ -52,11 +46,6 @@ export default function ProjectsPage() {
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
-  const [newFocus, setNewFocus] = useState('')
-  const [newGoal, setNewGoal] = useState('')
-  const [newScope, setNewScope] = useState('')
-  const [newSuccessDefinition, setNewSuccessDefinition] = useState('')
-  const [newPrimaryMode, setNewPrimaryMode] = useState<ProjectPrimaryMode>('research')
 
   const loadProjects = useCallback(async () => {
     if (!activeSpaceId) {
@@ -85,25 +74,24 @@ export default function ProjectsPage() {
     }
     setCreating(true)
     try {
+      // Name and a line about it. Everything that defines the Project — goal,
+      // scope, what success means, how it advances — is decided once it exists,
+      // where the Brief, Pulse's goal prompt and the Assistant can help; asked
+      // here it was guessed at before the work had a shape.
       const project = await projectsApi.create({
         name: newName.trim(),
         description: newDescription.trim() || null,
-        current_focus: newFocus.trim() || null,
+        current_focus: null,
         settings_json: null,
-        primary_mode: newPrimaryMode,
-        goal: newGoal.trim() || null,
-        scope_included: newScope.trim() || null,
-        success_definition: newSuccessDefinition.trim() || null,
+        primary_mode: 'research',
+        goal: null,
+        scope_included: null,
+        success_definition: null,
       })
       toast.success('Project created')
       setCreateOpen(false)
       setNewName('')
       setNewDescription('')
-      setNewFocus('')
-      setNewPrimaryMode('research')
-      setNewGoal('')
-      setNewScope('')
-      setNewSuccessDefinition('')
       navigate(`/projects/${project.id}`)
     } catch (e) {
       toast.error(errMsg(e))
@@ -115,11 +103,6 @@ export default function ProjectsPage() {
   function resetForm() {
     setNewName('')
     setNewDescription('')
-    setNewFocus('')
-    setNewPrimaryMode('research')
-    setNewGoal('')
-    setNewScope('')
-    setNewSuccessDefinition('')
   }
 
   return (
@@ -207,10 +190,6 @@ export default function ProjectsPage() {
               )}
               <div className="flex items-center gap-2 mt-2 text-xs text-muted-foreground">
                 <Badge variant="outline">{project.status}</Badge>
-                {/* How the Project advances is what distinguishes one from
-                    another. The badge here used to name one hardcoded source
-                    pack, which said nothing about the work. */}
-                <Badge variant="secondary">{project.primary_mode}</Badge>
                 <span>Updated {fmt(project.updated_at)}</span>
               </div>
             </Card>
@@ -224,7 +203,7 @@ export default function ProjectsPage() {
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
             <DialogDescription className="sr-only">
-              Create a project with optional description and current focus.
+              Create a project with a name and an optional description.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -246,69 +225,9 @@ export default function ProjectsPage() {
                 rows={2}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label>Goal</Label>
-              <Textarea
-                value={newGoal}
-                onChange={e => setNewGoal(e.target.value)}
-                placeholder="What outcome should this project produce?"
-                rows={3}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Scope</Label>
-              <Textarea
-                value={newScope}
-                onChange={e => setNewScope(e.target.value)}
-                placeholder="What is included in this project?"
-                rows={2}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Success definition</Label>
-              <Textarea
-                value={newSuccessDefinition}
-                onChange={e => setNewSuccessDefinition(e.target.value)}
-                placeholder="How will you know this Project is successful?"
-                rows={2}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Current focus</Label>
-              <Input
-                value={newFocus}
-                onChange={e => setNewFocus(e.target.value)}
-                placeholder="What are you actively working on right now?"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>How does this Project advance?</Label>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {PRIMARY_MODE_CHOICES.map(choice => (
-                  <button
-                    key={choice.value}
-                    type="button"
-                    aria-pressed={newPrimaryMode === choice.value}
-                    className={[
-                      'rounded-md border p-3 text-left transition-colors',
-                      newPrimaryMode === choice.value
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border bg-background hover:bg-muted/40',
-                    ].join(' ')}
-                    onClick={() => setNewPrimaryMode(choice.value)}
-                  >
-                    <div className="flex items-center gap-2">
-                      <FolderKanban className="size-4 text-accent-foreground" />
-                      <span className="text-sm font-medium">{choice.label}</span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{choice.detail}</p>
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Every Area stays available whichever you pick; this decides what the Project shows first, and you can change it later.
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Starts as a Research Project. Goal, scope and how it advances are set from inside the Project, once there is something to set them about.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => { setCreateOpen(false); resetForm() }}>Cancel</Button>

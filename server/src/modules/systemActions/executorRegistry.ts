@@ -1,13 +1,16 @@
+import { registerProposalDecisionExecutor } from "../proposals/proposalDecisionExecutor.js";
 import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "./gateway.js";
 import { registerInquirySystemActionExecutors } from "../inquiry/inquirySystemActionExecutors.js";
+import { registerMemoryDirectWriteExecutors } from "../memory/memoryDirectWriteExecutors.js";
 import { registerKnowledgePromotionSystemActionExecutors } from "../knowledgePromotion/knowledgePromotionSystemActionExecutors.js";
 import { registerProjectResearchSystemActionExecutors } from "../projectResearch/projectResearchSystemActionExecutors.js";
 import { registerSourcesSystemActionExecutors } from "../sources/sourcesSystemActionExecutors.js";
 import { registerProjectsSystemActionExecutors } from "../projects/projectsSystemActionExecutors.js";
 import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionExecutors.js";
+import { registerProjectWorkSystemActionExecutors } from "../projectWork/projectWorkSystemActionExecutors.js";
 import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors.js";
 
 /**
@@ -34,7 +37,10 @@ export function registerModuleSystemActionExecutors(
     registerSourcesSystemActionExecutors(executors, config, run);
     registerProjectsSystemActionExecutors(executors, config, run);
     registerPlansSystemActionExecutors(executors, config, run);
+    registerProjectWorkSystemActionExecutors(executors, config, run);
     registerPolicySystemActionExecutors(executors, config, run);
+    registerProposalDecisionExecutor(executors, config, run);
+    registerMemoryDirectWriteExecutors(executors, config, run);
   }
   if (granted.researchAcquisition && config.databaseUrl && run.instructed_by_user_id) {
     registerProjectResearchSystemActionExecutors(executors, config, run);

@@ -3,13 +3,87 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import MemoriesPage from '../MemoriesPage'
+import type { Memory } from '../../../types/api'
 import { knowledgeApi, memoryApi, spacesApi } from '../../../api/client'
 
-vi.mock('sonner', () => ({
-  toast: {
-    success: vi.fn(),
-    error: vi.fn(),
-  },
+const toastCalls: string[] = []
+vi.mock('sonner', () => {
+  const toast = Object.assign(
+    (message: string) => { toastCalls.push(message) },
+    { success: vi.fn(), error: vi.fn(), message: vi.fn() },
+  )
+  return { toast }
+})
+
+// ADR 0003 §2/§3: the Agent writes without asking, so the page is where that
+// is read afterwards — and archiving your own entry is one request, not a
+// proposal you file with yourself.
+describe('MemoriesPage, memory an Agent wrote', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    toastCalls.length = 0
+    vi.mocked(memoryApi.list).mockResolvedValue({ items: [memoryRow()], limit: 50, offset: 0, total: 1 })
+    vi.mocked(spacesApi.getRetrievalSettings).mockResolvedValue(baseSettings)
+  })
+
+  it('asks for what the Agents wrote, and marks those rows', async () => {
+    renderPage()
+
+    expect(await screen.findByText('Meeting times')).toBeInTheDocument()
+    expect(screen.getByText('Agent')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Written by an Agent' }))
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ created_by: 'agent' }))
+    })
+  })
+
+  it('carries a paused session straight into the list', async () => {
+    renderPage('/memory?session=session-1')
+
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenCalledWith(expect.objectContaining({ session: 'session-1' }))
+    })
+    expect(await screen.findByText(/Session session-/)).toBeInTheDocument()
+  })
+
+  it('carries a paused turn into the list by Run', async () => {
+    renderPage('/memory?run=run-1')
+
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenCalledWith(expect.objectContaining({ run: 'run-1' }))
+    })
+    expect(await screen.findByText(/Turn run-1/)).toBeInTheDocument()
+  })
+
+  it('archives the caller\'s own entry outright and restores an archived one', async () => {
+    vi.mocked(memoryApi.delete).mockResolvedValue(memoryRow({ status: 'archived' }) as never)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    await waitFor(() => { expect(memoryApi.delete).toHaveBeenCalledWith('memory-1') })
+    // Not "proposal submitted": the server archived it.
+    expect(toastCalls).toContain('Archived')
+
+    vi.mocked(memoryApi.list).mockResolvedValue({
+      items: [memoryRow({ status: 'archived' })], limit: 50, offset: 0, total: 1,
+    })
+    renderPage('/memory?status=archived')
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+    await waitFor(() => { expect(memoryApi.restore).toHaveBeenCalledWith('memory-1') })
+  })
+
+  it('still says a proposal was submitted for someone else\'s entry', async () => {
+    vi.mocked(memoryApi.delete).mockResolvedValue({ id: 'proposal-1', proposal_type: 'memory_archive' } as never)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    await waitFor(() => { expect(toastCalls).toContain('Archive proposal submitted') })
+  })
+})
+
+vi.mock('../../../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1' } }),
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -30,6 +104,8 @@ vi.mock('../../../api/client', () => ({
     list: vi.fn(),
     create: vi.fn(),
     delete: vi.fn(),
+    restore: vi.fn(),
+    versions: vi.fn(),
     retrievalSearch: vi.fn(),
     feedback: vi.fn(),
     maintenanceScan: vi.fn(),
@@ -88,12 +164,37 @@ const baseSettings = {
   updated_at: '2026-06-26T00:00:00.000Z',
 } as const
 
-function renderPage() {
+function renderPage(entry = '/memory?project_id=project-1') {
   return render(
-    <MemoryRouter initialEntries={['/memory?project_id=project-1']}>
+    <MemoryRouter initialEntries={[entry]}>
       <MemoriesPage />
     </MemoryRouter>,
   )
+}
+
+function memoryRow(over: Record<string, unknown> = {}) {
+  return {
+    id: 'memory-1',
+    space_id: 'space-1',
+    owner_user_id: 'user-1',
+    title: 'Meeting times',
+    content: 'Prefers morning meetings',
+    type: 'semantic',
+    scope: 'user',
+    namespace: 'user.default',
+    status: 'active',
+    visibility: 'private',
+    access_level: 'full',
+    confidence: 1,
+    importance: 0.5,
+    created_by: 'agent:agent-1',
+    version: 1,
+    tags: null,
+    created_at: '2026-08-26T00:00:00.000Z',
+    updated_at: '2026-08-26T00:00:00.000Z',
+    deleted_at: null,
+    ...over,
+  } as Memory
 }
 
 describe('MemoriesPage maintenance UI', () => {

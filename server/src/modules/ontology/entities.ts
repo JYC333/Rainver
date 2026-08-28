@@ -132,6 +132,27 @@ export function registeredEntities(): readonly EntityDefinition[] {
   return [...registry.values()];
 }
 
+/**
+ * The `content_access_grants.resource_type` key an entity is gated under.
+ *
+ * Not the entity type: a `space_objects` subtype inherits the root's
+ * declaration, so an Experiment is gated as `space_object`. Callers that
+ * guessed the entity type got "Unknown content resource type" at runtime.
+ */
+export function resolveContentResourceType(entityType: string): string | null {
+  let current = registry.get(entityType);
+  const seen = new Set<string>();
+  while (current) {
+    if (current.contentAccessible) {
+      return current.contentAccessible.resourceType ?? current.entityType;
+    }
+    if (!current.rootEntity || seen.has(current.rootEntity)) return null;
+    seen.add(current.rootEntity);
+    current = registry.get(current.rootEntity);
+  }
+  return null;
+}
+
 /** Resolves a declaration through `rootEntity`, so subtypes inherit. */
 export function resolveContentAccessible(entityType: string): ContentAccessibleDeclaration | null {
   let current = registry.get(entityType);

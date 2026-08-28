@@ -52,7 +52,10 @@ export class ProjectOperationRepository {
     input: {
       title: string;
       intentText: string;
-      status: "active" | "waiting_review";
+      /** `failed` records an acquisition that never started — the pipeline
+       *  failing before an Operation existed used to leave nothing visible
+       *  anywhere, only a `jobs.result_json` row. */
+      status: "active" | "waiting_review" | "failed";
       progress: Record<string, unknown>;
       steps: Array<{ title: string; status: "pending" | "active" | "blocked" | "done" | "skipped"; detail?: Record<string, unknown> }>;
     },

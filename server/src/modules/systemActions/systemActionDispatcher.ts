@@ -198,6 +198,7 @@ export class SystemActionDispatcher {
           emitActionEvent(definition, "action_completed", context, {
             ok: false,
             error_code: (error as { code?: string }).code ?? "system_action_failed",
+            error_message: error instanceof Error ? error.message.slice(0, 2_000) : null,
             policy_decision_record_id: (error as { policy_decision_record_id?: string | null }).policy_decision_record_id ?? null,
           }),
       },
@@ -367,7 +368,28 @@ async function enforcePolicyForAction(
   return { allowed: false, reason: "No canonical policy adapter is registered for this action" };
 }
 
-async function enforceDeclaredResourcePolicy(
+/**
+ * The origin that actually decides whether a person asked for this.
+ *
+ * A delegated child carries `delegation` whoever started the chain, so reading
+ * its own origin would let an autonomous root launder a gated write through a
+ * specialist. The root's origin is the one that answers "did a person ask".
+ */
+export async function effectiveTriggerOrigin(
+  config: { databaseUrl: string },
+  run: RunRecord,
+): Promise<string> {
+  if (run.trigger_origin !== "delegation" || !run.root_run_id || run.root_run_id === run.id) {
+    return run.trigger_origin;
+  }
+  const root = await getDbPool(config.databaseUrl).query<{ trigger_origin: string }>(
+    `SELECT trigger_origin FROM runs WHERE space_id = $1 AND id = $2`,
+    [run.space_id, run.root_run_id],
+  );
+  return root.rows[0]?.trigger_origin ?? run.trigger_origin;
+}
+
+export async function enforceDeclaredResourcePolicy(
   databaseUrl: string,
   definition: SystemActionDefinition,
   resource: SystemActionPolicyResource,
@@ -406,6 +428,11 @@ async function enforceDeclaredResourcePolicy(
       tool_name: definition.id,
       project_id: run.project_id,
       instructed_by_user_id: run.instructed_by_user_id,
+      // Who wanted this. `ruleUnattendedProjectWrite` distinguishes a write a
+      // person asked for in a conversation from the same call made by an
+      // unattended wake-up, and without this key it read every dispatch as
+      // `manual` and never fired.
+      trigger_origin: await effectiveTriggerOrigin({ databaseUrl }, run),
       surface: "managed_run_system_action_gateway",
       ...(hasActionGrant !== undefined ? { has_action_approval_grant: hasActionGrant } : {}),
     },
@@ -471,6 +498,8 @@ function defaultActionEventSink(config: ServerConfig, run: RunRecord) {
         event_type: eventType,
         status: eventType === "action_invoked" ? "running" : (metadata.ok === false ? "failed" : "succeeded"),
         actor_id: run.agent_id,
+        ...(typeof metadata.error_code === "string" ? { error_code: metadata.error_code } : {}),
+        ...(typeof metadata.error_message === "string" ? { error_message: metadata.error_message } : {}),
         metadata_json: { action_id: call.name, action_version: 1, tool_call_id: call.id, instructed_by_user_id: run.instructed_by_user_id ?? null, ...metadata },
       });
     } catch {

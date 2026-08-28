@@ -17,9 +17,22 @@ class RunFinalizationReconcilerRegistry {
     this.reconcilers.set(key, { reconciler, owner });
   }
 
+  /**
+   * Each reconciler is isolated. They settle unrelated things — Task status,
+   * autonomy candidates, a follow-up Task — and a transient failure in the
+   * one that happens to be registered first must not silently skip the rest,
+   * which a bare loop inside a best-effort caller would do.
+   */
   async reconcileAll(db: Queryable, run: RunRecord): Promise<void> {
-    for (const { reconciler } of this.reconcilers.values()) {
-      await reconciler.reconcile(db, run);
+    for (const [key, { reconciler }] of this.reconcilers.entries()) {
+      try {
+        await reconciler.reconcile(db, run);
+      } catch (error) {
+        process.stderr.write(
+          `[runs] finalization reconciler ${key} failed for run ${run.id}: `
+          + `${String((error as Error)?.message ?? error)}\n`,
+        );
+      }
     }
   }
 

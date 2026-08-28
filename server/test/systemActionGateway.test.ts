@@ -87,7 +87,7 @@ describe("SystemActionGateway", () => {
       success_definition: { type: "string" },
     });
 
-    const createThread = systemActionInputJsonSchema(definitionFor("inquiry.propose_thread"));
+    const createThread = systemActionInputJsonSchema(definitionFor("inquiry.create_thread"));
     expect(createThread.required).toEqual(["statement"]);
     expect(createThread.properties).toMatchObject({
       kind: { type: "string" },
@@ -162,8 +162,8 @@ describe("SystemActionGateway", () => {
     );
   });
 
-  it("offers the proposal-gated Thread creation action to Room conversations", () => {
+  it("offers the Thread creation action to Room conversations", () => {
     expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("project.propose_definition");
-    expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("inquiry.propose_thread");
+    expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("inquiry.create_thread");
   });
 });

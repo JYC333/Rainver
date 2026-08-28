@@ -23,7 +23,6 @@ import { researchSetupDraftFromWorkflow, serializeResearchSetupDraft } from './r
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { ResearchSetupSummary } from './ResearchSetupSummary'
 import { defaultResearchSetupGuideSteps, ResearchSetupGuide } from './ResearchSetupGuide'
-import { ResearchTabsLegend } from './ResearchTabsLegend'
 import { isResearchHumanReviewCheckpoint } from './researchReviewAttention'
 import { ResearchResultCard } from './ResearchResultCard'
 import { researchResultState, savedSetupDiffersFromOperation, type ResearchResultAction } from './researchResultState'
@@ -103,7 +102,7 @@ function noReportOutcome(operation: ProjectOperation | null): Record<string, unk
 // Mirrors the backend's canonical stage-index table (operationProjection.ts's
 // researchStageIndex) — comparison and synthesis share one visual step
 // ("Compare or synthesize evidence").
-function researchStageIndex(value: unknown): number {
+export function researchStageIndex(value: unknown): number {
   switch (value) {
     case 'monitor_setup': return 0
     case 'backfill': return 1
@@ -463,10 +462,13 @@ export function FocusResearchWorkbench({
     () => new Set(sourceBindings.filter(binding => binding.status === 'active').map(binding => binding.source_channel_id)),
     [sourceBindings],
   )
-  const initialIntakeConfig = objectValue(activeWorkflow?.state_json.initial_intake)
   const initialIntakeDraft = objectValue(displayWorkflow?.state_json.draft)
   const initialIntakeSaved = initialIntakeDraft.status === 'saved' || emptyInitialSearchOperation !== null
-  const canExtendHistory = Boolean(activeWorkflow && !historicalBackfillActive && initialSearchOperation?.status === 'completed' && monitoring.active === true && initialIntakeConfig.history_mode !== 'all_available' && earliestCoverage)
+  // An "all available" baseline used to be excluded as having nothing
+  // earlier to reach. The acquisition is bounded now — it buys the newest N
+  // matches and stops — so earlier history is exactly what it left, and the
+  // server decides on coverage rather than on the history mode's name.
+  const canExtendHistory = Boolean(activeWorkflow && !historicalBackfillActive && initialSearchOperation?.status === 'completed' && monitoring.active === true && earliestCoverage)
   const pinnedThread = Array.isArray(activeWorkflow?.state_json.thread_scope)
     ? activeWorkflow?.state_json.thread_scope[0] as Record<string, unknown> | undefined
     : undefined
@@ -606,20 +608,19 @@ export function FocusResearchWorkbench({
       <nav aria-label="Project Research links" className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-sm text-muted-foreground">
         <Link className="hover:text-foreground hover:underline" to={sourceHref}>Manage sources</Link>
         <span aria-hidden="true">·</span>
-        <Link className="hover:text-foreground hover:underline" to={`/projects/${project.id}/research`}>Open reading list, checklist, and reports</Link>
+        <Link className="hover:text-foreground hover:underline" to={`/projects/${project.id}/research?tab=reading`}>Open the reading list</Link>
       </nav>
       {(runningResearchCount > 0 || waitingReviewResearchCount > 0) && (
         <Link
-          to={`/projects/${project.id}/operations`}
+          to={`/projects/${project.id}/research?tab=runs`}
           className="block rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground hover:bg-muted/40"
         >
           {runningResearchCount > 0 && `${runningResearchCount} search${runningResearchCount === 1 ? '' : 'es'} running`}
           {runningResearchCount > 0 && waitingReviewResearchCount > 0 && ' · '}
           {waitingReviewResearchCount > 0 && `${waitingReviewResearchCount} waiting for your review`}
-          {' — view all in Operations'}
+          {' — see Runs'}
         </Link>
       )}
-      {initialIntakeStarted && <ResearchTabsLegend projectId={project.id} />}
       {!initialIntakeStarted && (
         <ResearchSetupGuide steps={setupGuideSteps} />
       )}

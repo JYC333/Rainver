@@ -130,7 +130,7 @@ describe("taskContractDb", () => {
     it("rejects task statuses outside the canonical lifecycle vocabulary", async () => {
       if (!db.available) return;
       const repository = new PgTaskRepository(db.pool);
-      await expect(repository.createTask(identity, { title: "Ghost state", status: "waiting_for_review" })).rejects.toMatchObject({
+      await expect(repository.createTask(identity, { title: "Ghost state", status: "archived" })).rejects.toMatchObject({
         statusCode: 422,
       });
 
@@ -138,10 +138,23 @@ describe("taskContractDb", () => {
       await expect(
         db.pool.query(
           `INSERT INTO tasks (id, space_id, title, status, created_at, updated_at)
-           VALUES ($1,$2,'Ghost state','waiting_for_review',$3,$3)`,
+           VALUES ($1,$2,'Ghost state','archived',$3,$3)`,
           [randomUUID(), SPACE, now],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+    });
+
+    it("accepts the review hold the levels below it already had", async () => {
+      if (!db.available) return;
+      // `waiting_for_review` was the one state a Run and a Plan Node could both
+      // be in and the product work item above them could not, so a Task parked
+      // on a decision had nowhere to say so.
+      const repository = new PgTaskRepository(db.pool);
+      const task = await repository.createTask(identity, {
+        title: "Held for a decision",
+        status: "waiting_for_review",
+      });
+      expect(task.status).toBe("waiting_for_review");
     });
   });
 });

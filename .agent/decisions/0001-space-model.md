@@ -1,62 +1,62 @@
-# Decision 0001: Space as Product-Level Isolation Boundary
+# ADR 0001: Space As Product-Level Isolation Boundary
+
+Date: 2026-05 (original)
+Rewritten: 2026-08-27
 
 ## Status
-Accepted
+
+Accepted.
 
 ## Context
-The system needed a top-level isolation model that could serve personal users, households, and small teams from a single deployment. Options considered:
-- Personal-only (one user = one installation)
-- Tenant model (enterprise multi-tenancy with complex ACLs)
-- Space model (product-level containers with flexible membership)
+
+The system serves personal users, households, and small teams from a single
+deployment and needed one top-level isolation model. Options considered:
+
+- personal-only (one user = one installation);
+- tenant model (enterprise multi-tenancy with complex ACLs);
+- Space model (product-level containers with flexible membership).
 
 ## Decision
-Use **Space** as the product-level container instead of personal-only or tenant-only terminology.
+
+### 1. Space is the product-level container
 
 A Space:
-- Is the primary isolation boundary for all data
-- Has a type: `personal`, `household`, or `team`
-- Has an owner and members (via SpaceMembership)
-- Contains workspaces, agents, memories, sessions, tasks, and runs
-- Has its own policy configuration
 
-## Consequences
+- is the primary isolation boundary for all data;
+- has a type: `personal`, `household`, or `team`;
+- has an owner and members (`space_memberships`);
+- contains Projects, Project Folders, Agents, memory, sessions, tasks, and
+  runs;
+- has its own policy configuration.
 
-- All core data records carry `space_id` — required, never optional
-- One deployment instance hosts many spaces — do not create one instance per space
-- ContextBuilder refuses to build context without an explicit `space_id`
-- The term "tenant" is avoided — spaces are product-level, not infra-level
-- Users can belong to multiple spaces (via SpaceMembership)
-- Workspaces belong to spaces, not users
-- Data from space A must never appear in context built for space B
-  (**amended 2026-08-06 — see below**)
+"Tenant" is avoided: Spaces are product-level, not infrastructure-level. One
+deployment instance hosts many Spaces; an instance per Space is never created.
 
----
+### 2. Every core record carries `space_id`
 
-## Amended - 2026-08-06
+`space_id` is required, never optional. Users may belong to several Spaces
+through membership. Projects and Project Folders belong to Spaces, not to
+users.
 
-Amended by [ADR 0013](0013-personal-team-content-boundary.md), which moves all
-context-free capture into the personal Space. That makes the personal
-assistant's conversation live in a Space that holds none of the user's team
-content, and the last consequence above would leave it structurally unable to
-answer anything about the user's own team work.
+The content read gate and the Runtime Context Gateway refuse to resolve
+content without an explicit Space; there is no ambient or default Space on
+the server side.
 
-### What changes
+### 3. Isolation is user-centred, with one enumerated exception
 
-The last consequence is narrowed from a Space-centred rule to a **user-centred**
-one:
+Data from Space A must never appear in context built for Space B, **except in
+a per-user aggregated read where every contributing Space independently
+applies its own `contentAccessSql` predicate for that same user.**
 
-> Data from space A must never appear in context built for space B, **except in
-> a per-user aggregated read where every contributing Space independently
-> applies its own `contentAccessSql` predicate for that same user.**
+The exception exists because [ADR 0013](0013-personal-team-content-boundary.md)
+moves all context-free capture into the personal Space, which holds none of
+the user's team content; a Space-centred rule would leave the personal
+assistant structurally unable to answer anything about the user's own team
+work. The invariant that matters is preserved: a user never gains sight of a
+row they could not already read in the Space that owns it. What is relaxed is
+only the assumption that one context build serves exactly one Space.
 
-The isolation invariant that actually matters is preserved: a user never gains
-sight of a row they could not already read in the Space that owns it. What is
-relaxed is only the assumption that one context build serves exactly one Space.
-
-### Constraints on the exception
-
-These are part of the amendment, not implementation detail. The aggregated read
-is only sound while all five hold:
+The aggregated read is sound only while all five hold:
 
 1. **Per-Space predicate, no union shortcut.** Each contributing Space's rows
    pass through `contentAccessSql` with that Space's membership, scope,
@@ -70,15 +70,35 @@ is only sound while all five hold:
    next use, so membership revocation takes effect without a cleanup job.
 4. **Derived output is attributed by source Space.** Output attributable to a
    single source Space is written back to that Space (owner-private by
-   default). Output fusing two or more Spaces is never persisted automatically.
-5. **Cross-space lookup by id still 404s.** Nothing here changes single-resource
-   routes: a direct read of a resource id outside the request Space remains a
-   404 with no existence oracle. The exception applies only to the aggregated
-   retrieval path, which is enumerated in ADR 0013.
+   default). Output fusing two or more Spaces is never persisted
+   automatically.
+5. **Cross-Space lookup by id still 404s.** A direct read of a resource id
+   outside the request Space remains a 404 with no existence oracle. The
+   exception applies only to the aggregated retrieval path enumerated in
+   ADR 0013.
 
-The existing intentional cross-space exceptions (`/me` aggregation, personal
-memory grants, targeted publications, egress approval) are unchanged and remain
-documented in
-[`.agent/architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)
-section 8. This amendment adds a fifth, and it is the only one whose payload is
-content rather than pointer metadata — hence constraint 3.
+The other intentional cross-Space exceptions (`/me` aggregation, personal
+memory grants, targeted publications, egress approval) are pointer-metadata
+reads and are documented in
+[`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)
+section 8. The aggregated read is the only one whose payload is content —
+hence constraint 3.
+
+## Consequences
+
+- Space isolation applies to every module; a new domain joins by carrying
+  `space_id` and passing through the canonical read gate.
+- Every cross-Space read path must be enumerated and individually justified;
+  there is no general mechanism for widening.
+- Personal Spaces are high-traffic by design (ADR 0013), which is why the
+  aggregated read had to exist rather than being avoided.
+
+## Revision history
+
+- **2026-05** — accepted.
+- **2026-08-06** — the last consequence narrowed from Space-centred to
+  user-centred by ADR 0013's aggregated read; five constraints recorded.
+- **2026-08-27** — rewritten. Amendment folded into decision 3. "Workspace"
+  replaced by Project / Project Folder (renamed 2026-07-25) and the retired
+  `ContextBuilder` name replaced by the mechanisms that enforce the rule
+  today.

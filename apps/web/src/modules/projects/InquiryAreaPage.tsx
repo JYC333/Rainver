@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Plus, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
 import {
   inquiryApi, notesApi, projectsApi, projectResearchApi, spacesApi,
@@ -17,7 +16,7 @@ import type {
 import { Button } from '../../components/ui/button'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
-import { Tabs, TabsList, TabsTrigger } from '../../components/ui/tabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../components/ui/dialog'
@@ -31,10 +30,12 @@ import { CreateThreadDialog } from './inquiryArea/dialogs'
 import { draftWorkflowFor, isQuestionRefined, startedWorkflowFor, type ThreadTabId } from './inquiryArea/nextFocus'
 import { deriveStages } from './inquiryArea/stages'
 import { useDeclareProjectCaptureTarget } from '../../contexts/CaptureContext'
+import KnowledgeReviewPage from './KnowledgeReviewPage'
+import ExperimentAreaPage from './ExperimentAreaPage'
 
-type ViewId = 'focus' | 'map' | 'review'
+type ViewId = 'focus' | 'map' | 'review' | 'experiments'
 
-const VIEWS: ViewId[] = ['focus', 'map', 'review']
+const VIEWS: ViewId[] = ['focus', 'map', 'review', 'experiments']
 const EMPTY_CORPUS = new Map<string, ProjectCorpusItem>()
 
 export default function InquiryAreaPage() {
@@ -314,9 +315,6 @@ export default function InquiryAreaPage() {
   return (
     <div className="space-y-5 p-6">
       <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
-        <Button variant="ghost" size="icon" asChild>
-          <Link to={`/projects/${projectId}`}><ArrowLeft className="size-4" /></Link>
-        </Button>
         <div>
           <h1 className="text-lg font-semibold">Inquiry</h1>
           <p className="text-xs text-muted-foreground">{project?.name ?? 'Loading…'}</p>
@@ -329,6 +327,9 @@ export default function InquiryAreaPage() {
             <TabsTrigger value="review">
               Review{candidates.length > 0 ? ` (${candidates.length})` : ''}
             </TabsTrigger>
+            {/* An Experiment tests a hypothesis Thread and reports back into
+                Inquiry; it was a separate Area only by accident of history. */}
+            <TabsTrigger value="experiments">Experiments</TabsTrigger>
           </TabsList>
         </Tabs>
         <Button onClick={() => { setCreateKind('question'); setCreateOpen(true) }}>
@@ -432,15 +433,38 @@ export default function InquiryAreaPage() {
       )}
 
       {view === 'review' && (
-        <ReviewView
-          projectId={projectId}
-          threads={threads}
-          candidates={candidates}
-          deferredCandidates={deferredCandidates}
-          onOpenThread={selectThread}
-          onChanged={refresh}
-        />
+        <Tabs
+          value={searchParams.get('tab') === 'candidates' ? 'candidates' : 'inquiry'}
+          onValueChange={value => {
+            const params = new URLSearchParams(searchParams)
+            if (value === 'candidates') params.set('tab', 'candidates')
+            else params.delete('tab')
+            setSearchParams(params, { replace: true })
+          }}
+        >
+          {/* Two review queues, one place. Knowledge candidates were a separate
+              Area whose page linked back here; they are what Review is for. */}
+          <TabsList className="mb-3">
+            <TabsTrigger value="inquiry">Inquiry</TabsTrigger>
+            <TabsTrigger value="candidates">Knowledge candidates</TabsTrigger>
+          </TabsList>
+          <TabsContent value="inquiry">
+            <ReviewView
+              projectId={projectId}
+              threads={threads}
+              candidates={candidates}
+              deferredCandidates={deferredCandidates}
+              onOpenThread={selectThread}
+              onChanged={refresh}
+            />
+          </TabsContent>
+          <TabsContent value="candidates">
+            <KnowledgeReviewPage embedded />
+          </TabsContent>
+        </Tabs>
       )}
+
+      {view === 'experiments' && <ExperimentAreaPage embedded />}
 
       <CreateThreadDialog
         open={createOpen}
@@ -463,7 +487,7 @@ export default function InquiryAreaPage() {
 }
 
 /**
- * The Project goal lives on the Overview, but the setup checklist deep-links
+ * The Project goal lives on the Overview, but Pulse's goal prompt deep-links
  * here to fill it in, so this Area keeps the editor without giving the goal a
  * permanent card that competes with Thread work.
  */

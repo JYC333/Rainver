@@ -11,6 +11,7 @@ import type { Queryable } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../../routeUtils/common.js";
 import { assertActiveWorkContextReadable } from "../workContextService.js";
+import { wakeJobWorkers } from "../../jobs/wakeSignal.js";
 import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy.js";
 
 type Ref = { type: string; id: string; version?: string | null };
@@ -677,6 +678,9 @@ export class RuntimeContextContinuityService {
         JSON.stringify({ work_context_scope_id: authority.work_context_scope_id, target_cursor: targetCursor }),
         now, authority.work_context_scope_id, targetCursor],
     );
+    // This path inserts straight into `jobs` rather than going through
+    // `PgJobQueueRepository`, so it has to raise the wake itself.
+    wakeJobWorkers();
   }
 
   private async resolveExtractionEgressPolicy(spaceId: string, scopeId: string): Promise<RetrievalEgressPolicy> {

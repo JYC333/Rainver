@@ -33,7 +33,7 @@ describe('nextFocusDestination', () => {
     })
     expect(nextFocusDestination('search_acquisition', { ...context, startedWorkflow: workflow() })).toEqual({
       kind: 'link',
-      to: '/projects/project-1/operations',
+      to: '/projects/project-1/research?tab=runs',
       cta: 'Watch the running search',
     })
   })
@@ -47,10 +47,10 @@ describe('nextFocusDestination', () => {
   it('routes each remaining Focus to the Area that owns that work', () => {
     const expected: Partial<Record<InquiryNextFocusKind, string>> = {
       clarify_or_decompose: '/projects/project-1/inquiry/thread-1/assess',
-      design_run_experiment: '/projects/project-1/experiments',
+      design_run_experiment: '/projects/project-1/inquiry?view=experiments',
       create_decision_case: '/projects/project-1/decisions',
-      create_delivery_task: '/projects/project-1/delivery',
-      promote_knowledge: '/projects/project-1/knowledge-review',
+      create_delivery_task: '/projects/project-1/board',
+      promote_knowledge: '/projects/project-1/inquiry?view=review&tab=candidates',
       synthesize: '/projects/project-1/notes',
     }
     for (const [kind, to] of Object.entries(expected)) {

@@ -18,16 +18,38 @@ function registry(): ConversationContinuationRegistry {
 
 const baseEvent = { space_id: "space-1", project_id: "project-1" };
 
+/** A database with no advice recorded for the Operation's Thread. */
+const noAdvice = { query: async () => ({ rows: [] }) } as never;
+
 describe("registerResearchAcquisitionContinuation", () => {
   it("research_pipeline_outcome: started", async () => {
     const result = await registry().resolveEvent({} as never, {
       ...baseEvent,
       kind: "research_pipeline_outcome",
       key: "thread-1",
-      payload: { status: "started", operation_id: "op-1" },
+      payload: { status: "started", operation_id: "op-1", screening_cap: 200, matched_estimate: 2065 },
     });
     expect(result.directive).toBe("advance_started_acquisition");
-    expect(result.context).toMatchObject({ operation_id: "op-1" });
+    expect(result.context).toMatchObject({ operation_id: "op-1", screening_cap: 200, matched_estimate: 2065 });
+    // What it reads comes first, and the match size is labelled as the loose
+    // upper bound it is: leading with the bigger number read as the scope
+    // having grown when it had in fact just been bounded.
+    const capAt = result.instruction.indexOf("200 most recent");
+    const matchedAt = result.instruction.indexOf("2,065");
+    expect(capAt).toBeGreaterThan(-1);
+    expect(matchedAt).toBeGreaterThan(capAt);
+    expect(result.instruction).toContain("before de-duplication");
+  });
+
+  it("research_pipeline_outcome: started says how much it reads even when the match size is unknown", async () => {
+    const result = await registry().resolveEvent({} as never, {
+      ...baseEvent,
+      kind: "research_pipeline_outcome",
+      key: "thread-1",
+      payload: { status: "started", operation_id: "op-1", screening_cap: 200, matched_estimate: null },
+    });
+    expect(result.instruction).toContain("200 most recent");
+    expect(result.instruction).not.toContain("roughly");
   });
 
   it("research_pipeline_outcome: assessment_not_passed relays the reason and asks the Manager to help refine the question", async () => {
@@ -68,7 +90,7 @@ describe("registerResearchAcquisitionContinuation", () => {
   });
 
   it("research_workflow_terminal: completed asks for a summary of what the operation produced", async () => {
-    const result = await registry().resolveEvent({} as never, {
+    const result = await registry().resolveEvent(noAdvice, {
       ...baseEvent,
       kind: "research_workflow_terminal",
       key: "op-1:completed",
@@ -79,6 +101,32 @@ describe("registerResearchAcquisitionContinuation", () => {
     // reform was moving work away from.
     expect(result.instruction).toContain("Summarize");
     expect(result.context).toMatchObject({ operation_id: "op-1" });
+  });
+
+  it("research_workflow_terminal: completed relays the system's own recorded next step", async () => {
+    // A finished search used to end with the Agent inventing a next question,
+    // while the advice the system had just written sat in the Inquiry Area
+    // and in the Project's attention list saying something else.
+    const withAdvice = {
+      query: async () => ({
+        rows: [{
+          thread_id: "thread-1",
+          recommended_focus_kind: "clarify_or_decompose",
+          rationale: "The statement bundles four classification axes into one question.",
+        }],
+      }),
+    } as never;
+    const result = await registry().resolveEvent(withAdvice, {
+      ...baseEvent,
+      kind: "research_workflow_terminal",
+      key: "op-1:completed",
+      payload: { status: "completed", operation_id: "op-1", reason: "The research operation finished." },
+    });
+    expect(result.instruction).toContain("clarify or decompose");
+    expect(result.instruction).toContain("bundles four classification axes");
+    expect(result.instruction).toContain("inquiry.adopt_next_step");
+    expect(result.instruction).toContain("Do not substitute a next step of your own invention");
+    expect(result.context).toMatchObject({ next_step: "clarify_or_decompose", thread_id: "thread-1" });
   });
 
   it("research_workflow_terminal: waiting_review names the user's options, including cancel", async () => {

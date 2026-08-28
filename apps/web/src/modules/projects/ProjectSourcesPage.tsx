@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { AlertTriangle, ArrowLeft, BookOpen, FileText, Link2, Network, Play, Plus, RefreshCw, Rss, Search, Trash2 } from 'lucide-react'
+import { AlertTriangle, BookOpen, FileText, Link2, Network, Play, Plus, RefreshCw, Rss, Search, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { projectsApi, sourcesApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
@@ -445,14 +445,6 @@ export default function ProjectSourcesPage() {
   const attentionCount = health.filter(row => row.status === 'attention' || row.status === 'failing').length
   return (
     <div className="p-6 space-y-6">
-      <Link
-        to={projectId ? `/projects/${projectId}` : '/projects'}
-        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <ArrowLeft className="size-3" />
-        Project
-      </Link>
-
       <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
         <BookOpen className="size-3.5 shrink-0" />
         <span>Material triage and reading status live in the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Area → Reading List</Link>. This page manages collection only.</span>

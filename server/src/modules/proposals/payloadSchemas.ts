@@ -313,19 +313,19 @@ const projectSourceBind = z.object({
 }).passthrough();
 const sourceBackfillStart = z.object({ proposal_type:z.literal("source_backfill_start"),action_id:z.literal("source.backfill.propose_start"),source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1),strategy_json:z.record(z.unknown()),quota_policy_json:z.record(z.unknown()) }).passthrough();
 
-const inquiryConclusion = z.object({
-  proposal_type: z.literal("inquiry_conclusion"),
-  action_id: z.literal("inquiry.record_conclusion"),
-  thread_id: z.string().min(1),
-  change_summary: z.string().min(1),
-}).passthrough();
-
-const inquiryThreadCreate = z.object({
-  proposal_type: z.literal("inquiry_thread_create"),
-  action_id: z.literal("inquiry.propose_thread"),
+/**
+ * Offering the earlier history a bounded acquisition deliberately left
+ * unread. The first pass buys the newest N matches and stops; this is how the
+ * rest is offered — as one decision a person makes when it can be acted on,
+ * not as a default nobody agreed to.
+ */
+const researchHistoryExtend = z.object({
+  proposal_type: z.literal("research_history_extend"),
   project_id: z.string().min(1),
-  kind: z.enum(["question", "hypothesis"]),
-  statement: z.string().min(1),
+  workflow_id: z.string().min(1),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  max_items: z.number().int().min(1),
 }).passthrough();
 
 const projectBriefPublish = z.object({
@@ -431,15 +431,14 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   sourceChannelActivation,
   projectSourceBind,
   sourceBackfillStart,
-  inquiryThreadCreate,
   projectBriefPublish,
-  inquiryConclusion,
   researchQueryStrategyActivation,
   sourceRecipeActivation,
   evolvableAssetVersionPromote,
   workflowSave,
   evolutionBundleRollback,
   egressReview,
+  researchHistoryExtend,
 ]);
 
 export type ProposalPayload = z.infer<typeof ProposalPayloadSchema>;

@@ -3,6 +3,7 @@ import { getDbPool } from "../../db/pool.js";
 import type {
   MemoryOut,
   MemoryPage,
+  MemoryVersionsResponse,
 } from "@rainver/protocol";
 import {
   canReadMemory,
@@ -34,6 +35,18 @@ export interface MemoryListFilters {
   memoryType?: string | null;
   status?: string | null;
   projectId?: string | null;
+  /**
+   * Who wrote it. Reading what the Agents have been remembering is the
+   * after-the-fact review ADR 0003 §2 put in place of approving each write,
+   * so it is a filter on the list rather than a separate page.
+   */
+  writtenBy?: "agent" | "user" | null;
+  /** Only entries written at or after this instant. */
+  since?: string | null;
+  /** Only entries a single session wrote — the paused-session attention link. */
+  sessionId?: string | null;
+  /** The same, for a conversation with no session: one Run's writes. */
+  runId?: string | null;
   limit: number;
   offset: number;
 }
@@ -137,6 +150,31 @@ export class PgMemoryReadRepository {
     if (filters.projectId) {
       params.push(filters.projectId);
       where.push(`project_id = $${params.length}`);
+    }
+    if (filters.writtenBy === "agent") {
+      where.push(`created_by LIKE 'agent:%'`);
+    } else if (filters.writtenBy === "user") {
+      // `NULL NOT LIKE …` is NULL, so an entry with no recorded author would
+      // fall out of both halves and "everyone" would not be their sum.
+      where.push(`(created_by IS NULL OR created_by NOT LIKE 'agent:%')`);
+    }
+    if (filters.since) {
+      params.push(filters.since);
+      where.push(`created_at >= $${params.length}::timestamptz`);
+    }
+    if (filters.sessionId) {
+      params.push(filters.sessionId);
+      where.push(`EXISTS (SELECT 1 FROM provenance_links pl
+                           WHERE pl.space_id = me.space_id AND pl.target_type = 'memory'
+                             AND pl.target_id = me.id
+                             AND pl.evidence_json->>'session_id' = $${params.length})`);
+    }
+    if (filters.runId) {
+      params.push(filters.runId);
+      where.push(`EXISTS (SELECT 1 FROM provenance_links pl
+                           WHERE pl.space_id = me.space_id AND pl.target_type = 'memory'
+                             AND pl.target_id = me.id
+                             AND pl.source_type = 'run' AND pl.source_id = $${params.length})`);
     }
     params.push(userId);
     const userExpr = `$${params.length}`;
@@ -348,6 +386,64 @@ export class PgMemoryReadRepository {
         `project_id '${projectId}' not found in space '${spaceId}' or has been deleted`,
       );
     }
+  }
+
+  /**
+   * Every version of one memory, oldest first, with the provenance of each.
+   *
+   * The chain is what makes a direct revision safe to allow: the person can
+   * see what it said before and revise it back. Gated by the same read rules
+   * as the list — a version the caller cannot read is not in the answer.
+   */
+  async versions(spaceId: string, userId: string, memoryId: string): Promise<MemoryVersionsResponse> {
+    const anchor = await this.db.query<{ root_memory_id: string | null; id: string }>(
+      `SELECT id, root_memory_id FROM memory_entries WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+      [memoryId, spaceId],
+    );
+    const found = anchor.rows[0];
+    if (!found) return { items: [] };
+    const rootId = found.root_memory_id ?? found.id;
+    const rows = await this.db.query<MemoryRow & {
+      run_id: string | null; session_id: string | null; rationale: string | null; agent_id: string | null;
+    }>(
+      `SELECT ${MEMORY_COLUMNS}, me.agent_id,
+              prov.prov_run_id AS run_id,
+              prov.evidence_json->>'session_id' AS session_id,
+              prov.evidence_json->>'rationale' AS rationale
+         FROM memory_entries me
+         LEFT JOIN LATERAL (
+           -- Aliased because the memory column list selects an unqualified
+           -- source_id, which an unaliased one here makes ambiguous.
+           SELECT source_id AS prov_run_id, evidence_json FROM provenance_links
+            WHERE space_id = me.space_id AND target_type = 'memory' AND target_id = me.id
+              AND source_type = 'run' AND evidence_json->>'rationale' IS NOT NULL
+            ORDER BY created_at DESC LIMIT 1
+         ) prov ON true
+        WHERE me.space_id = $1 AND me.deleted_at IS NULL
+          AND (me.id = $2 OR me.root_memory_id = $2)
+        ORDER BY me.created_at ASC`,
+      [spaceId, rootId],
+    );
+    const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
+    const readable = rows.rows.filter((row) => canReadMemory(row, { userId, spaceId, oversightLevel }));
+    // The access filters carry MemoryRow through, so the provenance columns
+    // are looked back up by id rather than cast onto the narrowed rows.
+    const provenance = new Map(rows.rows.map((row) => [row.id, row]));
+    const visible = await this.filterByProjectAccess(readable, spaceId, userId);
+    return {
+      items: visible.map((row) => {
+        const prov = provenance.get(row.id);
+        return {
+          memory: this.serialize(row, userId),
+          written_by_agent_id: row.created_by?.startsWith("agent:")
+            ? row.created_by.slice("agent:".length)
+            : null,
+          run_id: prov?.run_id ?? null,
+          session_id: prov?.session_id ?? null,
+          rationale: prov?.rationale ?? null,
+        };
+      }),
+    };
   }
 
   private serialize(row: MemoryRow, viewerUserId: string): MemoryOut {

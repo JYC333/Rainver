@@ -856,7 +856,19 @@ create `TaskArtifact` rows as a side effect.
 `ReflectionProposalBuilder` creates pending proposal candidates from a `RunReflection`. Accepted proposals are applied through `ProposalApplyService`.
 
 **Supported apply types (from reflection):**
-- `follow_up_task` — accepted proposal creates a `Task` row. This is the first low-risk learning apply path.
+- `follow_up_task` — the proposal is always drafted, carrying the Run's
+  context taint, its egress requirement and its preview flag. When the Run
+  succeeded **and a person asked for it**, `tasks/followUpTaskReconciler.ts`
+  applies it at finalization through the same accept path a click uses, so
+  there is no card to approve
+  ([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §2):
+  a Task inside the Project they are working in commits nobody to anything and
+  is closed in one action. An unattended origin, a failed Run, a dry run, an
+  unapproved egress owner or an instructing person whose role cannot apply a
+  medium-risk proposal all leave the card exactly where it was. It is applied
+  at finalization rather than at materialization because everything that makes
+  the output provisional — staging, verification, the preview flag — is
+  decided after the output is read.
 
 **Unsupported apply types (remain pending-only):**
 - `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update` — accepted proposals raise `UnsupportedProposalTypeError`.

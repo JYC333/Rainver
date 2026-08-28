@@ -117,6 +117,9 @@ export interface AgentVersionRecord {
   output_schema_json: Record<string, unknown>;
   source_proposal_id: string | null;
   source_activity_id: string | null;
+  /** Non-null: this version materializes that managed seed and should be
+   * re-materialized when it changes. Null: detached, leave it alone. */
+  follows_seed_key: string | null;
   created_at: unknown;
   published_at: unknown | null;
   archived_at: unknown | null;
@@ -267,6 +270,7 @@ const VERSION_COLUMN_NAMES = [
   "prompt_provenance_json",
   "source_proposal_id",
   "source_activity_id",
+  "follows_seed_key",
   "created_at",
   "published_at",
   "archived_at",
@@ -490,9 +494,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
 
+  /**
+   * The managed Assistant for one scope.
+   *
+   * `projectId` null means the Space's own instance — the one `/home` chat and
+   * the Assistant settings pointer anchor to. A Project id means that
+   * Project's instance. The two are separate rows with separate partial unique
+   * indexes, so this must always say which it wants: a query that took
+   * whichever was created first would hand the Space's chat a Project's
+   * Assistant as soon as a second one existed.
+   */
   async getSystemAssistantInTransaction(
     db: Queryable,
     spaceId: string,
+    projectId: string | null = null,
   ): Promise<AgentOut | null> {
     const result = await db.query<AgentRecord>(
       `SELECT ${AGENT_COLUMNS}
@@ -503,11 +518,39 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         WHERE a.space_id = $1
           AND a.agent_kind = 'system_assistant'
           AND a.status = 'active'
+          AND ($2::varchar IS NULL AND a.project_id IS NULL
+               OR a.project_id = $2::varchar)
         ORDER BY a.created_at ASC, a.id ASC
         LIMIT 1`,
-      [spaceId],
+      [spaceId, projectId],
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
+  }
+
+  /**
+   * Mark the instance's current version as a materialization of a seed.
+   *
+   * Creation goes through the ordinary `create` path, which knows nothing
+   * about seeds; this is the provisioner saying "that first version was mine".
+   * It never clears the mark and never touches a version that already carries
+   * a different one, so it cannot re-attach an instance somebody has since
+   * given a version of its own.
+   */
+  async markCurrentVersionFollowsSeedInTransaction(
+    db: Queryable,
+    spaceId: string,
+    agentId: string,
+    seedKey: string,
+  ): Promise<void> {
+    await db.query(
+      `UPDATE agent_versions v
+          SET follows_seed_key = $3
+         FROM agents a
+        WHERE a.space_id = $1 AND a.id = $2
+          AND v.id = a.current_version_id
+          AND v.follows_seed_key IS NULL`,
+      [spaceId, agentId, seedKey],
+    );
   }
 
   async ensureAssistantSettingsPointerInTransaction(
@@ -995,11 +1038,18 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   async publishSystemManagedPrompt(input: {
     spaceId: string;
     agentId: string;
-    agentKind: "system_assistant" | "system_source_post_processor" | "system_source_annotator" | "system_research";
+    agentKind: "system_source_post_processor" | "system_source_annotator" | "system_research";
     systemPrompt: string;
     promptProvenanceJson?: PromptProvenance | null;
   }): Promise<{ changed: boolean; versionId: string }> {
     return withTransaction(this.pool, async (client) => {
+      // The managed Assistant is materialized from a seed and reconciled
+      // through `reconcileSystemManagedAgentInTransaction`, which tracks
+      // `follows_seed_key`. Publishing an unmarked version here would detach
+      // the instance from its seed as a side effect, and nothing would say so.
+      if ((input.agentKind as string) === "system_assistant") {
+        throw new HttpError(422, "Use the Assistant provisioner to publish a system_assistant prompt");
+      }
       const current = await this.lockCurrentVersion(
         client,
         input.spaceId,
@@ -1065,6 +1115,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputPolicyJson: Record<string, unknown>;
       scheduleConfigJson: Record<string, unknown>;
       outputSchemaJson: Record<string, unknown>;
+      /** Which scope this instance belongs to. Null is the Space's own. */
+      projectId?: string | null;
+      /** The seed being materialized. A version carrying it is re-materialized
+       * when the seed changes; one that does not has been given a version of
+       * its own and is left alone. */
+      followsSeedKey?: string | null;
     },
   ): Promise<AgentOut> {
     const agent = await client.query<{ id: string }>(
@@ -1081,7 +1137,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const now = new Date().toISOString();
     await client.query(
       `UPDATE agents
-          SET project_id = NULL,
+          SET project_id = $6,
               owner_user_id = NULL,
               name = $3,
               description = $4,
@@ -1091,7 +1147,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
               access_level = 'full',
               updated_at = $5
         WHERE space_id = $1 AND id = $2`,
-      [input.spaceId, input.agentId, input.name, input.description, now],
+      [input.spaceId, input.agentId, input.name, input.description, now, input.projectId ?? null],
     );
 
     const current = await this.lockCurrentVersion(client, input.spaceId, input.agentId, "system_assistant");
@@ -1112,6 +1168,35 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       && stableJsonStringify(current.schedule_config_json) === stableJsonStringify(input.scheduleConfigJson)
       && stableJsonStringify(current.output_schema_json) === stableJsonStringify(input.outputSchemaJson);
 
+    // A version somebody else authored is not the seed's to overwrite. The
+    // instance keeps its identity fields in step and stops there.
+    //
+    // An unmarked version that is nevertheless identical to what the seed
+    // produces is adopted rather than treated as divergence: it predates the
+    // mark and provably nobody has changed it. Where an unmarked version
+    // *differs*, a legacy drift and a person's edit are indistinguishable, and
+    // declining to overwrite is the safe direction.
+    if (current && input.followsSeedKey && current.follows_seed_key !== input.followsSeedKey) {
+      if (equal && current.follows_seed_key === null) {
+        // Adopt only an *unmarked* version. One already carrying a different
+        // seed belongs to that seed, and claiming it because the content
+        // happens to match would silently move it between managed lineages.
+        await client.query(
+          `UPDATE agent_versions
+              SET follows_seed_key = $3
+            WHERE id = $1 AND space_id = $2 AND follows_seed_key IS NULL`,
+          [current.id, input.spaceId, input.followsSeedKey],
+        );
+      }
+      // Detachment needs no separate note: `follows_seed_key IS NULL` on a
+      // system-managed Agent's current version *is* the record, and it is the
+      // column this branch reads. A second copy in agent metadata would add a
+      // timestamp nobody reads and a way for the two to disagree.
+      const settled = await this.getAgentWithClient(client, input.spaceId, input.agentId);
+      if (!settled) throw new HttpError(404, "Active system-managed Agent not found");
+      return settled;
+    }
+
     if (!equal) {
       const version = await this.insertVersion(client, {
         agentId: input.agentId,
@@ -1121,6 +1206,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         modelName: input.modelName,
         systemPrompt: input.systemPrompt,
         promptProvenanceJson: input.promptProvenanceJson,
+        followsSeedKey: input.followsSeedKey ?? null,
         modelConfigJson: input.modelConfigJson,
         runtimeConfigJson: input.runtimeConfigJson,
         contextPolicyJson: input.contextPolicyJson,
@@ -1215,6 +1301,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     });
   }
 
+  /** The Space's own Assistant, never a Project's — this backs the Space-level
+   * Assistant settings, which are personal preferences and not per-Project. */
   async getDefaultAssistant(spaceId: string): Promise<AgentOut | null> {
     const result = await this.pool.query<AgentRecord>(
       `SELECT ${AGENT_COLUMNS}
@@ -1225,6 +1313,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         WHERE a.space_id = $1
           AND a.agent_kind = 'system_assistant'
           AND a.status = 'active'
+          AND a.project_id IS NULL
         ORDER BY a.created_at ASC
         LIMIT 1`,
       [spaceId],
@@ -1703,6 +1792,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: string | null;
       systemPrompt: string | null;
       promptProvenanceJson?: PromptProvenance | null;
+      followsSeedKey?: string | null;
       modelConfigJson: Record<string, unknown>;
       runtimeConfigJson: Record<string, unknown>;
       contextPolicyJson: Record<string, unknown>;
@@ -1725,14 +1815,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
          context_policy_json, memory_policy_json, capabilities_json,
          tool_permissions_json, runtime_policy_json, tool_policy_json,
          output_policy_json, schedule_config_json, output_schema_json,
-         prompt_provenance_json, created_at
+         prompt_provenance_json, follows_seed_key, created_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
          $7, $8::jsonb, $9::jsonb,
          $10::jsonb, $11::jsonb, $12::jsonb,
          $13::jsonb, $14::jsonb, $15::jsonb,
          $16::jsonb, $17::jsonb, $18::jsonb,
-         $19::jsonb, $20
+         $19::jsonb, $20, $21
        )
        RETURNING id`,
       [
@@ -1755,6 +1845,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         JSON.stringify(input.scheduleConfigJson),
         JSON.stringify(input.outputSchemaJson),
         input.promptProvenanceJson ? JSON.stringify(input.promptProvenanceJson) : null,
+        // Null unless the caller says otherwise: a version authored by a person
+        // or an evolution proposal detaches the instance from the seed, and
+        // every caller but the provisioner is one of those.
+        input.followsSeedKey ?? null,
         now,
       ],
     );

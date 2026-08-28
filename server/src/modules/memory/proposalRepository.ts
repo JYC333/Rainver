@@ -29,6 +29,47 @@ export interface Queryable {
   ): Promise<QueryResult<Row>>;
 }
 
+/**
+ * An Agent's own write that had to become a proposal
+ * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §1).
+ *
+ * Threaded through so the proposal records who actually wrote it and why. The
+ * public-API path stamps a user confirmation, which for an Agent's write
+ * would be a false record of a person's action — the same falsehood
+ * `approved_by = null` exists to avoid on the direct path.
+ */
+export interface AgentProposalOrigin {
+  agentId: string;
+  runId: string;
+  rationale: string;
+}
+
+/**
+ * Marks the payload of a write that would have applied directly had it not
+ * changed reach. The accept path keys the person's confirmation on this and
+ * not on "an Agent made it": other agent-authored memory proposals carry
+ * their own provenance and must keep facing the source-monitoring gate they
+ * were written for.
+ */
+export const AGENT_DIRECT_WRITE_FALLBACK = "agent_direct_write_fallback";
+
+function originProvenance(
+  userId: string,
+  origin: AgentProposalOrigin | undefined,
+  request: { method: string; path: string },
+) {
+  return mergeDistinctProvenanceEntries([
+    origin
+      ? {
+        source_type: "run",
+        source_id: origin.runId,
+        source_trust: "agent_inferred",
+        evidence_json: { rationale: origin.rationale, agent_id: origin.agentId },
+      }
+      : userConfirmationEntry(userId, request),
+  ]);
+}
+
 export class MemoryProposalValidationError extends Error {
   readonly statusCode = 422;
 }
@@ -103,6 +144,7 @@ export class PgMemoryProposalRepository {
     identitySpaceId: string,
     userId: string,
     command: MemoryProposalCreateCommand,
+    agentOrigin?: AgentProposalOrigin,
   ): Promise<ProposalOut> {
     const effectiveSpaceId = command.space_id ?? identitySpaceId;
     if (effectiveSpaceId !== identitySpaceId) {
@@ -130,9 +172,11 @@ export class PgMemoryProposalRepository {
       target_visibility: visibility,
       target_access_level: accessLevel,
       sensitivity_level: sensitivity,
-      provenance_entries: mergeDistinctProvenanceEntries([
-        userConfirmationEntry(userId, { method: "POST", path: "/memory" }),
-      ]),
+      provenance_entries: originProvenance(userId, agentOrigin, {
+        method: "POST",
+        path: "/memory",
+      }),
+      ...(agentOrigin ? { [AGENT_DIRECT_WRITE_FALLBACK]: true } : {}),
     };
     if (subjectUserId !== null) payload.subject_user_id = subjectUserId;
     if (ownerUserId !== null) payload.owner_user_id = ownerUserId;
@@ -157,6 +201,7 @@ export class PgMemoryProposalRepository {
     return this.insertProposal({
       spaceId: effectiveSpaceId,
       userId,
+      agentOrigin,
       proposalType: "memory_create",
       title: command.title,
       payload,
@@ -175,6 +220,7 @@ export class PgMemoryProposalRepository {
     userId: string,
     memoryId: string,
     command: MemoryProposalUpdateCommand,
+    agentOrigin?: AgentProposalOrigin,
   ): Promise<ProposalOut> {
     if (
       command.visibility != null
@@ -205,12 +251,11 @@ export class PgMemoryProposalRepository {
       target_scope: target.scope_type,
       target_namespace: target.namespace ?? "user.default",
       memory_type: target.memory_type,
-      provenance_entries: mergeDistinctProvenanceEntries([
-        userConfirmationEntry(userId, {
-          method: "PATCH",
-          path: `/memory/${memoryId}`,
-        }),
-      ]),
+      provenance_entries: originProvenance(userId, agentOrigin, {
+        method: "PATCH",
+        path: `/memory/${memoryId}`,
+      }),
+      ...(agentOrigin ? { [AGENT_DIRECT_WRITE_FALLBACK]: true } : {}),
     };
 
     if (changeData.content !== undefined) {
@@ -263,6 +308,7 @@ export class PgMemoryProposalRepository {
     return this.insertProposal({
       spaceId,
       userId,
+      agentOrigin,
       proposalType: "memory_update",
       title,
       payload,
@@ -414,6 +460,8 @@ export class PgMemoryProposalRepository {
   private async insertProposal(input: {
     spaceId: string;
     userId: string;
+    /** Set when an Agent's own write was turned into a proposal. */
+    agentOrigin?: AgentProposalOrigin;
     proposalType: "memory_create" | "memory_update" | "memory_archive";
     title: string;
     payload: Record<string, unknown>;
@@ -435,6 +483,13 @@ export class PgMemoryProposalRepository {
       projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: input.userId,
+      // The Agent is recorded as the author when it is one. Without this the
+      // applied entry would carry the person as `created_by` and no
+      // `agent_id`: an Agent-authored memory attributed to someone who never
+      // wrote it.
+      ...(input.agentOrigin
+        ? { createdByAgentId: input.agentOrigin.agentId, createdByRunId: input.agentOrigin.runId }
+        : {}),
       visibility: input.targetVisibility ?? "private",
       riskLevel: "low",
     });

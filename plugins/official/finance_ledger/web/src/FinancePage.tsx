@@ -889,12 +889,6 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
   }, [reload])
 
   useEffect(() => {
-    setSelectedAccountId(null)
-    setPanel('none')
-    setBalanceScope('all')
-  }, [book.id])
-
-  useEffect(() => {
     if (!selectedAccountId) {
       setLedgerPostings([])
       return
@@ -1094,7 +1088,13 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
   }
 
   return (
+    // Keyed by the book so switching books gives this view fresh state.
+    // It used to reset that state from an effect on `[book.id]`, which also
+    // ran on mount — a click that landed between first paint and that effect
+    // (opening the transaction panel, selecting an account) was silently
+    // undone, and under load the tests caught it.
     <FinanceLedgerView
+      key={activeBook.id}
       api={api}
       book={activeBook}
       books={books}

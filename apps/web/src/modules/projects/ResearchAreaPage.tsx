@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, FileText, NotebookPen, RefreshCw } from 'lucide-react'
-import { useParams } from 'react-router-dom'
+import { FileText, NotebookPen, RefreshCw } from 'lucide-react'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { projectResearchApi, ApiRequestError } from '../../api/client'
 import type { ResearchArea, ResearchReadingList } from '../../types/api'
@@ -18,15 +18,25 @@ import { ProjectResearchStandingPanel } from './ProjectResearchStandingPanel'
 import { ResearchSetupDialog } from './ResearchSetupDialog'
 import { ResearchSettingsCard } from './ResearchSettingsCard'
 import { useProjectResearch } from './useProjectResearch'
+import ResearchRunsTab from './researchArea/ResearchRunsTab'
 
 export default function ResearchAreaPage() {
   const { projectId = '' } = useParams()
   const [area, setArea] = useState<ResearchArea | null>(null)
   const [reading, setReading] = useState<ResearchReadingList | null>(null)
   // Standing discovery is the default view for goal-ambiguous work; the
-  // Thread-scoped focus workflow stays one click away. Both used to live on
-  // the Project Overview behind a second, nested tab bar.
-  const [tab, setTab] = useState('standing')
+  // Thread-scoped focus workflow stays one click away.
+  // The tab is in the URL: attention items and the Inquiry Loop link straight
+  // to a tab (`?tab=runs`), and a link that lands on the wrong tab is a link
+  // that does not work.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') ?? 'standing'
+  const setTab = (next: string) => {
+    const params = new URLSearchParams(searchParams)
+    if (next === 'standing') params.delete('tab')
+    else params.set('tab', next)
+    setSearchParams(params, { replace: true })
+  }
   const [loading, setLoading] = useState(true)
   const [notInitialized, setNotInitialized] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -89,7 +99,6 @@ export default function ResearchAreaPage() {
   if (loadError) {
     return (
       <div className="p-6">
-        <Link to={`/projects/${projectId}`}><Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button></Link>
         <EmptyState title="Research Area unavailable" description={loadError} />
       </div>
     )
@@ -97,10 +106,9 @@ export default function ResearchAreaPage() {
   if (notInitialized || !area) {
     return (
       <div className="p-6">
-        <Link to={`/projects/${projectId}`}><Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button></Link>
         <EmptyState
           title="Research Area not initialized"
-          description="A project writer opens this page once to create the notebook, reading list, and checklist."
+          description="A project writer opens this page once to create the reading list and checklist."
         />
       </div>
     )
@@ -109,7 +117,6 @@ export default function ResearchAreaPage() {
   return (
     <div className="space-y-5 p-4 md:p-6">
       <header className="flex flex-wrap items-center gap-3">
-        <Link to={`/projects/${projectId}`}><Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button></Link>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-xl font-semibold">{research.project?.current_focus ?? research.project?.name ?? 'Research Area'}</h1>
           <p className="text-sm text-muted-foreground">Living research documents evolve independently from report snapshots.</p>
@@ -121,16 +128,16 @@ export default function ResearchAreaPage() {
         </Link>
         <Button size="sm" variant="ghost" onClick={() => void refreshArea()}><RefreshCw className="size-3.5" />Refresh</Button>
       </header>
-      {/* One tab bar. The standing/focus workbench and the Area's own
-          documents are the same Area; nesting a second tab bar inside the
-          first is what made the Overview look like a page of its own. */}
+      {/* One tab bar: the standing/focus workbench and the Area's own
+          documents are the same Area. */}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="standing">Standing overview</TabsTrigger>
           <TabsTrigger value="focus">Focus workbench</TabsTrigger>
           <TabsTrigger value="reading">Reading List</TabsTrigger>
           <TabsTrigger value="checklist">Checklist</TabsTrigger>
           <TabsTrigger value="reports"><FileText className="mr-1 size-4" />Reports</TabsTrigger>
+          <TabsTrigger value="runs">Runs</TabsTrigger>
         </TabsList>
         {/* Standing and focus keep their own in-progress state (a setup draft,
             a selected Workflow), so switching between them must not unmount
@@ -150,6 +157,7 @@ export default function ResearchAreaPage() {
             onChange={(items) => setArea({ ...area, checklist: items })}
           />
         </TabsContent>
+        <TabsContent value="runs"><ResearchRunsTab projectId={projectId} /></TabsContent>
         <TabsContent value="reports" className="space-y-3">
           <div className="flex justify-end">
             <Button size="sm" variant="outline" disabled={generatingReport} onClick={() => void generateReport()}>

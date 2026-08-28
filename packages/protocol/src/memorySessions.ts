@@ -365,6 +365,29 @@ export const MemoryPageSchema = z
   .passthrough();
 export type MemoryPage = z.infer<typeof MemoryPageSchema>;
 
+/**
+ * One version of a memory, with what an Agent said when it wrote it.
+ *
+ * ADR 0003 §2 moved the reading of an Agent's memory writes after the fact,
+ * so the page has to answer "why is this here" without a proposal to read:
+ * the rationale, the run and the session travel with the entry.
+ */
+export const MemoryVersionSchema = z
+  .object({
+    memory: MemoryOutSchema,
+    written_by_agent_id: IdSchema.nullable(),
+    run_id: IdSchema.nullable(),
+    session_id: IdSchema.nullable(),
+    rationale: z.string().nullable(),
+  })
+  .strict();
+export type MemoryVersion = z.infer<typeof MemoryVersionSchema>;
+
+export const MemoryVersionsResponseSchema = z
+  .object({ items: z.array(MemoryVersionSchema) })
+  .strict();
+export type MemoryVersionsResponse = z.infer<typeof MemoryVersionsResponseSchema>;
+
 export const MemoryMaintenanceFindingKindSchema = z.enum([
   "duplicate",
   "stale",

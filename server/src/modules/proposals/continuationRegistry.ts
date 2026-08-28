@@ -1,5 +1,4 @@
 import type { Queryable } from "./repository.js";
-import { registerInquiryThreadContinuation } from "../inquiry/inquiryThreadProposalApplier.js";
 import { registerProjectDefinitionContinuation } from "../projects/projectDefinitionProposalApplier.js";
 import { registerAgentDelegationContinuation } from "../agentGroups/delegationContinuation.js";
 import { registerResearchAcquisitionContinuation } from "../projectResearch/researchAcquisitionContinuation.js";
@@ -24,9 +23,8 @@ export interface ProposalContinuation {
   /**
    * A short machine-readable tag describing what kind of continuation this
    * is, for a future consumer (frontend, another domain) to key off of.
-   * This never forces a specific tool call — see the accepted
-   * `inquiry_thread_create` registration below, whose directive names an
-   * activity, not an action id, because more than one tool can satisfy it.
+   * A directive is a hint, not a forced tool call: a registration may name an
+   * activity rather than an action id when more than one tool can satisfy it.
    */
   directive: string | null;
   /** Neutral instruction text for the hidden system continuation message. */
@@ -112,7 +110,6 @@ export class ConversationContinuationRegistry {
 
 export function createDefaultConversationContinuationRegistry(): ConversationContinuationRegistry {
   const registry = new ConversationContinuationRegistry();
-  registerInquiryThreadContinuation(registry);
   registerProjectDefinitionContinuation(registry);
   registerAgentDelegationContinuation(registry);
   registerResearchAcquisitionContinuation(registry);

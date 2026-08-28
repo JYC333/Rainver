@@ -64,7 +64,55 @@ digests, public summaries, or maintenance outputs.
 
 ## Writes and proposals
 
-Long-lived writes continue through **proposal → approval**. Proposal payloads
+An Agent writes memory within bounds and is read afterwards
+([ADR 0003](../decisions/0003-memory-proposal-flow.md)). `memory.remember`
+and `memory.revise` apply directly when the entry stays `private`,
+`normal`-sensitivity and about the person in the turn, and when a revision
+replaces something the Agent itself wrote. Each write is a new version with
+`created_by = agent:<id>`, `approved_by = null`,
+`created_from_proposal_id = null`, and provenance carrying the run, session
+and the rationale the Agent gave. The entry is user-scoped and carries no
+Project (`ck_memory_entries_scope_placement`); what ties it to the work is
+the Project work event.
+
+Anything that changes reach — a wider `visibility`, a sensitivity above
+normal, another person as subject, or replacing what a person or another
+Agent wrote — becomes
+a `memory_create`/`memory_update` proposal instead of an error, so the write
+is recorded and only the decision waits. An Agent version whose
+`memory_policy_json.requires_proposal` is true writes only by proposal; that
+flag is enforced in `memoryDirectWriteExecutors.ts`. When one person's
+writing passes `SERVER_MEMORY_DIRECT_WRITES_PER_SESSION` (default 50) —
+counting active entries plus pending memory proposals, so ordinary revision
+does not walk toward it — their memory writing is paused and raises one
+`uncertain` attention item. A fault to look at, never a queue to approve, and
+archiving what was written is the reset.
+
+The boundary it counts within is the session, or the Run where there is no
+session: a conversation outside a Room has none, and a surface with no
+counter at all is the one thing the breaker must not leave behind. The
+attention item keys the same way — `/memory?session=<id>` for a session,
+`/memory?run=<id>` for a single turn — and a session-scoped one is raised in
+every Project that session ran in, while a Run-scoped one belongs to that
+Run's Project. Per person rather than per session, because a Room
+conversation is one session shared by its members and only the owner of an
+entry can archive it.
+
+Archive and restore move one version: `setOwnStatus` takes the active head to
+`archived` and back, and restores a `superseded` version once no newer one is
+active — which is how the chain answers "put back what the Agent replaced".
+
+The counterpart is that the writes are visible and reversible: the Memory
+page filters to what Agents wrote, shows each version with its rationale, run
+and session, and archives or restores the owner's own entry in one request
+(`DELETE /memory/:id` returns 200 with the entry, or 202 with a proposal for
+someone else's). In a Project run the write also appears in the Project's
+updates as `memory.remembered` / `memory.revised` with a one-step
+`archive_memory` undo.
+
+Everything else — post-session reflection, activity-to-memory pipelines,
+consolidation, maintenance packets and every import — continues through
+**proposal → approval**. Proposal payloads
 carry `owner_user_id`, `subject_user_id`, `visibility`, `access_level`, and
 `sensitivity_level`; acceptance must not conflate approving user, owner, and subject.
 
@@ -79,10 +127,15 @@ Project or shared Agent context. Capability learning belongs in
 
 - Central rule: `server/src/modules/access/contentAccess*.ts`; Memory sensitivity
   and redaction are additional gates in Memory repositories.
-- Serialization / redaction: `server/src/modules/memory/repository.ts` — memory row to API output helpers.
+- Serialization / redaction: `server/src/modules/memory/repository.ts` — memory row to API output helpers; `versions()` returns the chain with each version's provenance.
+- Direct Agent writes: `server/src/modules/memory/memoryApplyRepository.ts` (`applyDirect`, `setOwnStatus`, `MemoryReachError`) and `server/src/modules/memory/memoryDirectWriteExecutors.ts`.
+- Paused-session attention: `server/src/modules/memory/projectIntegration.ts`.
 - Persistence of cross-person reads: `server/src/modules/contentAccess/audit.ts`;
   table `content_access_logs`. Only the resource owner may query a resource's
-  audit log by default.
+  audit log by default. `GET /memory/:id` logs; the list and
+  `GET /memory/:id/versions` do not — a browse is not a read of one person's
+  memory, and logging every row of a filtered list would bury the reads that
+  matter.
 
 ## Future work (TODO)
 

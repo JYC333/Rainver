@@ -26,9 +26,8 @@ import { registerWorkflowExecutionProposalAppliers } from "../automations/workfl
 import { registerEvolutionBundleProposalApplier } from "../evolution/bundleProposalApplier.js";
 import { registerResearchProposalAppliers } from "../research/proposalApplier.js";
 import { registerEgressReviewProposalApplier } from "./egressReviewApplier.js";
-import { registerInquiryConclusionProposalAppliers } from "../inquiry/inquiryConclusionProposalApplier.js";
-import { registerInquiryThreadProposalAppliers } from "../inquiry/inquiryThreadProposalApplier.js";
 import { registerProjectDefinitionProposalAppliers } from "../projects/projectDefinitionProposalApplier.js";
+import { registerResearchHistoryExtendApplier } from "../projectResearch/researchHistoryExtendApplier.js";
 import {
   PgMemoryApplyRepository,
   type ApplyProposal,
@@ -128,9 +127,8 @@ export function createDefaultProposalApplierRegistry(
   registerEvolutionBundleProposalApplier(registry);
   registerResearchProposalAppliers(registry);
   registerEgressReviewProposalApplier(registry);
-  registerInquiryThreadProposalAppliers(registry);
   registerProjectDefinitionProposalAppliers(registry);
-  registerInquiryConclusionProposalAppliers(registry);
+  registerResearchHistoryExtendApplier(registry);
   contributor?.applyProposalAppliers(registry);
   return registry;
 }

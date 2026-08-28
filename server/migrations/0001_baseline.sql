@@ -235,6 +235,7 @@ CREATE TABLE "agent_versions" (
 	"output_schema_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"source_proposal_id" varchar(36),
 	"source_activity_id" varchar(36),
+	"follows_seed_key" varchar(128),
 	"created_at" timestamp with time zone NOT NULL,
 	"published_at" timestamp with time zone,
 	"archived_at" timestamp with time zone,
@@ -3805,6 +3806,39 @@ CREATE TABLE "projects" (
 	CONSTRAINT "ck_projects_primary_mode" CHECK ((primary_mode)::text = ANY (ARRAY[('research'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text]))
 );
 --> statement-breakpoint
+CREATE TABLE "project_work_events" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"event_kind" varchar(64) NOT NULL,
+	"subject_type" varchar(32) NOT NULL,
+	"subject_id" varchar(36) NOT NULL,
+	"actor_id" varchar(36) NOT NULL,
+	"occurred_at" timestamp with time zone NOT NULL,
+	"correlation_id" varchar(64),
+	"causation_id" varchar(64),
+	"idempotency_key" varchar(256),
+	"data_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_project_work_events_kind_format" CHECK (event_kind ~ '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$'),
+	CONSTRAINT "ck_project_work_events_data_object" CHECK (jsonb_typeof(data_json) = 'object')
+);
+--> statement-breakpoint
+CREATE TABLE "task_loop_states" (
+	"task_id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"project_id" varchar(36) NOT NULL,
+	"loop_instance_id" varchar(36) NOT NULL,
+	"current_stage_key" varchar(32) NOT NULL,
+	"stage_entered_at" timestamp with time zone NOT NULL,
+	"last_event_id" varchar(36),
+	"revision" integer DEFAULT 1 NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_task_loop_states_task_space" UNIQUE("task_id","space_id"),
+	CONSTRAINT "ck_task_loop_states_stage" CHECK (current_stage_key IN ('frame', 'plan', 'act', 'verify', 'conclude')),
+	CONSTRAINT "ck_task_loop_states_revision" CHECK (revision >= 1)
+);
+--> statement-breakpoint
 CREATE TABLE "proposal_approvals" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"proposal_id" varchar(36) NOT NULL,
@@ -4130,6 +4164,7 @@ CREATE TABLE "rooms" (
 	"updated_at" timestamp with time zone NOT NULL,
 	"archived_at" timestamp with time zone,
 	"roster_revision" bigint DEFAULT 0 NOT NULL,
+	"is_mainline" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "uq_rooms_id_space" UNIQUE("id","space_id"),
 	CONSTRAINT "uq_rooms_id_space_project" UNIQUE("id","space_id","project_id"),
 	CONSTRAINT "ck_rooms_status" CHECK (status IN ('active', 'archived'))
@@ -5384,7 +5419,7 @@ CREATE TABLE "board_columns" (
 	"updated_at" timestamp with time zone NOT NULL,
 	"deleted_at" timestamp with time zone,
 	CONSTRAINT "uq_board_columns_id_board_space" UNIQUE("id","board_id","space_id"),
-	CONSTRAINT "ck_board_columns_status_key" CHECK (status_key IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled'))
+	CONSTRAINT "ck_board_columns_status_key" CHECK (status_key IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled'))
 );
 --> statement-breakpoint
 CREATE TABLE "boards" (
@@ -5426,6 +5461,20 @@ CREATE TABLE "task_dependencies" (
 	"dependency_type" varchar(32) DEFAULT 'requires' NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_task_dependencies_task_depends" UNIQUE("depends_on_task_id","task_id")
+);
+--> statement-breakpoint
+CREATE TABLE "task_entity_links" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"task_id" varchar(36) NOT NULL,
+	"entity_type" varchar(32) NOT NULL,
+	"entity_id" varchar(36) NOT NULL,
+	"role" varchar(32) NOT NULL,
+	"created_by_actor_id" varchar(36) NOT NULL,
+	"created_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "uq_task_entity_links_edge" UNIQUE("space_id","task_id","entity_type","entity_id","role"),
+	CONSTRAINT "ck_task_entity_links_role" CHECK (role IN ('executes', 'investigates', 'prepares', 'references')),
+	CONSTRAINT "ck_task_entity_links_entity_type_format" CHECK (entity_type ~ '^[a-z][a-z0-9_]{0,31}$')
 );
 --> statement-breakpoint
 CREATE TABLE "task_proposals" (
@@ -5490,7 +5539,7 @@ CREATE TABLE "tasks" (
 	CONSTRAINT "ck_tasks_access_level" CHECK (access_level IN ('full', 'summary')),
 	CONSTRAINT "ck_tasks_private_owner" CHECK (visibility = 'space_shared' OR owner_user_id IS NOT NULL),
 	CONSTRAINT "ck_tasks_role" CHECK (task_role IN ('source', 'subtask')),
-	CONSTRAINT "ck_tasks_status" CHECK (status IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled')),
+	CONSTRAINT "ck_tasks_status" CHECK (status IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')),
 	CONSTRAINT "ck_tasks_column_requires_board" CHECK (column_id IS NULL OR board_id IS NOT NULL)
 );
 --> statement-breakpoint
@@ -6557,6 +6606,13 @@ ALTER TABLE "projects" ADD CONSTRAINT "projects_active_instruction_version_fkey"
 ALTER TABLE "projects" ADD CONSTRAINT "projects_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "projects" ADD CONSTRAINT "projects_focus_area_id_fkey" FOREIGN KEY ("focus_area_id","space_id") REFERENCES "public"."focus_areas"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "projects" ADD CONSTRAINT "projects_active_brief_version_fkey" FOREIGN KEY ("active_brief_version_id","id","space_id") REFERENCES "public"."project_brief_versions"("id","project_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_work_events" ADD CONSTRAINT "project_work_events_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_work_events" ADD CONSTRAINT "project_work_events_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project_work_events" ADD CONSTRAINT "project_work_events_actor_id_fkey" FOREIGN KEY ("actor_id") REFERENCES "public"."actors"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_task_id_fkey" FOREIGN KEY ("task_id","space_id") REFERENCES "public"."tasks"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_last_event_id_fkey" FOREIGN KEY ("last_event_id") REFERENCES "public"."project_work_events"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_approver_user_id_fkey" FOREIGN KEY ("approver_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_grant_id_fkey" FOREIGN KEY ("grant_id") REFERENCES "public"."personal_memory_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_action_grant_id_fkey" FOREIGN KEY ("action_grant_id") REFERENCES "public"."action_approval_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -6872,6 +6928,9 @@ ALTER TABLE "task_artifacts" ADD CONSTRAINT "task_artifacts_task_id_fkey" FOREIG
 ALTER TABLE "task_dependencies" ADD CONSTRAINT "task_dependencies_depends_on_task_id_fkey" FOREIGN KEY ("depends_on_task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_dependencies" ADD CONSTRAINT "task_dependencies_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_dependencies" ADD CONSTRAINT "task_dependencies_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_entity_links" ADD CONSTRAINT "task_entity_links_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_entity_links" ADD CONSTRAINT "task_entity_links_task_id_fkey" FOREIGN KEY ("task_id","space_id") REFERENCES "public"."tasks"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_entity_links" ADD CONSTRAINT "task_entity_links_created_by_actor_id_fkey" FOREIGN KEY ("created_by_actor_id") REFERENCES "public"."actors"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_proposals" ADD CONSTRAINT "task_proposals_proposal_id_fkey" FOREIGN KEY ("proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_proposals" ADD CONSTRAINT "task_proposals_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_proposals" ADD CONSTRAINT "task_proposals_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -6979,6 +7038,8 @@ CREATE INDEX "ix_actors_service_name" ON "actors" USING btree ("service_name");-
 CREATE INDEX "ix_actors_space_id" ON "actors" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_actors_status" ON "actors" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_actors_user_id" ON "actors" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_actors_user_per_space" ON "actors" USING btree ("space_id","user_id") WHERE actor_type = 'user' AND status = 'active';--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_actors_service_per_space" ON "actors" USING btree ("space_id","actor_type","service_name") WHERE service_name IS NOT NULL AND status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_agent_id" ON "agent_runtime_profiles" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_model_provider_id" ON "agent_runtime_profiles" USING btree ("model_provider_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_runtime_profiles_space_id" ON "agent_runtime_profiles" USING btree ("space_id");--> statement-breakpoint
@@ -6994,7 +7055,8 @@ CREATE INDEX "ix_agents_owner_user_id" ON "agents" USING btree ("owner_user_id")
 CREATE INDEX "ix_agents_project_id" ON "agents" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "ix_agents_space_id" ON "agents" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_agents_status" ON "agents" USING btree ("status");--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_agents_system_assistant_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_agents_system_assistant_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NULL));--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_agents_system_assistant_per_project" ON "agents" USING btree ("space_id","project_id") WHERE (((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NOT NULL));--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agents_system_source_post_processor_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agents_system_source_annotator_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_agents_system_research_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
@@ -7562,6 +7624,14 @@ CREATE INDEX "ix_projects_space_id" ON "projects" USING btree ("space_id");--> s
 CREATE INDEX "ix_projects_status" ON "projects" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "ix_projects_focus_area_id" ON "projects" USING btree ("focus_area_id") WHERE focus_area_id IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_projects_space_name_active" ON "projects" USING btree ("space_id","name") WHERE ((status)::text = 'active'::text);--> statement-breakpoint
+CREATE INDEX "ix_project_work_events_project_occurred" ON "project_work_events" USING btree ("space_id","project_id","occurred_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_project_work_events_subject" ON "project_work_events" USING btree ("space_id","subject_type","subject_id","occurred_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_project_work_events_kind" ON "project_work_events" USING btree ("space_id","event_kind","occurred_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "ix_project_work_events_correlation" ON "project_work_events" USING btree ("correlation_id") WHERE correlation_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "ix_project_work_events_undo_of" ON "project_work_events" USING btree ("space_id",(data_json->>'undo_of_event_id')) WHERE (data_json->>'undo_of_event_id') IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_project_work_events_idempotency" ON "project_work_events" USING btree ("space_id","idempotency_key") WHERE idempotency_key IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "ix_task_loop_states_project" ON "task_loop_states" USING btree ("space_id","project_id");--> statement-breakpoint
+CREATE INDEX "ix_task_loop_states_stage" ON "task_loop_states" USING btree ("space_id","project_id","current_stage_key");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_approval_type" ON "proposal_approvals" USING btree ("approval_type");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_approver_user_id" ON "proposal_approvals" USING btree ("approver_user_id");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_created_at" ON "proposal_approvals" USING btree ("created_at");--> statement-breakpoint
@@ -7626,6 +7696,7 @@ CREATE UNIQUE INDEX "uq_room_user_invitations_pending" ON "room_user_invitations
 CREATE INDEX "ix_room_user_members_user" ON "room_user_members" USING btree ("space_id","user_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_room_user_members_owner" ON "room_user_members" USING btree ("room_id") WHERE role = 'owner' AND status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_rooms_project_updated" ON "rooms" USING btree ("space_id","project_id","updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_rooms_mainline_per_project" ON "rooms" USING btree ("space_id","project_id") WHERE is_mainline AND status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_rooms_space_updated" ON "rooms" USING btree ("space_id","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_room_conversation_summary_states_due" ON "room_conversation_summary_states" USING btree ("status","next_attempt_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_room_conversation_summary_versions_active" ON "room_conversation_summary_versions" USING btree ("session_id") WHERE status = 'active';--> statement-breakpoint
@@ -7900,6 +7971,8 @@ CREATE INDEX "ix_task_artifacts_task_id" ON "task_artifacts" USING btree ("task_
 CREATE INDEX "ix_task_dependencies_depends_on_task_id" ON "task_dependencies" USING btree ("depends_on_task_id");--> statement-breakpoint
 CREATE INDEX "ix_task_dependencies_space_id" ON "task_dependencies" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_task_dependencies_task_id" ON "task_dependencies" USING btree ("task_id");--> statement-breakpoint
+CREATE INDEX "ix_task_entity_links_task" ON "task_entity_links" USING btree ("space_id","task_id");--> statement-breakpoint
+CREATE INDEX "ix_task_entity_links_entity" ON "task_entity_links" USING btree ("space_id","entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "ix_task_proposals_proposal_id" ON "task_proposals" USING btree ("proposal_id");--> statement-breakpoint
 CREATE INDEX "ix_task_proposals_space_id" ON "task_proposals" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_task_proposals_task_id" ON "task_proposals" USING btree ("task_id");--> statement-breakpoint

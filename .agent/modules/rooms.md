@@ -34,6 +34,14 @@ task/audit authority, not a second conversation UI.
 - Shared Room UI (`apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`) at
   `/rooms` for the cross-Project index and `/projects/:projectId/rooms` inside
   the persistent Project Shell
+- One conversation component
+  (`apps/web/src/modules/agent_groups/conversation/RoomConversation.tsx`):
+  messages, paging, sending, Run progress/streaming, polling, scroll-follow
+  and inline Proposal cards with continuation. The full Room page renders it
+  as `variant="full"` (adds routing, per-agent backends, the summary) and the
+  Project chat panel (`projects/sidecar/ProjectChatSidecar.tsx`) as
+  `variant="panel"` with focus refs. There is no second conversation
+  implementation; a behaviour a conversation needs is added there once.
 
 ## Navigation And Ordering
 
@@ -68,7 +76,7 @@ RoomUserMember:
 RoomAgentMember:
   id, space_id, room_id, agent_id, role (manager|member), status (active|removed)
   # exactly one active manager per Room (partial unique index)
-  # manager is the hidden Space Assistant; specialists are added later
+  # manager is the hidden Project Assistant; specialists are added later
 
 sessions (Room-backed conversation):
   room_id, project_id set; user_id, agent_id NULL
@@ -107,8 +115,11 @@ Room conversation summaries:
 - Room prompts enforce write/report consistency: listing a decomposition in a
   reply does not count as creating Project objects. If an Agent says it split
   work into N Project research questions, it must invoke
-  `inquiry.propose_thread` once per question and report the actual
-  created/proposed count or any failure in plain language.
+  `inquiry.create_thread` once per question — at most five in a turn — and
+  report the actual created count or any failure in plain language. The
+  questions exist immediately; the Agent is told not to ask for confirmation
+  per question, because the person sees each one in the Project's updates and
+  can archive it in one click.
 - Once an accepted Inquiry Thread exists, an explicit user instruction to
   start or continue research is an execution boundary: prompt guidance
   (`RESEARCH_EXECUTION_POLICY`) tells the Manager to act now using whichever
@@ -224,8 +235,8 @@ direct-chat/Room execution model.
 `RoomService.sendMessage` builds a domain-neutral "Project state" text block
 once per dispatch (`buildRoomProjectStateContext`, `rooms/service.ts`) from
 the same generic Project Overview contract the Project Overview page uses
-(`ProjectOverviewService.getOverview`: mode projection's
-`current_state_summary`/`next_actions` plus `attention`), and prefixes it onto
+(`ProjectOverviewService.getOverview`: `definition_status` plus `attention`,
+and the Task the person is looking at, see `PROJECT_WORK.md`), and prefixes it onto
 every recipient run's prompt (`roomRunPrompt`,
 `agentGroups/service.ts`). It never reads a specific domain's tables and fails
 open to no prefix on any error, so a Project state read never blocks sending a
@@ -241,12 +252,12 @@ complete even when no Inquiry Thread, Workflow, or Run exists. Audit metadata
 such as publication timestamps never substitutes for that definition, and
 Room agents are explicitly instructed not to collapse these two states.
 
-Agent-drafted structural changes (see `project.propose_definition`,
-`inquiry.propose_thread`,
-`inquiry.record_conclusion`, and `inquiry.promote_knowledge` in
-`architecture/SYSTEM_ACTIONS.md`) surface back
+Agent-drafted changes that still wait for a person (see
+`project.propose_definition` and `inquiry.promote_knowledge` in
+`architecture/SYSTEM_ACTIONS.md`; opening a Thread and recording a conclusion
+no longer do) surface back
 into the conversation as an inline Proposal review card
-(`RoomActionPreviewCard`, `apps/web/.../AgentGroupsPage.tsx`), reusing
+(`RoomActionPreviewCard`, rendered by `conversation/RoomConversation.tsx`), reusing
 `loadProjectChatActionPreviews` — the same generic proposals-by-run-id lookup
 `finalizeChatTurn` already writes onto a Room assistant message's
 `metadata_json.action_previews` for every project-bound Room run. That
@@ -273,7 +284,57 @@ runtime-profile capabilities. Routing excludes registered System Action ids
 from its capability hard filter, so a valid conversation backend does not have
 to duplicate the Room allowance in its AgentVersion or runtime profile.
 
-Room creation adds only the creator and the hidden Space Assistant. The manager
+Room creation adds the creator and the hidden managed Assistant — the
+**Project's own instance**, provisioned on first use, so two Projects have two
+Agents that start identical and accumulate their own token attribution
+and evolution.
+
+**The first Room in a Project is its mainline** (`rooms.is_mainline`, one
+active per Project). Mainline membership *is* Project membership: every
+active Project member and the owner are enrolled when it is created, and a
+member who joins the Project later is enrolled the first time they open it
+(`GET /projects/:projectId/mainline-room`, which the Project chat panel binds
+to). Because that membership follows the Project, the roster API refuses to
+remove someone from the mainline — remove them from the Project instead.
+Topic Rooms created afterwards keep the invite-only roster.
+
+### Deciding what a turn proposed
+
+A Room turn's proposals (a research question, a Project definition, a
+conclusion, a promotion) are decided where they were made. The Run snapshots
+them onto its message as `action_previews`; the shared `RoomConversation`
+component — so both the full Room page and the Project chat panel — renders
+each as a card with Accept / Reject, and a decision continues the
+conversation in place (`continueAfterProposal`). They also
+reach the Project's attention list (`proposals/projectIntegration.ts`), each
+row linking back to that conversation, so Pulse and the shell say a decision
+is waiting without anyone opening the Space-level Review page.
+
+A person can also decide in words. `proposal.decide` is a Room-allowed System
+Action the Assistant invokes when the user says to accept or reject a proposal
+this conversation produced. The Agent carries the decision and never authors
+it: the policy rule refuses the action on any trigger origin but the person's
+own turn (`unattended_project_write`), the executor refuses any proposal not
+created by a Run of this same conversation, and the decision is applied through
+the same `PgProposalApplyService.accept/reject` as the button, recorded against
+the instructing person. B10 holds: every durable Agent write is still a
+proposal a person decided.
+
+`GET /projects/:projectId/conversations` (`listProjectConversations`) is the
+Project's one list of everything said: every active conversation in every
+active Room the viewer is a member of, mainline first, then by last activity,
+each with its Room, its last message and its message count. Reading it enrols
+the viewer in the mainline exactly as opening the Project does. It backs the
+Conversations destination in the Project shell; the Rooms page stays the full
+per-Room surface.
+
+A Project **viewer** is a Project member and is therefore in the mainline, and
+may converse there: asking the Project's Assistant "is this one done?" is the
+panel's whole purpose, and reading the answer is what a viewer is for. What a
+viewer says cannot change the Project's work — every Task-addressed action an
+Agent takes on their instruction requires writer authority on the Project and
+is refused — and starting the mainline in the first place requires writer
+authority. The manager
 is system-controlled and cannot be selected, replaced, or removed. Later roster
 mutation adds/removes specialist Agents through Room-owned authorization, with
 explicit confirmation before a private Agent is shared. The shared Run
@@ -309,7 +370,7 @@ Conversation in the same transaction as the Room and manager membership.
 `openRoom` consumes that returned Conversation rather than issuing a second
 create request. Inside a Project with no Room yet, the empty state offers one
 "Start a conversation" button regardless of ordinary Agent count. The server
-first ensures the Space Assistant and verifies that the creator has an eligible
+first ensures the Project's Assistant and verifies that the creator has an eligible
 API or explicitly granted CLI backend; otherwise no Room or Assistant partial
 state is committed.
 
@@ -333,9 +394,10 @@ they do not compete with the message history and composer.
 `AgentGroupsPage.tsx`'s Room view renders `RoomProjectStatePanel` beside the
 conversation, fetched once per Room load via the same
 `projectsApi.getOverview` call the Project Overview page uses — no
-Room-specific read model. It shows `mode_projection.current_state_summary`,
-`mode_projection.next_actions`, and `attention`, each item deep-linking
-(`SpaceLink`) into the Area that owns it; a fetch failure degrades to
+Room-specific read model. It shows whether the Project has a goal and the
+same `attention` list Pulse and the shell show, each item deep-linking
+(`SpaceLink`) into the Area that owns it — nothing invented for the panel; a
+fetch failure degrades to
 "Project state unavailable" rather than blocking the Room. This is ambient
 awareness, not a second command surface — the panel has no actions of its
 own, only links out.

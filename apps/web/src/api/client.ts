@@ -1,5 +1,11 @@
 import type {
   AcademicPaper,
+  ProjectBoard,
+  ProjectMainlineRoomResponse,
+  ProjectConversationsResponse,
+  ProjectWorkUpdatesResponse,
+  TaskWorkView,
+  WorkLoopStageKey,
   AcademicPaperAuthor,
   AcademicPaperCitation,
   AcademicPaperCreate,
@@ -166,6 +172,7 @@ import type {
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
   MemoryMaintenanceReport,
+  MemoryVersion,
   MemoryMaintenanceScanRequestInput,
   MePendingProposalItem,
   Message,
@@ -700,6 +707,11 @@ export const memoryApi = {
     type?: string
     status?: string
     project_id?: string
+    /** `agent` = what the Agents have written on their own (ADR 0003 §2). */
+    created_by?: 'agent' | 'user'
+    since?: string
+    session?: string
+    run?: string
     limit?: number
     offset?: number
   } = {}) => {
@@ -709,6 +721,10 @@ export const memoryApi = {
     if (params.type !== undefined) q.type = params.type
     if (params.status !== undefined) q.status = params.status
     if (params.project_id !== undefined) q.project_id = params.project_id
+    if (params.created_by !== undefined) q.created_by = params.created_by
+    if (params.since !== undefined) q.since = params.since
+    if (params.session !== undefined) q.session = params.session
+    if (params.run !== undefined) q.run = params.run
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Memory>>('/memory?' + new URLSearchParams(q))
@@ -718,8 +734,14 @@ export const memoryApi = {
     post<Proposal>('/memory', data),
   update: (id: string, data: Partial<Memory>) =>
     patch<Proposal>(`/memory/${id}`, data),
+  // 200 with the archived entry when it is the caller's own; 202 with a
+  // proposal when it is someone else's (ADR 0003 §3).
   delete: (id: string) =>
-    del<Proposal>(`/memory/${id}`),
+    del<Memory | Proposal>(`/memory/${id}`),
+  restore: (id: string) =>
+    post<Memory>(`/memory/${id}/restore`, {}),
+  versions: (id: string) =>
+    get<{ items: MemoryVersion[] }>(`/memory/${id}/versions`),
   search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
     post<Memory[]>('/memory/search', data),
@@ -1045,6 +1067,9 @@ export const boardsApi = {
 
 // ── Tasks (product work items) ─────────────────────────────────────────────
 export const tasksApi = {
+  work:  (id: string) => get<TaskWorkView>(`/tasks/${id}/work`),
+  setStage: (id: string, body: { to_stage: WorkLoopStageKey; reason: string }) =>
+    post<TaskWorkView>(`/tasks/${id}/stage`, body),
   list:   (params: Record<string, string> = {}) =>
     get<Page<Task>>('/tasks?' + new URLSearchParams(params)),
   create: (data: Record<string, unknown>, options: { spaceId?: string } = {}) =>
@@ -2686,9 +2711,23 @@ export const projectsApi = {
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
+  getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
+  mainlineRoom: (id: string) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`),
+  conversations: (id: string, params: { limit?: number; offset?: number } = {}) =>
+    get<ProjectConversationsResponse>(`/projects/${id}/conversations?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),
+    )),
+  updates: (id: string, params: { cursor?: string; limit?: number } = {}) =>
+    get<ProjectWorkUpdatesResponse>(`/projects/${id}/updates?` + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),
+    )),
+  postUpdate: (id: string, body: { summary: string }) =>
+    post<{ id: string }>(`/projects/${id}/updates`, body),
   transitionMode: (id: string, toMode: string, reason?: string) =>
     post(`/projects/${id}/mode-transitions`, { to_mode: toMode, reason }),
   operations: (id: string) => get<ProjectOperation[]>(`/projects/${id}/operations`),
+  undoUpdate: (projectId: string, eventId: string) =>
+    post<{ undone_event_id: string; action: string }>(`/projects/${encodeURIComponent(projectId)}/updates/${encodeURIComponent(eventId)}/undo`, {}),
   getOperation: (id: string, operationId: string) => get<ProjectOperation>(`/projects/${id}/operations/${operationId}`),
   createOperation: (id: string, body: { kind: ProjectOperation['kind']; title: string; intent_text?: string; steps?: Array<{ title: string; detail?: Record<string, unknown> }> }) =>
     post<ProjectOperation>(`/projects/${id}/operations`, body),

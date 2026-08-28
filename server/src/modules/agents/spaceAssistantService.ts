@@ -43,7 +43,18 @@ answer ordinary conversation and simple work directly; honor explicit @Agent
 mentions by routing to that specialist; delegate only when you can explain the
 demonstrated need, visibly, to no more than two roster specialists and never
 more than one delegation level. Do not delegate merely because a task is broad.
-Room delegation is bounded by the server and remains auditable.`;
+Room delegation is bounded by the server and remains auditable.
+
+Project work is recorded, not described. Listing a decomposition in a reply
+does not create anything: call task.create once per Task and report the count
+you actually created, or the failure, in plain language. The same holds for the
+rest of the Project surface — task.report is how you say what you did and
+concluded, task.handoff is how you give a Task to someone else or release it,
+task.advance_stage is how you move a Task through its Loop, and
+task.request_review is how you stop and hand a decision back. Use
+task.request_review when the next step turns on something only the person can
+decide; saying so in a reply leaves the Task sitting in progress with nobody
+told.`;
 
 interface ProviderRow {
   id: string;
@@ -136,21 +147,25 @@ export class SpaceAssistantService {
         [spaceId],
       );
       if (!space.rows[0]) return;
-      const assistant = await client.query<{ id: string }>(
+      // Every managed Assistant in the Space. `model_api` is the default
+      // adapter for a provisioned instance, so reconciling only the oldest
+      // would leave every other Project's Assistant bound to a provider that
+      // is no longer granted.
+      const assistants = await client.query<{ id: string }>(
         `SELECT id
            FROM agents
           WHERE space_id = $1
             AND agent_kind = 'system_assistant'
             AND status = 'active'
-          ORDER BY created_at ASC, id ASC
-          LIMIT 1`,
+          ORDER BY created_at ASC, id ASC`,
         [spaceId],
       );
-      const agentId = assistant.rows[0]?.id;
-      if (!agentId) return;
+      if (assistants.rows.length === 0) return;
       const providers = await listChatProviderDefinitions(client, spaceId);
       const service = new SpaceAssistantService(client, pool);
-      await service.ensureModelApiProfiles(agentId, spaceId, providers);
+      for (const { id: agentId } of assistants.rows) {
+        await service.ensureModelApiProfiles(agentId, spaceId, providers);
+      }
     });
   }
 
@@ -173,26 +188,79 @@ export class SpaceAssistantService {
         [spaceId],
       );
       if (!space.rows[0]) return;
-      const assistant = await client.query<{ id: string }>(
+      // Every managed Assistant in the Space, not the oldest one: since each
+      // Project has its own instance, reconciling a single row would leave the
+      // rest bound to a runtime profile that no longer resolves.
+      const assistants = await client.query<{ id: string }>(
         `SELECT id
            FROM agents
           WHERE space_id = $1
             AND agent_kind = 'system_assistant'
             AND status = 'active'
-          ORDER BY created_at ASC, id ASC
-          LIMIT 1`,
+          ORDER BY created_at ASC, id ASC`,
         [spaceId],
       );
-      const agentId = assistant.rows[0]?.id;
-      if (!agentId) return;
       const service = new SpaceAssistantService(client, pool);
-      await service.disableUnavailableCliProfiles(spaceId, agentId, cliAdapters);
-      await service.ensureCliProfiles(agentId, spaceId, cliAdapters);
+      for (const { id: agentId } of assistants.rows) {
+        await service.disableUnavailableCliProfiles(spaceId, agentId, cliAdapters);
+        await service.ensureCliProfiles(agentId, spaceId, cliAdapters);
+      }
     });
   }
 
-  /** Runtime-tool binaries are process-wide, so activation/install changes
-   * can affect every Space that already has a managed Assistant. */
+  /**
+   * Bring every seed-following Assistant up to the current seed.
+   *
+   * Without this a seed change reached a Project's Assistant only when someone
+   * next created a Room there — so a prompt shipped in one release stayed
+   * unapplied on every Assistant that already existed. Runs at boot, once;
+   * it is idempotent (an instance already at the seed produces no version) and
+   * it skips, rather than fails on, an instance whose Project has no eligible
+   * backend for its owner. A detached instance is left alone by the same rule
+   * reconciliation always applies.
+   */
+  static async reconcileSeedFollowersForAllSpaces(
+    pool: Pool,
+    config: ServerConfig,
+    log?: { info(message: string): void; warn(message: string): void },
+  ): Promise<{ reconciled: number; skipped: number }> {
+    const followers = await pool.query<{ space_id: string; project_id: string; owner_user_id: string }>(
+      `SELECT a.space_id, a.project_id, p.owner_user_id
+         FROM agents a
+         JOIN agent_versions v ON v.id = a.current_version_id
+         JOIN projects p ON p.id = a.project_id AND p.space_id = a.space_id
+        WHERE a.agent_kind = 'system_assistant' AND a.status = 'active'
+          AND a.project_id IS NOT NULL
+          AND v.follows_seed_key = $1
+          AND p.owner_user_id IS NOT NULL AND p.deleted_at IS NULL
+        ORDER BY a.space_id, a.created_at`,
+      [MANAGED_ASSISTANT_PROMPT_KEY],
+    );
+    let reconciled = 0;
+    let skipped = 0;
+    for (const row of followers.rows) {
+      const identity = { spaceId: row.space_id, userId: row.owner_user_id };
+      try {
+        const preparation = await SpaceAssistantService.prepareForRoomCreator(pool, config, identity);
+        await withTransaction(pool, async (client) => {
+          await new SpaceAssistantService(client, pool)
+            .ensureForRoomCreator(identity, preparation, row.project_id);
+        });
+        reconciled += 1;
+      } catch (error) {
+        skipped += 1;
+        log?.warn(`[assistant] seed reconcile skipped project=${row.project_id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (followers.rows.length > 0) {
+      log?.info(`[assistant] seed reconcile: ${reconciled} reconciled, ${skipped} skipped`);
+    }
+    return { reconciled, skipped };
+  }
+
+  /** Runtime-tool binaries are process-wide, so activation/install changes can
+   * affect every Space that already has a managed Assistant. Per-Space
+   * reconciliation covers every instance in it. */
   static async reconcileCliProfilesForAllSpaces(
     pool: Pool,
     config: ServerConfig,
@@ -208,9 +276,23 @@ export class SpaceAssistantService {
     }
   }
 
+  /**
+   * The Assistant a Room talks to.
+   *
+   * One instance per Project, so two Projects get two Agents that start
+   * identical and diverge as each is worked with — a Project's Assistant
+   * accumulates that Project's memory, its token usage is attributable to that
+   * Project, and evolving one does not change the other. `projectId` null
+   * provisions the Space's own instance, which is what `/home` chat uses.
+   *
+   * Every instance is materialized from the same seed and re-materialized when
+   * the seed changes, unless it has been given a version of its own — see
+   * `followsSeedKey`.
+   */
   async ensureForRoomCreator(
     identity: { spaceId: string; userId: string },
     preparation: ManagedAssistantPreparation,
+    projectId: string | null = null,
   ) {
     // Serializing on the Space row makes first-use provisioning deterministic
     // and avoids relying on a unique-violation retry inside an aborted tx.
@@ -258,7 +340,7 @@ export class SpaceAssistantService {
       systemPrompt: `${resolved.system.trim()}${ROOM_MANAGER_POLICY}`,
       promptProvenanceJson: {
         ...promptProvenanceOf(resolved.resolveResult),
-        room_manager_policy_version: "room-manager-policy.v1",
+        room_manager_policy_version: "room-manager-policy.v2",
       },
       modelProviderId: defaultAdapter === "model_api" ? defaultProvider?.id ?? null : null,
       modelName: defaultAdapter === "model_api" ? defaultProvider?.default_model ?? null : null,
@@ -277,14 +359,17 @@ export class SpaceAssistantService {
     const existing = await this.agents.getSystemAssistantInTransaction(
       this.client,
       identity.spaceId,
+      projectId,
     );
-    const managedName = space.rows[0]?.type === "personal" ? seed.name : MANAGED_ASSISTANT_NAME;
+    const managedName = await this.managedNameFor(space.rows[0]?.type ?? null, seed.name, projectId);
     if (existing) {
       const reconciled = await this.agents.reconcileSystemManagedAgentInTransaction(this.client, {
         spaceId: identity.spaceId,
         agentId: existing.id,
         name: managedName,
         description: seed.description,
+        projectId,
+        followsSeedKey: MANAGED_ASSISTANT_PROMPT_KEY,
         ...canonical,
       });
       await this.agents.ensureSystemAssistantActorInTransaction(
@@ -294,14 +379,19 @@ export class SpaceAssistantService {
         reconciled.name,
       );
       await this.ensureRuntimeProfiles(reconciled.id, identity, providers, cliAdapters);
-      await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, reconciled.id);
+      // The pointer names the Space's Assistant, which backs personal
+      // preferences and `/home` chat. Repointing it at whichever Project a
+      // Room happened to be created in would silently move the Space's chat.
+      if (!projectId) {
+        await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, reconciled.id);
+      }
       await this.requireEligibleBackend(identity, preparation, providers);
       return reconciled;
     }
 
     const input: AgentCreateInput = {
       spaceId: identity.spaceId,
-      projectId: null,
+      projectId,
       userId: identity.userId,
       ownerUserId: null,
       name: managedName,
@@ -334,10 +424,38 @@ export class SpaceAssistantService {
       created.name,
     );
     await this.ensureRuntimeProfiles(created.id, identity, providers, cliAdapters);
-    await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, created.id);
+    if (!projectId) {
+      await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, created.id);
+    }
     await this.requireEligibleBackend(identity, preparation, providers);
-    return this.agents.getSystemAssistantInTransaction(this.client, identity.spaceId)
+    // The first version materializes the seed, so it follows it until somebody
+    // authors one of their own.
+    await this.agents.markCurrentVersionFollowsSeedInTransaction(
+      this.client,
+      identity.spaceId,
+      created.id,
+      MANAGED_ASSISTANT_PROMPT_KEY,
+    );
+    return this.agents.getSystemAssistantInTransaction(this.client, identity.spaceId, projectId)
       .then((assistant) => assistant ?? created);
+  }
+
+  /** `<Project name> Assistant`, so two of them are told apart by what they
+   * are for rather than by an id. */
+  private async managedNameFor(
+    spaceType: string | null,
+    seedName: string,
+    projectId: string | null,
+  ): Promise<string> {
+    if (projectId) {
+      const project = await this.client.query<{ name: string }>(
+        "SELECT name FROM projects WHERE id = $1",
+        [projectId],
+      );
+      const name = project.rows[0]?.name?.trim();
+      if (name) return `${name.slice(0, 96)} Assistant`;
+    }
+    return spaceType === "personal" ? seedName : MANAGED_ASSISTANT_NAME;
   }
 
   private async ensureRuntimeProfiles(

@@ -332,6 +332,11 @@ describe("memory read routes", () => {
             resulting_memory_id: memoryId,
           });
         },
+        // Not the caller's own entry, which is the case the proposal flow is
+        // still for (ADR 0003 §3).
+        async setOwnStatus() {
+          return null;
+        },
         async archiveMemoryProposal(
           _spaceId: string,
           _userId: string,
@@ -369,6 +374,71 @@ describe("memory read routes", () => {
       id: "proposal-archive",
       proposal_type: "memory_archive",
       resulting_memory_id: "memory-1",
+    });
+  });
+
+  it("archives and restores the caller's own memory without a proposal", async () => {
+    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const calls: Array<{ memoryId: string; status: string }> = [];
+    __setMemoryServicesFactoryForTests(() => ({
+      repository: {
+        async setOwnStatus(_spaceId: string, _userId: string, memoryId: string, status: string) {
+          calls.push({ memoryId, status });
+          return { id: memoryId, status };
+        },
+        // The route answers with the read shape, not the applier's row.
+        async get(_spaceId: string, _userId: string, memoryId: string) {
+          const status = calls[calls.length - 1]!.status;
+          return memoryOut({ id: memoryId, status });
+        },
+        async archiveMemoryProposal() {
+          throw new Error("the owner's own archive must not create a proposal");
+        },
+      } as unknown as MemoryServices["repository"],
+    }));
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
+
+    const archived = await app.inject({ method: "DELETE", url: "/api/v1/memory/memory-1" });
+    const restored = await app.inject({ method: "POST", url: "/api/v1/memory/memory-1/restore" });
+
+    // 200 with the entry, not 202 with something to approve.
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ id: "memory-1", status: "archived" });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toMatchObject({ id: "memory-1", status: "active" });
+    expect(calls).toEqual([
+      { memoryId: "memory-1", status: "archived" },
+      { memoryId: "memory-1", status: "active" },
+    ]);
+  });
+
+  it("passes the agent-written and session filters through to the read model", async () => {
+    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let seen: MemoryListArgs[2] | null = null;
+    __setMemoryServicesFactoryForTests(() => ({
+      repository: {
+        async list(_spaceId: string, _userId: string, filters: MemoryListArgs[2]) {
+          seen = filters;
+          return { items: [], total: 0, limit: filters.limit, offset: filters.offset };
+        },
+      } as unknown as MemoryServices["repository"],
+    }));
+    app = buildModuleServer(memoryConfig(), [memoryModule]);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/memory?created_by=agent&session=session-1&run=run-1&since=2026-08-01T00:00:00.000Z",
+    });
+    expect(res.statusCode).toBe(200);
+    // Reading what the Agents wrote is the after-the-fact review that replaced
+    // approving each write (ADR 0003 §2), so the page must be able to ask for it.
+    expect(seen).toMatchObject({
+      writtenBy: "agent",
+      sessionId: "session-1",
+      // `?run=` is the only action link a paused turn's attention item
+      // carries; a page that ignored it would silently show everything.
+      runId: "run-1",
+      since: "2026-08-01T00:00:00.000Z",
     });
   });
 });

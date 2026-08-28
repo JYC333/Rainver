@@ -313,7 +313,8 @@ is the actual fail_closed audit and approval boundary for all of these actions.
 
 | Action | Protected via | Notes |
 |--------|--------------|-------|
-| `memory.create` | `proposal.apply` gate | Memory writes require proposal approval. No direct PolicyGateway call site. |
+| `memory.write` | `systemActionDispatcher` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. |
+| `memory.create` | `proposal.apply` gate | The proposal route. No direct PolicyGateway call site. |
 | `memory.update` | `proposal.apply` gate | Memory updates require proposal approval. No direct PolicyGateway call site. |
 | `memory.archive` | `proposal.apply` gate | Memory archive requires proposal approval. No direct PolicyGateway call site. |
 | `policy.change` | `proposal.apply` gate | Requires admin/owner role. No direct PolicyGateway call site. Durable audit occurs through `proposal.apply`. |

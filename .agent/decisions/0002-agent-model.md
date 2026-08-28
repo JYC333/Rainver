@@ -1,51 +1,71 @@
-# Decision 0002: Agent is a Separate Model from User
+# ADR 0002: Agent Is A Separate Model From User
+
+Date: 2026-05 (original)
+Rewritten: 2026-08-27
 
 ## Status
-Accepted
+
+Accepted.
 
 ## Context
-Early designs conflated "user" and "agent" — treating an AI agent as a type of user. This caused confusion about:
-- Who owns what data
-- Whose permissions apply
-- How to model one user having multiple AI agents
+
+Early designs conflated "user" and "agent", treating an AI agent as a type of
+user. That left three questions unanswerable: who owns what data, whose
+permissions apply, and how one user has several agents.
 
 ## Decision
-**Agent** is a separate model from **User**.
 
-- A User is a human person. Identified by `user_id` string.
-- An Agent is an AI runtime entity. Has its own row in the `agents` table.
-- One user can create and own multiple agents.
-- Agents can be user-owned, space-owned, workspace-owned, or system-owned.
+### 1. Two models
 
-An agent's behaviour is fully configured via its model record:
-- `system_prompt` — base instruction
-- `model_config_json` — model, temperature, etc.
-- `memory_policy_json` — readable/writable scopes, requires_proposal flag
-- `capabilities_json` — list of enabled capability IDs
-- `tool_permissions_json` — declared allowed tools
-- `runtime_policy_json` — sandbox_required, can_delegate, max_delegation_depth, allowed_adapter_types
+- A **User** is a human person, identified by `user_id`.
+- An **Agent** is an AI runtime entity with its own row in `agents`. One user
+  may create and own many agents.
 
-## The instructing human is resolved per message
+An Agent is owned by a user (`owner_user_id`), shared by a Space, or bound to
+a Project (`project_id`); `agent_kind` distinguishes standard agents from
+system-provided ones. No concrete built-in agents are seeded: built-in
+behaviour ships as system Agent Templates (factories), and concrete agents are
+created on demand by copy-on-create.
 
-A run's instructing human is not a property of the container the run was started from. In a
-multi-party conversation it is resolved from the specific message that triggered the run —
-that message's sender, not the conversation's creator or owner. A container may still record
-an originator for ownership and lifecycle purposes, but that originator does not grant
-speaking rights and is never substituted for the per-message instructing human.
+An Agent's behaviour is fully described by its versioned record — role
+instruction, model configuration, runtime policy (including
+`allowed_adapter_types`), memory policy (including `requires_proposal`),
+capabilities, and tool/output policy. The column set is code-owned
+(`server/src/db/schema/agents.ts`) and is not enumerated here.
 
-This is a security boundary, not a convenience. `instructed_by_user_id` is the retrieval
-viewer identity: policy denies retrieval tools outright when it is absent, and an agent sees
-only what the instructing human is allowed to see. Resolving it from the container instead of
-the message would let one speaker's instruction execute under another member's retrieval
-visibility and spend another member's credential capacity.
+### 2. The instructing human is resolved per message
+
+A Run's instructing human is not a property of the container the Run was
+started from. In a multi-party conversation it is resolved from the specific
+message that triggered the Run — that message's sender, not the conversation's
+creator or owner. A container may record an originator for ownership and
+lifecycle, but that originator grants no speaking rights and is never
+substituted for the per-message instructing human.
+
+This is a security boundary, not a convenience. `instructed_by_user_id` is the
+retrieval viewer identity: policy denies retrieval tools outright when it is
+absent, and an agent sees only what the instructing human may see. Resolving
+it from the container would let one speaker's instruction execute under
+another member's retrieval visibility and spend another member's credential
+capacity.
 
 ## Consequences
 
-- Users and agents have independent identity, permissions, and memory policies
-- Multiple users may share access to a space-owned or system agent
-- An agent's allowed adapter types restrict which CLI tools it can use
-- Agent runs carry both `user_id` (the instructing human, resolved per message) and `agent_id`
-  (the executing agent)
-- Memory policy on the agent restricts which memory scopes it can read — enforced by ContextBuilder
-- No built-in concrete agents are seeded. Built-in behavior comes from system AgentTemplates
-  (factories); concrete agents are created on demand via copy-on-create.
+- Users and agents have independent identity, permissions, and memory
+  policies.
+- Several users may share a Space-owned or system agent.
+- `allowed_adapter_types` on the Agent restricts which runtime adapters a Run
+  may select.
+- Every Run carries both `instructed_by_user_id` (the human, per message) and
+  `agent_id` (the executing agent).
+- Memory policy on the Agent restricts which memory scopes it may read,
+  enforced at the Runtime Context and memory read boundaries.
+
+## Revision history
+
+- **2026-05** — accepted.
+- **2026-07** — per-message instructing human added with Rooms.
+- **2026-08-27** — rewritten. Column enumeration removed (it had drifted:
+  `can_delegate` / `max_delegation_depth` no longer exist, several policy
+  columns were missing); "workspace-owned" replaced by Project-bound; the
+  retired `ContextBuilder` name dropped.

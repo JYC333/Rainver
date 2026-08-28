@@ -4,15 +4,8 @@ import {
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry.js";
-import {
-  projectEntitySummaryRegistry,
-  projectModeProjectionRegistry,
-  type ModeOverviewProjection,
-  type ProjectEntitySummary,
-  type ProjectEntitySummaryAdapter,
-  type ProjectModeProjectionAdapter,
-} from "../projects/overviewRegistry.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { responsibleUserSql } from "../projectWork/responsibility.js";
 
 interface DeliveryTask {
   id: string;
@@ -20,6 +13,13 @@ interface DeliveryTask {
   status: string;
   due_at: string | null;
   blocked_reason: string | null;
+  claimed_by_user_id: string | null;
+  claimed_by_agent_id: string | null;
+  assigned_user_id: string | null;
+  assigned_agent_id: string | null;
+  created_by_user_id: string | null;
+  responsible_user_id: string | null;
+  loop_stage: string | null;
 }
 
 async function deliveryTasks(
@@ -28,67 +28,56 @@ async function deliveryTasks(
   projectId: string,
 ): Promise<DeliveryTask[]> {
   const result = await db.query<DeliveryTask>(
-    `SELECT t.id,t.title,t.status,t.due_at,t.blocked_reason
+    `SELECT t.id,t.title,t.status,t.due_at,t.blocked_reason,
+            t.claimed_by_user_id,t.claimed_by_agent_id,
+            t.assigned_user_id,t.assigned_agent_id,t.created_by_user_id,
+            ${responsibleUserSql("t", "p")} AS responsible_user_id,
+            ls.current_stage_key AS loop_stage
        FROM tasks t
+       JOIN projects p ON p.id=t.project_id AND p.space_id=t.space_id
+       LEFT JOIN task_loop_states ls ON ls.task_id=t.id AND ls.space_id=t.space_id
       WHERE t.space_id=$1 AND t.project_id=$2 AND t.deleted_at IS NULL
         AND ${contentReadSql("task", "t", "$3")}
       ORDER BY
-        CASE t.status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'ready' THEN 2 ELSE 3 END,
+        CASE t.status
+          WHEN 'waiting_for_review' THEN 0 WHEN 'blocked' THEN 1
+          WHEN 'in_progress' THEN 2 WHEN 'ready' THEN 3 ELSE 4 END,
         t.due_at NULLS LAST,t.updated_at DESC`,
     [identity.spaceId, projectId, identity.userId],
   );
   return result.rows;
 }
 
-const deliveryModeAdapter: ProjectModeProjectionAdapter = {
-  mode: "delivery",
-  async getOverviewProjection(db, identity, projectId): Promise<ModeOverviewProjection> {
-    const tasks = await deliveryTasks(db, identity, projectId);
-    const open = tasks.filter((task) => !["done", "cancelled"].includes(task.status));
-    const blocked = open.filter((task) => task.status === "blocked");
-    const done = tasks.filter((task) => task.status === "done");
-    return {
-      mode: "delivery",
-      current_state_summary: `${open.length} open Task${open.length === 1 ? "" : "s"}; ${blocked.length} blocked; ${done.length} done`,
-      progress_indicators: [
-        { metric: "open_tasks", value: open.length },
-        { metric: "blocked_tasks", value: blocked.length },
-        { metric: "completed_tasks", value: done.length },
-      ],
-      focus_set: open.slice(0, 10).map((task) => ({
-        id: task.id,
-        label: task.title,
-        href: `/projects/${projectId}/delivery`,
-      })),
-      next_actions: [{
-        id: "open-delivery",
-        label: open.length > 0 ? "Continue delivery" : "Plan delivery",
-        href: `/projects/${projectId}/delivery`,
-        kind: open.length > 0 ? "execute" : "plan",
-      }],
-    };
-  },
-};
-
 const deliveryAttentionAdapter: ProjectAttentionAdapter = {
   areaKind: "delivery",
   async listAttentionItems(db, identity, projectId): Promise<ProjectAttentionItem[]> {
     const now = Date.now();
+    const open = (task: DeliveryTask): boolean => !["done", "cancelled"].includes(task.status);
     return (await deliveryTasks(db, identity, projectId))
-      .filter((task) => task.status === "blocked"
-        || (!["done", "cancelled"].includes(task.status)
-          && task.due_at !== null
-          && Date.parse(task.due_at) < now))
+      // `waiting_for_review` is the state that means a person has to decide,
+      // so it is the reason this surface exists. `blocked` is now only ever
+      // set deliberately — Run failure stopped writing it, because a Run
+      // ending badly is not the same fact as work being held up by something
+      // else, and merging them lost which one had happened.
+      .filter((task) => (open(task) && task.status === "waiting_for_review")
+        || task.status === "blocked"
+        || (open(task) && task.due_at !== null && Date.parse(task.due_at) < now))
+      // Only the responsible person is interrupted. Everyone else still sees
+      // the Task on the Board and can take it over; they just are not told to.
+      .filter((task) => task.responsible_user_id === identity.userId)
       .map((task) => ({
         id: `task:${task.id}`,
+        attention_class: "gate",
         project_id: projectId,
         area_kind: "delivery",
         source_type: "task",
         source_id: task.id,
-        severity: task.status === "blocked" ? "high" : "normal",
+        severity: task.status === "waiting_for_review" || task.status === "blocked" ? "high" : "normal",
         title: task.title,
         summary: task.blocked_reason,
-        reason: task.status === "blocked" ? "blocked" : "overdue",
+        reason: task.status === "waiting_for_review"
+          ? "waiting_for_review"
+          : task.status === "blocked" ? "blocked" : "overdue",
         due_at: task.due_at,
         blocking_refs: [],
         action_descriptors: [{ label: "Open task", href: `/tasks/${task.id}` }],
@@ -97,26 +86,6 @@ const deliveryAttentionAdapter: ProjectAttentionAdapter = {
   },
 };
 
-/** Tasks are Delivery's entity. The Mode projection above says what to do
- *  next; this row says how much of it there is. */
-const deliveryTaskSummaryAdapter: ProjectEntitySummaryAdapter = {
-  entityType: "task",
-  label: "Tasks",
-  detail: "Work items assigned and tracked",
-  href: (projectId) => `/projects/${projectId}/delivery`,
-
-  async getSummary(db, identity, projectId): Promise<ProjectEntitySummary> {
-    const tasks = await deliveryTasks(db, identity, projectId);
-    const open = tasks.filter((task) => !["done", "cancelled"].includes(task.status));
-    return {
-      count: open.length,
-      status: open.some((task) => task.status === "blocked") ? "blocked" : "ok",
-    };
-  },
-};
-
 export function registerTasksProjectIntegration(): void {
-  projectModeProjectionRegistry.register(deliveryModeAdapter, "tasks");
-  projectEntitySummaryRegistry.register(deliveryTaskSummaryAdapter, "tasks");
   projectAttentionRegistry.replace(deliveryAttentionAdapter);
 }

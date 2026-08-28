@@ -8,8 +8,7 @@ import {
   parsePage,
   query,
   resolveIdentity,
-  sendRouteError,
-} from "../routeUtils/common.js";
+  sendRouteError, requiredString } from "../routeUtils/common.js";
 import { RoomService } from "./service.js";
 
 type RoomServicePort = Pick<
@@ -17,6 +16,8 @@ type RoomServicePort = Pick<
   | "createRoom"
   | "listRooms"
   | "getRoom"
+  | "getProjectMainline"
+  | "listProjectConversations"
   | "listAgentCandidates"
   | "addAgent"
   | "addAgentPreset"
@@ -98,6 +99,29 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await service(context).getRoom(identity, roomId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/mainline-room", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      return reply.send(await service(context).getProjectMainline(identity, projectId));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/conversations", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      const page = parsePage(query(request), 50);
+      return reply.send(await service(context).listProjectConversations(identity, projectId, page));
     } catch (error) {
       return sendRoomError(reply, error);
     }

@@ -8,6 +8,8 @@ import { managedAdapterRequest, managedProviderMessages, renderManagedDelivery }
 import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
 import { RuntimeContextCliContinuityService } from "../src/modules/runtimeContext/continuity/cliContinuity.js";
 import { RuntimeContextContinuityService } from "../src/modules/runtimeContext/continuity/service.js";
+import { checkpointMetering } from "../src/modules/runtimeContext/continuity/semanticExtractor.js";
+import { resolveUsageAttribution } from "../src/modules/usage/attribution.js";
 import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
 import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayloadCrypto.js";
 import { revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
@@ -607,6 +609,49 @@ describe("runtimeContextCliContinuityDb", () => {
       directItems: [current],
     });
   }
+
+  describe("semantic checkpoint metering (real PostgreSQL)", () => {
+    // From 2026-08-10 every semantic extraction was metered to a resource
+    // type nothing registers, so attribution rejected it before the provider
+    // was called and the job failed: no checkpoint was ever written, and the
+    // "completed" jobs were the ones with too few events to extract at all.
+    it("meters an extraction to the scope's owner, which attribution accepts", async () => {
+      if (!db.available) return;
+      // Attribution to a person requires that person to be an active member;
+      // the shared seed above creates the user but not the membership.
+      await db.pool.query(
+        `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+         VALUES ($1,$2,$3,'owner','active',now(),now()) ON CONFLICT DO NOTHING`,
+        [randomUUID(), SPACE, USER],
+      );
+      const metering = await checkpointMetering(db.pool, SPACE, RUN);
+      expect(metering).toEqual({ subject_user_id: USER, project_id: null });
+
+      const attribution = await resolveUsageAttribution(db.pool, {
+        ...metering,
+        space_id: SPACE,
+        event_type: "provider_task",
+        source_type: "local_run",
+        execution_channel: "managed_api",
+      } as never);
+      expect(attribution).toMatchObject({ owner_user_id: USER, source_resource_type: null });
+
+      // The shape that failed, pinned so it cannot come back.
+      await expect(resolveUsageAttribution(db.pool, {
+        space_id: SPACE,
+        event_type: "provider_task",
+        source_type: "local_run",
+        execution_channel: "managed_api",
+        source_resource_type: "work_context_scope",
+        source_resource_id: RUN,
+      } as never)).rejects.toMatchObject({ statusCode: 422 });
+    });
+
+    it("refuses to meter a scope that has no setup rather than guessing an owner", async () => {
+      if (!db.available) return;
+      await expect(checkpointMetering(db.pool, SPACE, randomUUID())).rejects.toMatchObject({ statusCode: 409 });
+    });
+  });
 });
 
 describe("runtimeContextDelivery", () => {

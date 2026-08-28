@@ -12,7 +12,6 @@ import {
 import { getDbPool } from "../../db/pool.js";
 import { assertProjectOwnerLevel, assertProjectOwnerLevelForMutation, assertProjectReadable, assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "./access.js";
 import { PRIMARY_MODES, isPrimaryMode, type ProjectPrimaryMode } from "./primaryMode.js";
-import { projectModeProjectionRegistry } from "./overviewRegistry.js";
 
 
 interface BriefVersionRow {
@@ -312,9 +311,6 @@ export class ProjectKernelService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const toMode = requiredMode(body.to_mode);
-    if (!projectModeProjectionRegistry.get(toMode)) {
-      throw new HttpError(409, `${toMode} Mode is not available until its Overview adapter is registered`);
-    }
     const now = new Date().toISOString();
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);

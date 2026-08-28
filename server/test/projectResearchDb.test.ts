@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config.js";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
+import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { resolveResearchThreadScope } from "../src/modules/projectResearch/threadScope.js";
@@ -215,6 +216,43 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       [SPACE, workflowId],
     );
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
+  });
+
+  it("bounds a daily update and defers the rest to the next one, without asking anybody", async () => {
+    if (!db.available) return;
+    // A daily update is bounded the same way a baseline is — an unbounded run
+    // put 873 documents through an LLM before anyone saw a number — but it
+    // answers differently: nobody is awake at 4am to approve anything, so the
+    // overflow waits for tomorrow instead of a decision.
+    const thread = await new InquiryThreadService(db.pool).createThread(
+      identity, PROJECT, { kind: "question", statement: "Does X improve Y?" },
+    );
+    const workflowId = await seedWorkflow({
+      research_question: "Does X improve Y?",
+      thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+      channel_ids: ["channel-1"],
+      project_source_binding_ids: ["binding-1"],
+      source_post_processing_rule_ids: ["rule-1"],
+      report_depth: "quick",
+      agent_id: AGENT,
+      monitoring: { active: true },
+    }, String(thread.id));
+
+    const scanned = Array.from({ length: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT + 40 }, (_, index) => `item-${index}`);
+    const operation = await new ProjectResearchOrchestrator(db.pool, CONFIG)
+      .triggerIncremental(identity, PROJECT, workflowId, { source_item_ids: scanned });
+
+    const progress = (operation as { progress_json: Record<string, unknown> }).progress_json;
+    expect((progress.source_item_ids as string[])).toHaveLength(SCREENING_AUTO_CONTINUE_CORPUS_LIMIT);
+    expect(progress.deferred_incremental_items).toBe(40);
+
+    // The overflow is the next update's work, not lost and not a question.
+    const workflow = await db.pool.query<{ state_json: Record<string, unknown> }>(
+      `SELECT state_json FROM project_research_workflows WHERE space_id=$1 AND object_id=$2`,
+      [SPACE, workflowId],
+    );
+    expect(workflow.rows[0]!.state_json.pending_incremental_source_item_ids)
+      .toEqual(scanned.slice(SCREENING_AUTO_CONTINUE_CORPUS_LIMIT));
   });
 
   it("blocks incremental research until a changed project question is explicitly applied forward", async () => {

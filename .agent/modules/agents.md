@@ -118,13 +118,60 @@ Rules (clean model — no old paths):
   per-recipient typed work-scope CLI binding (`modules/rooms.md`), so which
   Agent and runtime a turn runs against remains a per-conversation, per-user
   choice without making the Room session a vendor-state authority.
-  A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL, named
-  *Personal Assistant* in personal spaces and *Space Assistant* in shared ones, at most
-  one active per space via partial-unique index `uq_agents_system_assistant_per_space`,
-  minted lazily from the internal `personal_assistant` seed on the first Room creation)
-  is the immutable manager execution identity for Room turns. It is hidden from ordinary
+  A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL,
+  minted lazily from the internal `personal_assistant` seed on the first Room
+  creation) is the immutable manager execution identity for Room turns. There
+  is **one instance per Project**, plus one for the Space itself: two partial
+  unique indexes, `uq_agents_system_assistant_per_space` (`project_id IS NULL`)
+  and `uq_agents_system_assistant_per_project` — one composite index over
+  `(space_id, project_id)` would not do, because a NULL `project_id` does not
+  collide and the Space-level row would be unconstrained. A Project's instance
+  is named `<Project name> Assistant`; the Space's keeps *Personal Assistant*
+  in personal spaces and *Space Assistant* in shared ones, and is the one the
+  `agent.default_assistant` settings pointer names — creating a Room in a
+  Project must never repoint it.
+
+  Every instance is materialized from the same seed, so they start identical
+  and diverge only as each Project is worked with: its own memory, its own
+  token attribution, its own evolution target. `agent_versions.follows_seed_key`
+  records which seed a version materializes. Reconciliation re-materializes a
+  version carrying the current seed key, adopts an unmarked version whose
+  content is already identical to what the seed produces (provably untouched),
+  and leaves anything else alone rather than overwrite work it cannot account
+  for. No path can author a version for a `system_assistant` today —
+  `requireAgent` excludes the kind, and `publishSystemManagedPrompt` refuses it
+  — so the day one lands it must clear the mark, which is what makes divergence
+  real. The unmarked column *is* the record of divergence; nothing writes a
+  second copy of that fact. A left-alone instance still has its runtime profiles
+  reconciled, and routing builds its candidates from `agent_runtime_profiles`
+  rather than from the version, so declining to republish an instance's prompt
+  does not also stop it working.
+
+  Two further decisions, recorded rather than left to be rediscovered:
+
+  - **`agents.project_id` is `ON DELETE NO ACTION`, deliberately.** Projects are
+    archived, never deleted, so there is no live failure mode. Should a deletion
+    path land, it must **archive** the Project's Assistant — a non-`active`
+    status frees the partial-unique slot — rather than delete a row that owns
+    Run and token-usage history.
+  - **An Assistant's name follows its Project's and is refreshed on the next
+    reconcile**, so a Project renamed between Room creations carries the old
+    name until then, and two Projects sharing a name give their Assistants the
+    same name. Ambiguous, not an error.
+
+  **Seed changes reach existing instances at boot.**
+  `reconcileSeedFollowersForAllSpaces` runs once on start (and daily as a
+  backstop) over every instance whose current version follows the seed,
+  re-materializing it as the Project owner would by creating a Room — so a
+  prompt shipped in a release lands on every Assistant that already exists,
+  not only on the next Project to start a conversation. It is idempotent, and
+  an instance whose Project has no eligible backend for its owner is skipped
+  and logged rather than failed on.
+
+  An Assistant is hidden from ordinary
   Agent CRUD surfaces; `GET /api/v1/agents/default-assistant/settings` exposes only the
-  soft preference layer and points at the managed identity once provisioned. The shared
+  soft preference layer, and its managed-identity pointer stays null while no
+  Space-level instance exists. The shared
   Run admission boundary rejects this identity for every non-Room run producer; only the
   Room dispatch path supplies the internal Room authority marker for root, grouped, and
   delegated Runs.
@@ -400,20 +447,21 @@ for use rather than authoring new ones).
 
 There are no eagerly seeded per-space concrete Agents. The old boot-time
 concrete-agent seeder was removed. Built-in product behavior comes from system
-templates (factories), while the hidden Space Assistant is provisioned lazily
+templates (factories), while a Project's hidden managed Assistant is provisioned lazily
 and only when the first Project Room is created.
 
 Built-in **templates** (global factories, idempotent, seeded by the server agents module,
 seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
-per-space `system_assistant`-kind Agent — hidden from the public library and not
+per-Project `system_assistant`-kind Agent — hidden from the public library and not
 user-instantiable.
 **`general_chat` is intentionally not seeded** and there is no product-level DirectChat:
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
-  per-space `system_assistant`-kind Agent, which anchors Assistant preferences settings;
-  dynamic per-invocation selection via Runtime Context; `chat_message` + proposal-only
-  task/idea/memory/knowledge. Not a reusable template. Its concrete Space Assistant is
-  created transactionally on first Room creation, not during boot.
+  per-Project `system_assistant`-kind Agent; dynamic per-invocation selection via Runtime
+  Context; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
+  template. A Project's concrete Assistant is created transactionally on that Project's
+  first Room creation; a boot-time reconcile brings every seed-following instance up to
+  a changed seed afterwards.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
   proposals + reflection summary; `classification_mode: model_selects`; proposal-only durables
 - `memory_reflector` (`memory`) — model-only; memory update/merge/delete proposals only (+ noop);
@@ -436,8 +484,9 @@ There is **no** single global "default agent" that runs implicitly. Every `Run` 
 explicit `Agent`, and execution config resolves from the Run's snapshotted runtime profile plus
 `Agent.current_version_id` → `AgentVersion`.
 A `system_assistant`-kind Agent is system-owned, hidden from ordinary Agent list/detail/create
-surfaces, and limited to one active instance per Space. Room creation lazily provisions it from
-the internal `personal_assistant` prompt seed and uses it as the immutable Room manager. Its
+surfaces, and limited to one active instance per Project (plus a Space-level slot the schema
+allows and nothing fills). Room creation lazily provisions the Project's instance from the
+internal `personal_assistant` prompt seed and uses it as the immutable Room manager. Its
 runtime profiles remain shared definitions; the speaking user's API eligibility or CLI credential
 is resolved per conversation binding. It also anchors soft Assistant **preferences**
 (`agent.default_assistant.settings`) without allowing those preferences to change the core prompt

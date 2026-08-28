@@ -95,6 +95,8 @@ export interface ServerConfig {
   memoryMaintenanceSchedulerEnabled: boolean;
   memoryMaintenanceSchedulerIntervalSeconds: number;
   memoryMaintenanceSchedulerBatchLimit: number;
+  /** ADR 0003 §2 circuit breaker: direct Agent memory writes per session. */
+  memoryDirectWritesPerSession: number;
   sourceExtractionSchedulerEnabled: boolean;
   sourceExtractionSchedulerIntervalSeconds: number;
   /** Instance hard limits for Source Custom Source handler execution. Runner availability is DB-backed. */
@@ -573,6 +575,15 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     1,
     100,
   );
+  // Not a budget on remembering — a fault detector. The number is set where a
+  // real session never reaches it and a loop does within one turn.
+  const memoryDirectWritesPerSession = parseBoundedInt(
+    env.SERVER_MEMORY_DIRECT_WRITES_PER_SESSION,
+    50,
+    "SERVER_MEMORY_DIRECT_WRITES_PER_SESSION",
+    1,
+    1000,
+  );
   const sourceExtractionSchedulerEnabled = parseBool(
     env.SERVER_SOURCE_EXTRACTION_SCHEDULER_ENABLED,
     true,
@@ -726,6 +737,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     memoryMaintenanceSchedulerEnabled,
     memoryMaintenanceSchedulerIntervalSeconds,
     memoryMaintenanceSchedulerBatchLimit,
+    memoryDirectWritesPerSession,
     sourceExtractionSchedulerEnabled,
     sourceExtractionSchedulerIntervalSeconds,
     customSourceAllowedLanguages,

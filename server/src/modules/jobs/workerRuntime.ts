@@ -3,6 +3,7 @@ import type { ServerConfig } from "../../config.js";
 import { JobHandlerRegistry } from "./handlerRegistry.js";
 import { PgJobQueueRepository } from "./repository.js";
 import { JobWorker } from "./worker.js";
+import { waitForJobWake, wakeJobWorkers } from "./wakeSignal.js";
 import { registerAgentRunHandler } from "../runs/agentRunHandler.js";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob.js";
 import { registerDailyCaptureReportHandler } from "../dailyReports/jobHandler.js";
@@ -32,6 +33,15 @@ import { registerResearchOperationFailureNotifyHandler } from "../projectResearc
 import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob.js";
 
 const POLL_INTERVAL_MS = 1_000;
+/**
+ * An enqueue inside a caller's transaction wakes this loop before its `COMMIT`
+ * makes the row visible, so a woken claim can still come back idle. Re-check
+ * once after a short wait instead of dropping straight back to the full poll
+ * interval — the commit lands within microseconds of the insert in every
+ * current call path. It doubles as the floor on how often a wake can drive a
+ * claim query, so a burst of enqueues cannot spin this loop.
+ */
+const POST_WAKE_RECHECK_MS = 25;
 const RECLAIM_INTERVAL_MS = 120_000;
 // Keep the shared worker lease conservative for every job family. Individual
 // adapters own their execution deadlines and cancellation; a Research-specific
@@ -115,6 +125,7 @@ export function startJobsWorker(
 
   let stopped = false;
   let lastReclaim = 0;
+  let idleWaitMs = POLL_INTERVAL_MS;
 
   const loop = (async () => {
     log?.info(`[jobs-worker] started (${workerId}) types=${claimableJobTypes.join(",")}`);
@@ -157,9 +168,13 @@ export function startJobsWorker(
         }
         const result = await worker.processOne();
         if (result.status === "idle") {
-          await sleep(POLL_INTERVAL_MS);
-        } else if (result.status === "failed") {
-          log?.warn(`[jobs-worker] job ${result.job_id} failed: ${result.error}`);
+          const wake = await waitForJobWake(idleWaitMs);
+          idleWaitMs = wake === "signalled" ? POST_WAKE_RECHECK_MS : POLL_INTERVAL_MS;
+        } else {
+          idleWaitMs = POLL_INTERVAL_MS;
+          if (result.status === "failed") {
+            log?.warn(`[jobs-worker] job ${result.job_id} failed: ${result.error}`);
+          }
         }
       } catch (error) {
         log?.error(
@@ -177,6 +192,8 @@ export function startJobsWorker(
     queue,
     stop: async () => {
       stopped = true;
+      // Break an idle wait instead of letting shutdown sit out its remainder.
+      wakeJobWorkers();
       await loop;
     },
   };

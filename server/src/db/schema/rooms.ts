@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   check,
   foreignKey,
   index,
@@ -29,8 +30,17 @@ export const rooms = pgTable("rooms", {
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
   archivedAt: timestamp("archived_at", { withTimezone: true, mode: "string" }),
   rosterRevision: bigint("roster_revision", { mode: "number" }).default(0).notNull(),
+  /**
+   * The Project's one mainline conversation. Project members belong to it by
+   * being Project members, so the chat panel has a stable Room to bind to
+   * rather than "whichever Room the viewer happens to be in that was most
+   * recently active" — which switched under people and was empty for anyone
+   * not on a roster. The first Room created in a Project becomes it.
+   */
+  isMainline: boolean("is_mainline").default(false).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
   index("ix_rooms_project_updated").on(table.spaceId, table.projectId, table.updatedAt),
+  uniqueIndex("uq_rooms_mainline_per_project").on(table.spaceId, table.projectId).where(sql`is_mainline AND status = 'active'`),
   index("ix_rooms_space_updated").on(table.spaceId, table.updatedAt),
   unique("uq_rooms_id_space").on(table.id, table.spaceId),
   unique("uq_rooms_id_space_project").on(table.id, table.spaceId, table.projectId),

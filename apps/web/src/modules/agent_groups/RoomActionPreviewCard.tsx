@@ -119,8 +119,8 @@ function appliedActionDescription(preview: ChatActionPreview): string {
   if (preview.action_id === 'project.propose_definition') {
     return '项目目标、范围和成功标准已保存。'
   }
-  if (preview.action_id === 'inquiry.record_conclusion') {
-    return '研究结论已记录。'
+  if (preview.action_id === 'inquiry.promote_knowledge') {
+    return '已提升为空间级知识。'
   }
   return '这项变更已确认并保存。'
 }

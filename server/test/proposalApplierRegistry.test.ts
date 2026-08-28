@@ -174,17 +174,16 @@ describe("proposal applier registry", () => {
     );
   });
 
-  it("registers and validates Inquiry Thread creation proposals", () => {
-    expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain(
-      "inquiry_thread_create",
-    );
-    expect(() => validateProposalPayload("inquiry_thread_create", {
-      proposal_type: "inquiry_thread_create",
-      action_id: "inquiry.propose_thread",
-      project_id: "project-1",
-      kind: "question",
-      statement: "How should personal agent memory be evaluated?",
-    })).not.toThrow();
+  it("has no applier for the Inquiry writes that became direct", () => {
+    // ADR 0017 §5: opening a question and recording a conclusion are
+    // origin-gated and bounded, not reviewed. An applier for either would be a
+    // second way to make the write, reachable by anything that could still
+    // create the retired proposal row.
+    const types = createDefaultProposalApplierRegistry().registeredTypes();
+    expect(types).not.toContain("inquiry_thread_create");
+    expect(types).not.toContain("inquiry_conclusion");
+    expect(() => validateProposalPayload("inquiry_thread_create", { project_id: "project-1" }))
+      .toThrow();
   });
 
   it("registers and validates Project definition proposals", () => {

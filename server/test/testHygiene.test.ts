@@ -92,7 +92,7 @@ describe("test hygiene", () => {
     }, [
       "claimSourcesSourcePolicy.test.ts", "contentAccessEquivalence.test.ts", "evolutionRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts", "projectBriefConversationProjection.test.ts", "projectCorpusGraph.test.ts",
-      "projectExecutionModeAdapters.test.ts", "projectOverviewPlaceholders.test.ts", "projectResearchExecutionProfileDb.test.ts",
+      "projectExecutionModeAdapters.test.ts", "projectResearchExecutionProfileDb.test.ts",
       "projectResearchInitialIntakeCoordinator.test.ts", "projectResearchQuestionRefineRoutesDb.test.ts", "projectResearchReconcileNudge.test.ts",
       "projectResearchRetryService.test.ts", "projectResearchUsageDb.test.ts", "retrievalDiagnosticsPacket.test.ts",
       "retrievalExplainArtifacts.test.ts", "retrievalReindexIsolationDb.test.ts", "retrievalRelationalIntent.test.ts",

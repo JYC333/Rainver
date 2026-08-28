@@ -88,7 +88,7 @@ and child-resource writes, including Reader annotations, do not invent a new
 context: they inherit the source row's Space, Project, owner, visibility,
 access level, and grants.
 
-Reader annotations are the one deliberate exception (ADR 0013 decision 3a).
+Reader annotations are the one deliberate exception (ADR 0013 decision 5).
 They inherit their document's Project scope but default to `private` even on a
 `space_shared` document, because a margin note is personal marginalia and full
 inheritance would publish it the moment it is typed. The author may opt in to a

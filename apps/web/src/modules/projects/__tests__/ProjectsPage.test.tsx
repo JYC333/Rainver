@@ -60,20 +60,16 @@ async function submitCreate() {
 
 describe('ProjectsPage', () => {
   /**
-   * Creation asks one thing about shape: how the work advances. It never asks
-   * what the Project is about, and it presets nothing else — the Project
-   * Template concept it used to offer had been emptied three times over, and
-   * every job it once held has another home.
+   * Creation asks for a name and presets nothing — the Project Template
+   * concept it used to offer had been emptied three times over, and every
+   * job it once held has another home. Mode starts as Research and is
+   * changed from inside the Project.
    */
-  it('creates with a Mode and presets nothing else', async () => {
+  it('creates with a name and presets nothing else', async () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
 
     await openCreateDialog()
     expect(screen.getByRole('dialog')).toHaveClass('overflow-y-auto')
-    expect(screen.getByText('How does this Project advance?')).toBeInTheDocument()
-    expect(screen.queryByText(/source pack/i)).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Academic Research/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /^Research/ })).toHaveAttribute('aria-pressed', 'true')
 
     await typeName('Paper map')
     await submitCreate()
@@ -93,16 +89,18 @@ describe('ProjectsPage', () => {
     expect(navigateMock).toHaveBeenCalledWith('/projects/project-1')
   })
 
-  it('sends the Mode the creator picked', async () => {
+  it('asks for a name and nothing that the Project cannot yet answer', async () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
-
     await openCreateDialog()
-    await typeName('Ship it')
-    await userEvent.click(screen.getByRole('button', { name: /^Delivery/ }))
-    await submitCreate()
 
-    await waitFor(() => {
-      expect(projectsApi.create).toHaveBeenCalledWith(expect.objectContaining({ primary_mode: 'delivery' }))
-    })
+    // Goal, scope, success and Mode were asked here before the work had a
+    // shape, so they were guessed at. They are set from inside the Project,
+    // where the Brief, the checklist and the Assistant can help; Mode starts
+    // as Research and is changed from the Project shell.
+    for (const label of ['Goal', 'Scope', 'Success definition', 'Current focus', 'How does this Project advance?']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument()
+    }
+    expect(screen.queryByRole('button', { name: /^Delivery/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Starts as a Research Project/)).toBeInTheDocument()
   })
 })

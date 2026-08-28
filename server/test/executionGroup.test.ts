@@ -180,7 +180,7 @@ describe("executionTopologyDb", () => {
       expect(stale?.execution_ready).toBe(false);
     });
 
-    it("projects a terminal Run into the Task exactly once for success or failure", async (ctx) => {
+    it("settles a finished Run into the Task without closing it on the adapter exit", async (ctx) => {
       if (!db.available || !db.pool) return ctx.skip();
       const hosts = new PgHostRepository(db.pool);
       const hostId = await hosts.ensureServerHostId();
@@ -226,14 +226,29 @@ describe("executionTopologyDb", () => {
          VALUES ($1, $2, $3, $4, now())`,
         [randomUUID(), SPACE, TASK, RUN],
       );
+      // Settlement waits for finalization — that is where the evaluation and
+      // the Supervisor decision come from. This test is about the projection,
+      // so it records the finalization directly.
+      await db.pool.query(
+        `INSERT INTO run_finalizations (
+           id, space_id, run_id, attempt_number, finalizer_version, status, finalized_at, created_at
+         ) VALUES ($1, $2, $3, 1, 'test', 'completed', now(), now())`,
+        [randomUUID(), SPACE, RUN],
+      );
 
+      // A Run finishing is not the Task finishing. With no evaluation to say
+      // the result is good, settlement holds the Task for a person rather than
+      // closing it — this used to write `done` straight from the adapter exit.
       await projectTaskStatusFromRun(db.pool, SPACE, RUN);
       let task = await db.pool.query<{ status: string; blocked_reason: string | null }>(
         `SELECT status, blocked_reason FROM tasks WHERE id = $1`,
         [TASK],
       );
-      expect(task.rows[0]).toMatchObject({ status: "done", blocked_reason: null });
+      expect(task.rows[0]).toMatchObject({ status: "waiting_for_review", blocked_reason: null });
 
+      // Failure also asks a person, rather than writing `blocked`. Retry,
+      // change of approach and abandonment are all decisions, and `blocked`
+      // now means only what it says: held up by something else.
       await db.pool.query(`UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = $1`, [TASK]);
       await db.pool.query(`UPDATE runs SET status = 'failed' WHERE id = $1`, [RUN]);
       await projectTaskStatusFromRun(db.pool, SPACE, RUN);
@@ -241,7 +256,7 @@ describe("executionTopologyDb", () => {
         `SELECT status, blocked_reason FROM tasks WHERE id = $1`,
         [TASK],
       );
-      expect(task.rows[0]).toMatchObject({ status: "blocked", blocked_reason: "A linked Run ended unsuccessfully" });
+      expect(task.rows[0]).toMatchObject({ status: "waiting_for_review", blocked_reason: null });
     });
   });
 });

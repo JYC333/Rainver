@@ -65,7 +65,13 @@ describe("agentAssistantSettingsRepository", () => {
         };
       }
       if (norm.includes("FROM agents a")) {
-        return { rows: [assistantRecord() as Row], rowCount: 1 };
+        // Honour the scope predicate rather than answering every agents read.
+        // `getDefaultAssistant` names the *Space's* Assistant; a fake that
+        // returns one for any query would keep passing if that pin were
+        // dropped and the pointer started naming a Project's instance.
+        return /project_id IS NULL/i.test(norm)
+          ? { rows: [assistantRecord() as Row], rowCount: 1 }
+          : { rows: [] as Row[], rowCount: 0 };
       }
       if (norm.startsWith("INSERT INTO settings")) {
         this.settingsJson = JSON.parse(String(params[4] ?? "{}")) as Record<string, unknown>;

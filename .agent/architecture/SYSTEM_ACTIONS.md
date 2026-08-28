@@ -177,17 +177,29 @@ managed loop's tool set. Exposure requires all of:
 and fails closed when the allowance is missing or malformed. That allowance
 normally comes from the AgentVersion, which models a tool as a property of the
 Agent. Some capabilities are properties of a *place* instead:
-`modules/systemActions/scenarioToolAllowance.ts` declares
-`ROOM_CONVERSATION_TOOL_ALLOWANCE`, the actions an Agent may use because it was
-spoken to in a Room, and `RunCreateInput.scenario_tool_allowance` supplies it
-in place of the AgentVersion's for exactly those Runs.
+`modules/systemActions/scenarioToolAllowance.ts` declares two:
+`CONVERSATION_TOOL_ALLOWANCE`, what an Agent may do because a person is
+talking to it at all, and `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
+Project write surface an Agent may use because it was spoken to in a Room.
+`RunCreateInput.scenario_tool_allowance` supplies the applicable one in place
+of the AgentVersion's for every Run dispatched from a group message. A
+delegated child spawned inside a group is not one of those: it carries no
+declared capabilities and so no system-action grants at all.
 
 This is a change of scope, not of strength: the intersection is unchanged, an
 action outside the list is still denied, and the Run must still declare it.
-Most of the allowance is proposal-gated (`project.propose_definition`,
-`inquiry.propose_thread`, `inquiry.record_conclusion`,
-`inquiry.promote_knowledge`); `agent.delegate`, `research.start_acquisition`
-(room-advancement-reliability-plan Phase 4), and `research.cancel_acquisition`
+The allowance also carries the four id-discovery reads (`inquiry.list_threads`,
+`task.list`, `proposal.list_pending`, `research.list_operations`), without
+which the id-taking actions below could only be called with a composed id —
+see "Where an Agent gets an id".
+
+Part of the allowance is proposal-gated (`project.propose_definition`,
+`inquiry.promote_knowledge`); `inquiry.create_thread`,
+`inquiry.record_conclusion`, `agent.delegate`, `research.start_acquisition`
+(room-advancement-reliability-plan Phase 4), `research.cancel_acquisition`,
+and `proposal.decide` (a person's decision on one of this conversation's own
+proposals, carried by the Agent on the person's word in the person's own turn
+— origin-gated, same-conversation only; see `modules/rooms.md`)
 are the directly-executed exceptions — durable actions guarded
 by idempotency rather than a human accept/reject step, because delegating a
 specialist investigation, starting a tracked research acquisition, and
@@ -234,30 +246,105 @@ intermediate Candidate private to the instructing user; the reviewable
 Proposal is the Room-visible shared result. This is the direct-executor
 equivalent of Run materialization's derived-output clamp (B8A).
 
-The currently enabled generic write-capable tools are proposal-only:
+The proposal-shaped generic write tools are
 `source.channel.propose_activation`, `project.source.propose_bind`,
 `project.propose_definition`, `source.backfill.propose_start`, `task.plan.propose`,
-`inquiry.propose_thread`, `inquiry.record_conclusion`, and
-`inquiry.promote_knowledge` (plus
+and `inquiry.promote_knowledge` (plus
 `authorization.request`, which is not itself proposal-shaped). They receive
 the run's space, agent, instructed user, run, and Project scope. Project-only
 actions reject an unscoped run; backfill proposal lookup also proves the plan
 belongs to that Project. Agents do not receive direct activation, proposal-apply,
-grant-management, credential, deployment, or memory-write actions.
-`research.start_acquisition` and `research.cancel_acquisition` are the durable
-exceptions in the Room allowance to this proposal-only shape (see below).
+grant-management, credential, or deployment actions. They do receive the two
+memory writes (`memory.remember`, `memory.revise`) — bounded rather than
+withheld, on the terms ADR 0003 §2 sets and described below.
 
-`inquiry.propose_thread`, `inquiry.record_conclusion`, and
-`inquiry.promote_knowledge` (plan:
-`.agent/plans/project-conversational-advancement-plan.md`, Phase A) let a
-Room-dispatched agent draft a new Inquiry Thread, draft an Inquiry Thread
-conclusion, or promote a concluded round to Knowledge, as a single reviewable
-Proposal the user accepts inline in the Room. `inquiry.propose_thread` creates
-the canonical Thread only after acceptance, under the accepting user's Project
-writer identity. `inquiry.record_conclusion`'s applier calls
-`InquiryIterationService.recordIteration` under the *accepting* user's
-identity at accept time — a second legitimate `trigger_kind` for the same
-write authority a direct user edit already uses, not a bypass of it.
+**Authorization follows cost, not authorship**
+([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md)). A
+write waits for a person per instance when, and only when, it falls in one of
+seven classes — self-modification, belief reach, real checkout, exposure,
+money, credential or deployment, direction — and an action that registers as a
+proposal names its class in the registry (`gate_class`, required by
+`gatedProposalAction`; a protocol test asserts `side_effects === "proposal"`
+and a non-null class imply each other). Nothing else is a proposal, because
+"an Agent wrote it" is not a reason: under an Agent that advances work,
+per-write approval degrades into a rubber stamp on exactly the writes that
+matter, and one Room turn once produced six pending cards for a single
+decomposition a person had asked for.
+
+Every other Project-internal write is governed by two things instead. **The
+trigger origin**: a write from a person's own turn (`manual`) executes, and a
+write from any other origin — scheduled, automated, or a delegated child whose
+root was unattended — is `require_approval` (`ruleUnattendedProjectWrite`,
+covering `task.create`, `task.stage.advance`, `proposal.decide`,
+`inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`
+and `research.acquisition.start`). And **bounds set before the work runs**: at
+most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
+Project's own event stream so a resumed Run cannot spend the budget twice),
+and a bounded acquisition corpus. Refusing a bound costs a turn, not a
+decision — the sixth question is opened in the next one.
+
+The counterpart is review-after: every such write is in the Project's updates
+with a one-click undo, and attention carries only what a person must decide
+(see `PROJECT_WORK.md`). `task.report`, `task.handoff` and
+`task.request_review` are ungated at any origin because they are append-only
+or self-limiting — a report only records, a handoff can only give work away, a
+review request can only stop work.
+
+**What flipped, and what did not.** `inquiry.propose_thread` became
+`inquiry.create_thread` and `inquiry.record_conclusion` became a direct write;
+their proposal types, services, appliers and the per-proposal continuation
+that had to count its own pending siblings are deleted. Still gated, each
+naming its class: `inquiry.promote_knowledge` (exposure — it leaves the
+Project for Space-level Knowledge), `project.propose_definition` (direction),
+`source.channel.propose_activation` / `project.source.propose_bind` /
+`source.backfill.propose_start` and `research_history_extend` (money).
+
+`task.create` takes its Project from the Run, not the input, and re-checks
+Project writer authority under the aggregate lock. The other four resolve their
+Task through the content read predicate for the instructing user, so an Agent's
+reach is that person's and never wider. See
+[`PROJECT_WORK.md`](PROJECT_WORK.md) §8.
+
+`inquiry.create_thread` and `inquiry.record_conclusion` let a Room-dispatched
+agent open an Inquiry Thread and record its conclusion directly, bounded and
+origin-gated; `inquiry.promote_knowledge` stays a reviewable Proposal the user
+accepts inline in the Room, because promoting leaves the Project for
+Space-level Knowledge. Both direct writes run under the instructing person's
+Project writer identity, checked under the Project lock by the domain command
+itself — `InquiryThreadService.createThread` and
+`InquiryIterationService.recordIteration`, the same commands a person's own
+edit uses, with `trigger_kind: "agent_conclusion"` marking who wrote it. The
+Thread create is additionally bounded and deduped: at most
+`THREAD_FAN_OUT_PER_TURN` per turn, counted under that same lock, and a
+retried tool call reuses its Thread through
+`producer_idempotency_key`, the sha256 of `<run id>:<tool call id>` — hashed
+because the column is bounded at 128 characters and a composed id is not.
+`memory.remember` and `memory.revise` are granted in *any* conversation with
+a person, Room or not: the allowance splits into the Room's Project write
+surface and `CONVERSATION_TOOL_ALLOWANCE`, which every group-dispatched Run
+gets. Remembering what someone told you is a capability of talking with them —
+what it writes is private to the speaker and touches no Project — so none of
+the reasoning that binds the Project writes to a Room applies. (A group with
+no Room previously declared no capabilities at all, so its Agent could call
+nothing whatever its own permissions said.) They are the same shape applied to
+memory
+([ADR 0003](../decisions/0003-memory-proposal-flow.md)). Before them no Agent
+could write memory from a conversation at all, so the person was not the
+bottleneck on what it learned — nothing was. A write that stays `private`,
+`normal`-sensitivity and about the person in the turn applies through
+`PgMemoryApplyRepository.applyDirect` as a new version with
+`created_by = agent:<id>`, `approved_by = null` and the run, session and
+rationale in its provenance; one that would change reach — a wider
+visibility, a higher sensitivity, or replacing what a person or another Agent
+wrote — is turned into a `memory_create`/`memory_update` proposal by the
+executor rather than returned as an error. Both are origin-gated
+(`memory.write` is in `ORIGIN_GATED_PROJECT_WRITES`), both refuse without a
+rationale, and writing more than `SERVER_MEMORY_DIRECT_WRITES_PER_SESSION`
+entries within one session — or within one Run, where a conversation outside
+a Room has no session — is paused with one `uncertain` attention item. An Agent version with
+`memory_policy_json.requires_proposal` writes only by proposal — the first
+place that flag is enforced rather than merely displayed.
+
 `inquiry.promote_knowledge` combines `KnowledgePromotionCandidateService
 .createFromThread` and an immediate `decideCandidate({decision:"promote"})`
 into one call so a conversational instruction produces one Proposal instead of
@@ -412,6 +499,69 @@ the engine never creates a Thread itself. The input carries a producer
 idempotency key, persisted under the Project on `inquiry_threads`, so browser
 retries return the same Thread and a conflicting replay fails closed.
 
+## `inquiry.adopt_next_step`
+
+Takes the next step the system already recorded for a Thread, on the user's
+instruction, making the same two writes the Inquiry Area's Adopt button makes:
+the Thread takes the recommended focus (`step_origin: "advice"`, attention
+`focused`) and the advice row becomes `adopted`. It refuses anything that is
+not currently open and current, so an already-taken or stale recommendation
+cannot be adopted twice. Policy action `inquiry.advice.adopt` (low risk,
+allow, audited); a proposal gate would have meant reviewing a suggestion the
+system itself made.
+
+It exists because the advice had nowhere to go. Written the moment a search
+finishes (`tryQueueAdviceForWorkflowThread`, trigger `search_completed`), it
+rendered only in the Inquiry Area's stage workspace for the one Thread you had
+selected — so a finished four-hour search ended with the Project front page
+silent about what to do next, and the Room's Agent inventing a question of its
+own because it could not read the advice either. Three surfaces now carry it:
+Project Attention (`inquiry_advice` items, stale ones omitted), the
+`research_workflow_terminal` completed instruction (which relays the recorded
+step and its reasoning and forbids substituting one of the Agent's own), and
+this action for taking it without leaving the conversation.
+
+## Where an Agent gets an id (id-discovery reads)
+
+A conversation's rendered history carries no ids — `productionAcquisition.ts`
+renders `role:\ncontent`, and the Room's Project-state block lists titles.
+An id-taking action therefore has exactly one legitimate source for that id: a
+read that returned it in the same turn. Every such action is paired with one:
+
+| Read | Returns | Feeds |
+| --- | --- | --- |
+| `inquiry.list_threads` | `{thread_id, kind, statement, attention_state}` | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge` |
+| `task.list` | `{task_id, title, status}` (optional `status` filter) | `task.report`, `task.handoff`, `task.advance_stage`, `task.request_review`, `task.plan.propose` |
+| `proposal.list_pending` | `{proposal_id, proposal_type, title}` for *this conversation* | `proposal.decide` |
+| `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
+
+All four are `none`-side-effect reads scoped to the Run's own Project (and, for
+proposals, its own conversation, matching `proposal.decide`'s reach), carry
+low-risk allow policy actions (`inquiry.thread.list`, `task.list`,
+`proposal.list`, `research.operation.list`), and read under the instructing
+person's identity — so a helpful failure can never name an object that person
+could not already see.
+
+Three layers keep a composed id out of an action:
+
+1. **The rule.** `IDENTIFIER_POLICY` heads the Room execution rules: an id is
+   never remembered or derived; call the matching read and copy it verbatim,
+   and if nothing matches, ask instead of sending a constructed id.
+2. **The schema.** Every `*_id` input for an already-existing object carries a
+   `.describe()` naming the read it comes from.
+3. **The failure.** An unknown id answers with the ids that do exist
+   (`… Use one of these ids exactly: <id> — <title>`), so the next call can
+   correct itself. `task.*`, `proposal.decide`, `research.start_acquisition`
+   and `research.cancel_acquisition` all do this.
+
+The Room focus sentence carries `task_id:` alongside the title, so the Task a
+person is looking at is addressable without a `task.list` round trip.
+
+Action failures persist their reason: the dispatcher's `onFailed` writes
+`error_message` onto the `action_completed` Run event (alongside
+`error_code`), and `loadProjectChatActionPreviews` shows the message on the
+failed card in preference to the code.
+
 ## `research.start_acquisition` (room-advancement-reliability-plan Phase 4)
 
 The Room's other research-execution tool alongside `agent.delegate`: given an
@@ -438,8 +588,73 @@ fully-identical invocation coalesces onto the same Operation through
 concurrent start on an already-active workflow surfaces as a reported stage
 failure instead of a duplicate Operation.
 
+**Bounded before it runs.** The acquisition passes
+`max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Unbounded — which is
+what `history_mode: "all_available"` meant with no cap — one Room turn walked
+a source's whole history, ingested 873 documents and put every one through an
+LLM classification: hours of work and roughly a million input tokens, with no
+confirmation asked and nothing on screen until the failure four hours later.
+The history walk is newest-first and the item budget is operation-wide, so the
+cap buys the most recent 200 matches and stops; earlier history stays
+reachable as a decision rather than a default. The `started` outcome carries
+`screening_cap` and `matched_estimate`, so the Room is told what this pass
+reads *before* it runs — the cap first, the match size second and labelled as
+an upper bound. `matched_estimate` is the *largest* single provider's recorded
+hit count, not the sum: providers overlap heavily, and summing them announced
+2,065 for a query whose corpus was 873, which read as the scope having grown
+when it had just been capped.
+
+**Scope is the caller's.** `max_items` and `since` are inputs on
+`research.start_acquisition`, defaulting to the cap and to all available
+history. "Only read the last year" and "500 is fine" are ordinary instructions
+the Agent passes through, rather than a server constant nobody could reach —
+`IDENTIFIER_POLICY` tells it to pass them when the user says how much, and
+never to raise the cap on its own initiative.
+
+**The rest is offered once, when it can be acted on.** A finished baseline
+whose coverage does not reach the source's floor raises a pending
+`research_history_extend` proposal (`researchHistoryExtendOffer.ts`), which
+renders as an Accept/Reject card in the Room and as a Project attention row.
+Accepting runs `startHistoricalBackfill` over the earlier range through the
+applier — the same method the manual Extend-history path uses, so coverage
+overlap, idempotency, and the Operation it produces are that method's
+already. The offer is made at completion rather than at the start because
+that is when there is a baseline to extend from; the start message already
+says how much matched and how much this pass reads, so nothing about the size
+waits for it. One standing offer per workflow. `startHistoricalBackfill` used
+to refuse an `all_available` baseline outright as having nothing earlier to
+reach; that stopped being true when the acquisition became bounded, so it now
+refuses only coverage that already reaches the floor (and the front end's
+`canExtendHistory` no longer tests the history mode's name either).
+
+The same number bounds a daily incremental update, which answers differently:
+it does not ask. `triggerIncremental` takes at most that many scanned items
+into one update — backlog first — and leaves the remainder in the workflow's
+`pending_incremental_source_item_ids`, which the next update drains, recording
+`deferred_incremental_items` on the operation so a monitor falling behind is
+visible. A cadence that runs daily drains its own backlog; a question nobody
+is awake to answer would not.
+
+The Thread's own statement is the authoritative question. Assessment
+legitimately rewrites the question it plans queries from (translating or
+narrowing it), so `resolveResearchThreadScope` no longer compares the
+strategy's text with the Thread's — text equality rejected the pipeline's own
+output and made `research.start_acquisition` unable to start once a single
+word changed. It checks provenance instead: the strategy's research-context
+version must belong to an assessment session for this Thread. A strategy built
+for a *different* Question is still a 409.
+
+A run that stops before `startInitialIntake` records the attempt as a
+terminal `failed` research Operation (`progress_json.run_kind =
+"acquisition_attempt"`, carrying the stage, reason and pipeline job id), so a
+failure that produced no acquisition is still visible where the work is looked
+for rather than living only in `jobs.result_json`. Every domain failure
+reports its own message; there is no catch-all remap of 409s.
+
 Completion reports back through the `ConversationContinuationRegistry` event
-side (Phase 3): `research_pipeline_outcome` (keyed by thread id) covers
+side (Phase 3): `research_pipeline_outcome` (keyed by `<thread id>:<pipeline
+job id>`, so each run reports its own outcome and a retry is never silently
+answered with the previous attempt's message) covers
 acquisition started, the question failing its FINER assessment (a first-class
 outcome relayed to the user for question refinement, not an error), and a
 stage failure; `research_workflow_terminal` (keyed by `<operation id>:<status>`)

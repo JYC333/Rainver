@@ -84,6 +84,8 @@ import {
   latestPublicationWatermarkForItems,
 } from "./monitoringWindow.js";
 import { tryCompleteSearchStepForWorkflow, tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob.js";
+import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "./researchCheckpointPolicy.js";
+import { offerEarlierHistoryExtension } from "./researchHistoryExtendOffer.js";
 
 const MONITORING_FIELDS = new Set(["submittedDate", "lastUpdatedDate"]);
 const MAX_ITEMS_DEFAULT = 10_000;
@@ -612,8 +614,14 @@ export class ProjectResearchOrchestrator {
     const workflowState = objectValue(workflow.state_json);
     const monitoring = objectValue(workflowState.monitoring);
     if (monitoring.active !== true) throw new HttpError(409, "Historical extension requires a completed baseline with active monitoring");
-    if (objectValue(workflowState.initial_intake).history_mode === "all_available") {
-      throw new HttpError(409, "All available history baseline does not need an earlier history extension");
+    // An "all available" baseline used to be refused here as having nothing
+    // earlier to reach. That stopped being true when the acquisition became
+    // bounded: the walk is newest-first and stops at its item budget, so the
+    // whole point of the cap is that earlier history remains. What actually
+    // has nothing left is coverage that already reaches the floor, and the
+    // range checks below say so on their own terms.
+    if (coverageReachesFloor(workflowState)) {
+      throw new HttpError(409, "This research workflow already covers the earliest available history");
     }
     const channelIds = stringArray(workflowState.channel_ids);
     const bindingIds = stringArray(workflowState.project_source_binding_ids);
@@ -746,17 +754,33 @@ export class ProjectResearchOrchestrator {
     const key = optionalString(body.idempotency_key) ?? `incremental:${workflowId}:${new Date().toISOString().slice(0, 13)}`;
     const workflowState = objectValue(workflow.state_json);
     const pendingItemIds = stringArray(workflowState.pending_incremental_source_item_ids);
-    const itemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
-    const consumePending = async () => {
-      if (pendingItemIds.length === 0) return;
+    // Backlog first, so nothing scanned long ago starves behind today's items.
+    const scannedItemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
+    /**
+     * A daily update is bounded the same way a baseline is, and for the same
+     * reason: an unbounded run put 873 documents through an LLM before anyone
+     * saw a number. It answers differently, though — this one does not ask.
+     * A monitor that scans more than one update can afford leaves the rest in
+     * `pending_incremental_source_item_ids`, which the next update drains, so
+     * a backlog costs days rather than a decision nobody is awake to make.
+     */
+    const takeWithin = (alreadyInCorpus: number) => {
+      const headroom = Math.max(0, SCREENING_AUTO_CONTINUE_CORPUS_LIMIT - alreadyInCorpus);
+      return { take: scannedItemIds.slice(0, headroom), defer: scannedItemIds.slice(headroom) };
+    };
+    /** Replaces the backlog with whatever this update could not take. */
+    const settlePending = async (deferred: string[]) => {
+      if (pendingItemIds.length === 0 && deferred.length === 0) return;
       const now = new Date().toISOString();
       await this.db.query(
         `WITH changed AS (UPDATE project_research_workflows
-          SET state_json=state_json - 'pending_incremental_source_item_ids'
+          SET state_json = CASE WHEN $5::jsonb = '[]'::jsonb
+                THEN state_json - 'pending_incremental_source_item_ids'
+                ELSE jsonb_set(COALESCE(state_json,'{}'::jsonb),'{pending_incremental_source_item_ids}',$5::jsonb,true) END
           WHERE space_id=$1 AND project_id=$2 AND object_id=$3 RETURNING object_id,space_id)
          UPDATE space_objects object SET updated_at=$4 FROM changed
           WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
-        [identity.spaceId, projectId, workflowId, now],
+        [identity.spaceId, projectId, workflowId, now, JSON.stringify(deferred)],
       );
     };
     const prior = await this.operationByIdempotency(identity.spaceId, projectId, key);
@@ -766,13 +790,18 @@ export class ProjectResearchOrchestrator {
         && ["active", "waiting_review"].includes(prior.status)
         && priorState.run_kind === "incremental"
         && priorState.workflow_id === workflowId) {
-        const merged = { ...priorState, source_item_ids: unique([...priorState.source_item_ids, ...itemIds]) };
+        const { take, defer } = takeWithin(priorState.source_item_ids.length);
+        const merged = {
+          ...priorState,
+          source_item_ids: unique([...priorState.source_item_ids, ...take]),
+          ...(defer.length > 0 ? { deferred_incremental_items: defer.length } : {}),
+        };
         await this.setState(prior, merged, deriveStepStates(merged));
-        await consumePending();
+        await settlePending(defer);
       }
       return this.readOperation(identity, projectId, prior.id);
     }
-    const awaitingSourceScan = itemIds.length === 0;
+    const awaitingSourceScan = scannedItemIds.length === 0;
     if (awaitingSourceScan) {
       if (!this.config) throw new HttpError(503, "Incremental source scans require server configuration");
       if (!state.channel_ids.length || !this.config) throw new HttpError(409, "Research workflow has no active search channels");
@@ -784,21 +813,28 @@ export class ProjectResearchOrchestrator {
     if (existing) {
       if (awaitingSourceScan) return this.readOperation(identity, projectId, existing.id);
       const existingState = researchState(existing.progress_json);
-      const merged = { ...existingState, source_item_ids: unique([...existingState.source_item_ids, ...itemIds]) };
+      const { take, defer } = takeWithin(existingState.source_item_ids.length);
+      const merged = {
+        ...existingState,
+        source_item_ids: unique([...existingState.source_item_ids, ...take]),
+        ...(defer.length > 0 ? { deferred_incremental_items: defer.length } : {}),
+      };
       await this.setState(existing, merged, deriveStepStates(merged));
-      await consumePending();
+      await settlePending(defer);
       return this.readOperation(identity, projectId, existing.id);
     }
 
-    const operationProjection = incrementalStateFromWorkflow(workflow.state_json, workflowId, itemIds, key, null);
+    const { take, defer } = takeWithin(0);
+    const operationProjection = incrementalStateFromWorkflow(workflow.state_json, workflowId, take, key, null);
     operationProjection.awaiting_source_scan = awaitingSourceScan;
+    if (defer.length > 0) operationProjection.deferred_incremental_items = defer.length;
     const operation = await this.createOperation(identity, projectId, {
       title: "Run incremental research update",
       intentText: "Scan new source content and prepare a human-reviewed research delta.",
       steps: operationSteps(),
       state: operationProjection,
     });
-    await consumePending();
+    await settlePending(defer);
     await this.enqueueReconcile(identity.spaceId, identity.userId, operation.id, "incremental_trigger");
     return this.readOperation(identity, projectId, operation.id);
   }
@@ -1479,6 +1515,12 @@ export class ProjectResearchOrchestrator {
       await this.enqueueIntegrityMonitor(spaceId, userId, projectId, workflowId, "monitoring_activated");
       if (state.run_kind === "baseline") {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
+        // The bounded pass read the newest matches and stopped. Offer the
+        // rest now that there is a finished baseline to extend from.
+        await offerEarlierHistoryExtension(this.db, {
+          spaceId, projectId, workflowId, userId,
+          operationProgress: objectValue(operation.progress_json),
+        });
       }
       if (state.run_kind === "historical_backfill") {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
@@ -1851,6 +1893,10 @@ export class ProjectResearchOrchestrator {
       projectId,
       input.researchQuestion,
       input.requestedThreadId,
+      {
+        queryStrategyId: input.queryStrategyId,
+        ...(input.agentId ? { provenance: { agentId: input.agentId } } : {}),
+      },
     );
     input = { ...input, researchQuestion: threadScope.statement, threadScope: [threadScope] };
     // Serialize the idempotency lookup and Thread-owned Workflow resolution.
@@ -3161,6 +3207,16 @@ function historicalBackfillStateFromWorkflow(
     monitoring_active: monitoring.active === true,
     idempotency: { key: idempotencyKey, fingerprint },
   };
+}
+
+/**
+ * Whether the workflow's covered history already starts at the earliest date
+ * a source can offer, in which case there is no earlier range to extend into.
+ */
+function coverageReachesFloor(workflowState: Record<string, unknown>): boolean {
+  const earliest = historyCoverage(workflowState).map((range) => range.from).sort()[0]
+    ?? optionalString(objectValue(workflowState.initial_intake).from);
+  return earliest !== undefined && earliest !== null && Date.parse(earliest) <= Date.parse(ARXIV_HISTORY_FLOOR);
 }
 
 function historyCoverage(value: unknown): Array<{ from: string; to: string; operation_id: string; status: "pending" | "completed" | "partial" }> {

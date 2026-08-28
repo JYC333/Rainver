@@ -23,7 +23,10 @@ import {
 import TaskCreateForm from './TaskCreateForm'
 import { spacePath } from '../../core/navigation'
 
-const OPEN_STATUSES = new Set(['inbox', 'ready', 'in_progress', 'blocked'])
+// `waiting_for_review` is open work: it stopped for a decision, which is the
+// one state most worth seeing. Leaving it out would hide exactly the Tasks
+// that are waiting on the person reading this list.
+const OPEN_STATUSES = new Set(['inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked'])
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -48,6 +51,7 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [boardId, setBoardId] = useState<string>('')
+  const [mineOnly, setMineOnly] = useState(true)
   const [fStatus, setFStatus] = useState<string>('')
   const [fPriority, setFPriority] = useState<string>('')
   const [fRisk, setFRisk] = useState<string>('')
@@ -77,6 +81,11 @@ export default function TasksPage() {
     try {
       const params: Record<string, string> = { limit: '200' }
       if (boardId) params.board_id = boardId
+      // Cross-Project "what is mine", not a second Space-wide Task list: a
+      // Project's whole set is worked on its Board. The scoping is server-side
+      // through the responsibility chain, so this page, the Board and Needs You
+      // agree on whose Task it is.
+      if (mineOnly) params.assigned_to_me = 'true'
       const p = await tasksApi.list(params)
       setTasks(p.items)
     } catch (e) {
@@ -85,7 +94,7 @@ export default function TasksPage() {
     } finally {
       setLoading(false)
     }
-  }, [boardId, activeSpaceId])
+  }, [boardId, activeSpaceId, mineOnly])
 
   useEffect(() => { loadBoards() }, [loadBoards])
   useEffect(() => {
@@ -190,6 +199,13 @@ export default function TasksPage() {
           <Label className="text-xs">Board</Label>
           <Select value={boardId} options={boardOptions} onChange={setBoardId} />
         </div>
+        <Button
+          size="sm"
+          variant={mineOnly ? 'default' : 'outline'}
+          onClick={() => setMineOnly(value => !value)}
+        >
+          {mineOnly ? 'Mine' : 'Everyone'}
+        </Button>
         {emptyFilter('Status', fStatus, setFStatus, statusOpts)}
         {emptyFilter('Priority', fPriority, setFPriority, priorityOpts)}
         {emptyFilter('Risk', fRisk, setFRisk, riskOpts)}

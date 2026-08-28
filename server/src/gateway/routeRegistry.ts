@@ -74,6 +74,7 @@ import { graphModule } from "../modules/graph/index.js";
 import { evolutionModule } from "../modules/evolution/index.js";
 import { promptsModule } from "../modules/prompts/index.js";
 import { tasksModule } from "../modules/tasks/index.js";
+import { projectWorkModule } from "../modules/projectWork/index.js";
 import { projectFolderExecutionConfigsModule } from "../modules/projectFolderExecutionConfigs/index.js";
 import { projectFoldersModule } from "../modules/projectFolders/index.js";
 import { hostsModule } from "../modules/hosts/index.js";
@@ -162,6 +163,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   evolutionModule,
   promptsModule,
   tasksModule,
+  projectWorkModule,
   projectFolderExecutionConfigsModule,
   projectFoldersModule,
   hostsModule,

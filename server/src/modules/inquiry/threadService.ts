@@ -17,6 +17,7 @@ import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutatio
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
+import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 
 /**
  * Actions only, in the order of the stages they belong to. The vocabulary
@@ -134,6 +135,8 @@ export class InquiryThreadService {
     identity: SpaceUserIdentity,
     projectId: string,
     body: Record<string, unknown>,
+    /** Set by a Run so the Project's account can say the Agent did it. */
+    provenance?: ThreadEventProvenance,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const kind = requiredString(body.kind, "kind");
@@ -222,6 +225,20 @@ export class InquiryThreadService {
         at: now,
       });
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
+      // In the same transaction as the Thread: an advancement the person
+      // cannot see afterwards is the invisibility ADR 0017 traded the
+      // approval gate against.
+      await recordThreadWorkEvent(db, {
+        spaceId: identity.spaceId,
+        projectId,
+        threadId,
+        userId: identity.userId,
+        eventKind: "thread.created",
+        occurredAt: now,
+        idempotencySuffix: "1",
+        data: { statement, kind },
+        ...(provenance ? { provenance } : {}),
+      });
       return threadToOut(inserted.rows[0]!);
     });
   }

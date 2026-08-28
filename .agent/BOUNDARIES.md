@@ -48,7 +48,7 @@ and remain subject to the Project ACL on every read.
 
 **B9** — Memory is scoped long-term context, not raw business data. Raw input must enter `activity_records` first.
 
-**B10** — Agents do not directly write active memory. All memory updates must go through the proposal → user approval → activation flow.
+**B10** — The proposal applier is the only writer of active memory. An Agent's memory write applies directly only when it is a new version, carries full provenance, comes from a `manual`-origin session, and changes no reach — no wider visibility, no higher sensitivity, not about another person, not replacing human-authored content. Any write that changes reach, and any write from an unattended origin, is a proposal a person approves. There is no cap on how much may be remembered — the volume mechanism is a circuit breaker that pauses one person's writing in a session and raises it as a fault, never a queue of writes to approve. Memory is never a black box: every entry shows its provenance and version chain, and a person archives or restores their own directly, without a proposal.
 
 **B11** — Successful reads of registered content are written to
 `content_access_logs` only when the viewer differs from the resource owner.
@@ -186,9 +186,12 @@ it is passed in as an explicit seam rather than duplicated or absorbed, so the
 dependency direction stays visible.
 
 **B12H** — Ontology objects owned by a Project carry a non-null
-`primary_project_id`, enforced by constraint. The content read gate's scope
-predicate treats a null project as "no Project restriction", so a null value
-silently bypasses Project membership. Any projection over `object_relations`
+`primary_project_id`. The content read gate's scope predicate treats a null
+project as "no Project restriction", so a null value silently bypasses Project
+membership. This cannot be a root constraint — it would have to name which
+subtypes are Project-owned, and B12F forbids the root from branching on
+`object_type` — so it is enforced at the single write path below, with a test
+asserting no second write path appears. Any projection over `object_relations`
 must not expose pre-filter counts or near-miss signals for edges whose
 endpoints the viewer cannot read.
 
@@ -537,5 +540,7 @@ code.
 ---
 
 ## Open-Source Boundary
+
+**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`) and by bounds set before the work runs (fan-out ≤ 5 per turn; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into `core/`; see B1/B2.

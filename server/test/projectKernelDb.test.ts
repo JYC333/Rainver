@@ -8,8 +8,11 @@ import { ProjectKernelService } from "../src/modules/projects/kernelService.js";
 import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
 import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
-import { projectModeProjectionRegistry } from "../src/modules/projects/overviewRegistry.js";
 import { registerAutomationsProjectIntegration } from "../src/modules/automations/projectIntegration.js";
+import { registerInquiryProjectIntegration } from "../src/modules/inquiry/projectIntegration.js";
+import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration.js";
+import { registerTasksProjectIntegration } from "../src/modules/tasks/projectIntegration.js";
+import { registerProposalsProjectIntegration } from "../src/modules/proposals/projectIntegration.js";
 import { OperationalAlertService } from "../src/modules/notifications/operationalAlerts.js";
 import { WorkContextService } from "../src/modules/runtimeContext/workContextService.js";
 import { PgRuntimeContextAcquisitionRepository } from "../src/modules/runtimeContext/acquisitionRepository.js";
@@ -51,17 +54,10 @@ beforeEach(async () => {
     [randomUUID(), SPACE, OWNER, randomUUID(), now, VIEWER],
   );
   registerBuiltInAttentionAdapters();
-  projectModeProjectionRegistry.register({
-    mode: "research",
-    async getOverviewProjection() {
-      return { mode: "research", current_state_summary: "Research ready.", progress_indicators: [], focus_set: [], next_actions: [] };
-    },
-  }, "project_kernel_test");
 });
 
 afterEach(() => {
   projectAttentionRegistry.__resetForTests();
-  projectModeProjectionRegistry.__resetForTests();
 });
 
 const ownerIdentity = { spaceId: SPACE, userId: OWNER };
@@ -722,12 +718,6 @@ describe("Project Kernel (real Postgres)", () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const kernel = new ProjectKernelService(db.pool);
-    projectModeProjectionRegistry.register({
-      mode: "delivery",
-      async getOverviewProjection() {
-        return { mode: "delivery", current_state_summary: "Delivery ready.", progress_indicators: [], focus_set: [], next_actions: [] };
-      },
-    }, "project_kernel_test");
     const project = await repo.create(ownerIdentity, { name: "Mode Project" });
     const now = new Date().toISOString();
     await db.pool.query(
@@ -765,15 +755,6 @@ describe("Project Kernel (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("rejects a known Mode until its Overview adapter is registered", async () => {
-    if (!db.available) return;
-    const project = await new PgProjectRepository(db.pool).create(ownerIdentity, { name: "Unavailable Mode Project" });
-    await expect(
-      new ProjectKernelService(db.pool).transitionMode(ownerIdentity, project.id as string, { to_mode: "learning" }),
-    ).rejects.toMatchObject({ statusCode: 409 });
-  });
-
-
   it("aggregates Attention items from registered adapters and respects snooze", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
@@ -793,7 +774,7 @@ describe("Project Kernel (real Postgres)", () => {
       source_type: "project_operation",
       source_id: opId,
       severity: "normal",
-      href: `/projects/${project.id}/operations?open=${opId}`,
+      href: `/projects/${project.id}/research?tab=runs&open=${opId}`,
     });
 
     const future = new Date(Date.now() + 3_600_000).toISOString();
@@ -826,10 +807,12 @@ describe("Project Kernel (real Postgres)", () => {
       source_type: "operational_alert",
       title: "Automation failed",
     });
-    expect(items[0]?.href).toMatch(new RegExp(`^/projects/${project.id}/operations\\?alert=`));
+    // Alerts are activity records; they are read in the Space Inbox filtered
+    // to the Project, since the Project's Operations Area is retired.
+    expect(items[0]?.href).toBe(`/activity?project_id=${project.id}`);
   });
 
-  it("composes the Overview from the Brief, Mode projection, and Attention without a registered Mode adapter", async () => {
+  it("composes the Overview from the Brief, its definition status, and Attention", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const kernel = new ProjectKernelService(db.pool);
@@ -847,23 +830,115 @@ describe("Project Kernel (real Postgres)", () => {
       basis: "published_brief_goal",
       goal_or_problem: "Ship the Project Kernel",
     });
-    expect(result.mode_projection).toMatchObject({ mode: "research" });
-    expect(result.available_modes).toEqual(["research"]);
+    // Every Mode is available: it only changes the Loop's wording, so there is
+    // no adapter to wait for. There is no per-Mode projection any more.
+    expect(result.available_modes).toEqual(["research", "delivery", "operations", "learning"]);
+    expect(result).not.toHaveProperty("mode_projection");
+    expect(result).not.toHaveProperty("entity_summaries");
     expect(result.attention).toEqual([]);
-    // A research Project needs a Provider, an Agent and a Source before it can
-    // do anything, whether or not a source pack was applied at creation.
-    expect(result.setup_checklist).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "brief", status: "ready", required: true }),
-      expect.objectContaining({ id: "provider", status: "missing", required: true }),
-      expect.objectContaining({ id: "agent", status: "missing", required: true }),
-      expect.objectContaining({ id: "source", status: "missing", required: true }),
-      expect.objectContaining({ id: "folder", status: "missing", required: false }),
-    ]));
+    // No readiness checklist: a Project needs nothing configured before it can
+    // be talked to or have work put on it. The one Project-level readiness
+    // fact is whether its goal is defined, and that is `definition_status`.
+    expect(result).not.toHaveProperty("setup_checklist");
   });
 
-  /** What a Project needs before it can start is a question about how it
-   *  advances, not about which sources it happened to bind at creation. */
-  it("requires Provider/Agent/Source setup by Mode, not by source pack", async () => {
+  it("refuses an adapter that cannot say why its item needs a person", async () => {
+    if (!db.available) return;
+    // A plugin adapter is not compiled with this repo, and the front page
+    // renders only the four classes — an unclassed item would vanish into a
+    // panel that says nothing rather than failing where the wiring is wrong.
+    const repo = new PgProjectRepository(db.pool);
+    const project = await repo.create(ownerIdentity, { name: "Unclassed adapter" });
+    projectAttentionRegistry.replace({
+      areaKind: "rogue",
+      async listAttentionItems() {
+        return [{
+          id: "rogue:1", project_id: project.id as string, area_kind: "rogue",
+          source_type: "rogue", source_id: "1", severity: "normal",
+          title: "No class", summary: null, reason: null, due_at: null,
+          blocking_refs: [], action_descriptors: [], href: "/",
+        } as never];
+      },
+    });
+
+    await expect(new ProjectAttentionService(db.pool).listAttentionItems(ownerIdentity, project.id as string))
+      .rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it("emits nothing that cannot say why it needs a person", async () => {
+    if (!db.available) return;
+    // ADR 0017 §4 / ADR 0011 decision 6: attention is only worth reading while
+    // everything on it needs a decision, so each item names which of the four
+    // reasons it is. An adapter that cannot is a wiring bug, not a runtime
+    // condition — six identical "confirm what I already did" cards is what
+    // this keeps out of the list.
+    const repo = new PgProjectRepository(db.pool);
+    const project = await repo.create(ownerIdentity, { name: "Classed attention" });
+    await db.pool!.query(
+      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, version, created_at, updated_at)
+       VALUES ($1, $2, $3, 'research', 'Waiting operation', 'waiting_review', $4, '{}'::jsonb, 1, now(), now())`,
+      [randomUUID(), SPACE, project.id, OWNER],
+    );
+
+    // A second adapter with a row of its own, so the assertion is over a
+    // merged list rather than one adapter's single item.
+    await db.pool!.query(
+      `INSERT INTO proposals (id, space_id, project_id, proposal_type, status, risk_level, urgency,
+         preview, title, payload_json, created_by_user_id, owner_user_id, visibility, access_level, created_at, updated_at)
+       VALUES ($1, $2, $3, 'project_brief_publish', 'pending', 'low', 'normal', false, 'A pending definition',
+         '{}'::jsonb, $4, $4, 'space_shared', 'full', now(), now())`,
+      [randomUUID(), SPACE, project.id, OWNER],
+    );
+    // Every adapter the product registers, not only the built-in one: the
+    // invariant is about the list a person reads, which is all of them merged.
+    registerInquiryProjectIntegration();
+    registerDecisionsProjectIntegration();
+    registerTasksProjectIntegration();
+    registerProposalsProjectIntegration();
+    registerAutomationsProjectIntegration();
+
+    const items = await new ProjectAttentionService(db.pool).listAttentionItems(ownerIdentity, project.id as string);
+    expect(new Set(items.map((item) => item.area_kind)).size).toBeGreaterThan(1);
+    for (const item of items) {
+      expect(["gate", "remainder", "next_step", "uncertain"]).toContain(item.attention_class);
+    }
+  });
+
+  it("says what is running, not only what is waiting on a person", async () => {
+    if (!db.available) return;
+    // The failure this closes: the front page read the Task board and nothing
+    // else, so a research acquisition screening 873 documents for four hours
+    // rendered as "nothing is being worked on right now". Attention answers
+    // "what needs me"; this answers "what is happening".
+    const repo = new PgProjectRepository(db.pool);
+    const overview = new ProjectOverviewService(db.pool);
+    const project = await repo.create(ownerIdentity, { name: "Running Project" });
+    const insert = async (id: string, title: string, status: string, progress: Record<string, unknown>) => {
+      await db.pool!.query(
+        `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, version, created_at, updated_at)
+         VALUES ($1, $2, $3, 'research', $4, $5, $6, $7::jsonb, 1, now(), now())`,
+        [id, SPACE, project.id, title, status, OWNER, JSON.stringify(progress)],
+      );
+    };
+    const screening = {
+      current_stage: "screening",
+      screening_progress: { phase: "screening_batches", total_items: 873, classified_items: 848 },
+    };
+    await insert(randomUUID(), "Start initial material intake", "active", screening);
+    await insert(randomUUID(), "Earlier sweep", "completed", {});
+    await insert(randomUUID(), "Abandoned sweep", "cancelled", {});
+
+    const result = await overview.getOverview(ownerIdentity, project.id as string);
+    const running = result.in_progress as Array<Record<string, unknown>>;
+    expect(running).toHaveLength(1);
+    expect(running[0]).toMatchObject({ title: "Start initial material intake", status: "active", kind: "research" });
+    // The progress the Area's renderer reads travels with it, so the front
+    // page shows that same sentence instead of composing a second one.
+    expect((running[0]!.progress_json as Record<string, unknown>).screening_progress)
+      .toMatchObject({ total_items: 873, classified_items: 848 });
+  });
+
+  it("says a Project without a published goal still needs definition, whatever its Mode", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const overview = new ProjectOverviewService(db.pool);
@@ -875,11 +950,6 @@ describe("Project Kernel (real Postgres)", () => {
       basis: "missing_published_brief_goal",
       goal_or_problem: null,
     });
-    expect(result.setup_checklist).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "provider", required: false }),
-      expect.objectContaining({ id: "agent", required: false }),
-      expect.objectContaining({ id: "source", required: false }),
-    ]));
   });
 
   it("keeps every Project Kernel route Space- and membership-gated", async () => {

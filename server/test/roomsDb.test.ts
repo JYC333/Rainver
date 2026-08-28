@@ -5,8 +5,15 @@ import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { RoomService } from "../src/modules/rooms/service.js";
+import { registerProposalDecisionExecutor } from "../src/modules/proposals/proposalDecisionExecutor.js";
+import { registerProposalsProjectIntegration } from "../src/modules/proposals/projectIntegration.js";
+import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
+import type { SystemActionId } from "@rainver/protocol";
+import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
+
+import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
+import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
@@ -29,8 +36,7 @@ import {
   requestRoomConversationTitle,
   RoomConversationTitleService,
 } from "../src/modules/rooms/conversationTitleService.js";
-import { InquiryThreadProposalService } from "../src/modules/inquiry/inquiryThreadProposalService.js";
-import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+
 import {
   loadRoomContinuityForRunRequest,
   loadRoomConversationReplayThroughMessage,
@@ -39,6 +45,8 @@ import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeConte
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
 
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
@@ -105,7 +113,8 @@ async function addRoomMember(roomId: string, userId: string): Promise<void> {
     await db.pool.query(
     `INSERT INTO room_user_members (
        id, space_id, room_id, user_id, role, status, created_at, updated_at
-     ) VALUES ($1, 'space-1', $2, $3, 'member', 'active', now(), now())`,
+     ) VALUES ($1, 'space-1', $2, $3, 'member', 'active', now(), now())
+     ON CONFLICT (room_id, user_id) DO UPDATE SET status = 'active'`,
     [randomUUID(), roomId, userId],
   );
 }
@@ -262,25 +271,33 @@ beforeEach(async () => {
     [now],
   );
   await db.pool.query(
+    // The Project's own Assistant instance, which is what a Room in that
+    // Project binds to. A Space-level row here would make every Room in the
+    // fixture provision a second Agent on creation.
     `INSERT INTO agents (
-       id, space_id, owner_user_id, name, status, agent_kind,
+       id, space_id, project_id, owner_user_id, name, status, agent_kind,
        current_version_id, visibility, created_at, updated_at
      ) VALUES (
-       'agent-1', 'space-1', NULL, 'Space Assistant', 'active',
+       'agent-1', 'space-1', 'project-1', NULL, 'A stale name', 'active',
        'system_assistant', NULL, 'space_shared', $1, $1
      )`,
     [now],
   );
   await db.pool.query(
+    // Marked as a materialization of the managed seed, which is what a
+    // provisioned instance looks like — an unmarked version that differs from
+    // the seed reads as somebody's own work and is deliberately not
+    // overwritten.
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
        model_config_json, runtime_config_json, context_policy_json,
        memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
+       runtime_policy_json, follows_seed_key, created_at
      ) VALUES (
        'version-1', 'agent-1', 'space-1', 'v1', 'Coordinate the Room.',
        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $1
+       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb,
+       'agent_template.personal_assistant.system', $1
      )`,
     [now],
   );
@@ -378,6 +395,48 @@ describe("Room workflow (real Postgres)", () => {
     ]);
   });
 
+  it("reports each research pipeline run, and each run only once", async () => {
+    if (!db.available || !service) return;
+    // Keying the outcome by Thread meant a retry silently returned the first
+    // attempt's message: the second failure was never reported, so an Agent's
+    // "queued" was the last word in the conversation while nothing ran.
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Pipeline outcomes" });
+    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const thread = randomUUID();
+    const failure = (jobId: string) => ({
+      kind: "research_pipeline_outcome",
+      key: `${thread}:${jobId}`,
+      payload: { status: "stage_failed", stage: "start_intake", thread_id: thread, reason: `attempt ${jobId} failed` },
+    });
+    const client = await db.pool.connect();
+    try {
+      const say = async (jobId: string) => {
+        await client.query("BEGIN");
+        const result = await service!.continueAfterDomainEventInTransaction(
+          client, owner, created.room.id, conversation.id, failure(jobId));
+        await client.query("COMMIT");
+        // The turn this continuation started must finish before the next one
+        // may begin; the pipeline's own retries are minutes apart.
+        await db.pool.query(
+          "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id = ANY ($1::varchar[])",
+          [result.run_ids],
+        );
+        return result;
+      };
+      const first = await say("job-1");
+      const second = await say("job-2");
+      const repeat = await say("job-1");
+
+      expect(second.message.id).not.toBe(first.message.id);
+      expect(second.message.content).toContain("attempt job-2 failed");
+      // The same run reporting twice is still one message.
+      expect(repeat.message.id).toBe(first.message.id);
+    } finally {
+      client.release();
+    }
+  });
+
   it("validates and deduplicates server-owned Proposal continuations", async () => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -443,10 +502,62 @@ describe("Room workflow (real Postgres)", () => {
         continuation_proposal_id: proposalId,
         // Typed directive from ConversationContinuationRegistry (plan Phase
         // 2), not a string the caller has to pattern-match.
-        continuation_directive: "inquiry.propose_thread",
+        continuation_directive: "inquiry.create_thread",
       },
     });
     expect(first.message.content).toContain("不要只在回复里列清单");
+
+    // And the continuation run actually executes. Deleting the retired
+    // question-batch continuation took the only end-to-end execution of one
+    // with it; a continuation that composes a message but cannot be run is
+    // half a mechanism.
+    const continuationPolicyId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runtime_context_policy_versions (
+         id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,
+         reason,created_by_user_id,created_at
+       ) VALUES ($1,'space-1','space','space-1',1,'{"constraints":{},"preferences":{}}','{}',
+                 'Room continuation test policy','user-1',now())`,
+      [continuationPolicyId],
+    );
+    await db.pool.query(
+      `INSERT INTO runtime_context_policy_bindings (
+         space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at
+       ) VALUES ('space-1','space','space-1',$1,'user-1',now())`,
+      [continuationPolicyId],
+    );
+    const continuationExecution = await new RunOrchestrationService(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
+      new PgRunRepository(db.pool),
+      {
+        usageRecorder: async () => {},
+        managedApi: {
+          executeRuntimeHost: async () => ({
+            success: true,
+            stdout: "",
+            stderr: "",
+            output_text: "已按确认的项目定义拆出研究问题。",
+            output_json: { adapter_type: "ts_agent_host" },
+            exit_code: 0,
+            error_text: null,
+            error_code: null,
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            model: "test-model",
+            usage: null,
+            events: [],
+            adapter_metadata: { adapter_type: "ts_agent_host" },
+            adapter_log_json: null,
+          }),
+        },
+      },
+    ).executeRun({
+      run_id: first.run_ids[0]!,
+      space_id: owner.spaceId,
+      worker_id: "room-continuation-test-worker",
+      command_source: "job",
+    });
+    expect(continuationExecution, JSON.stringify(continuationExecution)).toMatchObject({ status: "succeeded" });
 
     await expect(loadAuthorizedCurrentContextMessage(db.pool, {
       messageId: first.message.id,
@@ -510,103 +621,6 @@ describe("Room workflow (real Postgres)", () => {
       statusCode: 409,
       message: "Proposal belongs to a different conversation",
     });
-
-    const acceptedQuestionId = randomUUID();
-    const pendingSiblingId = randomUUID();
-    await db.pool.query(
-      `INSERT INTO proposals (
-         id,space_id,created_by_run_id,proposal_type,status,risk_level,urgency,
-         preview,title,payload_json,created_at,updated_at,reviewed_at,reviewed_by,
-         visibility,access_level,project_id
-       ) VALUES
-       ($1,'space-1',$3,'inquiry_thread_create','accepted','medium','normal',false,
-        '创建研究问题：记忆如何分层？',$4::jsonb,now(),now(),now(),'user-1','space_shared','full','project-1'),
-       ($2,'space-1',$3,'inquiry_thread_create','pending','medium','normal',false,
-        '创建研究问题：记忆如何检索？',$5::jsonb,now(),now(),NULL,NULL,'space_shared','full','project-1')`,
-      [
-        acceptedQuestionId,
-        pendingSiblingId,
-        source.run_ids[0],
-        JSON.stringify({ proposal_type: "inquiry_thread_create", action_id: "inquiry.propose_thread", project_id: "project-1", kind: "question", statement: "记忆如何分层？" }),
-        JSON.stringify({ proposal_type: "inquiry_thread_create", action_id: "inquiry.propose_thread", project_id: "project-1", kind: "question", statement: "记忆如何检索？" }),
-      ],
-    );
-    const questionContinuation = await service.continueAfterProposal(
-      owner,
-      created.room.id,
-      conversation.id,
-      {
-        proposal_id: acceptedQuestionId,
-        backends: [{
-          agent_id: "agent-1",
-          runtime_profile_id: "runtime-api",
-          credential_profile_id: null,
-        }],
-      },
-    );
-    expect(questionContinuation.message.content).toContain("仍有 1 个研究问题提案等待确认");
-    expect(questionContinuation.message.content).toContain("不要创建、改写或重新提交任何研究问题");
-    expect(questionContinuation.message.metadata_json).toMatchObject({
-      continuation_directive: "advance_accepted_thread",
-      continuation_context: { pending_sibling_count: 1 },
-    });
-    const continuationPolicyId = randomUUID();
-    await db.pool.query(
-      `INSERT INTO runtime_context_policy_versions (
-         id,space_id,scope_type,scope_id,version,policy_json,typed_diff_json,
-         reason,created_by_user_id,created_at
-       ) VALUES ($1,'space-1','space','space-1',1,'{"constraints":{},"preferences":{}}','{}',
-                 'Room continuation test policy','user-1',now())`,
-      [continuationPolicyId],
-    );
-    await db.pool.query(
-      `INSERT INTO runtime_context_policy_bindings (
-         space_id,scope_type,scope_id,active_version_id,updated_by_user_id,updated_at
-       ) VALUES ('space-1','space','space-1',$1,'user-1',now())`,
-      [continuationPolicyId],
-    );
-    const continuationExecution = await new RunOrchestrationService(
-      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
-      new PgRunRepository(db.pool),
-      {
-        usageRecorder: async () => {},
-        managedApi: {
-          executeRuntimeHost: async () => ({
-            success: true,
-            stdout: "",
-            stderr: "",
-            output_text: "已开始推进确认的研究问题。",
-            output_json: { adapter_type: "ts_agent_host" },
-            exit_code: 0,
-            error_text: null,
-            error_code: null,
-            started_at: new Date().toISOString(),
-            completed_at: new Date().toISOString(),
-            model: "test-model",
-            usage: null,
-            events: [],
-            adapter_metadata: { adapter_type: "ts_agent_host" },
-            adapter_log_json: null,
-          }),
-        },
-      },
-    ).executeRun({
-      run_id: questionContinuation.run_ids[0]!,
-      space_id: owner.spaceId,
-      worker_id: "room-continuation-test-worker",
-      command_source: "job",
-    });
-    expect(continuationExecution, JSON.stringify(continuationExecution)).toMatchObject({ status: "succeeded" });
-    await expect(new InquiryThreadProposalService(db.pool).proposeThread(
-      owner,
-      "project-1",
-      { statement: "不应由自动 continuation 重复创建的问题" },
-      {
-        agentId: "agent-1",
-        runId: questionContinuation.run_ids[0],
-        idempotencyKey: "duplicate-question-call",
-      },
-    )).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("lazily provisions exactly one managed Assistant and the initial conversation", async () => {
@@ -1029,6 +1043,9 @@ describe("Room workflow (real Postgres)", () => {
     const testPool = db.pool;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
+    // Not the mainline: this test removes a member, and mainline membership
+    // follows Project membership by design.
+    await service.createRoom(owner, { project_id: "project-1", title: "Mainline" });
     const created = await service.createRoom(owner, {
       project_id: "project-1",
       title: "Task authority Room",
@@ -1254,6 +1271,15 @@ describe("Room workflow (real Postgres)", () => {
       title: "Context Room",
     });
     const conversation = await service.createConversation(owner, created.room.id, { title: "Main thread" });
+    // Something needs a person, so the prompt has attention to state. The
+    // adapter that surfaces it registers at route-module init, which this
+    // service-level test does not run.
+    registerBuiltInAttentionAdapters();
+    await db.pool.query(
+      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', 'custom', 'Approve the screening batch', 'waiting_review', '{}'::jsonb, now(), now())`,
+      [randomUUID()],
+    );
 
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "What should I do next?",
@@ -1273,9 +1299,14 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt).toContain("still needs a formal goal/core problem");
     expect(prompt).toContain("one to three short sentences");
     expect(prompt).not.toContain("Project initialization: incomplete");
+    // What the block carries now that the per-Mode projection is gone: the
+    // definition status and what needs attention — nothing invented.
+    expect(prompt).toContain("Items needing attention for internal reasoning:");
+    expect(prompt).toContain("- Approve the screening batch");
+    expect(prompt).not.toContain("Possible next actions");
     expect(prompt).toContain("[Room execution rules]");
-    expect(prompt).toContain("invoke inquiry.propose_thread exactly once for each question");
-    expect(prompt).toContain("Merely listing questions in the reply does not create them");
+    expect(prompt).toContain("invoke inquiry.create_thread once for each");
+    expect(prompt).toContain("merely listing them in the reply does not create them");
     expect(prompt).toContain("treat that as an execution instruction");
     expect(prompt).toContain("whichever research-execution tool is available");
     expect(prompt).not.toContain("[Current turn execution mode]");
@@ -1283,6 +1314,113 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt.endsWith("What should I do next?")).toBe(true);
     // Context precedes the assigned task, never the other way around.
     expect(prompt.indexOf("[Project state]")).toBeLessThan(prompt.indexOf("What should I do next?"));
+  });
+
+  it("states the Task the person is looking at, and stays silent about one they cannot read", async () => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(
+      `INSERT INTO agent_runtime_profiles (
+         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
+         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
+       ) VALUES (
+         'runtime-focus','space-1','agent-1','Managed API','model_api','provider-1','test-model',
+         '{}'::jsonb,'{}'::jsonb,true,false,now(),now()
+       )`,
+    );
+    const readable = randomUUID();
+    const unreadable = randomUUID();
+    const senderPrivate = randomUUID();
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, project_id, title, status, created_by_user_id, owner_user_id,
+         visibility, created_at, updated_at
+       ) VALUES
+         ($1,'space-1','project-1','Draft the memory chapter','in_progress','user-1','user-1','space_shared',now(),now()),
+         ($2,'space-1','project-1','Someone else private note','inbox','user-2','user-2','private',now(),now()),
+         ($3,'space-1','project-1','My own private note','inbox','user-1','user-1','private',now(),now())`,
+      [readable, unreadable, senderPrivate],
+    );
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Focus Room" });
+    // One conversation per turn: a Room conversation holds a single turn at a
+    // time, which is the behaviour under test elsewhere, not here.
+    const [first, second, third, fourth] = await Promise.all([
+      service.createConversation(owner, created.room.id, { title: "Focused" }),
+      service.createConversation(owner, created.room.id, { title: "Hidden focus" }),
+      service.createConversation(owner, created.room.id, { title: "No focus" }),
+      service.createConversation(owner, created.room.id, { title: "Own private focus" }),
+    ]);
+
+    const backends = [{
+      agent_id: "agent-1",
+      runtime_profile_id: "runtime-focus",
+      credential_profile_id: null,
+    }];
+    const focused = await service.sendMessage(owner, created.room.id, first.id, {
+      content: "Is this done?",
+      backends,
+      focus_refs: [{ type: "task", id: readable }],
+    });
+    const promptOf = async (runId: string): Promise<string> => {
+      const run = await db.pool!.query<{ prompt: string | null }>(
+        `SELECT prompt FROM runs WHERE id = $1`,
+        [runId],
+      );
+      return run.rows[0]?.prompt ?? "";
+    };
+
+    // The whole point of the sidecar: "this" resolves without the person
+    // restating which Task they mean.
+    const withFocus = await promptOf(focused.run_ids[0]!);
+    // With its id: the Task a turn is most likely to act on arrives
+    // addressable, without a task.list round trip.
+    expect(withFocus).toContain(`"Draft the memory chapter" (in_progress, task_id: ${readable})`);
+    expect(withFocus).toContain("hint, not a restriction");
+
+    // Recorded, not only prompted: without this the sole trace of an injected
+    // Task is free text inside `runs.prompt`, which cannot be queried back to
+    // "which Task entered which turn".
+    const injected = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+      `SELECT m.metadata_json
+         FROM agent_run_messages m
+         JOIN agent_run_groups g ON g.id = m.group_id
+        WHERE g.session_id = $1 AND m.message_type = 'user_instruction'
+        ORDER BY m.created_at DESC
+        LIMIT 1`,
+      [first.id],
+    );
+    expect(injected.rows[0]?.metadata_json?.injected_focus_task_ids).toEqual([readable]);
+
+    // A focus the person cannot read produces nothing — naming it would leak
+    // the title, which is the part worth reading.
+    const hidden = await service.sendMessage(owner, created.room.id, second.id, {
+      content: "And this one?",
+      backends,
+      focus_refs: [{ type: "task", id: unreadable }],
+    });
+    const withoutFocus = await promptOf(hidden.run_ids[0]!);
+    expect(withoutFocus).not.toContain("Someone else private note");
+    expect(withoutFocus).not.toContain("currently looking at");
+
+    // The sender can read their own private Task, but the sentence is written
+    // into a prompt whose Run output every Room member can read, and the focus
+    // came from the route rather than from anything the person typed. Naming
+    // it would disclose the title by navigation alone.
+    const own = await service.sendMessage(owner, created.room.id, fourth.id, {
+      content: "And mine?",
+      backends,
+      focus_refs: [{ type: "task", id: senderPrivate }],
+    });
+    const withOwnPrivate = await promptOf(own.run_ids[0]!);
+    expect(withOwnPrivate).not.toContain("My own private note");
+    expect(withOwnPrivate).not.toContain("currently looking at");
+
+    // No focus at all is the ordinary case and must not change the turn.
+    const plain = await service.sendMessage(owner, created.room.id, third.id, {
+      content: "What next?",
+      backends,
+    });
+    expect(await promptOf(plain.run_ids[0]!)).not.toContain("currently looking at");
   });
 
   it("guides research execution through prompt policy, not a server-side text match on the turn", async () => {
@@ -1322,20 +1460,17 @@ describe("Room workflow (real Postgres)", () => {
     expect(runPrompt.rows[0]?.prompt).toContain("treat that as an execution instruction");
     expect(runPrompt.rows[0]?.prompt).not.toContain("[Current turn execution mode]");
 
-    // Choosing whether to call inquiry.propose_thread is the model's own
-    // judgment; the server no longer blocks it by pattern-matching the
-    // triggering message text (a genuine duplicate is still coalesced —
-    // covered separately by the propose_thread dedupe test).
-    await expect(new InquiryThreadProposalService(db.pool).proposeThread(
+    // Choosing whether to open another question is the model's own judgment;
+    // the server no longer blocks it by pattern-matching the triggering
+    // message text. The Thread service is reachable with no proposal in the
+    // way — the bound, not a gate, is what limits it (covered in
+    // inquiryDirectWritesDb.test.ts).
+    await expect(new InquiryThreadService(db.pool).createThread(
       owner,
       "project-1",
-      { statement: "把分层继续拆成四个问题" },
-      {
-        agentId: "agent-1",
-        runId: sent.run_ids[0],
-        idempotencyKey: "must-execute-not-decompose",
-      },
-    )).resolves.toMatchObject({ proposal: expect.objectContaining({ id: expect.any(String) }) });
+      { kind: "question", statement: "把分层继续拆成四个问题" },
+      { runId: sent.run_ids[0], agentId: "agent-1" },
+    )).resolves.toMatchObject({ id: expect.any(String) });
   });
 
   it("grants a Room-dispatched run the conversation scenario tools despite the Agent declaring none", async () => {
@@ -1372,9 +1507,14 @@ describe("Room workflow (real Postgres)", () => {
     );
     const granted = (run.rows[0]?.tool_grants ?? []).map((grant) => grant.action_id);
     expect(granted).toContain("project.propose_definition");
-    expect(granted).toContain("inquiry.propose_thread");
+    expect(granted).toContain("inquiry.create_thread");
     expect(granted).toContain("inquiry.record_conclusion");
     expect(granted).toContain("inquiry.promote_knowledge");
+    // The Room allowance is the Project write surface plus what belongs to
+    // any conversation; a Room must not lose the second half by holding the
+    // first (ADR 0003 §2).
+    expect(granted).toContain("memory.remember");
+    expect(granted).toContain("memory.revise");
     // Retrieval would run under the sender's identity and answer into a
     // conversation every Room member reads, so no retrieval action is in the
     // allowance — and listing one would also switch its domain on.
@@ -1410,7 +1550,7 @@ describe("Room workflow (real Postgres)", () => {
     expect((rebound.rows[0]?.tool_grants ?? []).map((grant) => grant.action_id))
       .toEqual(expect.arrayContaining([
         "project.propose_definition",
-        "inquiry.propose_thread",
+        "inquiry.create_thread",
         "inquiry.record_conclusion",
         "inquiry.promote_knowledge",
       ]));
@@ -2436,5 +2576,487 @@ describe("Room workflow (real Postgres)", () => {
         WHERE run_row.session_id=$1`,
       [conversation.id],
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+  });
+
+  it("gives each Project its own Assistant instance, following one seed until one is changed", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(
+      `INSERT INTO projects (
+         id, space_id, owner_user_id, name, status, created_at, updated_at
+       ) VALUES ('project-2', 'space-1', 'user-1', 'Second Project', 'active', now(), now())`,
+    );
+
+    const first = await service.createRoom(owner, { project_id: "project-1", title: "First" });
+    const second = await service.createRoom(owner, { project_id: "project-2", title: "Second" });
+
+    const assistants = await db.pool.query<{ id: string; project_id: string; name: string }>(
+      `SELECT id, project_id, name
+         FROM agents
+        WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'
+        ORDER BY project_id ASC`,
+    );
+    // Two Agents, one per Project, told apart by what they are for.
+    expect(assistants.rows).toHaveLength(2);
+    expect(assistants.rows.map((row) => row.project_id)).toEqual(["project-1", "project-2"]);
+    // Both are named for what they are for, including the one that already
+    // existed — reconciliation renames it, it is not only set at creation.
+    expect(assistants.rows.map((row) => row.name))
+      .toEqual(["Room Project Assistant", "Second Project Assistant"]);
+
+    const managerOf = async (roomId: string): Promise<string> => {
+      const row = await db.pool!.query<{ agent_id: string }>(
+        `SELECT agent_id FROM room_agent_members
+          WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+        [roomId],
+      );
+      return row.rows[0]!.agent_id;
+    };
+    const firstManager = await managerOf(first.room.id);
+    const secondManager = await managerOf(second.room.id);
+    expect(firstManager).not.toBe(secondManager);
+
+    const promptOf = async (agentId: string): Promise<string> => {
+      const row = await db.pool!.query<{ system_prompt: string | null }>(
+        `SELECT v.system_prompt
+           FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
+          WHERE a.id = $1`,
+        [agentId],
+      );
+      return row.rows[0]?.system_prompt ?? "";
+    };
+    expect(await promptOf(firstManager)).toBe(await promptOf(secondManager));
+
+    // Change the seed itself, then re-materialize: both instances follow it.
+    // Asserting on the shipped prompt text instead would prove only that they
+    // were created from the same thing, not that a change reaches them.
+    await db.pool.query(
+      `UPDATE evolvable_asset_versions
+          SET content_json = jsonb_set(
+                content_json, '{messages}',
+                (SELECT jsonb_agg(
+                          CASE WHEN message->>'role' = 'system'
+                            THEN jsonb_set(
+                                   message, '{content}',
+                                   to_jsonb((message->>'content') || E'\nAlso mention the weather.'))
+                            ELSE message END)
+                   FROM jsonb_array_elements(content_json->'messages') AS message))
+        WHERE id IN (
+          SELECT d.version_id
+            FROM prompt_deployment_refs d
+            JOIN evolvable_assets asset ON asset.id = d.asset_id
+           WHERE asset.asset_key = 'agent_template.personal_assistant.system'
+             AND d.status = 'active'
+        )`,
+    );
+    await service.createRoom(owner, { project_id: "project-1", title: "First reseeded" });
+    await service.createRoom(owner, { project_id: "project-2", title: "Second reseeded" });
+    expect(await promptOf(firstManager)).toContain("Also mention the weather.");
+    expect(await promptOf(secondManager)).toContain("Also mention the weather.");
+
+    // Give the second Project's instance a version of its own. Nothing else
+    // marks it, so it is detached from the seed by that act alone.
+    await db.pool.query(
+      `INSERT INTO agent_versions (
+         id, agent_id, space_id, version_label, system_prompt, model_config_json,
+         runtime_config_json, context_policy_json, memory_policy_json,
+         capabilities_json, tool_permissions_json, runtime_policy_json, created_at
+       ) VALUES ($1, $2, 'space-1', 'v99', 'A prompt somebody wrote by hand',
+         '{}', '{}', '{}', '{}', '[]', '{}', '{}', now())`,
+      [randomUUID(), secondManager],
+    );
+    await db.pool.query(
+      `UPDATE agents SET current_version_id = (
+         SELECT id FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1
+       ) WHERE id = $1`,
+      [secondManager],
+    );
+
+    // Re-materialize again. The following instance keeps tracking the seed;
+    // the changed one is not overwritten — that work would be lost with
+    // nothing recording it.
+    await service.createRoom(owner, { project_id: "project-1", title: "First again" });
+    await service.createRoom(owner, { project_id: "project-2", title: "Second again" });
+
+    expect(await promptOf(firstManager)).toContain("Also mention the weather.");
+    expect(await promptOf(secondManager)).toBe("A prompt somebody wrote by hand");
+
+    // Reusing the Project's instance rather than making a third.
+    const after = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM agents
+        WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'`,
+    );
+    expect(after.rows[0]!.count).toBe("2");
+  });
+
+  it("leaves the Space's own Assistant pointer alone when a Project provisions one", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const pointer = async (): Promise<unknown> => {
+      const row = await db.pool!.query<{ settings_json: Record<string, unknown> }>(
+        `SELECT settings_json FROM settings
+          WHERE scope_type = 'space' AND settings_key = 'agent.default_assistant.settings'`,
+      );
+      return row.rows[0]?.settings_json?.assistant_agent_id ?? null;
+    };
+    const before = await pointer();
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Pointer Room" });
+    const manager = await db.pool.query<{ agent_id: string }>(
+      `SELECT agent_id FROM room_agent_members
+        WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+      [created.room.id],
+    );
+    // Assistant settings are Space-scoped preferences, not per-Project: a Room
+    // created in a Project must never repoint them at that Project's instance.
+    expect(await pointer()).toBe(before);
+    expect(await pointer()).not.toBe(manager.rows[0]!.agent_id);
+
+    // And on the create path too: a Project with no instance yet mints one,
+    // which must not claim the Space pointer either. Only the reconcile path
+    // was covered above, because project-1 already had an Assistant.
+    await db.pool.query(
+      `INSERT INTO projects (
+         id, space_id, owner_user_id, name, status, created_at, updated_at
+       ) VALUES ('project-4', 'space-1', 'user-1', 'Pointer Project', 'active', now(), now())`,
+    );
+    const fresh = await service.createRoom(owner, { project_id: "project-4", title: "Fresh Room" });
+    const freshManager = await db.pool.query<{ agent_id: string }>(
+      `SELECT agent_id FROM room_agent_members
+        WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+      [fresh.room.id],
+    );
+    expect(freshManager.rows[0]!.agent_id).not.toBe(manager.rows[0]!.agent_id);
+    expect(await pointer()).toBe(before);
+    expect(await pointer()).not.toBe(freshManager.rows[0]!.agent_id);
+  });
+
+  it("adopts an unmarked version it can prove nobody changed, and leaves a changed one alone", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(
+      `INSERT INTO projects (
+         id, space_id, owner_user_id, name, status, created_at, updated_at
+       ) VALUES ('project-3', 'space-1', 'user-1', 'Adoption Project', 'active', now(), now())`,
+    );
+    const first = await service.createRoom(owner, { project_id: "project-3", title: "Adopt" });
+    const manager = await db.pool.query<{ agent_id: string }>(
+      `SELECT agent_id FROM room_agent_members
+        WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+      [first.room.id],
+    );
+    const agentId = manager.rows[0]!.agent_id;
+
+    const markOf = async (): Promise<string | null> => {
+      const row = await db.pool!.query<{ follows_seed_key: string | null }>(
+        `SELECT v.follows_seed_key
+           FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
+          WHERE a.id = $1`,
+        [agentId],
+      );
+      return row.rows[0]?.follows_seed_key ?? null;
+    };
+    expect(await markOf()).toBe("agent_template.personal_assistant.system");
+
+    // An instance provisioned before the mark existed: same content, no mark.
+    // It is provably untouched, so it is adopted rather than treated as
+    // somebody's work and abandoned.
+    await db.pool.query(
+      `UPDATE agent_versions SET follows_seed_key = NULL
+        WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
+      [agentId],
+    );
+    await service.createRoom(owner, { project_id: "project-3", title: "Adopt again" });
+    expect(await markOf()).toBe("agent_template.personal_assistant.system");
+
+    // An unmarked version whose content differs cannot be told apart from a
+    // person's edit, so it is left alone. The unmarked column is itself the
+    // record of that, which is why nothing else needs to write one.
+    await db.pool.query(
+      `UPDATE agent_versions SET follows_seed_key = NULL, system_prompt = 'Hand-written'
+        WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
+      [agentId],
+    );
+    await service.createRoom(owner, { project_id: "project-3", title: "Adopt once more" });
+    expect(await markOf()).toBeNull();
+    const kept = await db.pool.query<{ system_prompt: string | null }>(
+      `SELECT v.system_prompt FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
+        WHERE a.id = $1`,
+      [agentId],
+    );
+    expect(kept.rows[0]!.system_prompt).toBe("Hand-written");
+
+    // The binding is repaired regardless: runtime profiles are reconciled
+    // outside the version, and routing prefers them over the version's own
+    // provider, so a left-alone instance does not also stop working.
+    const profiles = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM agent_runtime_profiles
+        WHERE agent_id = $1 AND enabled = true`,
+      [agentId],
+    );
+    expect(Number(profiles.rows[0]!.count)).toBeGreaterThan(0);
+  });
+
+  it("makes the first Room a Project's mainline, and every Project member part of it", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const first = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const second = await service.createRoom(owner, { project_id: "project-1", title: "Tax season" });
+    expect(first.room.is_mainline).toBe(true);
+    expect(second.room.is_mainline).toBe(false);
+
+    // user-2 is a Project member and was never invited: in the mainline from
+    // the start, not in the topic Room.
+    const membership = async (roomId: string): Promise<string[]> => {
+      const rows = await db.pool!.query<{ user_id: string }>(
+        `SELECT user_id FROM room_user_members WHERE room_id = $1 AND status = 'active' ORDER BY user_id`,
+        [roomId],
+      );
+      return rows.rows.map((row) => row.user_id);
+    };
+    expect(await membership(first.room.id)).toEqual(["user-1", "user-2"]);
+    expect(await membership(second.room.id)).toEqual(["user-1"]);
+  });
+
+  it("binds the chat panel to the mainline and enrols a member who joined the Project later", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    // A third person joins the Project after the Room exists.
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at)
+       VALUES ('user-later', 'Later', 'active', now(), now())`);
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, 'space-1', 'user-later', 'member', 'active', now(), now())`, [randomUUID()]);
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', 'user-later', 'viewer', 'active', now(), now())`, [randomUUID()]);
+    const later = { spaceId: "space-1", userId: "user-later" };
+
+    // Before this the panel listed only Rooms the viewer was on the roster
+    // of, so a member nobody had invited saw an empty panel — and as a
+    // viewer could not start a Room either.
+    const opened = await service.getProjectMainline(later, "project-1");
+    expect(opened.room?.id).toBe(created.room.id);
+    expect(opened.joined).toBe(true);
+    expect(opened.viewer_can_write).toBe(false);
+    // Idempotent: opening again is not a second join.
+    expect((await service.getProjectMainline(later, "project-1")).joined).toBe(false);
+    // And now the ordinary Room reads work for them too.
+    await expect(service.getRoom(later, created.room.id)).resolves.toMatchObject({ room: { id: created.room.id } });
+
+    // Someone outside the Project gets nothing, not a join.
+    await expect(service.getProjectMainline({ spaceId: "space-1", userId: "user-9" }, "project-1"))
+      .rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("answers honestly when a Project has no conversation yet", async (ctx) => {
+    if (!db.available || !service) return;
+    // user-2 is a Project viewer: may read, may not start one. Telling the
+    // panel so is what keeps it from offering a button that would 403.
+    const none = await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+    expect(none).toEqual({ room: null, joined: false, viewer_can_write: false });
+    const asOwner = await service.getProjectMainline({ spaceId: "space-1", userId: "user-1" }, "project-1");
+    expect(asOwner).toEqual({ room: null, joined: false, viewer_can_write: true });
+  });
+
+  it("refuses to remove a member from the mainline: that membership is the Project's", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    await expect(service.removeUser(owner, created.room.id, "user-2"))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("brings an existing Assistant up to a changed seed at boot, not only on the next Room", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const manager = await db.pool.query<{ agent_id: string }>(
+      `SELECT agent_id FROM room_agent_members WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+      [created.room.id],
+    );
+    const agentId = manager.rows[0]!.agent_id;
+    const promptOf = async (): Promise<string> => {
+      const row = await db.pool!.query<{ system_prompt: string | null }>(
+        `SELECT v.system_prompt FROM agents a JOIN agent_versions v ON v.id = a.current_version_id WHERE a.id = $1`,
+        [agentId],
+      );
+      return row.rows[0]?.system_prompt ?? "";
+    };
+    // The seed changes — a release ships new rules.
+    await db.pool.query(
+      `UPDATE evolvable_asset_versions
+          SET content_json = jsonb_set(
+                content_json, '{messages}',
+                (SELECT jsonb_agg(
+                          CASE WHEN message->>'role' = 'system'
+                            THEN jsonb_set(message, '{content}',
+                                   to_jsonb((message->>'content') || E'\nNew rule from a release.'))
+                            ELSE message END)
+                   FROM jsonb_array_elements(content_json->'messages') AS message))
+        WHERE id IN (
+          SELECT d.version_id FROM prompt_deployment_refs d
+            JOIN evolvable_assets asset ON asset.id = d.asset_id
+           WHERE asset.asset_key = 'agent_template.personal_assistant.system' AND d.status = 'active')`,
+    );
+    expect(await promptOf()).not.toContain("New rule from a release.");
+
+    const result = await SpaceAssistantService.reconcileSeedFollowersForAllSpaces(
+      db.pool,
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }),
+    );
+    expect(result).toEqual({ reconciled: 1, skipped: 0 });
+    expect(await promptOf()).toContain("New rule from a release.");
+  });
+
+  it("lists every conversation in the Project as one list, mainline first, and enrols the reader", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const mainline = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const topic = await service.createRoom(owner, { project_id: "project-1", title: "Tax season" });
+    // Both Rooms carry their first conversation; add one more to the topic
+    // Room and say something in it, so ordering has something to bite on.
+    const topicSecond = await service.createConversation(owner, topic.room.id, { title: "Receipts" });
+    await db.pool.query(
+      `INSERT INTO messages (id, space_id, session_id, user_id, role, content, created_at)
+       VALUES ($1, 'space-1', $2, 'user-1', 'user', 'Where are the March receipts?', now())`,
+      [randomUUID(), topicSecond.id],
+    );
+
+    // user-2 was never invited to the topic Room. Reading the list enrols them
+    // in the mainline — and only the mainline.
+    const seen = await service.listProjectConversations({ spaceId: "space-1", userId: "user-2" }, "project-1", { limit: 50, offset: 0 });
+    expect(seen.items.map((item) => item.room_id)).toEqual([mainline.room.id]);
+    expect(seen.items[0]).toMatchObject({ room_is_mainline: true, room_title: "Daily", message_count: 0 });
+
+    // The owner sees all three: mainline first, then the topic Room's by last
+    // activity, with what was last said.
+    const all = await service.listProjectConversations(owner, "project-1", { limit: 50, offset: 0 });
+    expect(all.total).toBe(3);
+    expect(all.items.map((item) => [item.room_title, item.title])).toEqual([
+      ["Daily", "New conversation"],
+      ["Tax season", "Receipts"],
+      ["Tax season", "New conversation"],
+    ]);
+    expect(all.items[1]).toMatchObject({
+      room_is_mainline: false,
+      last_message_role: "user",
+      last_message_preview: "Where are the March receipts?",
+      message_count: 1,
+    });
+    expect(all.viewer_can_write).toBe(true);
+
+    // Not in the Project: nothing, and no join.
+    await expect(service.listProjectConversations({ spaceId: "space-1", userId: "user-9" }, "project-1", { limit: 50, offset: 0 }))
+      .rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("decides, on the person's word, a proposal this conversation produced — and no other", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const here = await service.createConversation(owner, created.room.id, { title: "Here" });
+    const elsewhere = await service.createConversation(owner, created.room.id, { title: "Elsewhere" });
+
+    const runIn = async (sessionId: string): Promise<string> => {
+      const id = randomUUID();
+      await db.pool!.query(
+        `INSERT INTO runs (
+           id, space_id, agent_id, agent_version_id, project_id, run_type, trigger_origin, status, mode,
+           session_id, instructed_by_user_id, created_at, updated_at, owner_user_id, visibility, access_level
+         ) VALUES ($1,'space-1','agent-1','version-1','project-1','agent','manual','succeeded','live',
+                   $2,'user-1',now(),now(),'user-1','space_shared','full')`,
+        [id, sessionId],
+      );
+      return id;
+    };
+    const proposalBy = async (runId: string, statement: string): Promise<string> => {
+      const id = randomUUID();
+      await db.pool!.query(
+        `INSERT INTO proposals (
+           id,space_id,created_by_run_id,created_by_agent_id,owner_user_id,proposal_type,status,risk_level,urgency,
+           preview,title,payload_json,created_at,updated_at,visibility,access_level,project_id
+         ) VALUES ($1,'space-1',$2,'agent-1','user-1','project_brief_publish','pending','medium','normal',
+                   false,$3,$4::jsonb,now(),now(),'space_shared','full','project-1')`,
+        [id, runId, `确认项目定义：${statement}`, JSON.stringify({
+          proposal_type: "project_brief_publish", action_id: "project.propose_definition",
+          project_id: "project-1", goal: statement,
+        })],
+      );
+      return id;
+    };
+    const hereRun = await runIn(here.id);
+    const mine = await proposalBy(hereRun, "记忆如何分层？");
+    const alsoMine = await proposalBy(hereRun, "记忆如何检索？");
+    const theirs = await proposalBy(await runIn(elsewhere.id), "别处的问题");
+
+    // Before deciding: every pending proposal is a decision waiting, on the
+    // Project's own attention list, linking back to the conversation that
+    // produced it rather than to the Space-level Review page.
+    registerBuiltInAttentionAdapters();
+    registerProposalsProjectIntegration();
+    const attention = await new ProjectAttentionService(db.pool).listAttentionItems(owner, "project-1");
+    const waiting = attention.find((item) => item.source_id === mine);
+    expect(waiting).toMatchObject({
+      source_type: "proposal",
+      title: "确认项目定义：记忆如何分层？",
+      reason: "project brief publish awaiting your decision",
+      href: `/projects/project-1/rooms?room=${created.room.id}&conversation=${here.id}`,
+    });
+
+    const executors = new Map<SystemActionId, SystemActionExecutor>();
+    registerProposalDecisionExecutor(
+      executors,
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }),
+      {
+        id: hereRun, space_id: "space-1", agent_id: "agent-1", project_id: "project-1",
+        session_id: here.id, instructed_by_user_id: "user-1", trigger_origin: "manual", status: "running",
+      } as never,
+    );
+    const decide = executors.get("proposal.decide" as SystemActionId)!;
+    const dispatch = { actor: { type: "agent", id: "agent-1" }, visibility: "agent_tool", idempotency_key: randomUUID() } as never;
+
+    // How the Agent learns which id to decide. Nothing in the rendered
+    // conversation carries one, so without this read the id can only be
+    // composed — and a composed id decides nothing.
+    const pending = await executors.get("proposal.list_pending" as SystemActionId)!({}, dispatch) as { modelResult: Record<string, unknown>; summary: Record<string, unknown> };
+    expect((pending.modelResult as { proposals: Array<{ proposal_id: string; title: string }> }).proposals)
+      .toEqual([
+        { proposal_id: mine, proposal_type: "project_brief_publish", title: "确认项目定义：记忆如何分层？" },
+        { proposal_id: alsoMine, proposal_type: "project_brief_publish", title: "确认项目定义：记忆如何检索？" },
+      ]);
+    expect(pending.summary).toMatchObject({ tool_name: "proposal.list_pending", ok: true, count: 2 });
+
+    // And an id it composed anyway is answered with the ones it may decide.
+    await expect(decide({ proposal_id: "memory-layering", decision: "accept" }, dispatch))
+      .rejects.toMatchObject({
+        statusCode: 404,
+        message: `No proposal in this conversation has id 'memory-layering'. Use one of these ids exactly: ${mine} — 确认项目定义：记忆如何分层？; ${alsoMine} — 确认项目定义：记忆如何检索？`,
+      });
+
+    // Reach: a proposal from another conversation is not this one's to decide.
+    await expect(decide({ proposal_id: theirs, decision: "accept" }, dispatch))
+      .rejects.toMatchObject({ statusCode: 404 });
+
+    await expect(decide({ proposal_id: alsoMine, decision: "reject" }, dispatch))
+      .resolves.toMatchObject({ status: "rejected", decided_by: "user-1" });
+    const accepted = await decide({ proposal_id: mine, decision: "accept" }, dispatch);
+    expect(accepted).toMatchObject({ status: "accepted", decided_by: "user-1", via: "room_instruction" });
+
+    // Applied through the same path as the button: the decision is the
+    // person's, and the Brief version now exists.
+    const rows = await db.pool.query<{ id: string; status: string; reviewed_by: string | null }>(
+      `SELECT id, status, reviewed_by FROM proposals WHERE id = ANY ($1::varchar[]) ORDER BY status`,
+      [[mine, alsoMine]],
+    );
+    expect(rows.rows.map((row) => [row.status, row.reviewed_by])).toEqual([["accepted", "user-1"], ["rejected", "user-1"]]);
+    const brief = await db.pool.query(
+      `SELECT 1 FROM project_brief_versions WHERE project_id = 'project-1' AND goal = '记忆如何分层？'`);
+    expect(brief.rowCount).toBe(1);
+    // Twice is once.
+    await expect(decide({ proposal_id: mine, decision: "accept" }, dispatch))
+      .rejects.toMatchObject({ statusCode: 409 });
   });
 });

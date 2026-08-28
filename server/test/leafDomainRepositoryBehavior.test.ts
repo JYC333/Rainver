@@ -49,6 +49,7 @@ function sourcesConfig(): ServerConfig {
     memoryMaintenanceSchedulerEnabled: true,
     memoryMaintenanceSchedulerIntervalSeconds: 900,
     memoryMaintenanceSchedulerBatchLimit: 5,
+    memoryDirectWritesPerSession: 50,
     sourceExtractionSchedulerEnabled: true,
     sourceExtractionSchedulerIntervalSeconds: 30,
     retrievalRerankEnabled: false,

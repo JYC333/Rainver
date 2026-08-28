@@ -523,6 +523,13 @@ export class RoomRosterService {
       if (userId === identity.userId) {
         throw new HttpError(409, "Room members cannot remove themselves through the owner-managed removal endpoint");
       }
+      // Mainline membership is Project membership. Removing someone here would
+      // only last until they next open the Project; the honest place to remove
+      // them is the Project itself.
+      if (room.is_mainline) throw new HttpError(409, "room_mainline_membership_follows_project", {
+        code: "room_mainline_membership_follows_project",
+        detail: "Every Project member belongs to the Project's mainline Room. Remove them from the Project instead.",
+      });
       const roster = new PgRoomRosterRepository(client);
       const member = await roster.lockUserMember(identity.spaceId, room.id, userId);
       if (!member || member.status !== "active") throw new HttpError(404, "Room member not found");

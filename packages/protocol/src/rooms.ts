@@ -18,8 +18,25 @@ export const RoomSchema = z.object({
   archived_at: ISODateTimeSchema.nullish(),
   // Internal concurrency cursor surfaced when available; older clients may omit it.
   roster_revision: z.number().int().nonnegative().optional(),
+  /** The Project's mainline conversation, which every Project member belongs to. */
+  is_mainline: z.boolean().default(false),
   ...SecretResponseGuards,
 }).strict();
+
+/**
+ * What the Project chat panel binds to.
+ *
+ * Membership is Project membership: a reader who is not yet on the roster is
+ * enrolled by this read, so `joined` says whether that just happened.
+ * `viewer_can_write` tells a surface with no Room yet whether offering to
+ * start one is honest.
+ */
+export const ProjectMainlineRoomResponseSchema = z.object({
+  room: RoomSchema.nullable(),
+  joined: z.boolean(),
+  viewer_can_write: z.boolean(),
+}).strict();
+export type ProjectMainlineRoomResponse = z.infer<typeof ProjectMainlineRoomResponseSchema>;
 export type Room = z.infer<typeof RoomSchema>;
 
 export const RoomUserMemberSchema = z.object({
@@ -190,6 +207,37 @@ export const RoomConversationSchema = z.object({
 }).strict();
 export type RoomConversation = z.infer<typeof RoomConversationSchema>;
 
+/**
+ * One conversation as the Project's conversation list shows it: which Room it
+ * is in, whether that Room is the mainline, and what was last said.
+ *
+ * Every step of a Project is pushed through conversation, so the place to see
+ * all of it has to exist — and it has to be one list, not one Room at a time.
+ */
+export const ProjectConversationSchema = z.object({
+  id: IdSchema,
+  room_id: IdSchema,
+  room_title: z.string(),
+  room_is_mainline: z.boolean(),
+  title: z.string().nullable(),
+  created_at: ISODateTimeSchema,
+  last_message_at: ISODateTimeSchema.nullable(),
+  last_message_role: z.string().nullable(),
+  last_message_preview: z.string().nullable(),
+  message_count: z.number().int().nonnegative(),
+}).strict();
+export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
+
+export const ProjectConversationsResponseSchema = z.object({
+  items: z.array(ProjectConversationSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  /** Whether the viewer may start a Room (and so a conversation) here. */
+  viewer_can_write: z.boolean(),
+}).strict();
+export type ProjectConversationsResponse = z.infer<typeof ProjectConversationsResponseSchema>;
+
 export const RoomConversationSummarySchema = z.object({
   id: IdSchema,
   version: z.number().int().positive(),
@@ -292,8 +340,28 @@ export const CreateRoomConversationRequestSchema = z.object({
   title: z.string().trim().min(1).max(512).nullish(),
 }).strict();
 
+/**
+ * What the person is looking at while they type.
+ *
+ * A focus hint, never a boundary: retrieval keeps its Project scope and the
+ * Agent can still reach anything it could before. It exists so "is this one
+ * done?" resolves without the person restating which Task they mean — the
+ * highest-frequency friction in talking to an Agent about work you are
+ * already looking at.
+ */
+export const RoomMessageFocusRefSchema = z.object({
+  // Task only. The Room is already bound to one Project, so a `project` focus
+  // said nothing the turn did not already carry — it was accepted here and
+  // then silently discarded on the way in, which is worse than not offering
+  // it. Widen the enum when a second subject can actually be focused.
+  type: z.literal("task"),
+  id: IdSchema,
+}).strict();
+export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
+
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().min(1).max(8000),
+  focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
   backends: z.array(z.object({

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, Clock3, X } from 'lucide-react'
+import { Check, Clock3, X } from 'lucide-react'
 import {
   agentsApi,
   experimentsApi,
@@ -25,7 +25,7 @@ function message(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-export default function KnowledgeReviewPage() {
+export default function KnowledgeReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { projectId = '' } = useParams()
   const [status, setStatus] = useState<'pending' | 'deferred'>('pending')
   const [showAll, setShowAll] = useState(false)
@@ -123,14 +123,13 @@ export default function KnowledgeReviewPage() {
     }
   }
 
-  return <div className="p-6 space-y-5">
+  return <div className={embedded ? 'space-y-5' : 'p-6 space-y-5'}>
     <ThreadOriginBar projectId={projectId} kinds={['promote_knowledge']} />
-    <div className="flex items-center gap-3">
-      <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}`}><ArrowLeft className="size-4" />Project</Link></Button>
-      <div>
-        <h1 className="text-xl font-semibold">Knowledge review</h1>
-        <p className="text-sm text-muted-foreground">{summary || 'Checking new source information…'}</p>
-      </div>
+    <div>
+      {/* Inside Inquiry's Review view it is a section, not a page: the shell
+          is the way back, and the heading is the tab's. */}
+      <h2 className={embedded ? 'text-base font-semibold' : 'text-xl font-semibold'}>Knowledge candidates</h2>
+      <p className="text-sm text-muted-foreground">{summary || 'Checking new source information…'}</p>
     </div>
     <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
       <div><p className="font-medium">Project review checkpoint</p><p className="text-sm text-muted-foreground">{projectReview?.summary ?? 'Open one bounded checkpoint across Inquiry and Knowledge.'}</p></div>

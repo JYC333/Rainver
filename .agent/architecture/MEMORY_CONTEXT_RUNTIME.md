@@ -9,10 +9,18 @@ authority. Neither may silently become the other.
 
 ## 1. Memory authority
 
-`memory_entries` contains approved, scoped Memory. Active Memory is written only
-through proposal review and the proposal apply service. Public routes, Runs,
-retrievers, checkpoint extractors, adapters, and agent output cannot directly
-create or update active Memory.
+`memory_entries` contains scoped Memory. It is written only through the
+proposal apply service, by one of two routes
+([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a proposal a person
+approved, or an Agent's own bounded write in a person's turn (`applyDirect` —
+private, normal-sensitivity, about the acting person, always a new version
+carrying its run, session and rationale). Public routes, Runs, retrievers,
+checkpoint extractors and adapters still cannot write around it, and a
+checkpoint promoting content into Memory is a write under ADR 0003 like any
+other. Note for anyone hardening this path: the direct route deliberately does
+not run `evaluateMemoryProposal`, whose trust rule would reject every
+agent-authored write; what stands in for it is §2's bounds and the fact that
+the write is reversible in one action.
 
 Every Memory read revalidates:
 

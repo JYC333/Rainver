@@ -3,6 +3,7 @@ import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
+import { resolveServiceActorId, resolveUserActorId } from "../../db/actorResolver.js";
 import {
   redactEvidenceText,
   sanitizeErrorJson,
@@ -1512,55 +1513,11 @@ export class PgRunRepository {
     commandSource: string,
   ): Promise<string> {
     if (run.instructed_by_user_id) {
-      const existing = await this.db.query<{ id: string }>(
-        `SELECT id FROM actors
-          WHERE actor_type = 'user' AND user_id = $1 AND space_id = $2
-            AND status = 'active'
-          LIMIT 1`,
-        [run.instructed_by_user_id, run.space_id],
-      );
-      if (existing.rows[0]) return existing.rows[0].id;
-      const created = await this.db.query<{ id: string }>(
-        `INSERT INTO actors (
-            id, space_id, actor_type, user_id, agent_id, service_name,
-            display_name, status, metadata_json, created_at, updated_at
-         )
-         VALUES ($1, $2, 'user', $3, NULL, NULL, NULL, 'active', '{}'::jsonb, $4, $4)
-         RETURNING id`,
-        [
-          randomUUID(),
-          run.space_id,
-          run.instructed_by_user_id,
-          new Date().toISOString(),
-        ],
-      );
-      const row = created.rows[0];
-      if (!row) throw new Error("user actor insert returned no row");
-      return row.id;
+      return resolveUserActorId(this.db, run.space_id, run.instructed_by_user_id);
     }
-
-    const actorType = commandSource === "job" ? "job" : "system";
-    const serviceName = commandSource === "job" ? "agent_run" : "run_execution";
-    const existing = await this.db.query<{ id: string }>(
-      `SELECT id FROM actors
-        WHERE actor_type = $1 AND service_name = $2 AND space_id = $3
-          AND status = 'active'
-        LIMIT 1`,
-      [actorType, serviceName, run.space_id],
-    );
-    if (existing.rows[0]) return existing.rows[0].id;
-    const created = await this.db.query<{ id: string }>(
-      `INSERT INTO actors (
-          id, space_id, actor_type, user_id, agent_id, service_name,
-          display_name, status, metadata_json, created_at, updated_at
-       )
-       VALUES ($1, $2, $3, NULL, NULL, $4, NULL, 'active', '{}'::jsonb, $5, $5)
-       RETURNING id`,
-      [randomUUID(), run.space_id, actorType, serviceName, new Date().toISOString()],
-    );
-    const row = created.rows[0];
-    if (!row) throw new Error(`${actorType} actor insert returned no row`);
-    return row.id;
+    return commandSource === "job"
+      ? resolveServiceActorId(this.db, run.space_id, "agent_run", "job")
+      : resolveServiceActorId(this.db, run.space_id, "run_execution", "system");
   }
 
   async markRunRunning(input: {

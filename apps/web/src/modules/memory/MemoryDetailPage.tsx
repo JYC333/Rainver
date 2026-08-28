@@ -5,8 +5,9 @@ import { ArrowLeft, Archive, Database } from 'lucide-react'
 import { toast } from 'sonner'
 import { memoryApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { errMsg } from '../../lib/utils'
-import type { Memory } from '../../types/api'
+import type { Memory, MemoryVersion } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
@@ -35,9 +36,11 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 export default function MemoryDetailPage() {
   const { memoryId = '' } = useParams()
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const { currentUser } = useAuth()
   const [memory, setMemory] = useState<Memory | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [versions, setVersions] = useState<MemoryVersion[]>([])
 
   useEffect(() => {
     if (!memoryId) return
@@ -50,8 +53,16 @@ export default function MemoryDetailPage() {
     ;(async () => {
       setLoading(true)
       try {
-        const row = await memoryApi.get(memoryId)
-        if (!cancelled) setMemory(row)
+        const [row, chain] = await Promise.all([
+          memoryApi.get(memoryId),
+          // Best effort: the entry is readable without its history, and a
+          // failure here should not blank the page.
+          memoryApi.versions(memoryId).catch(() => ({ items: [] as MemoryVersion[] })),
+        ])
+        if (!cancelled) {
+          setMemory(row)
+          setVersions(chain.items)
+        }
       } catch (e) {
         if (!cancelled) {
           toast.error(errMsg(e))
@@ -64,16 +75,41 @@ export default function MemoryDetailPage() {
     return () => { cancelled = true }
   }, [memoryId, activeSpaceId])
 
-  async function proposeArchive() {
+  // Your own memory archives on the spot; someone else's goes through a
+  // proposal (ADR 0003 §3). The server decides which and says so by what it
+  // returns.
+  async function archive() {
     if (!memory) return
     setBusy(true)
     try {
-      const proposal = await memoryApi.delete(memory.id)
-      toast.success('Archive proposal submitted')
+      const result = await memoryApi.delete(memory.id)
+      const archived = 'content' in result && 'namespace' in result
+      toast.success(archived ? 'Archived' : 'Archive proposal submitted')
       setMemory(await memoryApi.get(memory.id))
-      if (proposal?.id) {
-        toast.message('Review the archive proposal from Proposals.')
-      }
+      if (!archived) toast.message('Review the archive proposal from Proposals.')
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Restores this entry, or the older version a revision replaced — the
+  // second half of ADR 0003 §2's "one action restores it", once the newer
+  // version has been archived. Without it the chain is readable and the way
+  // back is API-only.
+  async function restore(id: string = memory?.id ?? '') {
+    if (!id) return
+    setBusy(true)
+    try {
+      await memoryApi.restore(id)
+      toast.success('Restored')
+      const [row, chain] = await Promise.all([
+        memoryApi.get(memoryId),
+        memoryApi.versions(memoryId).catch(() => ({ items: [] as MemoryVersion[] })),
+      ])
+      setMemory(row)
+      setVersions(chain.items)
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -119,9 +155,21 @@ export default function MemoryDetailPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <ContentAccessControl resourceType="memory" resourceId={memory.id} ownerUserId={memory.owner_user_id} />
-              <Button size="sm" variant="destructive" disabled={busy || memory.status !== 'active'} onClick={proposeArchive}>
-                <Archive className="size-3.5" /> Archive proposal
-              </Button>
+              {memory.status === 'archived'
+                ? (
+                  // Owner-only: the route answers 404 for anyone else, and
+                  // unlike archive there is no proposal to fall back to.
+                  memory.owner_user_id === currentUser?.id ? (
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => restore()}>
+                      <Archive className="size-3.5" /> Restore
+                    </Button>
+                  ) : null
+                )
+                : (
+                  <Button size="sm" variant="destructive" disabled={busy || memory.status !== 'active'} onClick={archive}>
+                    <Archive className="size-3.5" /> Archive
+                  </Button>
+                )}
             </div>
           </div>
 
@@ -179,7 +227,14 @@ export default function MemoryDetailPage() {
             <Card>
               <CardTitle>Provenance</CardTitle>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <Field label="Created by" value={val(memory.created_by)} />
+                <Field
+                  label="Written by"
+                  value={memory.created_by?.startsWith('agent:')
+                    ? <span>Agent <code className="text-xs">{memory.created_by.slice(6)}</code></span>
+                    : val(memory.created_by)}
+                />
+                {/* Blank for an Agent's own write, and that is the honest
+                    reading: nobody approved it in advance (ADR 0003 §2). */}
                 <Field label="Approved by" value={val(memory.approved_by)} />
                 <Field
                   label="Created from proposal"
@@ -189,6 +244,63 @@ export default function MemoryDetailPage() {
                     </Link>
                   ) : '-'}
                 />
+              </div>
+            </Card>
+
+            <Card className="lg:col-span-2">
+              <CardTitle>History</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Every version of this memory, oldest first. An Agent writes without asking
+                and says why; this is where that is read, and one Archive takes it back.
+              </p>
+              <div className="mt-4 divide-y divide-border rounded-md border border-border">
+                {versions.length === 0 && (
+                  <p className="p-3 text-sm text-muted-foreground">No earlier versions.</p>
+                )}
+                {versions.map(version => (
+                  <div
+                    key={version.memory.id}
+                    className={`p-3 text-sm ${version.memory.id === memory.id ? 'bg-muted/30' : ''}`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">v{version.memory.version}</Badge>
+                      <Badge variant={version.memory.status === 'active' ? 'success' : 'muted'}>
+                        {version.memory.status}
+                      </Badge>
+                      {version.written_by_agent_id && <Badge variant="secondary">Agent</Badge>}
+                      <span className="text-xs text-muted-foreground">{fmt(version.memory.created_at)}</span>
+                    </div>
+                    {version.rationale && (
+                      <p className="mt-1 text-xs text-muted-foreground">Why: {version.rationale}</p>
+                    )}
+                    {(version.session_id || version.run_id) && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {version.session_id && <>Session <code>{version.session_id.slice(0, 8)}</code> </>}
+                        {version.run_id && (
+                          <Link to={`/runs/${version.run_id}`} className="text-accent-foreground hover:underline">
+                            run {version.run_id.slice(0, 8)}
+                          </Link>
+                        )}
+                      </p>
+                    )}
+                    {version.memory.content && version.memory.id !== memory.id && (
+                      <p className="mt-1 text-xs text-muted-foreground line-clamp-3">{version.memory.content}</p>
+                    )}
+                    {version.memory.status === 'superseded'
+                      && version.memory.owner_user_id === currentUser?.id
+                      && !versions.some(v => v.memory.status === 'active') && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mt-2"
+                        disabled={busy}
+                        onClick={() => restore(version.memory.id)}
+                      >
+                        Restore this version
+                      </Button>
+                    )}
+                  </div>
+                ))}
               </div>
             </Card>
 

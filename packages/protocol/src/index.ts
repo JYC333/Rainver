@@ -90,6 +90,9 @@ export * from "./knowledge.js";
 // Project public summary contracts
 export * from "./projects.js";
 
+// Project work: loop stages and the work event vocabulary
+export * from "./projectWork.js";
+
 // Memory + sessions contracts
 export * from "./memorySessions.js";
 

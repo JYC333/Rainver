@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { ArrowLeft, FlaskConical, Plus } from 'lucide-react'
+import { FlaskConical, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { agentsApi, experimentsApi, inquiryApi, projectFoldersApi, projectsApi } from '../../api/client'
@@ -24,7 +24,7 @@ import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
 import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
-export default function ExperimentAreaPage() {
+export default function ExperimentAreaPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { projectId } = useParams<{ projectId: string }>()
   const [project, setProject] = useState<Project | null>(null)
   const [definitions, setDefinitions] = useState<ExperimentDefinition[]>([])
@@ -264,16 +264,12 @@ export default function ExperimentAreaPage() {
   if (!projectId || !project) return <EmptyState title="Project not found" />
 
   return (
-    <div className="space-y-5 p-6">
+    <div className={embedded ? 'space-y-5' : 'space-y-5 p-6'}>
       <ThreadOriginBar projectId={projectId} kinds={['design_run_experiment']} />
       <div>
-        <Link to={`/projects/${projectId}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-3" />{project.name}
-        </Link>
-        <div className="mt-2 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <FlaskConical className="size-5" />
-          <h1 className="text-xl font-semibold">Experiments</h1>
-          <Badge variant="secondary">Project capability</Badge>
+          <h2 className="text-base font-semibold">Experiments</h2>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           Define a test, capture immutable runs and observations, then send a reviewed interpretation into Inquiry.

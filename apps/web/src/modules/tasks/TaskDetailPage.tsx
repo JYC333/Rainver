@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft, ExternalLink, Pencil } from 'lucide-react'
@@ -20,8 +20,9 @@ import { PreviewBadge, DryRunBanner } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import TaskContractEditor from './TaskContractEditor'
+import TaskWorkTab from './TaskWorkTab'
 
-type TaskDetailTab = 'overview' | 'runs' | 'artifacts' | 'proposals'
+type TaskDetailTab = 'work' | 'overview' | 'runs' | 'artifacts' | 'proposals'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -37,7 +38,11 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 export default function TaskDetailPage() {
-  const { taskId = '' } = useParams()
+  const { taskId = '', projectId = '' } = useParams()
+  // Opened from a Project's Board, Back belongs to that Board: sending the
+  // person to the cross-Project list would unmount the Project shell, which is
+  // the thing opening the Task inside it was meant to preserve.
+  const backTo = projectId ? `/projects/${projectId}/board` : '/tasks'
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [task, setTask] = useState<Task | null>(null)
   const [runs, setRuns] = useState<TaskRunListItem[]>([])
@@ -51,7 +56,9 @@ export default function TaskDetailPage() {
   const [agentPick, setAgentPick] = useState<string>('')
   const [creatingRun, setCreatingRun] = useState(false)
   const [requestingPlan, setRequestingPlan] = useState(false)
-  const [activeTab, setActiveTab] = useState<TaskDetailTab>('overview')
+  // Work is the default: the first question about a Task is where it stands,
+  // not what its description says.
+  const [activeTab, setActiveTab] = useState<TaskDetailTab>('work')
   const [editOpen, setEditOpen] = useState(false)
 
   const load = useCallback(async () => {
@@ -94,7 +101,16 @@ export default function TaskDetailPage() {
   }, [taskId, activeSpaceId])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setActiveTab('overview') }, [taskId])
+  // Navigating to another Task starts at Work again — where a fresh mount
+  // starts. The guard is the point: this effect predates the Work tab and ran
+  // on mount too, so it silently overrode the default above on every visit,
+  // and a tab clicked before it flushed was undone.
+  const shownTaskId = useRef(taskId)
+  useEffect(() => {
+    if (shownTaskId.current === taskId) return
+    shownTaskId.current = taskId
+    setActiveTab('work')
+  }, [taskId])
 
   async function createRun() {
     if (!taskId || !task) return
@@ -159,7 +175,7 @@ export default function TaskDetailPage() {
     return (
       <div className="p-6">
         <Button variant="ghost" asChild>
-          <Link to="/tasks"><ArrowLeft className="size-4 mr-1" />Back</Link>
+          <Link to={backTo}><ArrowLeft className="size-4 mr-1" />Back</Link>
         </Button>
         <EmptyState
           className="mt-6"
@@ -169,7 +185,7 @@ export default function TaskDetailPage() {
             : 'Select an operational space to inspect this task.'}
           action={
             <Button variant="ghost" asChild>
-              <Link to="/tasks">Back to Tasks</Link>
+              <Link to={backTo}>{projectId ? 'Back to the Board' : 'Back to Tasks'}</Link>
             </Button>
           }
         />
@@ -184,7 +200,7 @@ export default function TaskDetailPage() {
     <div className="p-6 space-y-6 max-w-5xl">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" asChild>
-          <Link to="/tasks"><ArrowLeft className="size-4" /></Link>
+          <Link to={backTo}><ArrowLeft className="size-4" /></Link>
         </Button>
       </div>
 
@@ -258,11 +274,16 @@ export default function TaskDetailPage() {
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as TaskDetailTab)}>
         <TabsList>
+          <TabsTrigger value="work">Work</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
           <TabsTrigger value="proposals">Proposals</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="work" className="space-y-4 mt-4">
+          <TaskWorkTab taskId={taskId} onChanged={() => void load()} />
+        </TabsContent>
 
         <TabsContent value="overview" className="space-y-4 mt-4">
           <Card className="p-4 space-y-3">

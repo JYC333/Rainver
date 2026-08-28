@@ -206,7 +206,11 @@ export async function copyProvenanceToMemory(
 /** INSERT a `supersedes` memory_relations edge (new → old). Does not commit. */
 export async function recordMemorySupersedesRelation(
   db: Queryable,
-  input: { spaceId: string; newMemoryId: string; oldMemoryId: string; proposalId: string },
+  // `proposalId` is null for an Agent's own bounded revision (ADR 0003 §2):
+  // the version chain is the same chain whether or not a proposal produced it,
+  // and a synthetic id here would be a foreign key to a proposal that never
+  // existed.
+  input: { spaceId: string; newMemoryId: string; oldMemoryId: string; proposalId: string | null },
 ): Promise<void> {
   await db.query(
     `INSERT INTO memory_relations

@@ -2,11 +2,19 @@ import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 
 export type ProjectAttentionSeverity = "low" | "normal" | "high" | "critical";
 
+/**
+ * Why this item is asking for a person (ADR 0017 §4). Required: an adapter
+ * that cannot name one of the four is not emitting attention, and the list is
+ * only worth reading while everything on it needs a decision.
+ */
+export type ProjectAttentionClass = "gate" | "remainder" | "next_step" | "uncertain";
+
 // Wire shape for `ProjectAttentionItem` (plan section 8). Computed on demand
 // from registered domain adapters — never stored, never authoritative, and
 // never a substitute for the owning Domain's own lifecycle/status.
 export interface ProjectAttentionItem {
   id: string;
+  attention_class: ProjectAttentionClass;
   project_id: string;
   area_kind: string;
   source_type: string;

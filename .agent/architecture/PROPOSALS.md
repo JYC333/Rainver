@@ -99,9 +99,20 @@ Proposals are the product review and application boundary for durable mutations.
   remain artifact metadata until a user/operator explicitly creates a
   `claim_candidate_packet`, retrieval maintenance packet, diagnostics packet, or
   Memory maintenance packet from selected artifacts/reports.
-- `policy_change`, `follow_up_task`, `agent_config_update`, and other
-  non-memory target mutations are not currently registered server appliers. They
-  fail closed until their owning domain registers a server applier.
+- `follow_up_task` has a registered applier (`tasks/proposalApplier.ts`).
+  After a Run a person asked for finalizes successfully, the proposal is
+  applied for them rather than queued (ADR 0017 §2,
+  `tasks/followUpTaskReconciler.ts`); every other case waits for a person as
+  before. Whichever route reaches it, the write takes the Project lock and
+  re-checks Project writer authority — the space role that authorises an
+  accept says nothing about whether that person may write into the Project.
+  Two consequences worth knowing: a card whose Project has since been archived
+  can only be rejected, and a follow-up naming a Project other than the Run's
+  own is never applied automatically — it waits for a person, being the same
+  input `task.create` refuses outright.
+- `policy_change`, `agent_config_update`, and other non-memory target
+  mutations are not currently registered server appliers. They fail closed
+  until their owning domain registers a server applier.
 - Custom Source proposal apply validates the handler version/proposal binding,
   rejects stale active-pointer or envelope changes, and then activates the
   named handler version while superseding the previous active version.

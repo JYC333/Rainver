@@ -18,12 +18,6 @@ import {
   type AutonomyDiscoverer,
 } from "../src/modules/autonomy/registry.js";
 import {
-  projectEntitySummaryRegistry,
-  projectModeProjectionRegistry,
-  type ProjectEntitySummaryAdapter,
-  type ProjectModeProjectionAdapter,
-} from "../src/modules/projects/overviewRegistry.js";
-import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
 } from "../src/modules/projects/attentionRegistry.js";
@@ -41,23 +35,6 @@ const discoverer: AutonomyDiscoverer = {
   buildLaunch: () => ({ capabilityId: "test", capabilities: [], prompt: "", instruction: "" }),
   buildReport: () => ({ artifactType: "test", title: "test", fallbackContent: "" }),
 };
-const modeAdapter: ProjectModeProjectionAdapter = {
-  mode: "research",
-  getOverviewProjection: async () => ({
-    mode: "research",
-    current_state_summary: "test",
-    progress_indicators: [],
-    focus_set: [],
-    next_actions: [],
-  }),
-};
-const summaryAdapter: ProjectEntitySummaryAdapter = {
-  entityType: "test_entity",
-  label: "Test",
-  href: () => "/test",
-  detail: "test",
-  getSummary: async () => ({ count: 0, status: "ok" }),
-};
 const reconciler = { reconcile: async () => {} };
 
 function resetOwnedRegistries(): void {
@@ -65,8 +42,6 @@ function resetOwnedRegistries(): void {
   automationTargetHandlerRegistry.__resetForTests();
   workflowExecutionOutcomeHandlerRegistry.__resetForTests();
   autonomyDiscovererRegistry.__resetForTests();
-  projectModeProjectionRegistry.__resetForTests();
-  projectEntitySummaryRegistry.__resetForTests();
   runFinalizationReconcilerRegistry.__resetForTests();
   projectAttentionRegistry.__resetForTests();
 }
@@ -77,8 +52,6 @@ function registrySnapshot() {
     automationTargets: [...automationTargetHandlerRegistry.registeredTypes()].sort(),
     workflowOutcomes: [...workflowExecutionOutcomeHandlerRegistry.registeredKeys()].sort(),
     autonomyDiscoverers: autonomyDiscovererRegistry.entries().map(([kind]) => kind).sort(),
-    projectModes: projectModeProjectionRegistry.list().map(({ mode }) => mode).sort(),
-    projectEntities: projectEntitySummaryRegistry.list().map(({ entityType }) => entityType).sort(),
     runFinalizers: [...runFinalizationReconcilerRegistry.registeredKeys()].sort(),
   };
 }
@@ -107,16 +80,6 @@ describe("owned contribution registries", () => {
     autonomyDiscovererRegistry.register("periodic_digest", discoverer, "first");
     expect(() => autonomyDiscovererRegistry.register("periodic_digest", discoverer, "second"))
       .toThrow("periodic_digest is already registered by first");
-
-    projectModeProjectionRegistry.register(modeAdapter, "first");
-    projectModeProjectionRegistry.register(modeAdapter, "first");
-    expect(() => projectModeProjectionRegistry.register(modeAdapter, "second"))
-      .toThrow("research is already registered by first");
-
-    projectEntitySummaryRegistry.register(summaryAdapter, "first");
-    projectEntitySummaryRegistry.register(summaryAdapter, "first");
-    expect(() => projectEntitySummaryRegistry.register(summaryAdapter, "second"))
-      .toThrow("test_entity is already registered by first");
 
     runFinalizationReconcilerRegistry.register("test.finalizer", reconciler, "first");
     runFinalizationReconcilerRegistry.register("test.finalizer", reconciler, "first");

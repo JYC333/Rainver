@@ -176,5 +176,23 @@ export const DEFAULT_COLUMNS = [
   { name: "Inbox", status_key: "inbox", position: 0, isDone: false, isDefault: true },
   { name: "Ready", status_key: "ready", position: 1, isDone: false, isDefault: false },
   { name: "In Progress", status_key: "in_progress", position: 2, isDone: false, isDefault: false },
-  { name: "Done", status_key: "done", position: 3, isDone: true, isDefault: false },
+  // A card that stopped for someone's decision needs somewhere to stop. Without
+  // this column it would sit under "In Progress" claiming work is happening.
+  { name: "Waiting", status_key: "waiting_for_review", position: 3, isDone: false, isDefault: false },
+  { name: "Done", status_key: "done", position: 4, isDone: true, isDefault: false },
 ];
+
+/**
+ * Which completion requirements a person is knowingly closing without.
+ *
+ * A bare force flag would record that the Task was closed and lose what was
+ * skipped, which is the only part worth keeping.
+ */
+export function completionOverride(value: unknown): { acknowledged: string[] } | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const acknowledged = (value as Record<string, unknown>).acknowledged;
+  if (!Array.isArray(acknowledged)) return null;
+  const reasons = acknowledged.filter((entry): entry is string => typeof entry === "string");
+  return reasons.length > 0 ? { acknowledged: reasons } : null;
+}

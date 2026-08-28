@@ -3,7 +3,6 @@ import {
   ConversationContinuationRegistry,
   type ContinuationProposal,
 } from "../src/modules/proposals/continuationRegistry.js";
-import { registerInquiryThreadContinuation } from "../src/modules/inquiry/inquiryThreadProposalApplier.js";
 import { registerProjectDefinitionContinuation } from "../src/modules/projects/projectDefinitionProposalApplier.js";
 import type { Queryable } from "../src/modules/proposals/repository.js";
 
@@ -73,10 +72,9 @@ describe("ConversationContinuationRegistry", () => {
       .toThrow(/already registered/);
   });
 
-  it("wires both domain registrations without a naming collision", () => {
+  it("wires a domain registration without a naming collision", () => {
     const registry = new ConversationContinuationRegistry();
     expect(() => {
-      registerInquiryThreadContinuation(registry);
       registerProjectDefinitionContinuation(registry);
     }).not.toThrow();
   });

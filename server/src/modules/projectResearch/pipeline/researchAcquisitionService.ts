@@ -8,6 +8,10 @@ export interface StartResearchAcquisitionInput {
   intentNote?: string | null;
   originRoomId: string | null;
   originSessionId: string | null;
+  /** How many of the newest matches to read; the pipeline's own default applies when absent. */
+  maxItems?: number | null;
+  /** ISO date floor for collection; all available history when absent. */
+  since?: string | null;
 }
 
 export type StartResearchAcquisitionResult =
@@ -53,7 +57,7 @@ export class ResearchAcquisitionService {
       // without this, two near-simultaneous calls can both see no active job
       // and both enqueue one, each burning a real LLM assessment/live-search
       // pipeline run before either row is visible to the other. Same idiom as
-      // `InquiryThreadProposalService.proposeThread`'s coalesce lock.
+      // the Inquiry Thread creation path's coalesce lock.
       await db.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [`research-start-acquisition:${identity.spaceId}:${input.threadId}`],
@@ -76,6 +80,8 @@ export class ResearchAcquisitionService {
           intent_note: input.intentNote ?? null,
           origin_room_id: input.originRoomId,
           origin_session_id: input.originSessionId,
+          ...(input.maxItems ? { max_items: input.maxItems } : {}),
+          ...(input.since ? { since: input.since } : {}),
         },
       });
       return { status: "queued" as const, thread_id: input.threadId };

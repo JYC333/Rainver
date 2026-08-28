@@ -33,17 +33,16 @@ export function registerProjectDefinitionProposalAppliers(registry: ProposalAppl
 
 /**
  * Continuation for an accepted `project_brief_publish`: unlike
- * `inquiry_thread_create`, this is a genuinely single-tool case — the only
- * next step is decomposing the Brief into Inquiry Threads via
- * `inquiry.propose_thread`, so the directive names that tool directly
- * (plan Phase 2).
+ * the retired thread proposal, this is a genuinely single-tool case — the
+ * only next step is decomposing the Brief into Inquiry Threads via
+ * `inquiry.create_thread`, so the directive names that tool directly.
  */
 export function registerProjectDefinitionContinuation(registry: ConversationContinuationRegistry): void {
   registry.register("project_brief_publish", ({ proposal }) => {
     const chinese = isChineseTitle(proposal.proposed_title || "the proposal");
     const instruction = chinese
-      ? "用户已确认上一项项目定义。现在直接将它拆成 3–5 个关键研究问题，并逐个创建到项目的问题列表。拆出几个，就必须实际执行几次创建动作；不要只在回复里列清单。完成后用一句话说明实际创建或提交了几个；任何一个失败都要明确说明。"
-      : "The user accepted the preceding Project definition. Now decompose it into 3–5 key research questions and create each one in the Project question list. If you identify N questions, execute the creation action N times; do not merely list them in the reply. Finish with one sentence stating exactly how many were created or proposed, and clearly report any failure.";
-    return { directive: "inquiry.propose_thread", instruction };
+      ? "用户已确认上一项项目定义。现在直接将它拆成 3–5 个关键研究问题，并逐个创建到项目的问题列表。拆出几个，就必须实际执行几次创建动作；不要只在回复里列清单。这些问题会立即存在，不要再逐个征求确认——用户在项目动态里看得到，也可以随时归档。完成后用一句话说明实际创建了几个；任何一个失败都要明确说明。"
+      : "The user accepted the preceding Project definition. Now decompose it into 3–5 key research questions and create each one in the Project question list. If you identify N questions, execute the creation action N times; do not merely list them in the reply. They exist immediately — do not ask the user to confirm each one; they see every question you open in the Project's updates and can archive any of them. Finish with one sentence stating exactly how many were created, and clearly report any failure.";
+    return { directive: "inquiry.create_thread", instruction };
   });
 }

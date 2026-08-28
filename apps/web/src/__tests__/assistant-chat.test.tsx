@@ -42,6 +42,19 @@ function renderPage(entry = '/agents/a1/chat') {
   )
 }
 
+/**
+ * The composer stays disabled until the backend catalog resolves, and `send`
+ * drops anything typed before then — as it does for a person, who cannot type
+ * into a disabled box at all. Waiting for it is what a person does; not
+ * waiting made these tests race the component's own guard and fail whenever
+ * the catalog resolved a tick late.
+ */
+async function enabledComposer(): Promise<HTMLElement> {
+  const input = await screen.findByPlaceholderText(/ask your assistant/i)
+  await waitFor(() => expect(input).not.toBeDisabled())
+  return input
+}
+
 function LocationProbe() {
   const location = useLocation()
   return <span data-testid="location">{location.pathname}{location.search}</span>
@@ -163,7 +176,7 @@ describe('AssistantChatPage conversation backends', () => {
     } as never)
 
     renderPage()
-    const input = await screen.findByPlaceholderText(/ask your assistant/i)
+    const input = await enabledComposer()
     fireEvent.change(input, { target: { value: 'hello' } })
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 
@@ -194,7 +207,7 @@ describe('AssistantChatPage conversation backends', () => {
     })
 
     renderPage()
-    const input = await screen.findByPlaceholderText(/ask your assistant/i)
+    const input = await enabledComposer()
     fireEvent.change(input, { target: { value: 'hello' } })
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 

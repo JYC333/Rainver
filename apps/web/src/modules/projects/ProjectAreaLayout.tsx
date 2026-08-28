@@ -5,50 +5,45 @@ import type { Project, ProjectOverview } from '../../types/api'
 import { cn } from '../../lib/utils'
 import { Badge } from '../../components/ui/badge'
 import { spacePath } from '../../core/navigation'
+import ProjectChatSidecar from './sidecar/ProjectChatSidecar'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from '../../core/reviewAttention'
 import { useDeclareProjectCaptureProject } from '../../contexts/CaptureContext'
+import { inProjectHref } from './taskHref'
 
-const groups = [
-  {
-    label: 'Project',
-    items: [
-      { label: 'Overview', path: '' },
-      // Notes sit under Project, not under an Area: a Project has a dozen
-      // Areas and writing something down should not mean going to one of them.
-      { label: 'Notes', path: 'notes' },
-      { label: 'Rooms', path: 'rooms' },
-      // The Space's one review queue, pinned to this Project. Staying inside
-      // the Project matters: this is where a capture is checked on, and
-      // bouncing out to the Space Inbox to do it lost the reader their place.
-      { label: 'Raw material', path: 'raw' },
-    ],
-  },
-  {
-    label: 'Explore',
-    items: [
-      { label: 'Inquiry', path: 'inquiry' },
-      { label: 'Research', path: 'research' },
-      { label: 'Sources', path: 'sources' },
-      { label: 'Digest', path: 'digest' },
-      { label: 'Files & Code', path: 'files' },
-      { label: 'Experiments', path: 'experiments' },
-    ],
-  },
-  {
-    label: 'Decide & learn',
-    items: [
-      { label: 'Decisions', path: 'decisions' },
-      { label: 'Learning', path: 'learning' },
-      { label: 'Knowledge review', path: 'knowledge-review' },
-    ],
-  },
-  {
-    label: 'Execute',
-    items: [
-      { label: 'Delivery', path: 'delivery' },
-      { label: 'Operations', path: 'operations' },
-    ],
-  },
+/**
+ * The three things a person switches between while running a Project.
+ *
+ * Everything else stays reachable under Areas — this is a promotion, not a
+ * removal, and every route is unchanged so existing links keep working. A flat
+ * list of fifteen made choosing a module the first step of understanding a
+ * Project, which is backwards: the question on arriving is what is going on,
+ * not which subsystem to open.
+ */
+const primary = [
+  { label: 'Pulse', path: '' },
+  { label: 'Board', path: 'board' },
+  { label: 'Updates', path: 'updates' },
+  // A Project is pushed forward through conversation, so all of it is a
+  // first-level destination — not a Room picker two clicks down.
+  { label: 'Conversations', path: 'conversations' },
+] as const
+
+/**
+ * Six, flat. Thirteen entries in four groups were six research surfaces that
+ * had grown up separately and pointed at each other with banners, plus three
+ * doors to one source pipeline. Each fold keeps the route: Raw material and
+ * Digest are tabs of Sources; Knowledge review and Experiments are views of
+ * Inquiry; every Room's conversations are one list under Conversations, and
+ * the Rooms page (roster, invitations) is reached from there. Group labels
+ * went with the groups — six is one glance.
+ */
+const areas = [
+  { label: 'Notes', path: 'notes' },
+  { label: 'Inquiry', path: 'inquiry' },
+  { label: 'Research', path: 'research' },
+  { label: 'Sources', path: 'sources' },
+  { label: 'Files & Code', path: 'files' },
+  { label: 'Decisions', path: 'decisions' },
 ] as const
 
 export default function ProjectAreaLayout() {
@@ -97,6 +92,16 @@ export default function ProjectAreaLayout() {
   // must not require navigating to notes first (U2). This declares the Project
   // the shell's composer may offer as a destination; Areas that know what they
   // are currently about declare that object separately.
+  // Open by default: an Area a person cannot see is one they will not
+  // remember exists, and the dropdown exists to shorten the list, not to hide
+  // it. Their choice is remembered per browser.
+  const [areasOpen, setAreasOpen] = useState(() => {
+    try { return localStorage.getItem('project.areas.open') !== 'false' } catch { return true }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('project.areas.open', String(areasOpen)) } catch { /* private mode */ }
+  }, [areasOpen])
+
   useDeclareProjectCaptureProject(projectId)
 
   return (
@@ -104,46 +109,55 @@ export default function ProjectAreaLayout() {
       <aside className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r">
         <div className="mb-5 px-2">
           <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
-          <p className="text-xs capitalize text-muted-foreground">{project?.primary_mode ?? 'project'} mode</p>
         </div>
-        <nav className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-1">
-          {groups.map(group => (
-            <div key={group.label}>
-              <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{group.label}</p>
-              <div className="space-y-0.5">
-                {group.items.map(item => (
+        <nav className="space-y-4">
+          <div className="space-y-0.5">
+            {primary.map(item => (
+              <NavLink
+                key={item.path}
+                to={spacePath(spaceId, `/projects/${projectId}${item.path ? `/${item.path}` : ''}`)}
+                end={item.path === ''}
+                className={({ isActive }) => cn(
+                  'block rounded-md px-2 py-1.5 text-sm font-medium',
+                  isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted',
+                )}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  {item.label}
+                  {item.path === '' && (overview?.attention.length ?? 0) > 0 && <Badge variant="destructive">{overview?.attention.length}</Badge>}
+                </span>
+              </NavLink>
+            ))}
+          </div>
+
+          <div className="border-t pt-3">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:bg-muted"
+              onClick={() => setAreasOpen(open => !open)}
+              aria-expanded={areasOpen}
+            >
+              Areas
+              <span aria-hidden>{areasOpen ? '▾' : '▸'}</span>
+            </button>
+            {areasOpen && (
+              <div className="mt-1 space-y-0.5">
+                {areas.map(item => (
                   <NavLink
                     key={item.path}
-                    to={spacePath(spaceId, `/projects/${projectId}${item.path ? `/${item.path}` : ''}`)}
-                    end={item.path === ''}
+                    to={spacePath(spaceId, `/projects/${projectId}/${item.path}`)}
                     className={({ isActive }) => cn(
                       'block rounded-md px-2 py-1.5 text-sm',
                       isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted',
                     )}
                   >
-                    <span className="flex items-center justify-between gap-2">
-                      {item.label}
-                      {item.path === '' && (overview?.attention.length ?? 0) > 0 && <Badge variant="destructive">{overview?.attention.length}</Badge>}
-                    </span>
+                    {item.label}
                   </NavLink>
                 ))}
               </div>
-            </div>
-          ))}
-        </nav>
-        {(overview?.setup_checklist?.length ?? 0) > 0 && (
-          <div className="mt-5 border-t pt-4">
-            <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Setup</p>
-            <div className="space-y-1">
-              {overview?.setup_checklist?.map(item => (
-                <NavLink key={item.id} to={spacePath(spaceId, item.href)} className="flex items-start justify-between gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
-                  <span><span className="block">{item.label}{item.required ? ' *' : ''}</span><span className="text-[11px] text-muted-foreground">{item.detail}</span></span>
-                  <Badge variant={item.status === 'ready' ? 'success' : item.required ? 'warning' : 'outline'}>{item.status}</Badge>
-                </NavLink>
-              ))}
-            </div>
+            )}
           </div>
-        )}
+        </nav>
         {/* This is the only "what should I do next" surface visible from every
             Area, not just Overview — an Area page in the middle of an async
             workflow (research scan, screening review, …) has nowhere else to
@@ -153,7 +167,7 @@ export default function ProjectAreaLayout() {
             <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Needs attention</p>
             <div className="space-y-1">
               {overview?.attention.map(item => (
-                <Link key={item.id} to={spacePath(spaceId, item.href)} className="block rounded-md px-2 py-1.5 text-xs hover:bg-muted">
+                <Link key={item.id} to={spacePath(spaceId, inProjectHref(projectId, item.href))} className="block rounded-md px-2 py-1.5 text-xs hover:bg-muted">
                   <span className="block font-medium">{item.title}</span>
                   <span className="block text-[11px] text-muted-foreground">{item.reason ?? item.summary}</span>
                 </Link>
@@ -162,7 +176,13 @@ export default function ProjectAreaLayout() {
           </div>
         )}
       </aside>
-      <main className="min-w-0"><Outlet /></main>
+      {/* The sidecar sits beside every Area, so discussing what you are looking
+          at never means leaving it. It renders the Room's own conversation, not
+          a private one. */}
+      <div className="flex min-w-0">
+        <main className="min-w-0 flex-1"><Outlet /></main>
+        <ProjectChatSidecar />
+      </div>
     </div>
   )
 }

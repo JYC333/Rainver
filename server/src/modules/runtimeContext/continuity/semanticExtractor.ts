@@ -1,6 +1,6 @@
 import type { ContextEvent, SemanticCheckpoint } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
-import type { Queryable } from "../../routeUtils/common.js";
+import { HttpError, type Queryable } from "../../routeUtils/common.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { completeProviderText } from "../../providers/invocation/invocation.js";
 import type { SemanticCheckpointProviderPort } from "./service.js";
@@ -70,10 +70,7 @@ export class ManagedSemanticCheckpointProvider implements SemanticCheckpointProv
           ? { payloadSourceConnectionIds: sourceIds, sourcePolicies }
           : {}),
       },
-      metering: {
-        source_resource_type: "work_context_scope",
-        source_resource_id: input.workContextScopeId,
-      },
+      metering: await checkpointMetering(this.db, input.spaceId, input.workContextScopeId),
     });
     return {
       extraction: parseJsonObject(completion.text),
@@ -156,4 +153,39 @@ async function sourceConnectionIdsForRefs(
     return [...byTarget.values()].flat();
   }));
   return [...new Set([...direct, ...linked.flat()])];
+}
+
+/**
+ * Who a checkpoint extraction is metered to.
+ *
+ * It used to name the work-context scope as a content resource
+ * (`source_resource_type: "work_context_scope"`). No such resource exists —
+ * a scope is not an ontology entity and has no table keyed by its id — so
+ * attribution rejected every extraction with a 422 and the job failed. Because
+ * attribution is resolved before the provider is called, no tokens were
+ * spent; but from 2026-08-10 no semantic checkpoint was ever written, and
+ * the "completed" jobs were the ones with too few events to extract.
+ *
+ * A scope belongs to the person whose work context it is: the owner of its
+ * latest setup, with that setup's Project when it has one. That is the
+ * "explicit owner, no source resource" attribution path, which is what a
+ * background task on someone's behalf is.
+ */
+export async function checkpointMetering(
+  db: Queryable,
+  spaceId: string,
+  workContextScopeId: string,
+): Promise<{ subject_user_id: string; project_id: string | null }> {
+  const setup = await db.query<{ user_id: string; project_id: string | null }>(
+    `SELECT user_id, project_id FROM work_context_setups
+      WHERE space_id = $1 AND work_context_scope_id = $2
+      ORDER BY version DESC, created_at DESC
+      LIMIT 1`,
+    [spaceId, workContextScopeId],
+  );
+  const row = setup.rows[0];
+  if (!row) {
+    throw new HttpError(409, `Work context scope '${workContextScopeId}' has no setup to meter its checkpoint extraction to`);
+  }
+  return { subject_user_id: row.user_id, project_id: row.project_id ?? null };
 }

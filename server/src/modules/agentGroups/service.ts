@@ -24,11 +24,17 @@ import {
   estimateRoomSummaryTokens,
   ROOM_RECENT_TOKEN_BUDGET,
 } from "../rooms/conversationContext.js";
-import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../systemActions/scenarioToolAllowance.js";
+import {
+  CONVERSATION_TOOL_ALLOWANCE,
+  ROOM_CONVERSATION_TOOL_ALLOWANCE,
+} from "../systemActions/scenarioToolAllowance.js";
 import {
   ACTION_RESULT_REPORTING_POLICY,
   DURABLE_ACTION_CLAIM_POLICY,
+  IDENTIFIER_POLICY,
+  CONCLUSION_ACTION_POLICY,
   QUESTION_DECOMPOSITION_ACTION_POLICY,
+  PROPOSAL_DECISION_POLICY,
   RESEARCH_EXECUTION_POLICY,
 } from "../systemActions/conversationPolicy.js";
 import {
@@ -385,8 +391,15 @@ export class AgentGroupRunService {
       // not of whichever Agent its roster happens to name — a Room roster is
       // fixed at creation, so binding these to the Agent would mean a Room
       // built around a differently configured Agent silently does nothing.
-      // Non-Room groups keep the Agent's own standing permissions.
-      const roomToolAllowance = group.room_id ? ROOM_CONVERSATION_TOOL_ALLOWANCE : null;
+      //
+      // A group with no Room is still a conversation with a person, and gets
+      // what belongs to that: the memory writes, and nothing that touches a
+      // Project. Before this it declared no capabilities at all, so whatever
+      // its Agent's standing permissions said, the intersection was empty and
+      // it could call nothing.
+      const conversationToolAllowance = group.room_id
+        ? ROOM_CONVERSATION_TOOL_ALLOWANCE
+        : CONVERSATION_TOOL_ALLOWANCE;
       const roomRunGranteeUserIds = group.room_id
         ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
         : [];
@@ -436,8 +449,8 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
-              scenario_tool_allowance: roomToolAllowance,
+              capabilities_json: [...conversationToolAllowance],
+              scenario_tool_allowance: conversationToolAllowance,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
@@ -482,8 +495,8 @@ export class AgentGroupRunService {
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
-          capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
-          scenario_tool_allowance: roomToolAllowance,
+          capabilities_json: [...conversationToolAllowance],
+          scenario_tool_allowance: conversationToolAllowance,
           allow_system_assistant: Boolean(group.room_id),
         });
         const linkedRootRun = await repos.runs.linkRunToGroupRoot({
@@ -528,8 +541,8 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: roomToolAllowance ? [...roomToolAllowance] : null,
-              scenario_tool_allowance: roomToolAllowance,
+              capabilities_json: [...conversationToolAllowance],
+              scenario_tool_allowance: conversationToolAllowance,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
@@ -1594,9 +1607,12 @@ function roomRunPrompt(
 ): string {
   const executionRules = [
     "[Room execution rules]",
+    IDENTIFIER_POLICY,
     DURABLE_ACTION_CLAIM_POLICY,
     QUESTION_DECOMPOSITION_ACTION_POLICY,
+    CONCLUSION_ACTION_POLICY,
     RESEARCH_EXECUTION_POLICY,
+    PROPOSAL_DECISION_POLICY,
     ACTION_RESULT_REPORTING_POLICY,
   ].join("\n");
   return [

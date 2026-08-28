@@ -16,6 +16,8 @@ import { ProjectResearchQuestionRefineService } from "../questionRefineService.j
 import { AdaptiveQueryOrchestrator } from "../../research/queryPlanning/adaptiveQueryOrchestrator.js";
 import { ResearchMonitorMaterializer } from "../../research/discovery/monitorMaterializer.js";
 import { ProjectResearchOrchestrator } from "../orchestrator.js";
+import { ProjectOperationRepository } from "../../projects/projectOperationRepository.js";
+import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../researchCheckpointPolicy.js";
 
 export const RESEARCH_PIPELINE_START_JOB = "research_pipeline_start";
 
@@ -48,8 +50,14 @@ export function registerResearchAcquisitionPipelineHandler(registry: JobHandlerR
 interface PipelinePayload {
   threadId: string;
   projectId: string;
+  /** Caller-set scope; the defaults below apply when the caller said nothing. */
+  maxItems: number | null;
+  since: string | null;
   originRoomId: string | null;
   originSessionId: string | null;
+  /** Identifies *this* pipeline run, so its outcome is reported even when an
+   *  earlier run for the same Thread already reported an identical one. */
+  jobId: string;
 }
 
 /** True for a domain/semantic rejection (bad input, business-rule conflict);
@@ -79,15 +87,16 @@ export class ResearchAcquisitionPipelineRunner {
   ) {}
 
   async run(job: JobEnvelopeForHandler): Promise<JobHandlerResult> {
-    const payload = this.parsePayload(job.payload);
+    const payload = this.parsePayload(job.payload, job.job_id);
     const identity: SpaceUserIdentity = { spaceId: job.space_id, userId: requireUserId(job) };
 
     const outcome = await this.runPipeline(identity, payload);
+    if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
     await this.postOutcome(identity, payload, outcome);
     return outcome as unknown as JobHandlerResult;
   }
 
-  private parsePayload(raw: Record<string, unknown>): PipelinePayload {
+  private parsePayload(raw: Record<string, unknown>, jobId: string): PipelinePayload {
     const threadId = optionalString(raw.thread_id);
     const projectId = optionalString(raw.project_id);
     if (!threadId || !projectId) {
@@ -98,6 +107,11 @@ export class ResearchAcquisitionPipelineRunner {
       projectId,
       originRoomId: optionalString(raw.origin_room_id) ?? null,
       originSessionId: optionalString(raw.origin_session_id) ?? null,
+      maxItems: typeof raw.max_items === "number" && Number.isInteger(raw.max_items) && raw.max_items > 0
+        ? raw.max_items
+        : null,
+      since: optionalString(raw.since) ?? null,
+      jobId,
     };
   }
 
@@ -164,15 +178,29 @@ export class ResearchAcquisitionPipelineRunner {
       const started = await new ProjectResearchOrchestrator(this.pool, this.config).startInitialIntake(identity, payload.projectId, {
         thread_id: payload.threadId,
         query_strategy_id: strategyId,
-        history_mode: "all_available",
+        // A date floor makes this a bounded range, which is also what leaves
+        // an earlier-history extension something to extend.
+        ...(payload.since
+          ? { history_mode: "bounded_range" as const, from: payload.since, to: new Date().toISOString() }
+          : { history_mode: "all_available" as const }),
+        // The whole of a source's history is a number nobody has seen and
+        // nobody agreed to: unbounded, this ingested 873 documents and put
+        // every one of them through an LLM classification — hours of work
+        // and a million tokens — with no confirmation and nothing on screen.
+        // The walk is newest-first and the budget is operation-wide, so this
+        // buys the most recent `SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` items
+        // and stops. Earlier history remains reachable through the Extend
+        // history path, which is a decision rather than a default.
+        max_items: payload.maxItems ?? SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,
         report_depth: "quick",
         question_refine_skipped: false,
       });
       operationId = (started as { operation: { id: string } }).operation.id;
     } catch (error) {
-      if (isDomainError(error) && error.statusCode === 409) {
-        return { status: "stage_failed", stage: "start_intake", thread_id: payload.threadId, reason: "Research is already running for this Thread; no new acquisition was started" };
-      }
+      // Every domain failure reports its own message. Folding 409s into one
+      // "research is already running" line told the user — and the Agent
+      // relaying it — something that was not true of any 409 but one, and
+      // sent both down a diagnosis that had nothing to do with the failure.
       if (isDomainError(error)) {
         return { status: "stage_failed", stage: "start_intake", thread_id: payload.threadId, reason: error.message };
       }
@@ -187,7 +215,15 @@ export class ResearchAcquisitionPipelineRunner {
       );
     }
 
-    return { status: "started", thread_id: payload.threadId, operation_id: operationId };
+    return {
+      status: "started",
+      thread_id: payload.threadId,
+      operation_id: operationId,
+      // What the person is owed before it runs, not after it fails: roughly
+      // how much matched, and how much of it this pass will actually read.
+      screening_cap: payload.maxItems ?? SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,
+      matched_estimate: await this.estimateMatchedItems(identity, strategyId),
+    };
   }
 
   /** Reuses the Thread's existing assessment-session context version when one
@@ -240,6 +276,78 @@ export class ResearchAcquisitionPipelineRunner {
     return strategy.id;
   }
 
+  /**
+   * A pipeline that stops before `startInitialIntake` never created an
+   * Operation, so the attempt existed only inside `jobs.result_json` — the
+   * Project's own surfaces (Pulse, the Research Area's runs, and
+   * `research.list_operations`) all read Operations and showed nothing at
+   * all, which reads as "it is still running". A terminal, managed Operation
+   * records the attempt where the work is looked for.
+   */
+  private async recordFailedAttempt(
+    identity: SpaceUserIdentity,
+    payload: PipelinePayload,
+    outcome: Record<string, unknown>,
+  ): Promise<void> {
+    const reason = typeof outcome.reason === "string" ? outcome.reason : "The research pipeline did not start an acquisition.";
+    const stage = typeof outcome.stage === "string" ? outcome.stage : String(outcome.status ?? "unknown");
+    try {
+      const thread = await this.pool.query<{ statement: string }>(
+        `SELECT statement FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
+        [payload.threadId, identity.spaceId],
+      );
+      const statement = thread.rows[0]?.statement ?? "this Question";
+      await new ProjectOperationRepository(this.pool).createManagedResearch(identity, payload.projectId, {
+        title: `Research did not start: ${statement}`.slice(0, 256),
+        intentText: reason,
+        status: "failed",
+        progress: {
+          run_kind: "acquisition_attempt",
+          thread_id: payload.threadId,
+          failed_stage: stage,
+          failure_reason: reason,
+          outcome_status: outcome.status ?? null,
+          pipeline_job_id: payload.jobId,
+          ...(payload.originRoomId ? { origin_room_id: payload.originRoomId } : {}),
+          ...(payload.originSessionId ? { origin_session_id: payload.originSessionId } : {}),
+        },
+        steps: [],
+      });
+    } catch (error) {
+      // Recording the attempt must never turn a reported failure into an
+      // unreported one; the Room message below is the primary channel.
+      process.stderr.write(
+        `[project-research] could not record the failed acquisition attempt for thread ${payload.threadId}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
+  /**
+   * Roughly how much the selected query matches, from the counts adaptive
+   * query planning already recorded while choosing it — no extra provider
+   * call.
+   *
+   * The largest single provider's count, not the sum: providers overlap
+   * heavily (the same paper is in arXiv and OpenAlex), so summing them
+   * reported 2,065 for a query whose corpus was 873 — a number that read as
+   * the scope having grown when it had just been capped at 200. The union is
+   * at least the largest count and at most the sum; the larger of the two
+   * errors is the one that misleads about size.
+   */
+  private async estimateMatchedItems(identity: SpaceUserIdentity, strategyId: string): Promise<number | null> {
+    const rows = await this.pool.query<{ hits: number | null }>(
+      `SELECT DISTINCT ON (plan.id) attempt.provider_hit_count AS hits
+         FROM research_query_provider_plans plan
+         JOIN research_query_attempts attempt ON attempt.provider_plan_id = plan.id
+        WHERE plan.strategy_id = $1 AND plan.space_id = $2 AND plan.status = 'selected'
+        ORDER BY plan.id, attempt.round DESC, attempt.sequence DESC`,
+      [strategyId, identity.spaceId],
+    );
+    const counts = rows.rows.map((row) => Number(row.hits ?? 0)).filter((value) => Number.isFinite(value) && value > 0);
+    if (counts.length === 0) return null;
+    return Math.max(...counts);
+  }
+
   private async postOutcome(
     identity: SpaceUserIdentity,
     payload: PipelinePayload,
@@ -253,7 +361,11 @@ export class ResearchAcquisitionPipelineRunner {
           identity,
           payload.originRoomId!,
           payload.originSessionId!,
-          { kind: "research_pipeline_outcome", key: payload.threadId, payload: outcome },
+          // Keyed by the pipeline run, not the Thread: retrying the same
+          // Thread is a new outcome to report, and keying by Thread made
+          // every attempt after the first silently return the first one's
+          // message — so a failed retry looked like no answer at all.
+          { kind: "research_pipeline_outcome", key: `${payload.threadId}:${payload.jobId}`, payload: outcome },
         ),
       );
     } catch (error) {

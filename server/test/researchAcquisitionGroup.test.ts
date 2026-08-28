@@ -15,6 +15,9 @@ import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/com
 import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
+import { offerEarlierHistoryExtension } from "../src/modules/projectResearch/researchHistoryExtendOffer.js";
+import { ARXIV_HISTORY_FLOOR } from "../src/modules/sources/sourceBackfillStrategy.js";
 
 // Files share a worker: an identity or invoker left in a module-level
 // seam would leak into whichever file runs next.
@@ -120,9 +123,6 @@ describe("researchAcquisitionPipelineDb", () => {
 
   const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
-  // `recommended_question` must echo the Thread's own statement:
-  // `resolveResearchThreadScope` requires the materialized question to exactly
-  // match the pinned Thread, so a fake assessment can never rephrase it.
   function passingAssessmentInvoker() {
     return async (input: { messages: Array<{ content: string }> }) => {
       const lastMessage = JSON.parse(input.messages[input.messages.length - 1]!.content) as { candidate_research_question: string };
@@ -136,6 +136,21 @@ describe("researchAcquisitionPipelineDb", () => {
         clarifying_questions: [],
       };
     };
+  }
+
+  /** What assessment does in production: it rewrites the question it plans
+   *  queries from — here, translating it — while the Thread keeps its own
+   *  statement. */
+  function refiningAssessmentInvoker() {
+    return async () => ({
+      reply: "Assessed.",
+      recommended_question: "How should agent memory systems be classified along axes such as short-term versus long-term?",
+      assessment: { answerable: true, finer: { feasible: 4, interesting: 4, novel: 3, ethical: 5, relevant: 5 }, issues: [] },
+      suggested_questions: ["How should agent memory systems be classified along axes such as short-term versus long-term?"],
+      sub_questions: [],
+      scope: { in: [], out: [] },
+      clarifying_questions: [],
+    });
   }
 
   function failingAssessmentInvoker() {
@@ -220,9 +235,44 @@ describe("researchAcquisitionPipelineDb", () => {
       );
       expect(operation.rows[0]!.status).toBe("active");
       expect(operation.rows[0]!.progress_json).toMatchObject({ origin_room_id: ROOM, origin_session_id: SESSION });
+
+      // The acquisition is bounded before it runs, and says so. Unbounded,
+      // this walked a source's whole history — 873 documents, every one put
+      // through an LLM classification — with no confirmation, nothing on
+      // screen, and the first number the user ever saw inside the failure
+      // four hours later. The walk is newest-first and the budget is
+      // operation-wide, so the cap buys the most recent N items.
+      expect(operation.rows[0]!.progress_json).toMatchObject({
+        history: { max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT },
+      });
+      expect(result).toMatchObject({ screening_cap: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT });
     });
 
-    it("reports assessment_not_passed and does not create an Operation when FINER scores fail the gate", async () => {
+    it("starts when assessment rephrased the question, keeping the Thread's own statement authoritative", async () => {
+      if (!db.available) return;
+      // Assessment rewriting the question is the pipeline working, not drift:
+      // comparing the strategy's text with the Thread's rejected the
+      // pipeline's own output, so `research.start_acquisition` could never
+      // start once a single word changed. Provenance decides instead — the
+      // strategy came from an assessment of this Thread.
+      __setQuestionRefineInvokerForTests(refiningAssessmentInvoker());
+      const statement = "agent memory 应该按什么维度分类？";
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, { kind: "question", statement });
+
+      const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
+      const result = await runner.run(await makeJob(String(thread.id)));
+      expect(result).toMatchObject({ status: "started", thread_id: String(thread.id) });
+
+      const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(
+        `SELECT status, progress_json FROM project_operations WHERE id=$1 AND space_id=$2`,
+        [(result as { operation_id: string }).operation_id, SPACE],
+      );
+      expect(operation.rows[0]!.status).toBe("active");
+      // The Question a person reads stays the Thread's own, not the rewrite.
+      expect(JSON.stringify(operation.rows[0]!.progress_json)).toContain(statement);
+    });
+
+    it("reports assessment_not_passed and records the attempt as a failed Operation, not an acquisition", async () => {
       if (!db.available) return;
       __setQuestionRefineInvokerForTests(failingAssessmentInvoker());
       const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
@@ -234,8 +284,22 @@ describe("researchAcquisitionPipelineDb", () => {
       const result = await runner.run(await makeJob(String(thread.id)));
       expect(result).toMatchObject({ status: "assessment_not_passed", thread_id: String(thread.id) });
 
-      const operations = await db.pool.query(`SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`, [SPACE, PROJECT]);
-      expect(operations.rows).toHaveLength(0);
+      // No acquisition was started — and the attempt is still visible where a
+      // person looks for it. A pipeline that stopped before startInitialIntake
+      // used to leave nothing but a jobs row, so every Project surface showed
+      // an empty list, which reads as "still running".
+      const operations = await db.pool.query<{ status: string; intent_text: string; progress_json: Record<string, unknown> }>(
+        `SELECT status, intent_text, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
+        [SPACE, PROJECT],
+      );
+      expect(operations.rows).toHaveLength(1);
+      expect(operations.rows[0]!.status).toBe("failed");
+      expect(operations.rows[0]!.progress_json).toMatchObject({
+        run_kind: "acquisition_attempt",
+        thread_id: String(thread.id),
+        outcome_status: "assessment_not_passed",
+      });
+      expect(operations.rows[0]!.intent_text).toContain("assessment");
     });
 
     // Advance-to-done idempotency: a second, identical invocation reuses the
@@ -345,7 +409,7 @@ describe("researchAcquisitionServiceDb", () => {
     if (!db.available) return;
     await resetTables(
       db.pool,
-      ["jobs", "project_members", "projects", "space_memberships", "users", "spaces"],
+      ["proposals", "jobs", "project_members", "projects", "space_memberships", "users", "spaces"],
       { cascade: true },
     );
     await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
@@ -423,7 +487,7 @@ describe("researchAcquisitionServiceDb", () => {
     // lock serializing the "already starting" check against the enqueue, two
     // concurrent calls can both observe no active job and both enqueue one —
     // duplicating real LLM-assessment/live-search pipeline cost. Same idiom as
-    // InquiryThreadProposalService's coalesce lock.
+    // the Inquiry Thread creation path's coalesce guard.
     it("serializes concurrent calls for the same Thread so only one job is enqueued", async () => {
       if (!db.available) return;
       const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
@@ -441,6 +505,53 @@ describe("researchAcquisitionServiceDb", () => {
 
       const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
       expect(jobs.rows).toHaveLength(1);
+    });
+  });
+
+  describe("earlier-history extension offer (real Postgres)", () => {
+    // The other half of the bounded acquisition: the pass reads the newest N
+    // matches and stops, and the history it left is offered once, as a decision
+    // a person makes when it can be acted on, rather than run by default.
+    const WORKFLOW_ID = "7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const bounded = {
+      history: { from: "2024-06-01T00:00:00.000Z", max_items: 200 },
+      coverage_ranges: [{ from: "2024-06-01T00:00:00.000Z", to: "2026-08-27T00:00:00.000Z", operation_id: "op-1", status: "completed" }],
+    };
+    const offer = (progress: Record<string, unknown>) => offerEarlierHistoryExtension(db.pool!, {
+      spaceId: SPACE, projectId: PROJECT, workflowId: WORKFLOW_ID, userId: OWNER, operationProgress: progress,
+    });
+
+    it("offers the history the bounded pass did not read, once", async () => {
+      if (!db.available) return;
+      const proposalId = await offer(bounded);
+      expect(proposalId).not.toBeNull();
+
+      const row = await db.pool.query<{ title: string; summary: string; status: string; payload_json: Record<string, unknown> }>(
+        `SELECT title, summary, status, payload_json FROM proposals WHERE id=$1`,
+        [proposalId],
+      );
+      expect(row.rows[0]).toMatchObject({ status: "pending" });
+      expect(row.rows[0]!.title).toContain("2024-06-01");
+      expect(row.rows[0]!.summary).toContain("200 most recent");
+      expect(row.rows[0]!.payload_json).toMatchObject({
+        workflow_id: WORKFLOW_ID, from: ARXIV_HISTORY_FLOOR, to: "2024-06-01T00:00:00.000Z", max_items: 200,
+      });
+
+      // A second finished pass must not ask the same question again.
+      expect(await offer(bounded)).toBeNull();
+      expect((await db.pool.query(`SELECT id FROM proposals WHERE proposal_type='research_history_extend'`)).rows).toHaveLength(1);
+    });
+
+    it("says nothing when there is no earlier history to read", async () => {
+      if (!db.available) return;
+      // Coverage already at the floor: the pass read everything there was.
+      expect(await offer({
+        history: { from: ARXIV_HISTORY_FLOOR, max_items: 200 },
+        coverage_ranges: [{ from: ARXIV_HISTORY_FLOOR, to: "2026-08-27T00:00:00.000Z", operation_id: "op-1", status: "completed" }],
+      })).toBeNull();
+      // And nothing to say about a pass that recorded no coverage at all.
+      expect(await offer({})).toBeNull();
+      expect((await db.pool.query(`SELECT id FROM proposals WHERE proposal_type='research_history_extend'`)).rows).toHaveLength(0);
     });
   });
 });

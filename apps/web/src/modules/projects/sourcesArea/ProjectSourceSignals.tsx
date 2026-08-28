@@ -12,10 +12,6 @@ import type {
  * What the Project's bound sources have produced beyond the raw item list:
  * active evidence, post-processing relevance decisions, and shared reader
  * annotations.
- *
- * These three read models were rendered on the Project Overview while the
- * bindings and items they derive from lived here, so the two halves of one
- * source pipeline were on different pages.
  */
 export function ProjectSourceSignals({
   projectId,

@@ -261,7 +261,9 @@ describe("Inquiry next-step advice (real Postgres)", () => {
       cited_refs: [],
     });
     await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
-    await service.markAdopted(identity(), PROJECT, THREAD);
+    // Through the one adoption path there is: the Thread takes the focus and
+    // the advice closes together.
+    await service.adoptAdvice(identity(), PROJECT, THREAD);
     const adoptedAt = (await service.getAdvice(identity(), PROJECT, THREAD))!.updated_at;
 
     await queueAdviceForFocusedThread(db.pool, {

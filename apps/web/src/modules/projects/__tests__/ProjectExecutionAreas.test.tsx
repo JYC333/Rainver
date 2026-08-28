@@ -2,11 +2,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectAreaLayout from '../ProjectAreaLayout'
-import DeliveryAreaPage from '../DeliveryAreaPage'
-import OperationsAreaPage from '../OperationsAreaPage'
-import { agentsApi, automationsApi, inquiryApi, projectResearchApi, projectsApi, runsApi, tasksApi } from '../../../api/client'
-import { notifyReviewAttentionChanged, REVIEW_ATTENTION_CHANGED_EVENT } from '../../../core/reviewAttention'
-import { toast } from 'sonner'
+import { agentsApi, automationsApi, projectsApi, runsApi, tasksApi } from '../../../api/client'
+import { notifyReviewAttentionChanged } from '../../../core/reviewAttention'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() },
@@ -52,17 +49,11 @@ beforeEach(() => {
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
     project: { id: 'project-1', name: 'Execution Project', primary_mode: 'delivery', status: 'active' },
     brief: null,
-    mode_projection: { mode: 'delivery', current_state_summary: '', progress_indicators: [], focus_set: [], next_actions: [] },
     available_modes: ['research', 'delivery', 'operations', 'learning'],
     attention: [
-      { id: 'task:task-1', title: 'Ship release', summary: null, href: '/tasks/task-1', source_type: 'task', source_id: 'task-1' },
-      { id: 'operational_alert:alert-1', title: 'Health check failed', summary: 'Deployment is unhealthy', href: '/projects/project-1/operations?alert=alert-1', source_type: 'operational_alert', source_id: 'alert-1' },
+      { id: 'task:task-1', title: 'Ship release', summary: null, href: '/tasks/task-1', attention_class: 'gate', severity: 'high', source_type: 'task', source_id: 'task-1' },
+      { id: 'operational_alert:alert-1', title: 'Health check failed', summary: 'Deployment is unhealthy', href: '/projects/project-1/operations?alert=alert-1', attention_class: 'gate', severity: 'high', source_type: 'operational_alert', source_id: 'alert-1' },
     ],
-    setup_checklist: [
-      { id: 'brief', label: 'Project Brief goal', status: 'missing', required: true, href: '/projects/project-1/inquiry?setup=goal', detail: 'Add the intended outcome' },
-      { id: 'folder', label: 'Execution-enabled Folder', status: 'missing', required: false, href: '/projects/project-1/files', detail: 'Optional for file/code work' },
-    ],
-    entity_summaries: [],
   })
   vi.mocked(tasksApi.list).mockResolvedValue({
     items: [{
@@ -111,12 +102,12 @@ beforeEach(() => {
 describe('Project execution Areas', () => {
   it('keeps every Project domain reachable through persistent grouped navigation', async () => {
     render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/delivery']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/board']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
         <Routes>
           <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectAreaLayout />}>
             <Route index element={<div>Overview content</div>} />
             <Route path="inquiry" element={<div>Inquiry content</div>} />
-            <Route path="delivery" element={<div>Delivery content</div>} />
+            <Route path="board" element={<div>Board content</div>} />
             <Route path="operations" element={<div>Operations content</div>} />
           </Route>
         </Routes>
@@ -124,51 +115,77 @@ describe('Project execution Areas', () => {
     )
 
     expect(await screen.findByText('Execution Project')).toBeInTheDocument()
-    expect(screen.getByText('Explore')).toBeInTheDocument()
-    expect(screen.getByText('Decide & learn')).toBeInTheDocument()
-    expect(screen.getByText('Execute')).toBeInTheDocument()
+    // Three promoted destinations, then everything else under Areas. The
+    // promotion must not cost reachability: every route that existed before is
+    // still one click away.
+    expect(screen.getByRole('link', { name: /^Pulse/ })).toBeInTheDocument()
+    for (const gone of ['Explore', 'Decide & learn', 'Digest', 'Raw material', 'Experiments', 'Knowledge review', 'Learning', 'Operations']) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument()
+    }
+    // Six Areas, flat. What used to be thirteen entries in four groups is
+    // three tabs of Sources, two views of Inquiry, a link to the Room, and
+    // two Areas retired to the Space; every old route still resolves.
     const destinations = [
-      ['Overview', ''],
+      ['Pulse', ''],
+      ['Board', '/board'],
+      ['Updates', '/updates'],
+      ['Conversations', '/conversations'],
       ['Notes', '/notes'],
-      ['Rooms', '/rooms'],
       ['Inquiry', '/inquiry'],
       ['Research', '/research'],
       ['Sources', '/sources'],
-      ['Digest', '/digest'],
       ['Files & Code', '/files'],
-      ['Experiments', '/experiments'],
       ['Decisions', '/decisions'],
-      ['Learning', '/learning'],
-      ['Knowledge review', '/knowledge-review'],
-      ['Delivery', '/delivery'],
-      ['Operations', '/operations'],
     ] as const
     for (const [destination, suffix] of destinations) {
       expect(screen.getByRole('link', {
-        name: destination === 'Overview' ? /^Overview/ : destination,
+        name: destination === 'Pulse' ? /^Pulse/ : destination,
       })).toHaveAttribute('href', `/spaces/space-1/projects/project-1${suffix}`)
     }
-    expect(screen.getByText('Delivery content')).toBeInTheDocument()
-    // The shell shows how the Project advances. It used to also badge the
-    // Template it was created from — a provenance label for a concept that
-    // presets nothing.
-    expect(screen.getByText('delivery mode')).toBeInTheDocument()
+    expect(screen.getByText('Board content')).toBeInTheDocument()
+    // The shell names the Project and the way into its Room, and nothing about
+    // how it advances: Mode changes only the Loop's wording and lives in
+    // Settings. It used to also badge the Template it was created from.
+    expect(screen.queryByText(/mode$/)).toBeNull()
     expect(screen.queryByText(/template/i)).toBeNull()
-    expect(screen.getByText('Project Brief goal *')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Project Brief goal/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/inquiry?setup=goal')
-    expect(screen.getByRole('link', { name: /Execution-enabled Folder/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/files')
+    // No readiness checklist in the shell: it listed configuration state as
+    // to-dos from every Area. The one Project-level fact — a missing goal —
+    // is Pulse's to say.
+    expect(screen.queryByText('Setup')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Execution-enabled Folder/ })).not.toBeInTheDocument()
 
     // The "Needs attention" list is the one surface visible from every Area
-    // (not just Overview) that points back at exactly what's pending and where.
+    // (not just the landing tab) that points back at exactly what's pending
+    // and where.
     expect(screen.getByText('Needs attention')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Ship release/ })).toHaveAttribute('href', '/spaces/space-1/tasks/task-1')
+    // A Project's Task opens inside the Project, from here too — this list is
+    // the one nav element on screen from every Area, so a raw /tasks href here
+    // would drop the person out of the shell from anywhere.
+    expect(screen.getByRole('link', { name: /Ship release/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/tasks/task-1')
     expect(screen.getByRole('link', { name: /Health check failed/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/operations?alert=alert-1')
 
     fireEvent.click(screen.getByRole('link', { name: 'Inquiry' }))
     expect(screen.getByText('Inquiry content')).toBeInTheDocument()
     expect(screen.getByText('Needs attention')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('link', { name: 'Operations' }))
-    expect(screen.getByText('Operations content')).toBeInTheDocument()
+  })
+
+  it('can put the Areas list away and remembers that', async () => {
+    render(
+      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/board']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectAreaLayout />}>
+            <Route path="board" element={<div>Board content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('link', { name: 'Inquiry' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Areas/ }))
+    // The three promoted destinations stay; the Areas do not.
+    expect(screen.queryByRole('link', { name: 'Inquiry' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
+    expect(localStorage.getItem('project.areas.open')).toBe('false')
   })
 
   it('refreshes the sidebar attention badge after navigating within the Project, without a page reload', async () => {
@@ -189,11 +206,11 @@ describe('Project execution Areas', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: /^Overview/ })).toHaveTextContent('2')
+    expect(await screen.findByRole('link', { name: /^Pulse/ })).toHaveTextContent('2')
 
     fireEvent.click(screen.getByRole('link', { name: 'Inquiry' }))
     expect(await screen.findByText('Inquiry content')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('link', { name: /^Overview/ })).not.toHaveTextContent('2'))
+    await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).not.toHaveTextContent('2'))
   })
 
   it('refreshes the sidebar attention badge immediately after a review decision event', async () => {
@@ -204,148 +221,17 @@ describe('Project execution Areas', () => {
       .mockResolvedValueOnce({ ...baseOverview, attention: [] })
 
     render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/operations']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/inquiry']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
         <Routes>
           <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectAreaLayout />}>
-            <Route path="operations" element={<div>Operations content</div>} />
+            <Route path="inquiry" element={<div>Inquiry content</div>} />
           </Route>
         </Routes>
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: /^Overview/ })).toHaveTextContent('2')
+    expect(await screen.findByRole('link', { name: /^Pulse/ })).toHaveTextContent('2')
     notifyReviewAttentionChanged()
-    await waitFor(() => expect(screen.getByRole('link', { name: /^Overview/ })).not.toHaveTextContent('2'))
-  })
-
-  it('loads only the selected Project Tasks in Delivery', async () => {
-    render(
-      <MemoryRouter initialEntries={['/projects/project-1/delivery']}>
-        <Routes>
-          <Route path="/projects/:projectId/delivery" element={<DeliveryAreaPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    expect(await screen.findByText('Ship release')).toBeInTheDocument()
-    expect(tasksApi.list).toHaveBeenCalledWith({ project_id: 'project-1', limit: '100' })
-    expect(screen.getByRole('link', { name: /Ship release/ })).toHaveAttribute('href', '/tasks/task-1')
-    fireEvent.click(screen.getByRole('button', { name: 'Complete' }))
-    await waitFor(() => expect(tasksApi.update).toHaveBeenCalledWith('task-1', { status: 'done' }))
-  })
-
-  it('loads only the selected Project Automations and Runs in Operations', async () => {
-    render(
-      <MemoryRouter initialEntries={['/projects/project-1/operations?open=operation-1&alert=alert-1']}>
-        <Routes>
-          <Route path="/projects/:projectId/operations" element={<OperationsAreaPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    expect(await screen.findByText('Monitor release')).toBeInTheDocument()
-    expect(screen.getByText('Check deployment health')).toBeInTheDocument()
-    expect(screen.getByText('Health check failed')).toBeInTheDocument()
-    expect(screen.getByText('Release review')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Check deployment health/ })).toHaveAttribute('href', '/runs/run-1')
-    await waitFor(() => {
-      expect(automationsApi.list).toHaveBeenCalledWith({ project_id: 'project-1' })
-      expect(runsApi.list).toHaveBeenCalledWith({ project_id: 'project-1', limit: 100 })
-      expect(projectsApi.operations).toHaveBeenCalledWith('project-1')
-    })
-  })
-
-  it('lists every research Workflow as its own row in Operations and lets a pending Checkpoint be decided there', async () => {
-    vi.mocked(projectsApi.operations).mockResolvedValue([
-      {
-        id: 'operation-1', project_id: 'project-1', kind: 'research', title: 'Incremental literature search',
-        status: 'waiting_review', progress_json: { workflow_id: 'workflow-1', current_stage: 'screening' },
-        created_at: '2026-07-30T22:57:05.000Z', updated_at: '', steps: [],
-      },
-      {
-        id: 'operation-baseline', project_id: 'project-1', kind: 'research', title: 'Initial literature search',
-        status: 'completed', progress_json: { workflow_id: 'workflow-1', current_stage: 'complete' },
-        created_at: '2026-07-30T20:24:33.000Z', updated_at: '', steps: [],
-      },
-    ])
-    vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
-      status: 'active', state_json: { research_question: 'Does batching improve throughput?' },
-      primary_thread_id: 'thread-1', started_by_user_id: null, started_run_id: null,
-      created_at: '', updated_at: '',
-    }])
-    vi.mocked(inquiryApi.listThreads).mockResolvedValue([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'hypothesis', statement: 'Does batching improve throughput?',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: null, next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1', created_at: '', updated_at: '',
-    } as never])
-    vi.mocked(projectResearchApi.checkpoints).mockResolvedValue([{
-      id: 'checkpoint-1', project_id: 'project-1', workflow_id: 'workflow-1', stage_key: 'screening',
-      checkpoint_type: 'screening_gate', status: 'pending',
-      machine_result_json: { operation_id: 'operation-1', total: 4, relevant: 3, maybe: 1 },
-      review: null, user_decision: null, decision_reason: null, decided_by_user_id: null, decided_at: null,
-      created_at: '', updated_at: '',
-    }])
-    vi.mocked(projectResearchApi.decideCheckpoint).mockResolvedValue({} as never)
-    const reviewAttentionChanged = vi.fn()
-    window.addEventListener(REVIEW_ATTENTION_CHANGED_EVENT, reviewAttentionChanged)
-
-    render(
-      <MemoryRouter initialEntries={['/projects/project-1/operations']}>
-        <Routes>
-          <Route path="/projects/:projectId/operations" element={<OperationsAreaPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    expect(await screen.findAllByText('Does batching improve throughput?')).toHaveLength(2)
-    expect(screen.getAllByText('Review needed')).toHaveLength(1)
-    // Question/Hypothesis definition lives on the Inquiry page now — "+ New
-    // search" always routes there first instead of opening a dialog with no
-    // Thread to target.
-    expect(screen.getByRole('link', { name: /New search/ })).toHaveAttribute('href', '/projects/project-1/inquiry?research_intent=1')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Approve screening' }))
-    await waitFor(() => expect(projectResearchApi.decideCheckpoint).toHaveBeenCalledWith(
-      'project-1', 'workflow-1', 'checkpoint-1', { decision: 'approved' },
-    ))
-    expect(toast.dismiss).toHaveBeenCalledWith('research-review:project-1:checkpoint-1')
-    await waitFor(() => expect(reviewAttentionChanged).toHaveBeenCalled())
-    window.removeEventListener(REVIEW_ATTENTION_CHANGED_EVENT, reviewAttentionChanged)
-  })
-
-  it('keeps the research review toast when the checkpoint decision fails', async () => {
-    vi.mocked(projectsApi.operations).mockResolvedValue([{
-      id: 'operation-1', project_id: 'project-1', kind: 'research', title: 'Initial literature search',
-      status: 'waiting_review', progress_json: { workflow_id: 'workflow-1', current_stage: 'screening' },
-      created_at: '', updated_at: '', steps: [],
-    }])
-    vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
-      status: 'active', state_json: { research_question: 'Does batching improve throughput?' },
-      primary_thread_id: 'thread-1', started_by_user_id: null, started_run_id: null,
-      created_at: '', updated_at: '',
-    }])
-    vi.mocked(projectResearchApi.checkpoints).mockResolvedValue([{
-      id: 'checkpoint-1', project_id: 'project-1', workflow_id: 'workflow-1', stage_key: 'screening',
-      checkpoint_type: 'screening_gate', status: 'pending',
-      machine_result_json: { operation_id: 'operation-1', total: 4, relevant: 3, maybe: 1 },
-      review: null, user_decision: null, decision_reason: null, decided_by_user_id: null, decided_at: null,
-      created_at: '', updated_at: '',
-    }])
-    vi.mocked(projectResearchApi.decideCheckpoint).mockRejectedValueOnce(new Error('Decision failed'))
-
-    render(
-      <MemoryRouter initialEntries={['/projects/project-1/operations']}>
-        <Routes>
-          <Route path="/projects/:projectId/operations" element={<OperationsAreaPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve screening' }))
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Decision failed'))
-    expect(toast.dismiss).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).not.toHaveTextContent('2'))
   })
 })

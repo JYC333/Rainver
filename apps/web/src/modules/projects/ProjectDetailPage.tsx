@@ -3,18 +3,16 @@ import { useParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
   FolderKanban, Target, Edit2, Archive, ChevronLeft,
-  Package, CheckCircle, Folder, Cpu, Database, Workflow,
-  HelpCircle, Scale, ListTodo, GraduationCap, FileText, Layers,
-  MessageSquareText, Settings as SettingsIcon,
+  Settings as SettingsIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectsApi, activityApi } from '../../api/client'
+import { projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg, isNotFoundError } from '../../lib/utils'
-import type { Project, ProjectOverview, ActivityInboxRecord } from '../../types/api'
+import type { Project, ProjectOverview } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
-import { Badge, StatusBadge } from '../../components/ui/badge'
+import { StatusBadge } from '../../components/ui/badge'
 import { Label } from '../../components/ui/label'
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
@@ -31,6 +29,7 @@ import {
   ConfirmDialog,
 } from '../../components/ui/dialog'
 import EditProjectBriefGoalDialog from './EditProjectBriefGoalDialog'
+import ProjectPulse from './ProjectPulse'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 
 function fmt(dt: string | null | undefined) {
@@ -40,14 +39,16 @@ function fmt(dt: string | null | undefined) {
 /* ── Project settings dialog ──────────────────────────────────────────────── */
 interface EditDialogProps {
   project: Project
+  overview: ProjectOverview | null
   open: boolean
   onOpenChange: (v: boolean) => void
   onSaved: (updated: Project) => void
+  onModeChanged: (overview: ProjectOverview) => void
 }
 
 // General Project settings only. Research intake configuration used to share
 // this dialog; it belongs to the Research Area, which owns that state.
-function EditProjectDialog({ project, open, onOpenChange, onSaved }: EditDialogProps) {
+function EditProjectDialog({ project, overview, open, onOpenChange, onSaved, onModeChanged }: EditDialogProps) {
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description ?? '')
   const [focus, setFocus] = useState(project.current_focus ?? '')
@@ -110,6 +111,27 @@ function EditProjectDialog({ project, open, onOpenChange, onSaved }: EditDialogP
               placeholder="What are you actively working on right now?"
             />
           </div>
+          {overview && (
+            <div className="space-y-1.5">
+              <Label>How this Project advances</Label>
+              {/* Settings, not the front page: it changes only the Loop's stage
+                  wording and the Assistant's framing, and is changed rarely. */}
+              <Select
+                ariaLabel="How this Project advances"
+                value={overview.project.primary_mode}
+                options={overview.available_modes.map(mode => ({
+                  value: mode,
+                  label: mode.charAt(0).toUpperCase() + mode.slice(1),
+                }))}
+                onChange={async value => {
+                  try {
+                    await projectsApi.transitionMode(project.id, value, 'Changed from Project settings')
+                    onModeChanged(await projectsApi.getOverview(project.id))
+                  } catch (e) { toast.error(errMsg(e)) }
+                }}
+              />
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -122,62 +144,19 @@ function EditProjectDialog({ project, open, onOpenChange, onSaved }: EditDialogP
   )
 }
 
-/* ── Entity summary row ───────────────────────────────────────────────────── */
-
-/** Icons are presentation, so they live here rather than in the entity
- *  registry the server composes these rows from. An entity with no icon of
- *  its own still renders — it gets the generic one. */
-const ENTITY_ICONS: Record<string, React.ReactNode> = {
-  inquiry_thread: <HelpCircle className="size-4" />,
-  research_workflow: <FileText className="size-4" />,
-  decision_case: <Scale className="size-4" />,
-  task: <ListTodo className="size-4" />,
-  automation: <Workflow className="size-4" />,
-  learning_item: <GraduationCap className="size-4" />,
-  project_folder: <Folder className="size-4" />,
-  run: <Cpu className="size-4" />,
-  proposal: <CheckCircle className="size-4" />,
-  artifact: <Package className="size-4" />,
-  memory_entry: <Database className="size-4" />,
-}
-
-/** One line per entity: how much of it this Project has, and the way in.
- *  The rows themselves are chosen by the server — the current Mode's
- *  placeholders plus whatever the Project actually has data for. */
-function EntitySummaryRow({ row }: { row: ProjectOverview['entity_summaries'][number] }) {
-  return (
-    <Link
-      to={row.href}
-      className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5 transition-colors hover:bg-muted/40"
-    >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span className="text-muted-foreground">{ENTITY_ICONS[row.entity_type] ?? <Layers className="size-4" />}</span>
-        <div className="min-w-0">
-          <p className="text-sm font-medium">{row.label}</p>
-          <p className="truncate text-xs text-muted-foreground">{row.detail}</p>
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {row.status !== 'ok' && (
-          <Badge variant={row.status === 'blocked' ? 'destructive' : 'warning'}>{row.status}</Badge>
-        )}
-        <span className="text-lg font-semibold" style={{ fontFamily: 'var(--font-mono)' }}>{row.count}</span>
-      </div>
-    </Link>
-  )
-}
-
 /* ── Main page ─────────────────────────────────────────────────────────────── */
 
 /**
- * The Project Overview is a thin aggregation layer over Areas.
+ * Pulse: what this Project is for, and what is going on in it.
  *
- * It answers four questions and nothing else: what is this Project for, what
- * should happen next, what just happened, and how much of each kind of thing
- * exists. It used to also host the research workbench, Project Sources, and
- * Project Folders — surfaces that the Research, Sources, and Files Areas each
- * already own a route for — plus a second copy of the sidebar's setup
- * checklist and attention list.
+ * The header and the goal line are this page's own; the situation — what
+ * needs attention, what is moving, what was reported — is `ProjectPulse`.
+ * It used to carry four more blocks: a "Next" of Mode-generated links that
+ * all pointed at Areas the sidebar already lists, a "Recent activity" that
+ * was the raw-material queue under another name and jumped out of the
+ * Project to see more, an "In this project" that was a second copy of the
+ * Areas list with counts, and a Mode selector on the front page for a thing
+ * changed once. Each duplicated something on the same screen.
  */
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -186,9 +165,7 @@ export default function ProjectDetailPage() {
 
   const [project, setProject] = useState<Project | null>(null)
   const [kernelOverview, setKernelOverview] = useState<ProjectOverview | null>(null)
-  const [recentActivities, setRecentActivities] = useState<ActivityInboxRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [detailsLoading, setDetailsLoading] = useState(false)
   const [notFound, setNotFound] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [briefGoalOpen, setBriefGoalOpen] = useState(false)
@@ -201,12 +178,18 @@ export default function ProjectDetailPage() {
   // the same project into the load already in flight.
   const loadInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null)
 
-  const loadImpl = useCallback(async () => {
+  /**
+   * `quiet` refetches without the page skeleton. A surface acting on
+   * something the overview reports needs the list to refresh, and blanking
+   * the whole page for it would unmount the surface mid-action — the person
+   * would see a flash and the acting component would reload twice.
+   */
+  const loadImpl = useCallback(async (quiet = false) => {
     if (!projectId || !activeSpaceId) {
       setLoading(false)
       return
     }
-    setLoading(true)
+    if (!quiet) setLoading(true)
     setNotFound(false)
     try {
       const [proj, overview] = await Promise.all([
@@ -217,27 +200,16 @@ export default function ProjectDetailPage() {
       setKernelOverview(overview)
       setLoading(false)
     } catch (e) {
-      setDetailsLoading(false)
       if (isNotFoundError(e)) setNotFound(true)
       else toast.error(errMsg(e))
       setLoading(false)
-      return
-    }
-
-    setDetailsLoading(true)
-    try {
-      await activityApi.list({ project_id: projectId, limit: 8 }).then(setRecentActivities)
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setDetailsLoading(false)
     }
   }, [projectId, activeSpaceId])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     const key = `${projectId ?? ''}:${activeSpaceId ?? ''}`
     if (loadInFlightRef.current?.key === key) return loadInFlightRef.current.promise
-    const promise = loadImpl()
+    const promise = loadImpl(quiet)
     loadInFlightRef.current = { key, promise }
     try {
       await promise
@@ -284,9 +256,6 @@ export default function ProjectDetailPage() {
     )
   }
 
-  const nextActions = kernelOverview?.mode_projection.next_actions ?? []
-  const focusSet = kernelOverview?.mode_projection.focus_set ?? []
-
   return (
     <div className="p-6 space-y-6">
       <Link to="/projects" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
@@ -318,7 +287,6 @@ export default function ProjectDetailPage() {
           </div>
         </div>
         <div className="flex gap-2 shrink-0">
-          <Button asChild size="sm" className="gap-1.5"><Link to={`/projects/${project.id}/rooms`}><MessageSquareText className="size-3.5" />Rooms</Link></Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <SettingsIcon className="size-3.5" />
             Settings
@@ -332,43 +300,26 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      {/* 1. What this Project is for, and what it is on right now. */}
-      <Card className="p-4 space-y-3">
+      {/* What this Project is for, and what it is on right now. */}
+      <Card className="p-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0 flex-1 space-y-2">
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Goal</p>
               <p className="mt-1 text-sm font-medium">
-                {kernelOverview?.brief?.goal ?? 'Add a Project Brief goal to orient the work.'}
+                {kernelOverview?.brief?.goal ?? 'No goal yet.'}
               </p>
             </div>
             <div className="flex items-start gap-2">
               <Target className="mt-0.5 size-4 shrink-0 text-accent-foreground" />
               <p className="text-sm">
                 {project.current_focus ?? (
-                  <span className="text-muted-foreground">No current focus set. Add one so agents and Areas know what matters right now.</span>
+                  <span className="text-muted-foreground">No current focus set.</span>
                 )}
               </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {kernelOverview && (
-              <Select
-                value={kernelOverview.project.primary_mode}
-                options={kernelOverview.available_modes.map(mode => ({
-                  value: mode,
-                  label: mode.charAt(0).toUpperCase() + mode.slice(1),
-                }))}
-                onChange={async value => {
-                  try {
-                    await projectsApi.transitionMode(project.id, value, 'Changed from Project shell')
-                    const next = await projectsApi.getOverview(project.id)
-                    setKernelOverview(next)
-                    setProject(current => current ? { ...current, primary_mode: next.project.primary_mode } : current)
-                  } catch (e) { toast.error(errMsg(e)) }
-                }}
-              />
-            )}
             <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setBriefGoalOpen(true)}>
               <Edit2 className="size-3.5" />
               Edit goal
@@ -382,69 +333,20 @@ export default function ProjectDetailPage() {
             </Button>
           </div>
         </div>
-        {kernelOverview?.mode_projection.current_state_summary && (
-          <p className="text-xs text-muted-foreground">{kernelOverview.mode_projection.current_state_summary}</p>
-        )}
       </Card>
 
-      {/* 2. What should happen next, as this Project's current mode sees it.
-             Pending review items live in the shell sidebar, which is on screen
-             from every Area — not duplicated here. */}
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Next</h2>
-        {nextActions.length === 0 && focusSet.length === 0 ? (
-          <Card className="p-3"><p className="text-xs text-muted-foreground">No next action suggested for this mode yet.</p></Card>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {nextActions.map(action => (
-              <Button key={action.id} size="sm" asChild><Link to={action.href}>{action.label}</Link></Button>
-            ))}
-            {focusSet.slice(0, 3).map(item => (
-              <Button key={item.id} size="sm" variant="outline" asChild><Link to={item.href}>{item.label}</Link></Button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 3. What just happened, across every domain. */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Recent activity</h2>
-            {detailsLoading && <Badge variant="muted">Loading</Badge>}
-          </div>
-          <Link to={`/activity?project_id=${project.id}`} className="text-xs text-accent-foreground hover:underline">View all →</Link>
-        </div>
-        {recentActivities.length === 0 ? (
-          <Card className="p-3"><p className="text-xs text-muted-foreground">Nothing has happened in this project yet.</p></Card>
-        ) : (
-          <div className="space-y-1.5">
-            {recentActivities.map(item => (
-              <Card key={item.id} className="px-3 py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium truncate">{item.title || item.content?.slice(0, 60) || '—'}</p>
-                  <p className="text-xs text-muted-foreground">{item.source_type}</p>
-                </div>
-                <Badge variant="outline">{item.status}</Badge>
-              </Card>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 4. How much of each kind of thing this Project holds, and the way in. */}
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">In this project</h2>
-        {(kernelOverview?.entity_summaries.length ?? 0) === 0 ? (
-          <Card className="p-3"><p className="text-xs text-muted-foreground">This Project has no entity summaries yet.</p></Card>
-        ) : (
-          <div className="grid gap-2 md:grid-cols-2">
-            {kernelOverview?.entity_summaries.map(row => (
-              <EntitySummaryRow key={row.entity_type} row={row} />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* The situation, before anyone opens the Board: what is waiting on this
+             person, what is moving, and what has been reported lately. */}
+      {projectId && (
+        <ProjectPulse
+          projectId={projectId}
+          overview={kernelOverview}
+          /* The overview owns the attention list, so acting on an item from
+             Pulse has to reload it here — a suggestion that stays on the list
+             after being taken is the failure the classes exist to prevent. */
+          onOverviewChanged={() => { void load(true) }}
+        />
+      )}
 
       <ConfirmDialog
         open={archiveConfirmOpen}
@@ -457,9 +359,14 @@ export default function ProjectDetailPage() {
 
       <EditProjectDialog
         project={project}
+        overview={kernelOverview}
         open={editOpen}
         onOpenChange={setEditOpen}
         onSaved={updated => setProject(updated)}
+        onModeChanged={next => {
+          setKernelOverview(next)
+          setProject(current => current ? { ...current, primary_mode: next.project.primary_mode } : current)
+        }}
       />
       <EditProjectBriefGoalDialog
         projectId={project.id}

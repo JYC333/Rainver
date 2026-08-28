@@ -1,26 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { Bot, Loader2, MessageSquarePlus, Plus, RefreshCw, Send, Users } from 'lucide-react'
+import { Loader2, MessageSquarePlus, Plus, RefreshCw, Users } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, ApiRequestError, projectFoldersApi, projectsApi, roomsApi, runsApi, spacesApi } from '../../api/client'
+import { agentsApi, ApiRequestError, projectFoldersApi, projectsApi, roomsApi, spacesApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type {
   AgentOut,
-  ChatActionPreview,
   ConversationBackendCatalog,
   Project,
   ProjectFolder,
   ProjectOverview,
   Room,
-  RoomConversation,
-  RoomConversationSummaryResponse,
+  RoomConversation as RoomConversationRecord,
   RoomDetail,
-  RoomMessage,
   RoomPendingApproval,
   RoomPendingApprovalListResponse,
-  Run,
   SpaceMember,
 } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
@@ -29,32 +25,13 @@ import { Card, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
-import {
-  RoomMessageComposer,
-  emptyRoomMessageComposerValue,
-} from './RoomMessageComposer'
-import { MarkdownMessage } from './MarkdownMessage'
 import { RoomRosterPanel } from './RoomRosterPanel'
-import { RoomActionPreviewCard, type RoomActionDecision } from './RoomActionPreviewCard'
+import { RoomConversation, type RoomBackendSelection, type RoutingMode } from './conversation/RoomConversation'
 
-type RoutingMode = 'direct' | 'agent_coordination'
 type BackendSelection = {
   runtime_profile_id: string
   credential_profile_id: string | null
 }
-type RunProgress = {
-  event_type: string
-  status: string
-  summary?: string | null
-}
-type PendingProposalContinuation = {
-  proposalId: string
-  action: RoomActionDecision
-  phase: 'submitting' | 'running' | 'failed'
-  runIds: string[]
-  error?: string
-}
-const MESSAGE_PAGE_SIZE = 50
 const LIST_PAGE_SIZE = 100
 
 export default function AgentGroupsPage() {
@@ -74,33 +51,17 @@ export default function AgentGroupsPage() {
   const [detail, setDetail] = useState<RoomDetail | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [boundFolderName, setBoundFolderName] = useState<string | null>(null)
-  const [conversations, setConversations] = useState<RoomConversation[]>([])
-  const [messages, setMessages] = useState<RoomMessage[]>([])
-  const [conversationSummary, setConversationSummary] = useState<RoomConversationSummaryResponse | null>(null)
-  const [hasOlderMessages, setHasOlderMessages] = useState(false)
-  const [runs, setRuns] = useState<Record<string, Run>>({})
-  const runsRef = useRef<Record<string, Run>>({})
-  const [runProgress, setRunProgress] = useState<Record<string, RunProgress>>({})
-  const [runDeltas, setRunDeltas] = useState<Record<string, string>>({})
-  const streamControllers = useRef(new Map<string, AbortController>())
+  const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const locallyCommittedRooms = useRef(new Map<string, Room>())
   const roomCreationIdempotency = useRef<{ fingerprint: string; key: string } | null>(null)
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
-  const messageRequestSequence = useRef(0)
-  const conversationScrollRef = useRef<HTMLDivElement>(null)
-  const followConversationRef = useRef(true)
   const [backendCatalogs, setBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
   const [backendSelections, setBackendSelections] = useState<Record<string, BackendSelection>>({})
   const [loading, setLoading] = useState(true)
   const [roomLoading, setRoomLoading] = useState(false)
   const [roomLoadError, setRoomLoadError] = useState<string | null>(null)
-  const [messagesLoading, setMessagesLoading] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [pendingProposalContinuation, setPendingProposalContinuation] = useState<PendingProposalContinuation | null>(null)
-  const [composer, setComposer] = useState(emptyRoomMessageComposerValue)
-  const [resetToken, setResetToken] = useState(0)
   const [roomSetupTargets, setRoomSetupTargets] = useState<string[]>([])
   const [routingMode, setRoutingMode] = useState<RoutingMode>('direct')
   const [draft, setDraft] = useState({
@@ -108,37 +69,6 @@ export default function AgentGroupsPage() {
     project_id: projectFilter ?? '',
     project_folder_id: '',
   })
-
-  useEffect(() => {
-    runsRef.current = runs
-  }, [runs])
-
-  useEffect(() => {
-    followConversationRef.current = true
-    setPendingProposalContinuation(null)
-  }, [conversationId])
-
-  useEffect(() => {
-    if (!pendingProposalContinuation?.runIds.length) return
-    const hasVisibleReply = messages.some(message =>
-      message.role === 'assistant'
-      && metadataRunIds(message.metadata_json).some(runId => pendingProposalContinuation.runIds.includes(runId)))
-    if (hasVisibleReply) setPendingProposalContinuation(null)
-  }, [messages, pendingProposalContinuation])
-
-  useEffect(() => {
-    const container = conversationScrollRef.current
-    if (
-      messagesLoading
-      || !container
-      || !followConversationRef.current
-      || typeof container.scrollTo !== 'function'
-    ) return
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'auto' })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [messages, messagesLoading, pendingProposalContinuation, runDeltas, runProgress])
 
   useEffect(() => {
     if (!draft.project_id) {
@@ -272,99 +202,6 @@ export default function AgentGroupsPage() {
     )
   }, [roomId])
 
-  const loadMessages = useCallback(async () => {
-    const requestSequence = ++messageRequestSequence.current
-    if (!roomId || !conversationId) {
-      setMessages([])
-      setConversationSummary(null)
-      setRuns({})
-      return
-    }
-    const page = await roomsApi.messages(roomId, conversationId, {
-      limit: MESSAGE_PAGE_SIZE,
-      offset: 0,
-    })
-    if (requestSequence !== messageRequestSequence.current) return
-    if (page.conversation) {
-      setConversations(current => sortConversationsNewestFirst(current.some(conversation => conversation.id === page.conversation!.id)
-        ? current.map(conversation =>
-            conversation.id === page.conversation!.id ? page.conversation! : conversation)
-        : [...current, page.conversation!]))
-    }
-    setMessages(current =>
-      current.length > 0
-      && current.every(message => message.session_id === conversationId)
-        ? uniqueMessages([...current, ...page.items])
-        : page.items)
-    setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
-    void roomsApi.summary(roomId, conversationId)
-      .then(summary => {
-        if (requestSequence === messageRequestSequence.current) setConversationSummary(summary)
-      })
-      .catch(() => {
-        if (requestSequence === messageRequestSequence.current) setConversationSummary(null)
-      })
-    const runIds = uniqueIds(page.items.flatMap(message => metadataRunIds(message.metadata_json)))
-    const idsToRefresh = runIds.filter(id =>
-      !runsRef.current[id] || !isTerminalRunStatus(runsRef.current[id]!.status))
-    const results = await Promise.all(idsToRefresh.map(async id => {
-      try {
-        return await runsApi.get(id)
-      } catch {
-        return null
-      }
-    }))
-    if (requestSequence !== messageRequestSequence.current) return
-    setRuns(current => ({
-      ...current,
-      ...Object.fromEntries(results.filter((run): run is Run => Boolean(run)).map(run => [run.id, run])),
-    }))
-    const terminalIds = results.flatMap(run =>
-      run && isTerminalRunStatus(run.status) ? [run.id] : [])
-    if (terminalIds.length > 0) clearTransientRuns(terminalIds, setRunProgress, setRunDeltas)
-  }, [conversationId, roomId])
-
-  const loadOlderMessages = useCallback(async () => {
-    if (!roomId || !conversationId || !hasOlderMessages) return
-    const page = await roomsApi.messages(roomId, conversationId, {
-      limit: MESSAGE_PAGE_SIZE,
-      offset: messages.length,
-    })
-    setMessages(current => uniqueMessages([...page.items, ...current]))
-    setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
-  }, [conversationId, hasOlderMessages, messages.length, roomId])
-
-  const watchRuns = useCallback((runIds: string[]) => {
-    for (const runId of uniqueIds(runIds)) {
-      if (streamControllers.current.has(runId)) continue
-      const controller = new AbortController()
-      streamControllers.current.set(runId, controller)
-      void runsApi.streamEvents(runId, {
-        signal: controller.signal,
-        onLifecycle: event => {
-          setRunProgress(current => ({ ...current, [runId]: event }))
-          if (event.event_type === 'run_finalized') {
-            streamControllers.current.delete(runId)
-            clearTransientRuns([runId], setRunProgress, setRunDeltas)
-            void loadMessages()
-          }
-        },
-        onTextDelta: delta => {
-          setRunDeltas(current => ({
-            ...current,
-            [runId]: `${current[runId] ?? ''}${delta}`,
-          }))
-        },
-      }).catch(error => {
-        if (!controller.signal.aborted) toast.error(errMsg(error))
-      }).finally(() => {
-        if (streamControllers.current.get(runId) === controller) {
-          streamControllers.current.delete(runId)
-        }
-      })
-    }
-  }, [loadMessages])
-
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -423,48 +260,6 @@ export default function AgentGroupsPage() {
       return next
     }, { replace: true })
   }, [conversationId, conversations, detail, roomId, setSearch])
-
-  useEffect(() => {
-    let cancelled = false
-    setMessagesLoading(Boolean(roomId && conversationId))
-    setMessages([])
-    setConversationSummary(null)
-    setHasOlderMessages(false)
-    setRuns({})
-    setRunProgress({})
-    setRunDeltas({})
-    loadMessages()
-      .catch(error => toast.error(errMsg(error)))
-      .finally(() => {
-        if (!cancelled) setMessagesLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [conversationId, loadMessages, roomId])
-
-  useEffect(() => {
-    if (!roomId || !conversationId) return
-    const activeRunIds = Object.values(runs)
-      .filter(run => !isTerminalRunStatus(run.status))
-      .map(run => run.id)
-    const timer = window.setInterval(() => {
-      loadMessages().catch(() => undefined)
-    }, activeRunIds.length > 0 ? 2500 : 5000)
-    return () => window.clearInterval(timer)
-  }, [conversationId, loadMessages, roomId, runs])
-
-  useEffect(() => {
-    const controllers = streamControllers.current
-    return () => {
-      for (const controller of controllers.values()) controller.abort()
-      controllers.clear()
-    }
-  }, [conversationId])
-
-  useEffect(() => {
-    watchRuns(Object.values(runs)
-      .filter(run => !isTerminalRunStatus(run.status))
-      .map(run => run.id))
-  }, [runs, watchRuns])
 
   useEffect(() => {
     if (!conversationId || !detail) {
@@ -575,98 +370,6 @@ export default function AgentGroupsPage() {
     }
   }
 
-  async function sendMessage() {
-    if (!roomId || !conversationId || !composer.text.trim() || sending) return
-    const segments = composer.routingSegments
-      .map(segment => ({
-        recipient_agent_ids: uniqueIds(segment.recipient_agent_ids),
-        content: segment.content.trim(),
-      }))
-      .filter(segment => segment.recipient_agent_ids.length > 0 && segment.content)
-    const managerAgentId = detail?.agent_members.find(member => member.role === 'manager')?.agent_id
-    const recipientAgentIds = uniqueIds(
-      routingMode === 'agent_coordination' || segments.length === 0
-        ? managerAgentId ? [managerAgentId] : []
-        : segments.flatMap(segment => segment.recipient_agent_ids),
-    )
-    setSending(true)
-    followConversationRef.current = true
-    try {
-      const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
-        content: composer.text.trim(),
-        routing_mode: routingMode,
-        recipient_segments: routingMode === 'direct' && segments.length > 0 ? segments : null,
-        backends: recipientAgentIds.flatMap(agent_id => {
-          const selection = backendSelections[agent_id]
-          return selection ? [{ agent_id, ...selection }] : []
-        }),
-      })
-      watchRuns(dispatched.run_ids)
-      setMessages(current => uniqueMessages([...current, dispatched.message]))
-      if (dispatched.conversation) {
-        setConversations(current => sortConversationsNewestFirst(current.some(conversation => conversation.id === dispatched.conversation!.id)
-          ? current.map(conversation =>
-              conversation.id === dispatched.conversation!.id ? dispatched.conversation! : conversation)
-          : [...current, dispatched.conversation!]))
-      }
-      setResetToken(value => value + 1)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setSending(false)
-    }
-  }
-
-  async function continueAfterProposalDecision(
-    preview: ChatActionPreview,
-    action: RoomActionDecision,
-  ) {
-    if (!roomId || !conversationId || !detail) {
-      throw new Error('The conversation is no longer available')
-    }
-    if (!preview.proposal_id) throw new Error('The proposal is no longer available')
-    if (sending) throw new Error('Wait for the current reply before continuing')
-    setSending(true)
-    followConversationRef.current = true
-    setPendingProposalContinuation({
-      proposalId: preview.proposal_id,
-      action,
-      phase: 'submitting',
-      runIds: [],
-    })
-    try {
-      if (action === 'accept') {
-        const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
-        if (refreshed) setOverview(refreshed)
-      }
-      const managerAgentId = detail.agent_members.find(member => member.role === 'manager')?.agent_id
-      const selection = managerAgentId ? backendSelections[managerAgentId] : null
-      const dispatched = await roomsApi.continueAfterProposal(roomId, conversationId, {
-        proposal_id: preview.proposal_id,
-        backends: managerAgentId && selection
-          ? [{ agent_id: managerAgentId, ...selection }]
-          : [],
-      })
-      setPendingProposalContinuation(current => current && current.proposalId === preview.proposal_id
-        ? { ...current, phase: 'running', runIds: dispatched.run_ids }
-        : current)
-      watchRuns(dispatched.run_ids)
-      if (dispatched.conversation) {
-        setConversations(current => sortConversationsNewestFirst(current.some(conversation => conversation.id === dispatched.conversation!.id)
-          ? current.map(conversation =>
-              conversation.id === dispatched.conversation!.id ? dispatched.conversation! : conversation)
-          : [...current, dispatched.conversation!]))
-      }
-    } catch (error) {
-      setPendingProposalContinuation(current => current && current.proposalId === preview.proposal_id
-        ? { ...current, phase: 'failed', error: errMsg(error) }
-        : current)
-      throw error
-    } finally {
-      setSending(false)
-    }
-  }
-
   const roomAgents = useMemo(() => {
     return detail?.agent_members.map(member => ({
       id: member.agent_id,
@@ -676,6 +379,16 @@ export default function AgentGroupsPage() {
     })) ?? []
   }, [detail])
   const currentConversation = conversations.find(item => item.id === conversationId) ?? null
+  const upsertConversation = useCallback((conversation: RoomConversationRecord) => {
+    setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
+      ? current.map(item => item.id === conversation.id ? conversation : item)
+      : [...current, conversation]))
+  }, [])
+  const backendsFor = useCallback((recipientAgentIds: string[]): RoomBackendSelection[] =>
+    recipientAgentIds.flatMap(agent_id => {
+      const selection = backendSelections[agent_id]
+      return selection ? [{ agent_id, ...selection }] : []
+    }), [backendSelections])
 
   if (loading) {
     return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Rooms…</div>
@@ -711,7 +424,7 @@ export default function AgentGroupsPage() {
             Project-bound conversations where every human speaks under their own identity and subscription.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => Promise.all([loadCatalog(), loadRoom(), loadMessages()])}>
+        <Button variant="outline" size="sm" onClick={() => Promise.all([loadCatalog(), loadRoom()])}>
           <RefreshCw className="size-3.5 mr-1" />Refresh
         </Button>
       </header>
@@ -936,113 +649,69 @@ export default function AgentGroupsPage() {
                 <>
                   <div className="border-b border-border px-5 py-3">
                     <CardTitle className="text-base">{currentConversation.title || 'Conversation'}</CardTitle>
-                    <RoomSummaryFreshness summary={conversationSummary} isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')} />
                   </div>
-                  <div
-                    ref={conversationScrollRef}
-                    role="log"
-                    aria-label="Conversation messages"
-                    aria-live="polite"
-                    className="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4"
-                    onScroll={event => {
-                      const container = event.currentTarget
-                      const distanceFromBottom = container.scrollHeight
-                        - container.scrollTop
-                        - container.clientHeight
-                      followConversationRef.current = distanceFromBottom <= 80
+                  {/* The conversation itself is the shared module the Project
+                      chat panel also renders; this page adds only what is the
+                      page's — routing and per-agent backends. */}
+                  <RoomConversation
+                    key={`${detail.room.id}:${currentConversation.id}`}
+                    roomId={detail.room.id}
+                    conversationId={currentConversation.id}
+                    detail={detail}
+                    variant="full"
+                    agents={agents}
+                    humans={spaceMembers}
+                    routingMode={routingMode}
+                    backendsFor={backendsFor}
+                    isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
+                    onConversationUpdated={upsertConversation}
+                    onBeforeContinue={async () => {
+                      const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
+                      if (refreshed) setOverview(refreshed)
                     }}
-                  >
-                    {messagesLoading && (
-                      <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-                        <Loader2 className="size-4 animate-spin" />Loading conversation…
-                      </div>
-                    )}
-                    {hasOlderMessages && (
-                      <div className="text-center">
-                        <Button variant="outline" size="sm" onClick={() => void loadOlderMessages()}>
-                          Load older
-                        </Button>
-                      </div>
-                    )}
-                    {!messagesLoading && messages.length === 0 && <p className="text-sm text-muted-foreground text-center py-12">No messages yet.</p>}
-                    {messages.map(message => (
-                      <RoomMessageView
-                        key={message.id}
-                        message={message}
-                        agents={[
-                          ...roomAgents,
-                          ...agents.filter(agent => !roomAgents.some(roomAgent => roomAgent.id === agent.id)),
-                        ]}
-                        humans={spaceMembers}
-                        runs={runs}
-                        progress={runProgress}
-                        deltas={runDeltas}
-                        onActionDecision={continueAfterProposalDecision}
-                      />
-                    ))}
-                    {pendingProposalContinuation && (
-                      <ProposalContinuationStatus
-                        continuation={pendingProposalContinuation}
-                        progress={runProgress}
-                      />
-                    )}
-                  </div>
-                  <div className="border-t border-border bg-card px-5 py-3 space-y-3">
-                    <details>
-                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">Run settings</summary>
-                      <div className="mt-3 space-y-3 rounded-md bg-muted/30 p-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Label htmlFor="routing">Routing</Label>
-                          <Select
-                            className="w-48"
-                            ariaLabel="Routing"
-                            value={routingMode}
-                            onChange={value => setRoutingMode(value as RoutingMode)}
-                            options={[
-                              { value: 'direct', label: 'Direct mentions' },
-                              { value: 'agent_coordination', label: 'Agent coordination' },
-                            ]}
-                          />
-                          <Badge variant="secondary">own backend</Badge>
+                    runSettings={(
+                      <details>
+                        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">Run settings</summary>
+                        <div className="mt-3 space-y-3 rounded-md bg-muted/30 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Label htmlFor="routing">Routing</Label>
+                            <Select
+                              className="w-48"
+                              ariaLabel="Routing"
+                              value={routingMode}
+                              onChange={value => setRoutingMode(value as RoutingMode)}
+                              options={[
+                                { value: 'direct', label: 'Direct mentions' },
+                                { value: 'agent_coordination', label: 'Agent coordination' },
+                              ]}
+                            />
+                            <Badge variant="secondary">own backend</Badge>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {roomAgents.filter(agent => agent.kind !== 'system_assistant').map(agent => {
+                              const catalog = backendCatalogs[agent.id]
+                              const choices = backendChoices(catalog)
+                              const selection = backendSelections[agent.id]
+                              return (
+                                <div key={agent.id} className="space-y-1">
+                                  <Label>{agent.name} backend</Label>
+                                  <Select
+                                    value={selection ? backendSelectionValue(selection) : ''}
+                                    onChange={value => setBackendSelections(current => ({
+                                      ...current,
+                                      [agent.id]: parseBackendSelection(value),
+                                    }))}
+                                    options={choices}
+                                    disabled={choices.length === 0}
+                                  />
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {roomAgents.filter(agent => agent.kind !== 'system_assistant').map(agent => {
-                            const catalog = backendCatalogs[agent.id]
-                            const choices = backendChoices(catalog)
-                            const selection = backendSelections[agent.id]
-                            return (
-                              <div key={agent.id} className="space-y-1">
-                                <Label>{agent.name} backend</Label>
-                                <Select
-                                  value={selection ? backendSelectionValue(selection) : ''}
-                                  onChange={value => setBackendSelections(current => ({
-                                    ...current,
-                                    [agent.id]: parseBackendSelection(value),
-                                  }))}
-                                  options={choices}
-                                  disabled={choices.length === 0}
-                                />
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    </details>
-                    <RoomMessageComposer
-                      value={composer}
-                      onChange={setComposer}
-                      agents={roomAgents}
-                      members={detail.agent_members}
-                      disabled={sending}
-                      resetToken={resetToken}
-                      onSubmit={sendMessage}
-                    />
-                    <div className="flex justify-end">
-                      <Button disabled={sending || !composer.text.trim()} onClick={sendMessage}>
-                        {sending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Send className="size-4 mr-1" />}Send
-                      </Button>
-                    </div>
-                  </div>
+                      </details>
+                    )}
+                  />
                 </>
               )}
             </Card>
@@ -1059,17 +728,15 @@ export default function AgentGroupsPage() {
 
 /**
  * Ambient "what's going on in this Project right now" beside the Room
- * conversation (plan Phase B): renders the same generic mode-projection +
- * attention contract the Project Overview page renders, so a Mode/domain
- * that already reports into that contract shows up here with no Room-side
- * change. Every row deep-links into the Area that owns it — this panel is
- * awareness, not a second command surface.
+ * conversation: whether the Project has a goal, and what needs attention —
+ * the same list Pulse and the shell show, so it cannot disagree with them.
+ * Every row deep-links into the Area that owns it; this panel is awareness,
+ * not a second command surface.
  */
 function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null }) {
   if (!overview) {
     return <Card className="p-3 text-xs text-muted-foreground">Project state unavailable.</Card>
   }
-  const { current_state_summary, next_actions } = overview.mode_projection
   const attention = overview.attention
   const initialized = overview.definition_status?.status === 'initialized'
     || (!overview.definition_status && Boolean(overview.brief?.goal))
@@ -1081,20 +748,7 @@ function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null 
         <p className="mt-1 text-sm font-medium">
           {initialized ? 'Project initialized' : 'Project needs a goal or core problem'}
         </p>
-        <p className="mt-1 text-sm">{current_state_summary}</p>
       </div>
-      {next_actions.length > 0 && (
-        <div>
-          <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Next</CardTitle>
-          <ul className="mt-1 space-y-1">
-            {next_actions.map(action => (
-              <li key={action.id}>
-                <Link to={action.href} className="text-sm hover:underline">{action.label}</Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       {attention.length > 0 && (
         <div>
           <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Needs attention</CardTitle>
@@ -1107,222 +761,21 @@ function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null 
           </ul>
         </div>
       )}
-      {next_actions.length === 0 && attention.length === 0 && (
+      {attention.length === 0 && (
         <p className="text-xs text-muted-foreground">Nothing pending right now.</p>
       )}
     </Card>
   )
 }
 
-function ProposalContinuationStatus({
-  continuation,
-  progress,
-}: {
-  continuation: PendingProposalContinuation
-  progress: Record<string, RunProgress>
-}) {
-  const activeProgress = continuation.runIds.reduce<RunProgress | undefined>(
-    (latest, runId) => progress[runId] ?? latest,
-    undefined,
-  )
-  const actionLabel = continuation.action === 'accept' ? '已接受' : '已拒绝'
-  const statusText = continuation.phase === 'failed'
-    ? `后续处理未能启动：${continuation.error || '未知错误'}`
-    : continuation.phase === 'submitting'
-      ? `${actionLabel}，正在启动下一步…`
-      : activeProgress?.summary
-        || (activeProgress ? lifecycleLabel(activeProgress.event_type) : `${actionLabel}，助手正在处理…`)
-
-  return (
-    <div className="flex justify-start" role="status" aria-live="polite">
-      <div className={`max-w-[82%] rounded-lg border px-3 py-2 ${continuation.phase === 'failed'
-        ? 'border-destructive/40 bg-destructive/5'
-        : 'border-border bg-muted/30'}`}>
-        <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-          {continuation.phase === 'failed'
-            ? <Bot className="size-3.5" />
-            : <Loader2 className="size-3.5 animate-spin" />}
-          <span>系统状态</span>
-        </div>
-        <p className="text-sm">{statusText}</p>
-      </div>
-    </div>
-  )
-}
-
-function RoomSummaryFreshness({
-  summary,
-  isOwner,
-}: {
-  summary: RoomConversationSummaryResponse | null
-  isOwner: boolean
-}) {
-  if (!summary?.state) return null
-  const state = summary.state
-  const label = state.status === 'waiting_provider'
-    ? isOwner ? 'Summary paused — configure an API provider to resume' : 'Summary waiting for the Room owner’s API provider'
-    : state.status === 'retry_wait'
-      ? `Summary retry scheduled${state.next_attempt_at ? ` for ${new Date(state.next_attempt_at).toLocaleTimeString()}` : ''}`
-    : state.status === 'running' || state.status === 'queued'
-      ? 'Summary updating…'
-      : state.status === 'failed'
-        ? 'Summary update stopped after repeated provider failures'
-        : summary.summary
-          ? `Summary v${summary.summary.version} · covers ${summary.summary.covered_message_count} messages`
-          : 'Summary not created yet'
-  return (
-    <div className="mt-1 text-xs text-muted-foreground" role="status">
-      <span>{label}</span>
-      {state.status === 'waiting_provider' && isOwner && (
-        <Link to="/providers" className="ml-2 underline">Configure provider</Link>
-      )}
-    </div>
-  )
-}
-
-function RoomMessageView({
-  message,
-  agents,
-  humans,
-  runs,
-  progress,
-  deltas,
-  onActionDecision,
-}: {
-  message: RoomMessage
-  agents: Array<{ id: string; name: string; kind?: string }>
-  humans: SpaceMember[]
-  runs: Record<string, Run>
-  progress: Record<string, RunProgress>
-  deltas: Record<string, string>
-  onActionDecision: (preview: ChatActionPreview, action: RoomActionDecision) => Promise<void>
-}) {
-  const runIds = metadataRunIds(message.metadata_json)
-  const label = message.role === 'user'
-    ? humans.find(member => member.user_id === message.user_id)?.display_name
-      ?? humans.find(member => member.user_id === message.user_id)?.email
-      ?? 'Person'
-    : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? 'Agent'
-  return (
-    <div className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[82%] rounded-lg border px-3 py-2 ${message.role === 'user' ? 'bg-primary/5 border-primary/20' : 'bg-card border-border'}`}>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-          {message.role === 'assistant' && <Bot className="size-3.5" />}
-          <span>{label}</span>
-          <span>{new Date(message.created_at).toLocaleTimeString()}</span>
-        </div>
-        <MarkdownMessage content={message.content} />
-        {metadataActionPreviews(message.metadata_json).length > 0 && (
-          <div className="mt-2 space-y-2">
-            {metadataActionPreviews(message.metadata_json).map((preview, index) => (
-              <RoomActionPreviewCard
-                key={`${preview.action_id}:${preview.proposal_id ?? index}`}
-                preview={preview}
-                onDecision={onActionDecision}
-              />
-            ))}
-          </div>
-        )}
-        {runIds.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {runIds.map(runId => (
-              <span key={runId} className="inline-flex flex-col items-start gap-1">
-                <Link to={`/runs/${runId}`} className="inline-flex items-center gap-1 text-xs hover:underline">
-                  <RoomRunStatusBadge run={runs[runId]} fallbackStatus={progress[runId]?.status ?? 'queued'} />
-                  {roomRunLinkLabel(runs[runId], progress[runId]?.status)}
-                </Link>
-                {progress[runId] && (
-                  <span className="text-[11px] text-muted-foreground">
-                    {progress[runId].summary || lifecycleLabel(progress[runId].event_type)}
-                  </span>
-                )}
-                {deltas[runId] && (
-                  <span className="max-w-md whitespace-pre-wrap text-xs text-muted-foreground">
-                    {deltas[runId]}
-                  </span>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function lifecycleLabel(eventType: string): string {
-  return eventType.replace(/_/g, ' ')
-}
-
-function RoomRunStatusBadge({ run, fallbackStatus }: { run?: Run; fallbackStatus: string }) {
-  const status = run?.status ?? fallbackStatus
-  const authorization = status === 'waiting_for_review'
-    && run?.error_json?.supervisor_review !== true
-  const supervisorHold = status === 'waiting_for_review'
-    && run?.error_json?.supervisor_review === true
-  const presentation = authorization
-    ? { label: 'approval needed', variant: 'warning' as const }
-    : supervisorHold
-      ? { label: 'decision needed', variant: 'warning' as const }
-      : ({
-          queued: { label: 'waiting', variant: 'muted' as const },
-          running: { label: 'working', variant: 'warning' as const },
-          succeeded: { label: 'replied', variant: 'success' as const },
-          failed: { label: 'failed', variant: 'destructive' as const },
-          degraded: { label: 'replied with warning', variant: 'warning' as const },
-          cancelled: { label: 'cancelled', variant: 'muted' as const },
-          orphaned: { label: 'interrupted', variant: 'destructive' as const },
-          waiting_for_dependency: { label: 'waiting for collaborators', variant: 'warning' as const },
-          waiting_for_review: { label: 'input needed', variant: 'warning' as const },
-        }[status] ?? { label: status.replace(/_/g, ' '), variant: 'muted' as const })
-  return <Badge variant={presentation.variant}>{presentation.label}</Badge>
-}
-
-function roomRunLinkLabel(run: Run | undefined, fallbackStatus?: string): string {
-  const status = run?.status ?? fallbackStatus
-  if (status === 'waiting_for_review') {
-    return run?.error_json?.supervisor_review !== true
-      ? 'Review request'
-      : 'Resolve Run'
-  }
-  return 'Run details'
-}
-
-function isTerminalRunStatus(status: string): boolean {
-  return ['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review'].includes(status)
-}
-
-function clearTransientRuns(
-  runIds: string[],
-  setProgress: React.Dispatch<React.SetStateAction<Record<string, RunProgress>>>,
-  setDeltas: React.Dispatch<React.SetStateAction<Record<string, string>>>,
-): void {
-  const remove = <T,>(current: Record<string, T>): Record<string, T> => {
-    const next = { ...current }
-    for (const runId of runIds) delete next[runId]
-    return next
-  }
-  setProgress(remove)
-  setDeltas(remove)
-}
-
-function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
-  const seen = new Set<string>()
-  return messages.filter(message => {
-    if (seen.has(message.id)) return false
-    seen.add(message.id)
-    return true
-  })
-}
-
 function compareCreatedNewestFirst(
-  left: Pick<Room | RoomConversation, 'id' | 'created_at'>,
-  right: Pick<Room | RoomConversation, 'id' | 'created_at'>,
+  left: Pick<Room | RoomConversationRecord, 'id' | 'created_at'>,
+  right: Pick<Room | RoomConversationRecord, 'id' | 'created_at'>,
 ): number {
   return right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id)
 }
 
-function sortConversationsNewestFirst(conversations: RoomConversation[]): RoomConversation[] {
+function sortConversationsNewestFirst(conversations: RoomConversationRecord[]): RoomConversationRecord[] {
   return [...conversations].sort(compareCreatedNewestFirst)
 }
 
@@ -1333,22 +786,6 @@ function defaultRoomTitle(project: Pick<Project, 'name'> | undefined): string {
 function displayRoomTitle(room: Room, projects: Project[]): string {
   if (room.title.trim().toLocaleLowerCase() !== 'project conversation') return room.title
   return defaultRoomTitle(projects.find(project => project.id === room.project_id))
-}
-
-function metadataRunIds(metadata: Record<string, unknown> | null | undefined): string[] {
-  const value = metadata?.run_ids
-  if (Array.isArray(value)) return value.filter((id): id is string => typeof id === 'string')
-  const runId = metadata?.run_id
-  return typeof runId === 'string' ? [runId] : []
-}
-
-function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
-  const value = metadata?.action_previews
-  return Array.isArray(value) ? value as ChatActionPreview[] : []
-}
-
-function uniqueIds(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))]
 }
 
 async function loadAllPages<T>(

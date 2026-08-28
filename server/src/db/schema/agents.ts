@@ -30,7 +30,12 @@ export const agents = pgTable("agents", {
 	index("ix_agents_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_agents_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_agents_status").using("btree", table.status.asc().nullsLast()),
-	uniqueIndex("uq_agents_system_assistant_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text))`),
+	// One Assistant per Project, plus one for the Space itself. Two indexes
+	// rather than one over `(space_id, project_id)`, because a NULL project_id
+	// does not collide in a composite unique index — the Space-level instance
+	// would be unconstrained, which is the one the `/home` chat depends on.
+	uniqueIndex("uq_agents_system_assistant_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NULL))`),
+	uniqueIndex("uq_agents_system_assistant_per_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NOT NULL))`),
 	uniqueIndex("uq_agents_system_source_post_processor_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_source_annotator_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_research_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text))`),
@@ -82,6 +87,12 @@ export const actors = pgTable("actors", {
 	index("ix_actors_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_actors_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_actors_user_id").using("btree", table.userId.asc().nullsLast()),
+	// One identity per person and per service in a Space. Without these the
+	// resolver's insert-on-conflict was decorative: two concurrent first writes
+	// for the same person produced two actors, and every audit row after that
+	// named one of them at random.
+	uniqueIndex("uq_actors_user_per_space").using("btree", table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast()).where(sql`actor_type = 'user' AND status = 'active'`),
+	uniqueIndex("uq_actors_service_per_space").using("btree", table.spaceId.asc().nullsLast(), table.actorType.asc().nullsLast(), table.serviceName.asc().nullsLast()).where(sql`service_name IS NOT NULL AND status = 'active'`),
 	foreignKey({
 			columns: [table.agentId],
 			foreignColumns: [agents.id],
@@ -123,6 +134,14 @@ export const agentVersions = pgTable("agent_versions", {
 	outputSchemaJson: jsonb("output_schema_json").default({}).notNull(),
 	sourceProposalId: varchar("source_proposal_id", { length: 36 }),
 	sourceActivityId: varchar("source_activity_id", { length: 36 }),
+	/**
+	 * Set when this version is a materialization of a managed seed, naming
+	 * which seed. Non-null means "keep me in step with it"; null means the
+	 * instance has been given a version of its own and must be left alone.
+	 * Without it, re-materializing the seed would silently overwrite work a
+	 * person or an evolution proposal did on one Project's Assistant.
+	 */
+	followsSeedKey: varchar("follows_seed_key", { length: 128 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	publishedAt: timestamp("published_at", { withTimezone: true, mode: 'string' }),
 	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }),

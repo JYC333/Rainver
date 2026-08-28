@@ -5,9 +5,11 @@ import { Activity, ChevronRight, FileText, FolderKanban, Loader2, PackageCheck, 
 import { toast } from 'sonner'
 import { knowledgeApi, memoryApi, spacesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { errMsg } from '../../lib/utils'
 import type {
   Memory,
+  Proposal,
   MemoryMaintenanceReport,
   MemoryType,
   ClaimCandidatePacketCreateResponse,
@@ -40,8 +42,21 @@ const EMPTY_FORM: MemoryForm = {
 
 export default function MemoriesPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const { currentUser } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
+  // What the Agents have written on their own is the thing this page exists
+  // to make reviewable after the fact (ADR 0003 §2), and a paused session
+  // links straight into it from the attention list.
+  const sessionFilter = searchParams.get('session') ?? ''
+  // A conversation outside a Room has no session; its paused turn links by Run.
+  const runFilter = searchParams.get('run') ?? ''
+  const writtenByFilter = (searchParams.get('created_by') ?? 'all') as 'all' | 'agent' | 'user'
+  // "Since I last looked" (ADR 0003 §3). A stamped instant rather than a
+  // rolling window, so the list does not shift under the person while they
+  // are reading it.
+  const sinceFilter = searchParams.get('since') ?? ''
+  const statusFilter = searchParams.get('status') ?? 'active'
 
   const [memories, setMemories] = useState<Memory[]>([])
   const [form, setForm]         = useState<MemoryForm>(EMPTY_FORM)
@@ -72,12 +87,16 @@ export default function MemoriesPage() {
     }
     try {
       setMemories((await memoryApi.list({
-        status: 'active',
+        status: statusFilter,
         project_id: projectFilter || undefined,
+        created_by: writtenByFilter === 'all' ? undefined : writtenByFilter,
+        since: sinceFilter || undefined,
+        session: sessionFilter || undefined,
+        run: runFilter || undefined,
       })).items)
     }
     catch (e) { toast.error(errMsg(e)) }
-  }, [projectFilter, activeSpaceId])
+  }, [projectFilter, activeSpaceId, statusFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -177,10 +196,29 @@ export default function MemoriesPage() {
     } catch (e) { toast.error(errMsg(e)) }
   }
 
+  // Your own memory archives on the spot; someone else's still goes through
+  // a proposal (ADR 0003 §3). The server decides which, and says so by
+  // returning the entry rather than a proposal.
+  function setFilter(key: string, value: string | null) {
+    setSearchParams(previous => {
+      if (value === null) previous.delete(key)
+      else previous.set(key, value)
+      return previous
+    })
+  }
+
   async function deleteMemory(id: string) {
     try {
-      await memoryApi.delete(id)
-      toast('Archive proposal submitted')
+      const result = await memoryApi.delete(id)
+      toast(isMemory(result) ? 'Archived' : 'Archive proposal submitted')
+      await load()
+    } catch (e) { toast.error(errMsg(e)) }
+  }
+
+  async function restoreMemory(id: string) {
+    try {
+      await memoryApi.restore(id)
+      toast('Restored')
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -469,8 +507,62 @@ export default function MemoriesPage() {
 
       <Card>
         <div className="flex flex-col gap-3 mb-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <CardTitle>{showingSearch ? 'Search Results' : 'Active Memories'} ({showingSearch ? searchResults.length : memories.length})</CardTitle>
+          <div className="space-y-2">
+            <CardTitle>
+              {showingSearch
+                ? 'Search Results'
+                : statusFilter === 'archived' ? 'Archived Memories' : 'Active Memories'}
+              {' '}({showingSearch ? searchResults.length : memories.length})
+            </CardTitle>
+            {!showingSearch && (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {([
+                  ['all', 'Everyone'],
+                  ['agent', 'Written by an Agent'],
+                  ['user', 'Written by a person'],
+                ] as const).map(([value, label]) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    variant={writtenByFilter === value ? 'secondary' : 'ghost'}
+                    onClick={() => setFilter('created_by', value === 'all' ? null : value)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+                <Button
+                  size="sm"
+                  variant={sinceFilter ? 'secondary' : 'ghost'}
+                  onClick={() => setFilter(
+                    'since',
+                    sinceFilter ? null : new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(),
+                  )}
+                >
+                  Last 7 days
+                </Button>
+                <Button
+                  size="sm"
+                  variant={statusFilter === 'archived' ? 'secondary' : 'ghost'}
+                  onClick={() => setFilter('status', statusFilter === 'archived' ? null : 'archived')}
+                >
+                  Archived
+                </Button>
+                {([['session', sessionFilter], ['run', runFilter]] as const)
+                  .filter(([, value]) => value)
+                  .map(([key, value]) => (
+                    <Badge key={key} variant="warning" className="gap-1">
+                      {key === 'session' ? 'Session' : 'Turn'} {value.slice(0, 8)}
+                      <button
+                        type="button"
+                        onClick={() => setFilter(key, null)}
+                        aria-label={`Clear ${key} filter`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+              </div>
+            )}
           </div>
           <form
             className="flex gap-2 w-full lg:w-auto"
@@ -554,6 +646,9 @@ export default function MemoriesPage() {
                       >
                         {m.title || 'Untitled memory'}
                       </Link>
+                      {m.created_by?.startsWith('agent:') && (
+                        <Badge variant="outline" className="ml-2">Agent</Badge>
+                      )}
                       {m.content && <p className="text-xs text-muted-foreground truncate mt-0.5">{m.content}</p>}
                     </TableCell>
                     <TableCell><Badge variant="secondary">{m.type}</Badge></TableCell>
@@ -562,8 +657,15 @@ export default function MemoriesPage() {
                     <TableCell className="font-mono text-xs text-muted-foreground">{m.namespace ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground">{m.importance.toFixed(1)}</TableCell>
                     <TableCell className="text-muted-foreground text-xs">{fmt(m.created_at)}</TableCell>
-                    <TableCell>
-                      <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)}>×</Button>
+                    <TableCell className="whitespace-nowrap">
+                      {m.status === 'archived'
+                        // Only the owner's own: restore has no proposal
+                        // fallback the way archive does, so offering it on
+                        // someone else's entry is a button that only 404s.
+                        ? (m.owner_user_id === currentUser?.id
+                          ? <Button variant="outline" size="sm" onClick={() => restoreMemory(m.id)}>Restore</Button>
+                          : null)
+                        : <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)}>×</Button>}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -573,6 +675,11 @@ export default function MemoriesPage() {
       </Card>
     </div>
   )
+}
+
+/** A 200 from DELETE carries the archived entry; a 202 carries a proposal. */
+function isMemory(result: Memory | Proposal): result is Memory {
+  return 'content' in result && 'namespace' in result
 }
 
 function positiveInt(value: string, fallback: number): number {

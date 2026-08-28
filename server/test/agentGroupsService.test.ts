@@ -528,6 +528,37 @@ describe("AgentGroupRunService", () => {
     expect(JSON.parse(String(jobInsert?.params[7]))).not.toHaveProperty("parent_run_id");
   });
 
+  // ADR 0003 §2. A conversation with no Room is still a conversation with a
+  // person, and remembering what they said writes nothing anyone else reads.
+  // Before this the group declared no capabilities at all, so its Agent could
+  // call nothing whatever its own permissions said.
+  it("gives a group with no Room the memory writes, and nothing that touches a Project", async () => {
+    const db = new AgentGroupServiceDb(null);
+    const service = new AgentGroupRunService(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
+      new FakePool(db) as never,
+    );
+
+    await service.sendUserMessage(
+      { spaceId: "space-1", userId: "user-1" },
+      { space_id: "space-1", group_id: "group-1", content: "Remember that I prefer mornings" },
+    );
+
+    const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
+    const declared = runInsert!.params
+      .map((param) => {
+        try { return JSON.parse(String(param)) as unknown } catch { return null }
+      })
+      .find((value): value is string[] =>
+        Array.isArray(value) && value.includes("memory.remember"));
+    expect(declared, JSON.stringify(runInsert!.params)).toEqual(["memory.remember", "memory.revise"]);
+    // The Project write surface stays with the Room: its roster is fixed at
+    // creation, and advancing a Project is the Room's capability, not a
+    // capability of talking to an Agent.
+    expect(declared).not.toContain("inquiry.create_thread");
+    expect(declared).not.toContain("task.create");
+  });
+
   it("does not set a run instruction when the room has no goal", async () => {
     const db = new AgentGroupServiceDb(null, "");
     const service = new AgentGroupRunService(

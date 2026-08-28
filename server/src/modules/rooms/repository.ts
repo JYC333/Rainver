@@ -14,6 +14,7 @@ export interface RoomRecord {
   updated_at: string;
   archived_at: string | null;
   roster_revision: number;
+  is_mainline: boolean;
 }
 
 export interface RoomUserMemberRecord {
@@ -44,13 +45,13 @@ export interface RoomAgentMemberRecord {
 const ROOM_COLUMNS = `
   id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
   created_at, updated_at, archived_at
-  , roster_revision::int AS roster_revision
+  , roster_revision::int AS roster_revision, is_mainline
 `;
 const ROOM_SELECT = `
   room.id, room.space_id, room.project_id, room.project_folder_id,
   room.created_by_user_id, room.title,
   room.status, room.created_at, room.updated_at, room.archived_at,
-  room.roster_revision::int AS roster_revision
+  room.roster_revision::int AS roster_revision, room.is_mainline
 `;
 const ROOM_PROJECT_READABLE = `
   EXISTS (
@@ -83,14 +84,15 @@ export class PgRoomRepository {
     project_folder_id?: string | null;
     created_by_user_id: string;
     title: string;
+    is_mainline?: boolean;
     now?: string;
   }): Promise<RoomRecord> {
     const now = input.now ?? new Date().toISOString();
     const result = await this.db.query<RoomRecord>(
       `INSERT INTO rooms (
          id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
-         created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)
+         created_at, updated_at, is_mainline
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7, $8)
        RETURNING ${ROOM_COLUMNS}`,
       [
         randomUUID(),
@@ -100,9 +102,50 @@ export class PgRoomRepository {
         input.created_by_user_id,
         input.title,
         now,
+        input.is_mainline ?? false,
       ],
     );
     return required(result.rows[0], "Room insert returned no row");
+  }
+
+  /** The Project's mainline Room, if one has been started. */
+  async getMainlineRoom(spaceId: string, projectId: string): Promise<RoomRecord | null> {
+    const result = await this.db.query<RoomRecord>(
+      `SELECT ${ROOM_SELECT}
+         FROM rooms room
+        WHERE room.space_id = $1 AND room.project_id = $2
+          AND room.is_mainline AND room.status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
+   * Make a person a member if they are not one already. Idempotent, and
+   * reactivates a previously removed membership rather than failing on the
+   * `(room_id, user_id)` unique — mainline membership follows Project
+   * membership, so "removed" is not a state it can stay in.
+   */
+  async ensureUserMember(input: {
+    space_id: string;
+    room_id: string;
+    user_id: string;
+    now?: string;
+  }): Promise<{ joined: boolean }> {
+    const now = input.now ?? new Date().toISOString();
+    const result = await this.db.query<{ joined: boolean }>(
+      `INSERT INTO room_user_members (
+         id, space_id, room_id, user_id, role, status, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'member', 'active', $5, $5)
+       ON CONFLICT (room_id, user_id) DO UPDATE
+         SET status = 'active',
+             updated_at = CASE WHEN room_user_members.status = 'active'
+                               THEN room_user_members.updated_at ELSE EXCLUDED.updated_at END
+       RETURNING (xmax = 0 OR updated_at = $5) AS joined`,
+      [randomUUID(), input.space_id, input.room_id, input.user_id, now],
+    );
+    return { joined: Boolean(result.rows[0]?.joined) };
   }
 
   async addUserMember(input: {

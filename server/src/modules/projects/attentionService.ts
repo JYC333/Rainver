@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PROJECT_ATTENTION_CLASSES } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
@@ -22,6 +23,11 @@ interface UserStateRow {
 // machine: any operation waiting for a human decision is an attention item.
 // This proves the registry mechanism end to end; Inquiry/Experiment/Decision
 // register their own adapters at module initialization.
+// Read from the protocol's own vocabulary rather than restated here: a class
+// the wire contract knows and this guard does not would be rejected at
+// runtime with no way to tell which of the two was wrong.
+const ATTENTION_CLASSES: ReadonlySet<string> = new Set<string>(PROJECT_ATTENTION_CLASSES);
+
 const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
   areaKind: "project_operations",
   async listAttentionItems(db, identity, projectId) {
@@ -34,6 +40,7 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
     );
     return rows.rows.map((row): ProjectAttentionItem => ({
       id: `project_operation:${row.id}`,
+      attention_class: "gate",
       project_id: projectId,
       area_kind: "project_operations",
       source_type: "project_operation",
@@ -44,11 +51,12 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
       reason: `${row.kind} operation is waiting for review`,
       due_at: null,
       blocking_refs: [],
-      // Operations Area now renders a research operation's own progress row,
-      // including its screening/idea-review Checkpoint decide controls, so
-      // every operation kind (research included) shares one destination.
-      action_descriptors: [{ label: "Review", href: `/projects/${projectId}/operations?open=${row.id}` }],
-      href: `/projects/${projectId}/operations?open=${row.id}`,
+      // The Research Area's Runs tab renders the operation's own progress
+      // row, including its Checkpoint decide controls. (The Operations Area
+      // that used to is retired: everything else on it was a Space-level
+      // object filtered to the Project.)
+      action_descriptors: [{ label: "Review", href: `/projects/${projectId}/research?tab=runs&open=${row.id}` }],
+      href: `/projects/${projectId}/research?tab=runs&open=${row.id}`,
     }));
   },
 };
@@ -69,9 +77,25 @@ export class ProjectAttentionService {
 
   async listAttentionItems(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const adapters = projectAttentionRegistry.list();
     const perAdapter = await Promise.all(
-      projectAttentionRegistry.list().map((adapter) => adapter.listAttentionItems(this.db, identity, projectId)),
+      adapters.map((adapter) => adapter.listAttentionItems(this.db, identity, projectId)),
     );
+    // Every item says why it needs a person (ADR 0017 §4). Checked here rather
+    // than trusted from the type, because a plugin adapter is not compiled
+    // with this repo — and the front page renders only the four classes, so an
+    // unclassed item would vanish into a panel that says nothing at all
+    // instead of failing where the wiring is wrong.
+    perAdapter.forEach((items, index) => {
+      for (const item of items) {
+        if (!ATTENTION_CLASSES.has(item.attention_class)) {
+          throw new HttpError(
+            500,
+            `Attention adapter '${adapters[index]!.areaKind}' emitted '${item.id}' without a valid attention_class`,
+          );
+        }
+      }
+    });
     const items = sortAttentionItems(perAdapter.flat());
     const states = await this.userStatesByKey(identity, projectId);
     const now = Date.now();

@@ -8,6 +8,7 @@ import {
   redactEvidenceText,
   sanitizeEvidenceJson,
 } from "../runs/evidenceRedaction.js";
+import { wakeJobWorkers } from "./wakeSignal.js";
 
 export type JobStatus =
   | "pending"
@@ -86,6 +87,14 @@ const TERMINAL_RUN_STATES = [
   "waiting_for_review",
 ];
 
+/**
+ * A job scheduled for later is not claimable yet, so enqueuing one must not
+ * wake a worker that would only find it still out of reach.
+ */
+function isClaimableNow(scheduledAt: Date | undefined, now: Date): boolean {
+  return !scheduledAt || scheduledAt.getTime() <= now.getTime();
+}
+
 export class PgJobQueueRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -123,6 +132,7 @@ export class PgJobQueueRepository {
     );
     const row = result.rows[0];
     if (!row) throw new Error("Job enqueue returned no row");
+    if (isClaimableNow(input.scheduled_at, now)) wakeJobWorkers();
     return row;
   }
 
@@ -175,6 +185,7 @@ export class PgJobQueueRepository {
     if (!result.rows[0]) {
       throw new Error("Agent Run job ensure returned no row");
     }
+    if (isClaimableNow(input.scheduled_at, now)) wakeJobWorkers();
     return result.rows[0];
   }
 

@@ -1,6 +1,7 @@
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString } from "../routeUtils/common.js";
 import { InquiryThreadService } from "../inquiry/threadService.js";
+import type { ThreadEventProvenance } from "../inquiry/threadWorkEvents.js";
 
 export interface ResearchThreadScopeRef {
   thread_id: string;
@@ -52,6 +53,39 @@ export async function checkPinnedThreadDrift(
 }
 
 /**
+ * Whether a materialized question that reads differently from the Thread is a
+ * *refinement of that same Thread* rather than a different Question's.
+ *
+ * Assessment legitimately rewrites the question it plans queries from — it
+ * may translate it, narrow it, or make it answerable — and the strategy
+ * carries that rewritten text. Comparing the two texts therefore rejects the
+ * pipeline's own correct output (`research.start_acquisition` could never
+ * start once assessment changed a word), while the thing the comparison was
+ * protecting against — a strategy built for a *different* Question — is a
+ * question of provenance, so provenance is what is checked: the strategy's
+ * research-context version belongs to an assessment session for this Thread.
+ * The Thread's own statement stays the authoritative question either way.
+ */
+async function questionRefines(
+  db: Queryable,
+  spaceId: string,
+  queryStrategyId: string | null,
+  threadId: string,
+): Promise<boolean> {
+  if (!queryStrategyId) return false;
+  const result = await db.query(
+    `SELECT 1 FROM research_query_strategies strategy
+       JOIN project_research_question_assessment_sessions session
+         ON session.research_context_version_id = strategy.research_context_version_id
+        AND session.space_id = strategy.space_id
+      WHERE strategy.id = $1 AND strategy.space_id = $2 AND session.thread_id = $3
+      LIMIT 1`,
+    [queryStrategyId, spaceId, threadId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
  * Resolves the authoritative Inquiry Thread for one research workflow.
  *
  * A Project may own many workflows, each scoped to a different Question.
@@ -66,11 +100,13 @@ export async function resolveResearchThreadScope(
   projectId: string,
   researchQuestion: string,
   requestedThreadId: string | null,
+  options?: { queryStrategyId?: string | null; provenance?: ThreadEventProvenance },
 ): Promise<ResearchThreadScopeRef> {
   if (requestedThreadId) {
     const selected = await loadQuestion(db, identity.spaceId, projectId, requestedThreadId);
     if (!selected) throw new HttpError(422, "thread_id must reference an active Question in this Project");
-    if (selected.statement.trim() !== researchQuestion.trim()) {
+    if (selected.statement.trim() !== researchQuestion.trim()
+      && !(await questionRefines(db, identity.spaceId, options?.queryStrategyId ?? null, requestedThreadId))) {
       throw new HttpError(409, "The materialized research question differs from the selected Thread; revise the Thread before starting");
     }
     return selected;
@@ -88,10 +124,12 @@ export async function resolveResearchThreadScope(
   );
   if (matching.rows[0]) return toRef(matching.rows[0]);
 
+  // A Run materialised this question, so the Project's account says so — the
+  // same attribution the proposal appliers make.
   const created = await new InquiryThreadService(db).createThread(identity, projectId, {
     kind: "question",
     statement: researchQuestion,
-  });
+  }, options?.provenance);
   return {
     thread_id: String(created.id),
     version: Number(created.version),

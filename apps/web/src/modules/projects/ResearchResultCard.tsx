@@ -33,7 +33,7 @@ function actionHref(action: ResearchResultAction, state: ResearchResultState, pr
   if (action === 'view_corpus') return `/projects/${projectId}/sources`
   // Deciding a Checkpoint lives only in Operations Area now — a second,
   // independent decide UI here would risk a stale view after either one applies.
-  if (action === 'review_results') return `/projects/${projectId}/operations`
+  if (action === 'review_results') return `/projects/${projectId}/research?tab=runs`
   return null
 }
 

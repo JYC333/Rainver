@@ -1,10 +1,5 @@
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
-  projectEntitySummaryRegistry,
-  type ProjectEntitySummary,
-  type ProjectEntitySummaryAdapter,
-} from "../projects/overviewRegistry.js";
-import {
   projectAttentionRegistry,
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
@@ -14,33 +9,6 @@ import {
 // 5), mirroring modules/inquiry/projectIntegration.ts: modules/projects
 // aggregates through these contracts and never queries decision_cases
 // directly.
-
-/**
- * A Decision Case is an entity every Project can hold, not a way of advancing
- * work.
- *
- * It used to register a Primary Mode projection. Deciding is where research
- * ends, so `research` absorbed that Mode — and a Project that advances by
- * delivery makes decisions too, which is exactly why it was never a Mode of
- * its own. Cases ready to decide still reach the shell through the attention
- * adapter below.
- */
-const decisionEntitySummaryAdapter: ProjectEntitySummaryAdapter = {
-  entityType: "decision_case",
-  label: "Decision Cases",
-  detail: "Open choices with scored Options",
-  href: (projectId) => `/projects/${projectId}/decisions`,
-
-  async getSummary(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectEntitySummary> {
-    const open = await db.query<{ total: number }>(
-      `SELECT count(*)::int AS total FROM decision_cases WHERE space_id = $1 AND project_id = $2 AND status = 'open'`,
-      [identity.spaceId, projectId],
-    );
-    const readyToDecide = await readyToDecideCases(db, identity.spaceId, projectId);
-    const status: ProjectEntitySummary["status"] = readyToDecide.length > 0 ? "attention" : "ok";
-    return { count: open.rows[0]?.total ?? 0, status };
-  },
-};
 
 // A Case is ready once it has at least two Options, at least one Criterion,
 // and every active Option has a score for every Criterion.
@@ -71,6 +39,7 @@ const decisionAttentionAdapter: ProjectAttentionAdapter = {
     const cases = await readyToDecideCases(db, identity.spaceId, projectId);
     return cases.map((c): ProjectAttentionItem => ({
       id: `decision_case:${c.id}`,
+      attention_class: "gate",
       project_id: projectId,
       area_kind: "decision",
       source_type: "decision_case",
@@ -88,6 +57,5 @@ const decisionAttentionAdapter: ProjectAttentionAdapter = {
 };
 
 export function registerDecisionsProjectIntegration(): void {
-  projectEntitySummaryRegistry.register(decisionEntitySummaryAdapter, "decisions");
   projectAttentionRegistry.replace(decisionAttentionAdapter);
 }

@@ -1,3 +1,4 @@
+import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { startSchedulerRegistry, type ScheduledTask } from "./registry.js";
@@ -43,6 +44,18 @@ export function startBackgroundServices(
   const tasks: ScheduledTask[] = [
     // Plugin-contributed scheduler tasks (fan out to enabled users internally).
     ...(pluginHost?.getSchedulerTasks() ?? []),
+    {
+      // Once at boot: a seed change must reach every Assistant that already
+      // exists, not only the ones a Room is next created for. Daily after
+      // that is a cheap backstop; the work is idempotent.
+      name: "managed_assistant_seed_reconcile",
+      intervalSeconds: 86_400,
+      runOnStart: true,
+      run: async () => {
+        if (!config.databaseUrl) return;
+        await SpaceAssistantService.reconcileSeedFollowersForAllSpaces(getDbPool(config.databaseUrl), config, log);
+      },
+    },
     {
       name: "conversation_runtime_state_retention",
       intervalSeconds: 3600,

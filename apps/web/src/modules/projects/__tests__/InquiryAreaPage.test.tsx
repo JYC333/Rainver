@@ -245,7 +245,7 @@ describe('InquiryAreaPage', () => {
 
     fireEvent.click(await screen.findByRole('tab', { name: /^Acquire/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Watch the running search/ }))
-    await waitFor(() => expect(spaceNavigate).toHaveBeenCalledWith('/projects/project-1/operations'))
+    await waitFor(() => expect(spaceNavigate).toHaveBeenCalledWith('/projects/project-1/research?tab=runs'))
   })
 
   it('keeps recommending while a step is in progress, instead of falling silent', async () => {

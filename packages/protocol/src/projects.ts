@@ -190,9 +190,21 @@ export const ProjectModeTransitionSchema = z
 export const ProjectAttentionSeveritySchema = z.enum(["low", "normal", "high", "critical"]);
 export type ProjectAttentionSeverity = z.infer<typeof ProjectAttentionSeveritySchema>;
 
+/**
+ * Why an item is asking for a person, from the four things that may
+ * (ADR 0017 §4, ADR 0011 decision 6). An adapter that cannot name one is not
+ * emitting attention: "confirm what I already did" is an Updates row, and one
+ * item per element of a decomposition the person asked for is noise that
+ * teaches them to stop reading the list.
+ */
+export const PROJECT_ATTENTION_CLASSES = ["gate", "remainder", "next_step", "uncertain"] as const;
+export const ProjectAttentionClassSchema = z.enum(PROJECT_ATTENTION_CLASSES);
+export type ProjectAttentionClass = z.infer<typeof ProjectAttentionClassSchema>;
+
 export const ProjectAttentionItemSchema = z
   .object({
     id: z.string(),
+    attention_class: ProjectAttentionClassSchema,
     project_id: IdSchema,
     area_kind: z.string(),
     source_type: z.string(),
@@ -217,26 +229,28 @@ export const ProjectAttentionItemSchema = z
   .passthrough();
 export type ProjectAttentionItem = z.infer<typeof ProjectAttentionItemSchema>;
 
-export const ModeOverviewProjectionSchema = z
-  .object({
-    mode: ProjectPrimaryModeSchema,
-    current_state_summary: z.string(),
-    progress_indicators: z
-      .array(
-        z.object({
-          metric: z.string(),
-          value: z.number(),
-          trend: z.enum(["up", "down", "flat"]).optional(),
-        }),
-      )
-      .default([]),
-    focus_set: z.array(z.object({ id: z.string(), label: z.string(), href: z.string() })).default([]),
-    next_actions: z
-      .array(z.object({ id: z.string(), label: z.string(), href: z.string(), kind: z.string() }))
-      .default([]),
-  })
-  .passthrough();
-export type ModeOverviewProjection = z.infer<typeof ModeOverviewProjectionSchema>;
+
+/**
+ * A Project Operation that has not stopped, as the front page reads it.
+ *
+ * Pulse said "nothing is being worked on right now" while a research
+ * acquisition screened 873 documents for four hours: its only source was the
+ * Task board, and an Operation is not a Task. The fields are exactly what the
+ * existing `researchOperationDetail` reads, so the front page renders the
+ * same sentence the Research Area does instead of composing a second one —
+ * and it still fetches nothing an Area owns.
+ */
+export const ProjectRunningOperationSchema = z.object({
+  id: IdSchema,
+  project_id: IdSchema,
+  kind: z.string(),
+  title: z.string(),
+  status: z.string(),
+  progress_json: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ProjectRunningOperation = z.infer<typeof ProjectRunningOperationSchema>;
 
 export const ProjectOverviewResponseSchema = z
   .object({
@@ -254,31 +268,8 @@ export const ProjectOverviewResponseSchema = z
       basis: z.enum(["published_brief_goal", "missing_published_brief_goal"]),
       goal_or_problem: z.string().nullable(),
     }).strict(),
-    mode_projection: ModeOverviewProjectionSchema,
     available_modes: z.array(ProjectPrimaryModeSchema),
     attention: z.array(ProjectAttentionItemSchema),
-    setup_checklist: z.array(
-      z.object({
-        id: z.string(),
-        label: z.string(),
-        status: z.enum(["ready", "missing"]),
-        required: z.boolean(),
-        href: z.string(),
-        detail: z.string(),
-      }),
-    ),
-    // How much of each kind of thing the Project holds, and the way into the
-    // Area that owns it. Never a list of Areas: every navigation Area stays
-    // reachable whatever this contains.
-    entity_summaries: z.array(
-      z.object({
-        entity_type: z.string(),
-        label: z.string(),
-        detail: z.string(),
-        href: z.string(),
-        count: z.number(),
-        status: z.enum(["ok", "attention", "blocked"]),
-      }),
-    ),
+    in_progress: z.array(ProjectRunningOperationSchema),
   })
   .passthrough();

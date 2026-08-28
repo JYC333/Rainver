@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
+  HttpError,
   boolQuery,
   dbPool,
   jsonBody,
@@ -166,7 +168,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await repository().updateTask(identity, params(request).taskId ?? "", jsonBody(request)));
+      // The body is free-form for the many optional columns, but the two
+      // structured fields reach code that indexes into them: an unshaped
+      // `links[]` entry would arrive at the entity registry as `undefined`.
+      const body = jsonBody(request);
+      const structured = protocol.TaskPatchStructuredFieldsSchema.safeParse(body);
+      if (!structured.success) throw new HttpError(422, structured.error.message);
+      return reply.send(await repository().updateTask(identity, params(request).taskId ?? "", body));
     } catch (error) {
       return sendRouteError(reply, error);
     }

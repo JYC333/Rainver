@@ -3,6 +3,7 @@ import {
   ProjectBriefVersionWriteRequestSchema,
   ProjectOverviewResponseSchema,
 } from "../src/projects.js";
+import { ProjectWorkUpdateSchema } from "../src/projectWork.js";
 
 const overview = {
   project: {
@@ -51,29 +52,72 @@ const overview = {
   },
   available_modes: ["research", "delivery", "operations", "learning"],
   attention: [],
-  setup_checklist: [{
-    id: "brief",
-    label: "Project Brief goal",
-    status: "ready",
-    required: true,
-    href: "/projects/project-1/inquiry?setup=goal",
-    detail: "Goal recorded",
+  in_progress: [{
+    id: "11111111-1111-4111-8111-111111111111",
+    project_id: "project-1",
+    kind: "research",
+    title: "Start initial material intake",
+    status: "active",
+    progress_json: { current_stage: "screening", screening_progress: { total_items: 873, classified_items: 848 } },
+    created_at: "2026-08-27T16:00:00.000Z",
+    updated_at: "2026-08-27T20:00:00.000Z",
   }],
-  entity_summaries: [],
 };
 
 describe("ProjectOverviewResponseSchema", () => {
+  it("parses the overview contract the shell reads", () => {
+    expect(ProjectOverviewResponseSchema.safeParse(overview).success).toBe(true);
+  });
+
   it("accepts partial typed Brief drafts and rejects malformed or unknown fields", () => {
     expect(ProjectBriefVersionWriteRequestSchema.safeParse({ goal: "Understand X" }).success).toBe(true);
     expect(ProjectBriefVersionWriteRequestSchema.safeParse({ goal: 123 }).success).toBe(false);
     expect(ProjectBriefVersionWriteRequestSchema.safeParse({ goal: "Understand X", embedded_context: "no" }).success).toBe(false);
   });
 
-  it("keeps the persistent shell setup checklist in the public contract", () => {
-    expect(ProjectOverviewResponseSchema.parse(overview).setup_checklist).toEqual(
-      overview.setup_checklist,
-    );
-    const { setup_checklist: _omitted, ...withoutChecklist } = overview;
-    expect(ProjectOverviewResponseSchema.safeParse(withoutChecklist).success).toBe(false);
+});
+
+describe("ProjectWorkUpdateSchema", () => {
+  const base = {
+    id: "11111111-1111-4111-8111-111111111111",
+    event_kind: "thread.created" as const,
+    occurred_at: "2026-08-28T09:00:00.000Z",
+    actor: { kind: "agent" as const, id: "22222222-2222-4222-8222-222222222222", display_name: "Assistant" },
+    summary: "Question opened",
+    outcome: null,
+    subject: { type: "inquiry_thread" as const, id: "33333333-3333-4333-8333-333333333333", title: "A question" },
+    undo: { action: "archive_thread" as const, target_id: "33333333-3333-4333-8333-333333333333" },
+    undone_by_event_id: null,
+  };
+
+  it("carries a fold whose members keep their own undo", () => {
+    // The client contract for review-after (ADR 0017 §4). Without a test the
+    // fold, the undo and the generalised subject are validated by nothing.
+    const parsed = ProjectWorkUpdateSchema.parse({
+      ...base,
+      id: "fold:run-1:thread.created",
+      summary: "Opened 3 questions",
+      subject: null,
+      undo: null,
+      members: [base, { ...base, id: "44444444-4444-4444-8444-444444444444" }],
+    });
+    expect(parsed.members).toHaveLength(2);
+    expect(parsed.members![0]!.undo).toEqual({ action: "archive_thread", target_id: base.subject.id });
+  });
+
+  it("requires every field the read model derives, and rejects an unknown one", () => {
+    expect(ProjectWorkUpdateSchema.safeParse({ ...base, members: null }).success).toBe(true);
+    // A Task subject is the other kind the stream names.
+    expect(ProjectWorkUpdateSchema.safeParse({
+      ...base, subject: { type: "task", id: base.subject.id, title: "A task" }, members: null,
+    }).success).toBe(true);
+    for (const missing of ["undo", "undone_by_event_id", "members", "subject"]) {
+      const { [missing]: _dropped, ...rest } = { ...base, members: null } as Record<string, unknown>;
+      expect(ProjectWorkUpdateSchema.safeParse(rest).success).toBe(false);
+    }
+    expect(ProjectWorkUpdateSchema.safeParse({ ...base, members: null, task: { id: "x", title: "y" } }).success).toBe(false);
+    expect(ProjectWorkUpdateSchema.safeParse({
+      ...base, members: null, undo: { action: "delete_thread", target_id: base.subject.id },
+    }).success).toBe(false);
   });
 });

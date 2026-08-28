@@ -59,10 +59,8 @@ vi.mock('../../../api/client', () => ({
     getOverview: vi.fn().mockResolvedValue({
       project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
       brief: null,
-      mode_projection: { mode: 'inquiry', current_state_summary: 'No active Threads.', progress_indicators: [], focus_set: [], next_actions: [] },
       available_modes: ['research'],
       attention: [],
-      entity_summaries: [],
     }),
     transitionMode: vi.fn(),
     update: vi.fn(),

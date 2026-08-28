@@ -111,7 +111,7 @@ export default function ResearchReportPage() {
     <ReaderWorkspace document={readerDocument} annotations={annotations} onAnnotationsChange={setAnnotations} onReferenceClick={focusReference}
       header={({ panelOpen, togglePanel }) => <header className="border-b px-4 py-3">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}`}><ArrowLeft className="mr-1 size-4"/>Project</Link></Button>
+          <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}/research?tab=reports`}><ArrowLeft className="mr-1 size-4"/>Reports</Link></Button>
           <div className="min-w-0 flex-1"><h1 className="truncate font-semibold">Research report</h1><p className="truncate text-xs text-muted-foreground">{report.research_question}</p></div>
           <Badge variant={report.status === 'rejected' ? 'destructive' : report.status === 'awaiting_review' ? 'warning' : 'success'}>{statusLabel[report.status]}</Badge>
           <Button variant="ghost" size="icon" onClick={togglePanel} aria-label={panelOpen ? 'Hide inspector' : 'Show inspector'}><PanelRight className="size-4"/></Button>

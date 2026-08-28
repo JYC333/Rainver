@@ -9,6 +9,8 @@ import {
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
+import { InquiryIterationService } from "./iterationService.js";
+import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { completeProviderMessages } from "../providers/invocation/invocation.js";
@@ -192,17 +194,70 @@ export class InquiryAdviceService {
   }
 
   /**
-   * Marks the advice as adopted. The caller is responsible for having applied
-   * the Next Focus through the work-state command — this only records that the
-   * suggestion was taken, so a later regeneration knows it is not still open.
+   * Takes the recorded next step: the Thread adopts the recommended focus and
+   * the advice stops being open, as one action.
+   *
+   * One implementation, because there are two callers — the Inquiry Area's
+   * Adopt button and the Room's `inquiry.adopt_next_step` — and two copies of
+   * "apply the focus, then mark adopted, and only when it is open and current"
+   * is two chances for them to disagree about what adopting means.
    */
-  async markAdopted(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<void> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    await this.db.query(
-      `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $4
-        WHERE space_id = $1 AND project_id = $2 AND thread_id = $3 AND status = 'open'`,
-      [identity.spaceId, projectId, threadId, new Date().toISOString()],
-    );
+  async adoptAdvice(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    threadId: string,
+    provenance?: ThreadEventProvenance,
+  ): Promise<{ thread: Record<string, unknown>; advice: InquiryThreadAdvice | null; adopted: InquiryThreadAdvice }> {
+    const current = await this.getAdvice(identity, projectId, threadId);
+    // `getAdvice` returns the latest row whatever its state, so without these
+    // two an already-taken or stale recommendation would be adopted again.
+    if (!current || current.status !== "open" || current.stale) {
+      throw new HttpError(404, "This Thread has no current next step to adopt");
+    }
+    // One transaction for all three writes. Committing the focus and the
+    // adoption and then failing to record the event leaves an advancement
+    // that happened and that the Project's account cannot show — the
+    // invisibility the direct write was allowed on the promise of avoiding.
+    // `withQueryableTransaction` is nesting-aware, so the inner services join
+    // this one rather than opening their own.
+    const thread = await withQueryableTransaction(this.db, async (tx) => {
+      const updated = await new InquiryIterationService(tx).updateWork(identity, projectId, threadId, {
+        next_focus_kind: current.recommended_focus_kind,
+        blocked_reason: null,
+        // Adoption is one user command: a backlogged or monitoring Thread must
+        // not be focused in one transaction and receive its Step in another.
+        attention_state: "focused",
+        // Records that the suggestion, not the user's own reading, is where
+        // this step came from — the distinction the bare enum could not hold.
+        step_origin: "advice",
+      });
+      await tx.query(
+        `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $4
+          WHERE space_id = $1 AND project_id = $2 AND thread_id = $3 AND status = 'open'`,
+        [identity.spaceId, projectId, threadId, new Date().toISOString()],
+      );
+      await recordThreadWorkEvent(tx, {
+        spaceId: identity.spaceId,
+        projectId,
+        threadId,
+        userId: identity.userId,
+        eventKind: "thread.next_step_adopted",
+        occurredAt: new Date().toISOString(),
+        idempotencySuffix: current.id,
+        data: {
+          statement: typeof updated.statement === "string" ? updated.statement : "",
+          next_focus_kind: current.recommended_focus_kind,
+          advice_id: current.id,
+        },
+        ...(provenance ? { provenance } : {}),
+      });
+      return updated;
+    });
+    return {
+      thread,
+      advice: await this.getAdvice(identity, projectId, threadId),
+      adopted: current,
+    };
   }
 
   async generateAdvice(

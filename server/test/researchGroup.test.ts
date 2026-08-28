@@ -120,7 +120,7 @@ describe("researchGeneralizationGuard", () => {
         "apps/web/src/modules/projects/ResearchCheckpointReview.tsx",
         "apps/web/src/modules/projects/ResearchScanTimeline.tsx",
         "apps/web/src/modules/projects/ResearchSetupSummary.tsx",
-        "apps/web/src/modules/projects/ResearchTabsLegend.tsx",
+        "apps/web/src/modules/projects/researchArea/ResearchRunsTab.tsx",
         "apps/web/src/modules/projects/researchArea/ReadingListView.tsx",
         // The Research Area page replaced the ProjectResearchWorkbench wrapper
         // as the surface that composes standing and focus; useProjectResearch

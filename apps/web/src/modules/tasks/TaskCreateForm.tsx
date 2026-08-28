@@ -90,7 +90,9 @@ export default function TaskCreateForm({ boards, agents, submitLabel, busy = fal
         <div className="space-y-1.5"><Label>Task type</Label><Select value={taskType} onChange={setTaskType} options={TASK_TYPE_OPTIONS} /></div>
         <div className="space-y-1.5"><Label>Priority</Label><Select value={priority} onChange={setPriority} options={TASK_PRIORITY_OPTIONS} /></div>
         <div className="space-y-1.5"><Label>Risk</Label><Select value={riskLevel} onChange={setRiskLevel} options={TASK_RISK_OPTIONS} /></div>
-        <div className="space-y-1.5"><Label>Board</Label><Select value={boardId} onChange={setBoardId} options={[{ value: '', label: 'No board' }, ...boards.map(board => ({ value: board.id, label: board.name }))]} /></div>
+        {boards.length > 0 && (
+          <div className="space-y-1.5"><Label>Board</Label><Select value={boardId} onChange={setBoardId} options={[{ value: '', label: 'No board' }, ...boards.map(board => ({ value: board.id, label: board.name }))]} /></div>
+        )}
         <div className="space-y-1.5 sm:col-span-2"><Label>Planning Agent <span className="font-normal text-muted-foreground">(optional)</span></Label><Select value={agentId} onChange={setAgentId} options={[{ value: '', label: 'Choose later' }, ...agents.map(agent => ({ value: agent.id, label: agent.name }))]} /></div>
       </div>
 

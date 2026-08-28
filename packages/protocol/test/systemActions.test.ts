@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema } from "../src/index.js";
+import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema } from "../src/index.js";
 import type { SystemActionDefinition } from "../src/index.js";
 
 describe("SYSTEM_ACTION_REGISTRY", () => {
@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.propose_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["authorization.request","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -22,7 +22,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(byId.get("project.source.propose_bind")!.input_schema.safeParse({source_channel_id:"channel-1"}).success).toBe(true);
     expect(byId.get("source.backfill.propose_start")!.input_schema.safeParse({source_channel_id:"channel-1"}).success).toBe(false);
     expect(byId.get("project.propose_definition")!.input_schema.safeParse({goal:"Define reliable personal memory"}).success).toBe(true);
-    expect(byId.get("inquiry.propose_thread")!.input_schema.safeParse({ statement: "How should memory retrieval work?" }).success).toBe(true);
+    expect(byId.get("inquiry.create_thread")!.input_schema.safeParse({ statement: "How should memory retrieval work?" }).success).toBe(true);
   });
 
   it("validates source.channel.propose_activation as Source Channel creation parameters, not a channel reference (D5)", () => {
@@ -147,8 +147,6 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       "source.channel.propose_activation",
       "project.source.propose_bind",
       "project.propose_definition",
-      "inquiry.propose_thread",
-      "inquiry.record_conclusion",
       "inquiry.promote_knowledge",
     ]) {
       const definition = byId.get(id)!;
@@ -211,5 +209,35 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
         expect(definition.visibility.has("agent_tool")).toBe(false);
       }
     }
+  });
+
+  it("every gated action names why it is gated, and nothing else claims a gate", () => {
+    // ADR 0017 §1/§5: the hard-gate list is exhaustive, and a proposal is what
+    // you register when you can name which row of it applies. A default is how
+    // "draft a proposal" became the shape of every Agent write without anyone
+    // deciding it should be.
+    for (const definition of SYSTEM_ACTION_REGISTRY) {
+      if (definition.side_effects === "proposal") {
+        expect(definition.gate_class, `${definition.id} is a proposal with no gate class`).not.toBeNull();
+        expect(SYSTEM_ACTION_GATE_CLASSES).toContain(definition.gate_class!);
+      } else {
+        expect(definition.gate_class, `${definition.id} claims a gate class but is not a proposal`).toBeNull();
+      }
+    }
+  });
+
+  it("keeps Inquiry's Project-internal writes direct", () => {
+    // The two that flipped. A regression here is the six-cards-for-one-decision
+    // failure returning, so it is asserted by id rather than left to review.
+    const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
+    for (const id of ["inquiry.create_thread", "inquiry.record_conclusion"] as const) {
+      expect(byId.get(id)?.side_effects).toBe("durable");
+      expect(byId.get(id)?.proposal_type).toBeNull();
+    }
+    expect(byId.has("inquiry.propose_thread" as never)).toBe(false);
+    // What stays gated, and why.
+    expect(byId.get("inquiry.promote_knowledge")?.gate_class).toBe("exposure");
+    expect(byId.get("project.propose_definition")?.gate_class).toBe("direction");
+    expect(byId.get("source.backfill.propose_start")?.gate_class).toBe("money");
   });
 });

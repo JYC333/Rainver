@@ -125,7 +125,7 @@ export function FloatingQuickCapture() {
       const href = result.note_id
         ? spacePath(result.space_id, `/projects/${result.project_id}/notes/${result.note_id}`)
         : result.project_id
-          ? spacePath(result.space_id, `/projects/${result.project_id}/raw`)
+          ? spacePath(result.space_id, `/projects/${result.project_id}/sources?tab=raw`)
           : spacePath(result.space_id, '/activity?status=raw')
       toast.success(result.note_title ? `Captured to ${result.note_title}` : `Saved · ${label(destination)}`, {
         action: { label: 'View', onClick: () => navigate(href) },

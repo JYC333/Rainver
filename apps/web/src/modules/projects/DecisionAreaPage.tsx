@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { decisionCasesApi, inquiryApi, type DecisionCase } from '../../api/client'
 import type { InquiryThread } from '../../types/api'
 import { Button } from '../../components/ui/button'
@@ -61,7 +61,7 @@ export default function DecisionAreaPage() {
 
   return <div className="p-6 space-y-5">
     <ThreadOriginBar projectId={projectId} kinds={['create_decision_case']} />
-    <div className="flex items-center gap-3"><Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}`}><ArrowLeft className="size-4" />Project</Link></Button><div><h1 className="text-xl font-semibold">Decisions</h1><p className="text-sm text-muted-foreground">Frame choices, compare options, commit, then create Delivery work.</p></div></div>
+    <div className="flex items-center gap-3"><div><h1 className="text-xl font-semibold">Decisions</h1><p className="text-sm text-muted-foreground">Frame choices, compare options, commit, then turn the commitment into a Task.</p></div></div>
     <Card className="grid gap-3 p-4">
       <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]"><Input placeholder="Decision title" value={title} onChange={e => setTitle(e.target.value)} /><Input placeholder="Framing (optional)" value={framing} onChange={e => setFraming(e.target.value)} /><Button disabled={!title.trim()} onClick={createCase}><Plus className="size-4" />New case</Button></div>
       <div>
@@ -73,7 +73,7 @@ export default function DecisionAreaPage() {
       </div>
     </Card>
     <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-      <Card className="p-3 space-y-2">{cases.map(item => <button key={item.id} onClick={() => decisionCasesApi.get(projectId, item.id).then(setSelected)} className={`w-full text-left rounded-md border p-3 ${selected?.id === item.id ? 'border-primary bg-muted' : ''}`}><div className="flex justify-between"><span className="font-medium text-sm">{item.title}</span><Badge variant="outline">{item.status}</Badge></div><p className="text-xs text-muted-foreground mt-1">{item.framing}</p></button>)}{cases.length === 0 && <p className="p-3 text-sm text-muted-foreground">No Decision Cases yet.</p>}</Card>
+      <Card className="p-3 space-y-2">{cases.map(item => <button key={item.id} onClick={() => decisionCasesApi.get(projectId, item.id).then(setSelected)} className={`w-full text-left rounded-md border p-3 ${selected?.id === item.id ? 'border-primary bg-muted' : ''}`}><div className="flex justify-between"><span className="font-medium text-sm">{item.title}</span><Badge variant="outline">{item.status}</Badge></div><p className="text-xs text-muted-foreground mt-1">{item.framing}</p></button>)}{cases.length === 0 && <p className="p-3 text-sm text-muted-foreground">No Decision Cases yet. Frame the first one above: a title and, if it helps, the framing.</p>}</Card>
       <Card className="p-5 space-y-5">{selected ? <>
         <div><h2 className="font-semibold">{selected.title}</h2><p className="text-sm text-muted-foreground">{selected.framing}</p>{(selected.source_thread_ids?.length ?? 0) > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{selected.source_thread_ids?.map(id => { const thread = threads.find(item => item.id === id); return <Button key={id} size="sm" variant="outline" asChild><Link to={`/projects/${projectId}/inquiry`}>{thread?.statement ?? 'Related Inquiry Thread'}</Link></Button> })}</div>}</div>
         {selected.status === 'open' && <><div className="flex gap-2"><Input placeholder="Add option" value={option} onChange={e => setOption(e.target.value)} /><Button disabled={!option.trim()} onClick={() => run(async () => { await decisionCasesApi.addOption(projectId, selected.id, { title: option }); setOption('') })}>Add option</Button></div><div className="flex gap-2"><Input placeholder="Add criterion" value={criterion} onChange={e => setCriterion(e.target.value)} /><Button disabled={!criterion.trim()} onClick={() => run(async () => { await decisionCasesApi.addCriterion(projectId, selected.id, { name: criterion, weight: 3 }); setCriterion('') })}>Add criterion</Button></div></>}
@@ -82,7 +82,7 @@ export default function DecisionAreaPage() {
           const score = selected.scores?.find(item => item.option_id === optionRow.id && item.criterion_id === criterionRow.id)?.score
           return <div key={`${optionRow.id}:${criterionRow.id}`} className="grid grid-cols-[1fr_1fr_100px] items-center gap-2 rounded border p-2 text-sm"><span>{optionRow.title}</span><span>{criterionRow.name}</span><Select value={score ? String(score) : ''} ariaLabel={`Score ${optionRow.title} for ${criterionRow.name}`} options={[{ value: '', label: 'Score' }, ...[1, 2, 3, 4, 5].map(value => ({ value: String(value), label: String(value) }))]} onChange={value => value && run(() => decisionCasesApi.score(projectId, selected.id, { option_id: optionRow.id, criterion_id: criterionRow.id, score: Number(value) }))} /></div>
         }))}</div>}
-        {selected.status === 'decided' && <><div className="flex gap-2"><Textarea placeholder="Commitment statement" value={commitment} onChange={e => setCommitment(e.target.value)} /><Button disabled={!commitment.trim()} onClick={() => run(async () => { await decisionCasesApi.addCommitment(projectId, selected.id, commitment); setCommitment('') })}>Commit</Button></div><div className="space-y-2">{selected.commitments?.map(item => <div key={item.id} className="flex items-center justify-between rounded border p-3"><span>{item.statement}</span>{item.created_delivery_task_id ? <Badge>Delivery created</Badge> : <Button size="sm" onClick={() => run(() => decisionCasesApi.createDelivery(projectId, selected.id, item.id))}>Create Delivery task</Button>}</div>)}</div></>}
+        {selected.status === 'decided' && <><div className="flex gap-2"><Textarea placeholder="Commitment statement" value={commitment} onChange={e => setCommitment(e.target.value)} /><Button disabled={!commitment.trim()} onClick={() => run(async () => { await decisionCasesApi.addCommitment(projectId, selected.id, commitment); setCommitment('') })}>Commit</Button></div><div className="space-y-2">{selected.commitments?.map(item => <div key={item.id} className="flex items-center justify-between rounded border p-3"><span>{item.statement}</span>{item.created_delivery_task_id ? <Badge>Task created</Badge> : <Button size="sm" onClick={() => run(() => decisionCasesApi.createDelivery(projectId, selected.id, item.id))}>Create Task</Button>}</div>)}</div></>}
       </> : <p className="text-sm text-muted-foreground">Select a Decision Case.</p>}</Card>
     </div>
   </div>

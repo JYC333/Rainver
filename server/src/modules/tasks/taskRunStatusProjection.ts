@@ -1,4 +1,5 @@
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { settleTasksForRun } from "../projectWork/settlement.js";
 
 const HOST_THREAD_QUEUE_LOCK_PREFIX = "host_thread_queue:";
 
@@ -62,10 +63,14 @@ export async function reconcileTerminalTaskQueue(
 }
 
 /**
- * The single Run-terminal -> Task-status projection used by both the local
- * server executor and remote-host queue runs. It settles only after every Run
- * linked to the Task is hard-terminal, so a retry or a parallel child cannot
- * prematurely mark the Task done.
+ * The single Run-settlement -> Task-status projection used by both the local
+ * server executor and remote-host queue runs.
+ *
+ * The decision itself lives in `modules/projectWork/settlement.ts`, because
+ * settling a Task writes Project work events and moves its Loop stage as well
+ * as its flow status, and those are one transaction rather than three
+ * modules agreeing afterwards. This function stays the entry point so the
+ * queue lock is taken in the same place it always was.
  */
 export async function projectTaskStatusFromRun(
   db: Queryable,
@@ -80,44 +85,15 @@ export async function projectTaskStatusFromRun(
       [spaceId, runId],
     );
     const taskIds = linked.rows.map((row) => row.task_id);
+    if (taskIds.length === 0) return;
     await lockTaskQueueForTerminalMutation(tx, spaceId, taskIds);
 
-    const projected = await tx.query<{ task_id: string; status: string }>(
-    `WITH linked_tasks AS (
-       SELECT DISTINCT task_id, space_id
-         FROM task_runs
-        WHERE space_id = $1 AND run_id = $2
-     ), task_state AS (
-       SELECT linked.task_id,
-              linked.space_id,
-              bool_and(r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')) AS all_terminal,
-              bool_or(r.status IN ('failed', 'degraded', 'cancelled', 'orphaned')) AS has_failure
-         FROM linked_tasks linked
-         JOIN task_runs tr ON tr.task_id = linked.task_id AND tr.space_id = linked.space_id
-         JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
-        GROUP BY linked.task_id, linked.space_id
-     )
-     UPDATE tasks t
-        SET status = CASE WHEN s.has_failure THEN 'blocked' ELSE 'done' END,
-            completed_at = CASE WHEN s.has_failure THEN NULL ELSE COALESCE(t.completed_at, now()) END,
-            cancelled_at = CASE WHEN s.has_failure AND EXISTS (
-              SELECT 1 FROM task_runs tr2 JOIN runs r2 ON r2.id = tr2.run_id AND r2.space_id = tr2.space_id
-               WHERE tr2.task_id = s.task_id AND tr2.space_id = s.space_id AND r2.status = 'cancelled'
-            ) THEN COALESCE(t.cancelled_at, now()) ELSE t.cancelled_at END,
-            blocked_reason = CASE WHEN s.has_failure THEN COALESCE(t.blocked_reason, 'A linked Run ended unsuccessfully') ELSE NULL END,
-            updated_at = now()
-       FROM task_state s
-      WHERE t.id = s.task_id
-        AND t.space_id = s.space_id
-        AND s.all_terminal
-        AND t.status NOT IN ('done', 'cancelled')
-      RETURNING t.id AS task_id, t.status`,
-      [spaceId, runId],
-    );
-    const terminalTaskIds = projected.rows
-      .filter((row) => row.status === "done" || row.status === "blocked" || row.status === "cancelled")
-      .map((row) => row.task_id);
-    await withdrawQueuedTaskMessages(tx, spaceId, terminalTaskIds);
+    const settled = await settleTasksForRun(tx, spaceId, runId);
+    // A settled Task is not being worked on until someone decides otherwise —
+    // whether it finished or stopped for review. Letting a still-queued
+    // message dispatch into a fresh Run behind that decision is what the
+    // withdrawal prevents.
+    await withdrawQueuedTaskMessages(tx, spaceId, settled);
   });
 }
 

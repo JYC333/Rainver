@@ -8,6 +8,8 @@ import type {
   RetrievalSearchRequest,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
+import { registerMemoryProjectIntegration } from "./projectIntegration.js";
+import { MemoryApplyError, PgMemoryApplyRepository } from "./memoryApplyRepository.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
@@ -67,11 +69,16 @@ import {
  * pending `proposals` rows only and never mutate active `memory_entries`.
  */
 interface MemoryServices {
-  repository: Pick<PgMemoryReadRepository, "list" | "get" | "search"> &
+  repository: Pick<PgMemoryReadRepository, "list" | "get" | "search" | "versions"> &
     Pick<
       PgMemoryProposalRepository,
       "createMemoryProposal" | "updateMemoryProposal" | "archiveMemoryProposal"
-    >;
+    > &
+    // Archiving and restoring your own memory is a direct write (ADR 0003
+    // §3), so it belongs to the same service surface the routes resolve —
+    // reaching past the factory for a pool would make this the one path
+    // nothing can substitute.
+    Pick<PgMemoryApplyRepository, "setOwnStatus">;
 }
 
 type MemoryServicesFactory = (context: ModuleContext) => MemoryServices;
@@ -97,11 +104,14 @@ function memoryServices(context: ModuleContext): MemoryServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
   const readRepository = PgMemoryReadRepository.fromConfig(context.config);
   const proposalRepository = PgMemoryProposalRepository.fromConfig(context.config);
+  const applyRepository = new PgMemoryApplyRepository(getDbPool(context.config.databaseUrl!));
   return {
     repository: {
       list: readRepository.list.bind(readRepository),
       get: readRepository.get.bind(readRepository),
       search: readRepository.search.bind(readRepository),
+      versions: readRepository.versions.bind(readRepository),
+      setOwnStatus: applyRepository.setOwnStatus.bind(applyRepository),
       createMemoryProposal: proposalRepository.createMemoryProposal.bind(proposalRepository),
       updateMemoryProposal: proposalRepository.updateMemoryProposal.bind(proposalRepository),
       archiveMemoryProposal: proposalRepository.archiveMemoryProposal.bind(proposalRepository),
@@ -110,6 +120,8 @@ function memoryServices(context: ModuleContext): MemoryServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerMemoryProjectIntegration(context.config.memoryDirectWritesPerSession);
+
   app.get("/api/v1/memory", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -132,6 +144,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           memoryType: optionalString(q.type),
           status: q.status === undefined ? "active" : q.status,
           projectId: optionalString(q.project_id),
+          writtenBy: q.created_by === "agent" || q.created_by === "user" ? q.created_by : null,
+          since: optionalString(q.since),
+          sessionId: optionalString(q.session),
+          runId: optionalString(q.run),
           limit,
           offset,
         },
@@ -706,11 +722,25 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // Archiving and restoring your own memory (ADR 0003 §3). A proposal here
+  // was the person asking themselves for permission; someone else's entry
+  // still goes through one, which is the case the flow was for.
   app.delete("/api/v1/memory/:memoryId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const memoryId = params(request).memoryId ?? "";
     try {
+      const services = memoryServices(context);
+      const own = await services.repository.setOwnStatus(
+        identity.spaceId,
+        identity.userId,
+        memoryId,
+        "archived",
+      );
+      // Re-read rather than returning the applier's row: that row is the
+      // write shape, missing half of `MemoryOut` and skipping the redaction
+      // every other memory response goes through.
+      if (own) return reply.code(200).send(await services.repository.get(identity.spaceId, identity.userId, memoryId));
       const command = protocol.MemoryProposalArchiveCommandSchema.parse({
         operation: "archive",
         target_memory_id: memoryId,
@@ -722,6 +752,43 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         command,
       );
       return reply.code(202).send(proposal);
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/memory/:memoryId/versions", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const versions = await memoryServices(context).repository.versions(
+        identity.spaceId,
+        identity.userId,
+        params(request).memoryId ?? "",
+      );
+      return reply.send(versions);
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/memory/:memoryId/restore", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    if (!context.config.databaseUrl) {
+      return reply.code(502).send({ detail: "SERVER_DATABASE_URL is required" });
+    }
+    const memoryId = params(request).memoryId ?? "";
+    try {
+      const services = memoryServices(context);
+      const restored = await services.repository.setOwnStatus(
+        identity.spaceId,
+        identity.userId,
+        memoryId,
+        "active",
+      );
+      if (!restored) return reply.code(404).send({ detail: "Memory not found" });
+      return reply.code(200).send(await services.repository.get(identity.spaceId, identity.userId, memoryId));
     } catch (error) {
       return sendDomainError(reply, error);
     }
@@ -806,6 +873,11 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
     error instanceof MemoryProposalNotFoundError
   ) {
     return reply.code(error.statusCode).send({ detail: error.message });
+  }
+  // A state conflict, not a malformed request: archiving something already
+  // archived is a stale page, and 400 would send the client to fix its input.
+  if (error instanceof MemoryApplyError) {
+    return reply.code(409).send({ detail: error.message });
   }
   const message = error instanceof Error ? error.message : "Request failed";
   return reply.code(400).send({ detail: message });

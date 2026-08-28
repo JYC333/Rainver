@@ -367,7 +367,7 @@ export function roomRunReadAccessSql(
   )`;
 }
 
-function assertSqlIdentifier(value: string, label: string): void {
+export function assertSqlIdentifier(value: string, label: string): void {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) {
     throw new Error(`Invalid content access SQL ${label}`);
   }

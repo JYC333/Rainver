@@ -121,7 +121,7 @@ export function NotebookChatPanel({
           placeholder="Ask about or update the project's notes…"
           emptyTitle="Discuss the notes"
           emptyDescription="Ask a question or ask for an update — edits are applied immediately and can be undone."
-          assistantLabel="Research"
+          assistantLabel="Assistant"
         />
       </div>
     </div>

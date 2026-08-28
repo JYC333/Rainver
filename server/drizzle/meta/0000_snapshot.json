@@ -1,5 +1,5 @@
 {
-  "id": "499c7f5b-059d-48ea-b0e5-80802d52c748",
+  "id": "b48e0325-2108-486f-be8e-aeea798a41ab",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2783,6 +2783,56 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uq_actors_user_per_space": {
+          "name": "uq_actors_user_per_space",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "actor_type = 'user' AND status = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_actors_service_per_space": {
+          "name": "uq_actors_service_per_space",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "actor_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "service_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "service_name IS NOT NULL AND status = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3192,6 +3242,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "follows_seed_key": {
+          "name": "follows_seed_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3572,7 +3628,29 @@
             }
           ],
           "isUnique": true,
-          "where": "(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text))",
+          "where": "(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NULL))",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_agents_system_assistant_per_project": {
+          "name": "uq_agents_system_assistant_per_project",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "(((agent_kind)::text = 'system_assistant'::text) AND ((status)::text = 'active'::text) AND (project_id IS NOT NULL))",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -44378,6 +44456,489 @@
       },
       "isRLSEnabled": false
     },
+    "public.project_work_events": {
+      "name": "project_work_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_kind": {
+          "name": "event_kind",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_type": {
+          "name": "subject_type",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "correlation_id": {
+          "name": "correlation_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "causation_id": {
+          "name": "causation_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "data_json": {
+          "name": "data_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_project_work_events_project_occurred": {
+          "name": "ix_project_work_events_project_occurred",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_work_events_subject": {
+          "name": "ix_project_work_events_subject",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_work_events_kind": {
+          "name": "ix_project_work_events_kind",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_work_events_correlation": {
+          "name": "ix_project_work_events_correlation",
+          "columns": [
+            {
+              "expression": "correlation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "correlation_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_work_events_undo_of": {
+          "name": "ix_project_work_events_undo_of",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(data_json->>'undo_of_event_id')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(data_json->>'undo_of_event_id') IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_project_work_events_idempotency": {
+          "name": "uq_project_work_events_idempotency",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "idempotency_key IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_work_events_space_id_fkey": {
+          "name": "project_work_events_space_id_fkey",
+          "tableFrom": "project_work_events",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "project_work_events_project_id_fkey": {
+          "name": "project_work_events_project_id_fkey",
+          "tableFrom": "project_work_events",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_work_events_actor_id_fkey": {
+          "name": "project_work_events_actor_id_fkey",
+          "tableFrom": "project_work_events",
+          "tableTo": "actors",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_project_work_events_kind_format": {
+          "name": "ck_project_work_events_kind_format",
+          "value": "event_kind ~ '^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$'"
+        },
+        "ck_project_work_events_data_object": {
+          "name": "ck_project_work_events_data_object",
+          "value": "jsonb_typeof(data_json) = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.task_loop_states": {
+      "name": "task_loop_states",
+      "schema": "",
+      "columns": {
+        "task_id": {
+          "name": "task_id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "loop_instance_id": {
+          "name": "loop_instance_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_stage_key": {
+          "name": "current_stage_key",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stage_entered_at": {
+          "name": "stage_entered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_event_id": {
+          "name": "last_event_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_task_loop_states_project": {
+          "name": "ix_task_loop_states_project",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_task_loop_states_stage": {
+          "name": "ix_task_loop_states_stage",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "current_stage_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "task_loop_states_space_id_fkey": {
+          "name": "task_loop_states_space_id_fkey",
+          "tableFrom": "task_loop_states",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_loop_states_task_id_fkey": {
+          "name": "task_loop_states_task_id_fkey",
+          "tableFrom": "task_loop_states",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_loop_states_project_id_fkey": {
+          "name": "task_loop_states_project_id_fkey",
+          "tableFrom": "task_loop_states",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_loop_states_last_event_id_fkey": {
+          "name": "task_loop_states_last_event_id_fkey",
+          "tableFrom": "task_loop_states",
+          "tableTo": "project_work_events",
+          "columnsFrom": [
+            "last_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_task_loop_states_task_space": {
+          "name": "uq_task_loop_states_task_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_task_loop_states_stage": {
+          "name": "ck_task_loop_states_stage",
+          "value": "current_stage_key IN ('frame', 'plan', 'act', 'verify', 'conclude')"
+        },
+        "ck_task_loop_states_revision": {
+          "name": "ck_task_loop_states_revision",
+          "value": "revision >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.proposal_approvals": {
       "name": "proposal_approvals",
       "schema": "",
@@ -48366,6 +48927,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "is_mainline": {
+          "name": "is_mainline",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
@@ -48392,6 +48960,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_rooms_mainline_per_project": {
+          "name": "uq_rooms_mainline_per_project",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "is_mainline AND status = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -63814,7 +64404,7 @@
       "checkConstraints": {
         "ck_board_columns_status_key": {
           "name": "ck_board_columns_status_key",
-          "value": "status_key IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled')"
+          "value": "status_key IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')"
         }
       },
       "isRLSEnabled": false
@@ -64390,6 +64980,179 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.task_entity_links": {
+      "name": "task_entity_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_type": {
+          "name": "entity_type",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_actor_id": {
+          "name": "created_by_actor_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_task_entity_links_task": {
+          "name": "ix_task_entity_links_task",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_task_entity_links_entity": {
+          "name": "ix_task_entity_links_entity",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "task_entity_links_space_id_fkey": {
+          "name": "task_entity_links_space_id_fkey",
+          "tableFrom": "task_entity_links",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_entity_links_task_id_fkey": {
+          "name": "task_entity_links_task_id_fkey",
+          "tableFrom": "task_entity_links",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_entity_links_created_by_actor_id_fkey": {
+          "name": "task_entity_links_created_by_actor_id_fkey",
+          "tableFrom": "task_entity_links",
+          "tableTo": "actors",
+          "columnsFrom": [
+            "created_by_actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_task_entity_links_edge": {
+          "name": "uq_task_entity_links_edge",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "task_id",
+            "entity_type",
+            "entity_id",
+            "role"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_task_entity_links_role": {
+          "name": "ck_task_entity_links_role",
+          "value": "role IN ('executes', 'investigates', 'prepares', 'references')"
+        },
+        "ck_task_entity_links_entity_type_format": {
+          "name": "ck_task_entity_links_entity_type_format",
+          "value": "entity_type ~ '^[a-z][a-z0-9_]{0,31}$'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.task_proposals": {
@@ -65230,7 +65993,7 @@
         },
         "ck_tasks_status": {
           "name": "ck_tasks_status",
-          "value": "status IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled')"
+          "value": "status IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')"
         },
         "ck_tasks_column_requires_board": {
           "name": "ck_tasks_column_requires_board",

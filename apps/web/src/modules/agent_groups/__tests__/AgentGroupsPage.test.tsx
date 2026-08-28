@@ -72,6 +72,7 @@ const room: Room = {
   created_at: '2026-07-26T00:00:00.000Z',
   updated_at: '2026-07-26T00:00:00.000Z',
   archived_at: null,
+      is_mainline: false,
 }
 
 const initialConversation = {
@@ -170,16 +171,8 @@ describe('Rooms page', () => {
       project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
       brief: null,
       definition_status: { status: 'initialized', basis: 'published_brief_goal', goal_or_problem: 'Understand memory quality' },
-      mode_projection: {
-        mode: 'research',
-        current_state_summary: 'Gathering evidence.',
-        progress_indicators: [],
-        focus_set: [],
-        next_actions: [],
-      },
       available_modes: ['research'],
       attention: [],
-      entity_summaries: [],
     } as unknown as Awaited<ReturnType<typeof projectsApi.getOverview>>)
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [],
@@ -671,10 +664,10 @@ describe('Rooms page', () => {
         content: 'I drafted a conclusion for this Thread.',
         metadata_json: {
           action_previews: [{
-            action_id: 'inquiry.record_conclusion',
+            action_id: 'inquiry.promote_knowledge',
             status: 'proposed',
             proposal_id: 'proposal-1',
-            proposal_type: 'inquiry_conclusion',
+            proposal_type: 'knowledge_create',
             title: 'Record conclusion: Does caching help?',
             summary: null,
             risk_level: 'medium',
@@ -726,7 +719,7 @@ describe('Rooms page', () => {
     ))
     expect(screen.queryByText('I accepted “Record conclusion: Does caching help?”. Continue now: confirm what was completed in one sentence, then begin the next step.')).not.toBeInTheDocument()
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
-    expect(await screen.findByText('研究结论已记录。助手正在下方继续。')).toBeInTheDocument()
+    expect(await screen.findByText('已提升为空间级知识。助手正在下方继续。')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
   })
 
@@ -744,10 +737,10 @@ describe('Rooms page', () => {
         // and it is never updated after the Proposal is later decided.
         metadata_json: {
           action_previews: [{
-            action_id: 'inquiry.record_conclusion',
+            action_id: 'inquiry.promote_knowledge',
             status: 'proposed',
             proposal_id: 'proposal-2',
-            proposal_type: 'inquiry_conclusion',
+            proposal_type: 'knowledge_create',
             title: 'Record conclusion: Does caching help?',
             summary: null,
             risk_level: 'medium',
@@ -785,10 +778,10 @@ describe('Rooms page', () => {
         content: 'A recovery attempted the same question again.',
         metadata_json: {
           action_previews: [{
-            action_id: 'inquiry.propose_thread',
+            action_id: 'inquiry.promote_knowledge',
             status: 'proposed',
             proposal_id: 'proposal-duplicate',
-            proposal_type: 'inquiry_thread_create',
+            proposal_type: 'knowledge_create',
             title: 'Duplicate research question',
             summary: null,
             risk_level: 'medium',
@@ -1061,16 +1054,8 @@ describe('Rooms page', () => {
       project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
       brief: null,
       definition_status: { status: 'initialized', basis: 'published_brief_goal', goal_or_problem: 'Understand memory quality' },
-      mode_projection: {
-        mode: 'research',
-        current_state_summary: 'Two Threads are open; one search is running.',
-        progress_indicators: [],
-        focus_set: [],
-        next_actions: [{ id: 'action-1', label: 'Review new evidence', href: '/projects/project-1/inquiry', kind: 'read_evidence' }],
-      },
       available_modes: ['research'],
       attention: [{ id: 'attention-1', title: 'Candidate awaiting review', summary: null, href: '/projects/project-1/inquiry?candidate=candidate-1' }],
-      entity_summaries: [],
     } as unknown as Awaited<ReturnType<typeof projectsApi.getOverview>>)
 
     render(
@@ -1079,13 +1064,11 @@ describe('Rooms page', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByText('Two Threads are open; one search is running.')).toBeInTheDocument()
-    expect(screen.getByText('Project initialized')).toBeInTheDocument()
-    // Distinct hrefs per fixture item so this proves each row links to its
-    // own href, not just that some Inquiry-shaped link exists somewhere.
-    const nextAction = await screen.findByRole('link', { name: 'Review new evidence' })
-    expect(nextAction).toHaveAttribute('href', expect.stringContaining('/projects/project-1/inquiry'))
-    expect(nextAction).not.toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))
+    expect(await screen.findByText('Project initialized')).toBeInTheDocument()
+    // The panel shows the same attention list Pulse and the shell show, and
+    // nothing invented for it: the per-Mode "next actions" it used to carry
+    // all pointed at Areas the sidebar lists.
+    expect(screen.queryByText('Next')).toBeNull()
     const attentionItem = await screen.findByRole('link', { name: 'Candidate awaiting review' })
     expect(attentionItem).toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))
   })

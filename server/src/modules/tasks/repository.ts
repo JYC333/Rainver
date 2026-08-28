@@ -12,8 +12,7 @@ import {
   toDbDate,
   withDbTransaction,
   type SpaceUserIdentity,
-  type Queryable,
-} from "../routeUtils/common.js";
+  type Queryable, dateIso } from "../routeUtils/common.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
@@ -39,6 +38,15 @@ import {
   lockTaskQueueForTerminalMutation,
   withdrawQueuedTaskMessages,
 } from "./taskRunStatusProjection.js";
+import { responsibleUserSql } from "../projectWork/responsibility.js";
+import { linkTaskEntities } from "../projectWork/taskActions.js";
+import { resolveUserActorId } from "../../db/actorResolver.js";
+import {
+  assertCompletionForClose,
+  recordTaskCreated,
+  recordTaskFlowChange,
+  recordTaskResponsibilityChange,
+} from "../projectWork/taskWriteEvents.js";
 import {
   bounded01,
   boardColumnOut,
@@ -56,10 +64,27 @@ const DEFAULT_TASK_LIMITS = {
   maxCost: 10,
   maxDurationSeconds: 3600,
 } as const;
-const TASK_STATUSES = new Set(["inbox", "ready", "in_progress", "blocked", "done", "cancelled"]);
-const TASK_EXECUTION_TERMINAL_STATUSES = new Set(["blocked", "done", "cancelled"]);
+const TASK_STATUSES = new Set([
+  "inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled",
+]);
+/**
+ * Statuses after which a still-queued message must not dispatch into a fresh
+ * Run. `waiting_for_review` belongs here for the same reason the terminal ones
+ * do: the Task is parked on someone's decision, and a queued message turning
+ * into a Run behind that decision is the thing the queue lock exists to stop.
+ */
+const TASK_QUEUE_SETTLING_STATUSES = new Set([
+  "waiting_for_review", "blocked", "done", "cancelled",
+]);
+/**
+ * Statuses a new Run may not be dispatched from. `waiting_for_review` is
+ * deliberately not here: the Task stopped for a person's decision, and "run
+ * it again" is one of the decisions.
+ */
+const TASK_DISPATCH_REFUSED_STATUSES = new Set(["blocked", "done", "cancelled"]);
 import {
   BOARD_COLUMNS,
+  completionOverride,
   BOARD_COLUMN_COLUMNS,
   DEFAULT_COLUMNS,
   TASK_COLUMNS,
@@ -219,9 +244,17 @@ export class PgTaskRepository {
     offset: number;
   }) {
     const built = buildTaskWhere(identity, filters);
-    const total = await this.pool.query<{ total: string }>(`SELECT count(*)::text AS total FROM tasks t ${built.where}`, built.params);
+    const total = await this.pool.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM tasks t
+         LEFT JOIN projects fp ON fp.id = t.project_id AND fp.space_id = t.space_id ${built.where}`,
+      built.params,
+    );
     const rows = await this.pool.query<TaskRow>(
-      `SELECT ${TASK_COLUMNS} FROM tasks t ${built.where}
+      // Qualified because of the `projects` join: the two tables share `id`,
+      // `status`, `description`, `owner_user_id` and the timestamps, and a bare
+      // column list is an ambiguous-reference error rather than a wrong answer.
+      `SELECT t.${TASK_COLUMNS.trim().replace(/,\s*/g, ", t.")} FROM tasks t
+         LEFT JOIN projects fp ON fp.id = t.project_id AND fp.space_id = t.space_id ${built.where}
        ORDER BY t.updated_at DESC, t.id DESC
        LIMIT $${built.params.length + 1} OFFSET $${built.params.length + 2}`,
       [...built.params, filters.limit, filters.offset],
@@ -236,7 +269,11 @@ export class PgTaskRepository {
       "sm.status = 'active'",
       "t.deleted_at IS NULL",
       contentReadSql("task", "t", "$1"),
-      "(t.assigned_user_id = $1 OR t.claimed_by_user_id = $1 OR t.created_by_user_id = $1)",
+      // Responsible-is-me, not "touched by me". A Task an Agent has claimed is
+      // the Agent's, even where a person is assigned or created it, so this is
+      // narrower than the previous OR — and it agrees with what the Board and
+      // Needs You show, which the OR did not.
+      `${responsibleUserSql("t", "mp")} = $1`,
     ];
     if (filters.status) {
       params.push(filters.status);
@@ -244,13 +281,16 @@ export class PgTaskRepository {
     }
     const where = `WHERE ${clauses.join(" AND ")}`;
     const total = await this.pool.query<{ total: string }>(
-      `SELECT count(*)::text AS total FROM tasks t JOIN space_memberships sm ON sm.space_id = t.space_id ${where}`,
+      `SELECT count(*)::text AS total FROM tasks t
+         JOIN space_memberships sm ON sm.space_id = t.space_id
+         LEFT JOIN projects mp ON mp.id = t.project_id AND mp.space_id = t.space_id ${where}`,
       params,
     );
     const rows = await this.pool.query<TaskRow>(
       `SELECT t.${TASK_COLUMNS.trim().replace(/,\s*/g, ", t.")}
          FROM tasks t
          JOIN space_memberships sm ON sm.space_id = t.space_id
+         LEFT JOIN projects mp ON mp.id = t.project_id AND mp.space_id = t.space_id
         ${where}
         ORDER BY t.updated_at DESC, t.id DESC
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -259,7 +299,16 @@ export class PgTaskRepository {
     return page(rows.rows.map(taskOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
-  async createTask(identity: SpaceUserIdentity, body: Record<string, unknown>, db: Queryable = this.pool) {
+  async createTask(
+    identity: SpaceUserIdentity,
+    body: Record<string, unknown>,
+    db?: Queryable,
+    attributedActorId?: string,
+  ): Promise<ReturnType<typeof taskOut>> {
+    if (!db) {
+      return withDbTransaction(this.pool, (client) => this.createTask(identity, body, client, attributedActorId));
+    }
+
     const now = new Date().toISOString();
     const visibility = optionalString(body.visibility) ?? "private";
     if (!isContentVisibility(visibility)) throw new HttpError(422, "Invalid visibility");
@@ -330,7 +379,24 @@ export class PgTaskRepository {
         now,
       ],
     );
-    return taskOut(result.rows[0]!);
+    const created = result.rows[0]!;
+    // The event and the row it describes commit together. `db` defaults to the
+    // pool, so the public create path would otherwise autocommit the Task and
+    // then append separately — leaving a Task on the Board with nothing in the
+    // stream if the append failed, and no replay path to notice.
+    await recordTaskCreated(
+      db,
+      {
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        taskId: created.id,
+        projectId: created.project_id,
+        ...(attributedActorId ? { actorId: attributedActorId } : {}),
+        ...(created.source_run_id ? { runId: created.source_run_id } : {}),
+      },
+      { title: created.title, status: created.status },
+    );
+    return taskOut(created);
   }
 
   /** Creates the smallest durable Task needed when a composer has no task id. */
@@ -389,26 +455,73 @@ export class PgTaskRepository {
   }
 
   async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    const currentTask = await getVisibleTaskRow(this.pool, identity, taskId);
-    if (!currentTask) throw new HttpError(404, "Task not found");
-    if (Object.hasOwn(body, "parent_task_id")) {
-      const parentTaskId = optionalString(body.parent_task_id);
-      if (parentTaskId && parentTaskId === taskId) throw new HttpError(422, "A task cannot be its own parent");
-      if (parentTaskId) {
-        const parent = await this.pool.query<{ id: string }>(
-          `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
-          [parentTaskId, identity.spaceId],
-        );
-        if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
-      }
-      if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
-    }
     const now = new Date().toISOString();
     const requestedStatus = taskStatus(body.status);
     await withDbTransaction(this.pool, async (client) => {
-      if (requestedStatus && TASK_EXECUTION_TERMINAL_STATUSES.has(requestedStatus)) {
+      // Queue lock first, row lock second — the order `requestTaskReview`
+      // takes them in. Taking them the other way round deadlocks a person
+      // closing a Task against an Agent asking for review on it.
+      if (requestedStatus && TASK_QUEUE_SETTLING_STATUSES.has(requestedStatus)) {
         await lockTaskQueueForTerminalMutation(client, identity.spaceId, [taskId]);
       }
+      // Read under the same lock the write takes. Two concurrent closes that
+      // both read `in_progress` outside the transaction both passed the close
+      // gate and both wrote `task.accepted`; under the lock the second one
+      // reads `done` and has nothing to do.
+      const currentTask = await getVisibleTaskRow(client, identity, taskId, { lock: true });
+      if (!currentTask) throw new HttpError(404, "Task not found");
+      // Reading a Task is not licence to change it. A Project `viewer` can see
+      // every shared Task; without this they could drag one to Done, move its
+      // Loop stage, or reassign it. The Project the Task is *moving to* is
+      // gated too, or a viewer there could pull work into a Project they
+      // cannot write.
+      const targetProjectId = Object.hasOwn(body, "project_id")
+        ? optionalString(body.project_id)
+        : currentTask.project_id;
+      for (const projectId of new Set([currentTask.project_id, targetProjectId])) {
+        if (projectId) await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      }
+      if (Object.hasOwn(body, "parent_task_id")) {
+        const parentTaskId = optionalString(body.parent_task_id);
+        if (parentTaskId && parentTaskId === taskId) throw new HttpError(422, "A task cannot be its own parent");
+        if (parentTaskId) {
+          const parent = await client.query<{ id: string }>(
+            `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+            [parentTaskId, identity.spaceId],
+          );
+          if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
+        }
+        if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
+      }
+      const flowChanged = requestedStatus !== null && requestedStatus !== currentTask.status;
+      // The Project the Task ends up in, so a move between Projects records the
+      // change in the stream that now owns it rather than the one it left.
+      const effectiveProjectId = targetProjectId;
+      const eventContext = {
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        taskId,
+        projectId: effectiveProjectId,
+      };
+      const responsibilityFields = [
+        "assigned_user_id", "assigned_agent_id", "claimed_by_user_id", "claimed_by_agent_id",
+      ] as const;
+      const responsibilityChange = responsibilityFields
+        .filter((field) => Object.hasOwn(body, field)
+          && optionalString(body[field]) !== (currentTask[field] ?? null))
+        .map((field) => [field, optionalString(body[field])] as const);
+      // Gate before the write, so a refused close leaves no trace.
+      const overridden = flowChanged && requestedStatus === "done"
+        ? (await assertCompletionForClose(
+          client,
+          eventContext,
+          // The declaration as stored, never as edited in this same request:
+          // clearing `required_outputs_json` while closing would otherwise pass
+          // the gate and record `requirements_met` for a Task that met nothing.
+          currentTask.required_outputs_json,
+          completionOverride(body.override_completion),
+        )).overridden
+        : [];
       await client.query(
       `UPDATE tasks SET
          title = COALESCE($3, title),
@@ -426,7 +539,9 @@ export class PgTaskRepository {
          assigned_agent_id = CASE WHEN $22::boolean THEN $23 ELSE assigned_agent_id END,
          claimed_by_user_id = CASE WHEN $24::boolean THEN $25 ELSE claimed_by_user_id END,
          claimed_by_agent_id = CASE WHEN $26::boolean THEN $27 ELSE claimed_by_agent_id END,
-         completed_at = CASE WHEN $28::boolean THEN $29::timestamptz ELSE completed_at END,
+         completed_at = CASE WHEN $28::boolean THEN $29::timestamptz
+                             WHEN $63::boolean THEN COALESCE(completed_at, $62::timestamptz)
+                             ELSE completed_at END,
          cancelled_at = CASE WHEN $30::boolean THEN $31::timestamptz ELSE cancelled_at END,
          blocked_reason = CASE WHEN $32::boolean THEN $33 ELSE blocked_reason END,
          acceptance_criteria_json = CASE WHEN $34::boolean THEN $35::jsonb ELSE acceptance_criteria_json END,
@@ -508,9 +623,39 @@ export class PgTaskRepository {
         Object.hasOwn(body, "deleted_at"),
         toDbDate(body.deleted_at),
         now,
+        flowChanged && requestedStatus === "done",
         ],
       );
-      if (requestedStatus && TASK_EXECUTION_TERMINAL_STATUSES.has(requestedStatus)) {
+      if (flowChanged) {
+        await recordTaskFlowChange(client, eventContext, {
+          fromStatus: currentTask.status,
+          toStatus: requestedStatus!,
+          overridden,
+          // The row as it was before this write. Two writers that both read
+          // it produce one event; a later, separate move of the same Task
+          // reads a newer row and produces its own.
+          basedOn: dateIso(currentTask.updated_at) ?? String(currentTask.updated_at),
+        });
+      }
+      if (Array.isArray(body.links) && body.links.length > 0) {
+        await linkTaskEntities(
+          client,
+          {
+            spaceId: identity.spaceId,
+            actorId: await resolveUserActorId(client, identity.spaceId, identity.userId),
+            instructedByUserId: identity.userId,
+          },
+          taskId,
+          body.links as { entity_type: string; entity_id: string; role: string }[],
+        );
+      }
+      if (responsibilityChange.length > 0) {
+        await recordTaskResponsibilityChange(client, eventContext, {
+          via: "user",
+          changes: Object.fromEntries(responsibilityChange),
+        });
+      }
+      if (requestedStatus && TASK_QUEUE_SETTLING_STATUSES.has(requestedStatus)) {
         await withdrawQueuedTaskMessages(client, identity.spaceId, [taskId]);
       }
     });
@@ -547,7 +692,7 @@ export class PgTaskRepository {
       );
       const currentTask = lockedTask.rows[0];
       if (!currentTask) throw new HttpError(404, "Task not found");
-      if (TASK_EXECUTION_TERMINAL_STATUSES.has(currentTask.status)) {
+      if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status)) {
         throw new HttpError(409, `Task is ${currentTask.status} and cannot be dispatched`);
       }
       const maxRuns = currentTask.max_runs;
@@ -1099,11 +1244,16 @@ export class PgTaskRepository {
   }
 }
 
-async function getVisibleTaskRow(db: Queryable, identity: SpaceUserIdentity, taskId: string): Promise<TaskRow | null> {
+async function getVisibleTaskRow(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  taskId: string,
+  options: { lock?: boolean } = {},
+): Promise<TaskRow | null> {
   const result = await db.query<TaskRow>(
     `SELECT ${TASK_COLUMNS} FROM tasks t
       WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL
-        AND ${contentReadSql("task", "t", "$3")}`,
+        AND ${contentReadSql("task", "t", "$3")}${options.lock ? " FOR UPDATE OF t" : ""}`,
     [identity.spaceId, taskId, identity.userId],
   );
   return result.rows[0] ?? null;
@@ -1143,7 +1293,10 @@ function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string 
   if (filters.projectFolderId) clauses.push(`t.project_folder_id = ${add(filters.projectFolderId)}`);
   if (filters.projectId) clauses.push(`t.project_id = ${add(filters.projectId)}`);
   if (filters.status) clauses.push(`t.status = ${add(filters.status)}`);
-  if (filters.assignedToMe) clauses.push("(t.assigned_user_id = $2 OR t.claimed_by_user_id = $2)");
+  // The same chain the Board, Needs You and `/me/tasks` use. This was a third
+  // definition of "mine", and one that disagreed with the other two: it counted
+  // a Task an Agent had claimed as still yours.
+  if (filters.assignedToMe) clauses.push(`${responsibleUserSql("t", "fp")} = $2`);
   if (filters.q) clauses.push(`(t.title ILIKE ${add(`%${filters.q}%`)} OR t.description ILIKE $${params.length})`);
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }
@@ -1156,7 +1309,7 @@ function positiveIntegerOrNull(value: unknown): number | null {
 function taskStatus(value: unknown): string | null {
   const status = optionalString(value);
   if (status !== null && !TASK_STATUSES.has(status)) {
-    throw new HttpError(422, "task status must be inbox, ready, in_progress, blocked, done, or cancelled");
+    throw new HttpError(422, "task status must be inbox, ready, in_progress, waiting_for_review, blocked, done, or cancelled");
   }
   return status;
 }

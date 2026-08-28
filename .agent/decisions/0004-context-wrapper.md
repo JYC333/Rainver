@@ -1,58 +1,70 @@
-# Decision 0004: Vendor Context Files Are Generated Adapters, Not Source of Truth
+# ADR 0004: Vendor Files And Vendor Sessions Are Never Source Of Truth
+
+Date: 2026-05 (original)
+Rewritten: 2026-08-27 to its remaining scope
 
 ## Status
-Accepted
+
+Accepted. The original mechanism (a `ContextCompiler` generating `CLAUDE.md`
+/ `AGENTS.md` into the sandbox) was removed by
+[ADR 0014](0014-unified-runtime-context-engine.md) decision 12; runtime
+context is now delivered as protocol messages. What remains here is the
+principle that mechanism served.
 
 ## Context
-Claude Code uses `CLAUDE.md`, Codex uses `AGENTS.md`, Cursor uses `.cursorrules`. Early versions put architecture decisions and user preferences directly in these files. Problems:
-- Context locked into a vendor format
-- Files could be modified by the CLI agent, corrupting "source of truth"
-- No connection between changes in these files and long-term memory
-- Token waste: dumping all memory as JSON into the prompt
+
+Claude Code reads `CLAUDE.md`, Codex reads `AGENTS.md`, Cursor reads
+`.cursorrules`. Early versions put architecture decisions and user
+preferences directly in those files, which locked context into vendor formats,
+let the CLI agent edit its own "source of truth", and severed the link between
+those edits and long-term memory. A later generation generated the files per
+run; ADR 0014 replaced generation with protocol delivery. Both changes leave
+the same principle standing.
 
 ## Decision
-**Vendor-specific files (CLAUDE.md, AGENTS.md, Cursor rules) are generated adapter files, not source of truth.**
 
-The source of truth is:
-- `MemoryStore` — long-term scoped context
-- `ContextBuilder` — assembles context per space/user/workspace
-- `ContextCompiler` — formats it for a specific CLI target
+### 1. Vendor context files carry no authority
 
-Generated files:
-- Are written by `ContextCompiler` to the sandbox directory only
-- Are ephemeral — recreated fresh for each run
-- Are never written to the real workspace by default
-- Are never committed to source control
+Rainver's authority for model-visible context is the Runtime Context Gateway
+(ADR 0014) over memory, Project context, and retrieval. A vendor-format file
+is at most a rendering artifact of an accepted delivery; it is never read
+back as truth.
 
-## Vendor runtime sessions
+`CLAUDE.md`, `AGENTS.md`, `.agent/**`, and similar files that exist in a real
+Project Folder or in this repository are human-authored development documents.
+The product server, gateway, adapters, sandboxes, tests, and acceptance gate
+must not read them as runtime authority, and an agent's edits to them inside a
+sandbox never propagate to memory or Project context except through the
+ordinary proposal path.
 
-A vendor CLI may hold a resumable runtime session containing prior conversation turns. This
-does not weaken the decision above, and the session is never a source of truth:
+### 2. Vendor runtime sessions are disposable caches
 
-- Rainver always retains the ability to replay a full composed context and rebuild the
-  conversation from its own `sessions`, context snapshots, and condensed summaries. Resume is
-  a capacity optimization, not the authority.
-- A backend switch, an invalidated session, or a context that must be re-injected degrades
-  back to replay. Resume is never required for correctness.
-- Knowledge produced during a resumed conversation reaches Rainver only through tool
-  calls that create proposals, or through declared Run Exchange outputs. It is never
-  harvested by reading vendor session state.
-- Memory writes continue to require proposal approval (ADR 0003). A vendor session holding
-  history changes nothing about that path.
+A vendor CLI may hold a resumable session with prior turns. Resume is a
+capacity optimisation, never the authority:
 
-## Vendor context files under a read-only Folder mount
-
-When a run mounts the real Project Folder read-only, the vendor context file is materialized
-under `SANDBOX_ROOT/read-only-context/<space>/<run>` and mounted over the corresponding
-top-level vendor path only inside the runtime's bubblewrap namespace. The real Folder entry
-is neither created nor replaced, and the namespace remounts the assembled Folder view
-read-only — an OS-level guarantee, not a convention agents are expected to honor.
+- Rainver always retains the ability to rebuild the conversation from its own
+  messages, event ledger, checkpoints, and snapshots (ADR 0014 decisions
+  10–11). A backend switch, invalidated session, or required context
+  re-injection degrades to rebuild; resume is never required for correctness.
+- Knowledge produced in a resumed session reaches Rainver only through tool
+  calls that create proposals or through declared Run Exchange outputs. It is
+  never harvested by reading vendor session state.
+- Memory writes still require proposal approval ([ADR 0003](0003-memory-proposal-flow.md)).
 
 ## Consequences
 
-- `CLAUDE.md` and `AGENTS.md` in the real workspace (if present) are stable, human-authored project docs — not run-specific context
-- Run-specific context (memories, preferences, policies, task goal) is always compiled fresh per run
-- Changes an agent makes to CLAUDE.md inside its sandbox do not auto-propagate to MemoryStore
-- Long-term memory updates still require: agent run → MemoryReflector → `memory_update` proposal → user approval
-- ContextCompiler supports targets: `claude`, `codex`, `cursor`, `generic` — extensible for future tools
-- Context is concise: only title + content per memory item, capped per scope
+- Supporting a future vendor that can only accept a generated file requires
+  an explicit adapter decision and conformance boundary; it is not a fallback.
+- Run-specific context is always composed fresh per invocation and recorded
+  as an Invocation Snapshot; nothing run-specific is written into a real
+  Project Folder.
+
+## Revision history
+
+- **2026-05** — accepted with the `ContextCompiler` mechanism.
+- **2026-08-10** — mechanism removed by ADR 0014's clean cutover.
+- **2026-08-26** — vendor-session and read-only-mount sections added.
+- **2026-08-27** — rewritten to the remaining principle. The compiler,
+  target list, and per-vendor file table are gone; the read-only-mount
+  paragraph is dropped because that staging directory no longer holds a
+  vendor file (mechanism in `modules/runtime-adapters.md`).

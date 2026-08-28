@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, boolean, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents } from "./agents.js";
+import { actors, agents } from "./agents.js";
 import { activityRecords } from "./activity.js";
 import { users } from "./auth.js";
 import { runs } from "./runs.js";
@@ -93,7 +93,10 @@ export const boardColumns = pgTable("board_columns", {
 			name: "board_columns_space_id_fkey"
 		}),
 	unique("uq_board_columns_id_board_space").on(table.id, table.boardId, table.spaceId),
-	check("ck_board_columns_status_key", sql`status_key IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled')`),
+	// Kept identical to `ck_tasks_status`: a column's `status_key` is the flow
+	// status its cards hold, so a status with no column to sit in is a card the
+	// Board cannot show.
+	check("ck_board_columns_status_key", sql`status_key IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')`),
 ]);
 
 export const tasks = pgTable("tasks", {
@@ -247,7 +250,14 @@ export const tasks = pgTable("tasks", {
 	check("ck_tasks_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_tasks_private_owner", sql`visibility = 'space_shared' OR owner_user_id IS NOT NULL`),
 	check("ck_tasks_role", sql`task_role IN ('source', 'subtask')`),
-	check("ck_tasks_status", sql`status IN ('inbox', 'ready', 'in_progress', 'blocked', 'done', 'cancelled')`),
+	// `waiting_for_review` aligns the product work item with the two levels
+	// below it, which already had it: a Run the Supervisor stopped retrying and
+	// a Plan Node awaiting a decision both sit in `waiting_for_review`, and
+	// before this the Task above them had nowhere to show that. A Task whose
+	// only Run is parked for review used to stay `in_progress` forever, so the
+	// one state that means "a person has to look at this" was invisible exactly
+	// where a person would look for it.
+	check("ck_tasks_status", sql`status IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')`),
 	check("ck_tasks_column_requires_board", sql`column_id IS NULL OR board_id IS NOT NULL`),
 ]);
 
@@ -376,4 +386,52 @@ export const validationRecipes = pgTable("validation_recipes", {
 			name: "validation_recipes_project_folder_id_fkey"
 		}),
 	check("ck_validation_recipes_risk_level", sql`(risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text])`),
+]);
+
+/**
+ * What a Task is advancing: an Experiment, an Inquiry Thread, a Decision.
+ *
+ * An **execution binding**, not a semantic relation, which is why it is not an
+ * `object_relations` edge: those assert something is true about the world and
+ * are hard-FK'd to `space_objects` on both ends, and `tasks` is deliberately
+ * an independent root (ADR 0012 decision 4). This records *which work advanced
+ * which thing* — the same category as `task_runs`, `task_artifacts` and
+ * `task_proposals`, and their generalisation rather than a competitor.
+ *
+ * One table rather than `experiment_task_links` + `inquiry_task_links` + …:
+ * per-domain copies would each carry their own permissions, governance and
+ * cascade rules, and nothing would keep the three in agreement.
+ */
+export const taskEntityLinks = pgTable("task_entity_links", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	taskId: varchar("task_id", { length: 36 }).notNull(),
+	// Validated against the Entity registry at the write path, so a new domain
+	// joins by registering rather than by editing this table (ONTOLOGY.md §5).
+	entityType: varchar("entity_type", { length: 32 }).notNull(),
+	entityId: varchar("entity_id", { length: 36 }).notNull(),
+	role: varchar({ length: 32 }).notNull(),
+	createdByActorId: varchar("created_by_actor_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_task_entity_links_task").using("btree", table.spaceId.asc().nullsLast(), table.taskId.asc().nullsLast()),
+	index("ix_task_entity_links_entity").using("btree", table.spaceId.asc().nullsLast(), table.entityType.asc().nullsLast(), table.entityId.asc().nullsLast()),
+	unique("uq_task_entity_links_edge").on(table.spaceId, table.taskId, table.entityType, table.entityId, table.role),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "task_entity_links_space_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.taskId, table.spaceId],
+			foreignColumns: [tasks.id, tasks.spaceId],
+			name: "task_entity_links_task_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.createdByActorId],
+			foreignColumns: [actors.id],
+			name: "task_entity_links_created_by_actor_id_fkey"
+		}),
+	check("ck_task_entity_links_role", sql`role IN ('executes', 'investigates', 'prepares', 'references')`),
+	check("ck_task_entity_links_entity_type_format", sql`entity_type ~ '^[a-z][a-z0-9_]{0,31}$'`),
 ]);

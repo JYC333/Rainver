@@ -79,4 +79,33 @@ describe("system action registry loading", () => {
       `Unknown policy action missing.policy.action for system action ${valid.id}`,
     );
   });
+
+  it("declares one resource type per action across both registries", () => {
+    // The dispatcher passes the System Action's declared resource, so a
+    // mismatch is silent: the policy registry's entry is documentation that
+    // has drifted, and drifted documentation about authorization is worse
+    // than none. `task.create` was declared `task` in one and `project` in the
+    // other — a Task has no id yet when it is created, so `project` is right.
+    const policyResources = new Map(
+      actualProtocol.POLICY_ACTION_REGISTRY.map((entry) => [entry.action, entry.resource_type]),
+    );
+    const mismatches: string[] = [];
+    let compared = 0;
+    for (const action of actualProtocol.SYSTEM_ACTION_REGISTRY) {
+      const declared = action.policy_resource?.resource_type;
+      const policyAction = action.policy_action;
+      if (!declared || !policyAction) continue;
+      const expected = policyResources.get(policyAction);
+      if (!expected) continue;
+      compared += 1;
+      if (expected !== declared) {
+        mismatches.push(`${action.id}: system=${declared} policy=${expected} (${policyAction})`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+    // A guard that compares nothing passes forever. `server/test` is outside
+    // this package's `tsconfig` include, so a misspelled property is not a
+    // compile error — the count is what makes the guard real.
+    expect(compared).toBeGreaterThan(5);
+  });
 });

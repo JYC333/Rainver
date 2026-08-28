@@ -30,7 +30,7 @@ export class ProjectReviewSessionService {
           },
           knowledge: {
             packet: knowledge,
-            decision_href: `/projects/${projectId}/knowledge-review`,
+            decision_href: `/projects/${projectId}/inquiry?view=review&tab=candidates`,
           },
         },
       };

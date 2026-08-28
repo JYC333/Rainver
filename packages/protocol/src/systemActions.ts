@@ -19,6 +19,28 @@ export const SYSTEM_ACTION_ACTOR_VALUES = ["user", "agent", "system", "automatio
 export type SystemActionActorType = (typeof SYSTEM_ACTION_ACTOR_VALUES)[number];
 
 export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "durable"] as const;
+
+/**
+ * Why a write is gated behind per-instance human approval
+ * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1).
+ *
+ * The list is exhaustive and an action that registers as a proposal must name
+ * one. Authorship is deliberately not on it: "an Agent wrote it" was the old
+ * default, and under an Agent that advances work it degrades into a rubber
+ * stamp on exactly the writes that matter. What is gated is what cannot be
+ * taken back, costs money, changes who can see something, or changes the
+ * Agent itself.
+ */
+export const SYSTEM_ACTION_GATE_CLASSES = [
+  "self_modification",
+  "belief_reach",
+  "real_checkout",
+  "exposure",
+  "money",
+  "credential_or_deployment",
+  "direction",
+] as const;
+export type SystemActionGateClass = (typeof SYSTEM_ACTION_GATE_CLASSES)[number];
 export type SystemActionSideEffects = (typeof SYSTEM_ACTION_SIDE_EFFECT_VALUES)[number];
 
 export const SYSTEM_ACTION_AGENT_TOOL_SURFACE_VALUES = [
@@ -39,6 +61,7 @@ export type SystemActionPolicyAdapter = (typeof SYSTEM_ACTION_POLICY_ADAPTER_VAL
 export const SystemActionVisibilitySchema = z.enum(SYSTEM_ACTION_VISIBILITY_VALUES);
 export const SystemActionActorTypeSchema = z.enum(SYSTEM_ACTION_ACTOR_VALUES);
 export const SystemActionSideEffectsSchema = z.enum(SYSTEM_ACTION_SIDE_EFFECT_VALUES);
+export const SystemActionGateClassSchema = z.enum(SYSTEM_ACTION_GATE_CLASSES);
 export const SystemActionAgentToolSurfaceSchema = z.enum(SYSTEM_ACTION_AGENT_TOOL_SURFACE_VALUES);
 export const SystemActionPolicyAdapterSchema = z.enum(SYSTEM_ACTION_POLICY_ADAPTER_VALUES);
 const ZodSchemaValue = z.custom<z.ZodType>(
@@ -93,6 +116,7 @@ export const SystemActionDefinitionSchema = z.object({
   side_effects: SystemActionSideEffectsSchema,
   idempotency_required: z.boolean(),
   proposal_type: z.string().min(1).nullable(),
+  gate_class: SystemActionGateClassSchema.nullable(),
   grantable: z.boolean(),
   /**
    * Ontology object types this action operates on, when it operates on one.
@@ -136,6 +160,8 @@ export interface SystemActionDefinition {
   readonly side_effects: SystemActionSideEffects;
   readonly idempotency_required: boolean;
   readonly proposal_type: string | null;
+  /** Which ADR 0017 §1 class gates this action, or null when nothing does. */
+  readonly gate_class: SystemActionGateClass | null;
   readonly grantable: boolean;
   /** Ontology object types this action operates on, when it operates on one. */
   readonly applies_to?: readonly string[];
@@ -151,12 +177,77 @@ const objectInput = z.record(z.string(), z.unknown());
 const objectOutput = z.record(z.string(), z.unknown());
 const proposalOutput = z.object({ modelResult: z.record(z.string(), z.unknown()), summary: z.record(z.string(), z.unknown()) }).passthrough();
 const proposalInputs:Record<string,z.ZodType>={
+  /**
+   * A person deciding, in words, a proposal this conversation produced.
+   *
+   * The Agent is the transport for the decision, never its author: the action
+   * is refused on any origin but a person's own turn, and only for a proposal
+   * created by a Run of this same conversation. "Accept it" said to the
+   * Assistant is the same approval as the button beside the proposal.
+   */
+  "proposal.list_pending": z.object({}).strict(),
+  "proposal.decide": z.object({
+    proposal_id: z.string().min(1).describe("The Proposal id exactly as returned by proposal.list_pending. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    decision: z.enum(["accept", "reject"]),
+  }).strict(),
   "authorization.request": z.object({
     policy_decision_record_id: z.string().min(1),
     reason: z.string().trim().min(1).max(1000),
   }).passthrough(),
+  "task.create": z.object({
+    /**
+     * Optional, and only ever the Run's own Project. It is accepted so a model
+     * can state what it believes it is doing and be told when that disagrees,
+     * rather than silently writing somewhere else.
+     */
+    project_id: z.string().min(1).optional(),
+    title: z.string().trim().min(1).max(512),
+    description: z.string().trim().max(20_000).nullable().optional(),
+    acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
+    definition_of_done: z.string().trim().max(4_000).nullable().optional(),
+    required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
+    priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+    risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
+    links: z.array(z.object({
+      entity_type: z.string().trim().min(1).max(32),
+      entity_id: z.string().min(1),
+      role: z.enum(["executes", "investigates", "prepares", "references"]),
+    })).max(20).optional(),
+  }).strict(),
+  "task.list": z.object({
+    status: z.enum(["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"]).optional(),
+  }).strict(),
+  "task.report": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    summary: z.string().trim().min(1).max(8_000),
+    outcome: z.enum(["progress", "done", "stuck", "handoff"]).optional(),
+    refs: z.array(z.object({
+      type: z.string().trim().min(1).max(32),
+      id: z.string().min(1),
+    })).max(20).optional(),
+  }).strict(),
+  "task.handoff": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    /** Null releases the Task back to its assignment chain. */
+    to: z.object({
+      kind: z.enum(["user", "agent"]),
+      id: z.string().min(1),
+    }).nullable(),
+    note: z.string().trim().max(2_000).nullable().optional(),
+  }).strict(),
+  "task.advance_stage": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    to_stage: z.enum(["frame", "plan", "act", "verify", "conclude"]),
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+  "task.request_review": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    reason: z.string().trim().min(1).max(2_000),
+    /** What the person is being asked to choose between, when there is a choice. */
+    options: z.array(z.string().trim().min(1).max(500)).max(6).optional(),
+  }).strict(),
   "task.plan.propose": z.object({
-    task_id: z.string().min(1),
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     plan_id: z.string().min(1).nullable().optional(),
     definition_json: z.record(z.string(), z.unknown()),
     reference_workflow_version_id: z.string().min(1).nullable().optional(),
@@ -185,7 +276,7 @@ const proposalInputs:Record<string,z.ZodType>={
     constraints: z.string().trim().min(1).optional(),
     assumptions: z.string().trim().min(1).optional(),
   }).passthrough(),
-  "inquiry.propose_thread": z.object({
+  "inquiry.create_thread": z.object({
     kind: z.enum(["question", "hypothesis"]).default("question"),
     statement: z.string().trim().min(1),
     answerability: z.string().trim().min(1).optional(),
@@ -193,9 +284,39 @@ const proposalInputs:Record<string,z.ZodType>={
     proposed_claim: z.string().trim().min(1).optional(),
     predictions: z.string().trim().min(1).optional(),
     falsification_criteria: z.string().trim().min(1).optional(),
-  }).passthrough(),
+    // Strict, like every other direct action: the executor supplies the
+    // idempotency key itself, and a field the model is never shown is not a
+    // field it may pass.
+  }).strict(),
+  // ADR 0003 §2. `visibility` and `sensitivity_level` are askable and are the
+  // fields that change reach: asking for either is not refused, it is routed
+  // — the write becomes a proposal for the person. What is deliberately
+  // absent is a subject: an Agent cannot write into someone else's memory
+  // here at all, by any route.
+  "memory.remember": z.object({
+    content: z.string().trim().min(1).max(4000),
+    rationale: z.string().trim().min(1).max(1000)
+      .describe("Why this is worth keeping across sessions. Recorded with the entry; a write without one is refused."),
+    memory_type: z.enum(["semantic", "episodic", "procedural"]).optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    visibility: z.enum(["private", "space_shared", "selected_users"]).optional()
+      .describe("Defaults to private, which writes immediately. Anything wider is a change in reach: it becomes a proposal for the person to decide, and no entry exists until they accept."),
+    sensitivity_level: z.enum(["normal", "sensitive", "restricted"]).optional()
+      .describe("Above normal follows the same route as a wider visibility: a proposal, not an entry."),
+  }).strict(),
+  "memory.revise": z.object({
+    memory_id: z.string().min(1).describe("The memory entry id exactly as a memory retrieval returned it. Never invent one."),
+    content: z.string().trim().min(1).max(4000),
+    rationale: z.string().trim().min(1).max(1000),
+  }).strict(),
+  "inquiry.adopt_next_step": z.object({
+    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+  }).strict(),
+  "inquiry.list_threads": z.object({
+    kind: z.enum(["question", "hypothesis"]).optional(),
+  }).strict(),
   "inquiry.record_conclusion": z.object({
-    thread_id: z.string().min(1),
+    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     change_summary: z.string().min(1),
     reasoning_summary: z.string().min(1).optional(),
     // Question-kind cognitive fields.
@@ -213,18 +334,28 @@ const proposalInputs:Record<string,z.ZodType>={
     next_focus_note: z.string().optional(),
   }).passthrough(),
   "inquiry.promote_knowledge": z.object({
-    thread_id: z.string().min(1),
+    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     candidate_kind: z.enum(["concept", "lesson", "procedure", "decision", "summary"]),
     proposed_title: z.string().min(1),
     proposed_content: z.string().min(1),
     supersedes_knowledge_item_id: z.string().min(1).optional(),
   }).passthrough(),
+  // Scope is the caller's to set. It used to be a server constant nobody
+  // could reach, so "only read the last year" or "500 is fine" had no way
+  // through — the only adjustment available was cancelling and starting over.
   "research.start_acquisition": z.object({
-    thread_id: z.string().min(1),
+    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     intent_note: z.string().trim().min(1).max(2000).optional(),
+    max_items: z.number().int().min(1).max(2000).optional()
+      .describe("How many of the newest matching items this pass reads. Defaults to 200. Raise it only when the user asks for more."),
+    since: z.string().trim().min(1).optional()
+      .describe("ISO date; only material published on or after it is collected. Omit for all available history."),
+  }).strict(),
+  "research.list_operations": z.object({
+    include_terminal: z.boolean().optional(),
   }).strict(),
   "research.cancel_acquisition": z.object({
-    operation_id: z.string().min(1),
+    operation_id: z.string().min(1).describe("The research Operation id exactly as returned by research.list_operations. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     reason: z.string().trim().min(1).max(2000).optional(),
   }).strict(),
 };
@@ -254,15 +385,34 @@ export const SYSTEM_ACTION_REGISTRY = [
   httpAction("project.source.bind", "Bind a Source to a Project", "projects", "ProjectSourceBindingService.createBinding", "project.source.bind", "durable"),
   httpAction("policy.action_grant.create", "Create an action approval grant", "policy", "ActionApprovalGrantService.create", "policy.action_grant.create", "durable"),
   httpAction("policy.action_grant.revoke", "Revoke an action approval grant", "policy", "ActionApprovalGrantService.revoke", "policy.action_grant.revoke", "durable"),
-  proposalAction("source.channel.propose_activation", "Propose Source Channel activation", "sources", "SourceChannelService.proposeActivation", "source.connection.manage", "source_channel_activation"),
-  proposalAction("project.source.propose_bind", "Propose binding a Source to a Project", "projects", "ProjectSourceBindingService.proposeBind", "project.source.bind", "project_source_bind"),
-  proposalAction("project.propose_definition", "Propose the Project goal or core problem", "projects", "ProjectDefinitionProposalService.proposeDefinition", "project.brief.propose", "project_brief_publish"),
+  gatedProposalAction("source.channel.propose_activation", "Propose Source Channel activation", "sources", "SourceChannelService.proposeActivation", "source.connection.manage", "source_channel_activation", "money"),
+  gatedProposalAction("project.source.propose_bind", "Propose binding a Source to a Project", "projects", "ProjectSourceBindingService.proposeBind", "project.source.bind", "project_source_bind", "money"),
+  gatedProposalAction("project.propose_definition", "Propose the Project goal or core problem", "projects", "ProjectDefinitionProposalService.proposeDefinition", "project.brief.propose", "project_brief_publish", "direction"),
   httpAction("project.operation.read", "Read Project operation progress", "projects", "ProjectOperationService.get", "project.operation.manage", "none"),
   httpAction("project.operation.create", "Create a Project operation", "projects", "ProjectOperationService.create", "project.operation.manage", "durable"),
   httpAction("project.operation.cancel", "Cancel a Project operation", "projects", "ProjectOperationService.cancel", "project.operation.manage", "durable"),
   httpAction("source.backfill.preview", "Preview Source history import", "sources", "SourceBackfillPlanningService.preview", "source.backfill.plan", "none"),
   httpAction("source.backfill.create_plan", "Create Source history import plan", "sources", "SourceBackfillPlanningService.create", "source.backfill.plan", "draft"),
-  proposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start", { resource_type: "source_backfill_plan", resource_id_input_field: "source_backfill_plan_id", resource_id_fallback: "run" }),
+  gatedProposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start", "money", { resource_type: "source_backfill_plan", resource_id_input_field: "source_backfill_plan_id", resource_id_fallback: "run" }),
+  // The Project write surface. `task.create` and `task.advance_stage` are
+  // gated by trigger origin in `decisionCore.ts`: a person asking for something
+  // in the turn is the authorization for it, while the same call from an
+  // autonomous wake-up is a commitment made on the Project's behalf and needs
+  // to be seen. The other three are append-only or self-limiting — a report
+  // only records, a handoff can only give work away, and a review request can
+  // only stop work — so they need no origin gate.
+  // Every id-taking action below is fed by a read that returns those ids, so
+  // the model copies one instead of composing it from a title. Nothing in a
+  // conversation's rendered history carries ids: a turn that must address an
+  // existing object calls the matching list first.
+  action("task.list", "List this Project's Tasks with their ids", "tasks", "PgTaskRepository.listTasks", "task.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["task.list"] }),
+  agentAction("task.create", "Create a Project Task", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_input_field: "project_id", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
+  agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("task.advance_stage", "Move a Task's Loop stage", "projectWork", "ProjectWorkTaskActions.advanceStage", "task.stage.advance", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  action("proposal.list_pending", "List this conversation's pending Proposals with their ids", "proposals", "PgProposalRepository.listVisible", "proposal.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["proposal.list_pending"] }),
+  agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
   httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
@@ -274,14 +424,40 @@ export const SYSTEM_ACTION_REGISTRY = [
   objectAction("note.raise_as_question", "Raise a passage as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["note"]),
   objectAction("note.link_to_evidence", "Link a passage to evidence", "knowledge", "PgKnowledgeRepository.createNoteLink", "note.link.create", "durable", ["note"]),
   objectAction("source.raise_as_question", "Explore as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["source"]),
-  proposalAction("inquiry.propose_thread", "Propose creating an Inquiry Thread", "inquiry", "InquiryThreadProposalService.proposeThread", "inquiry.thread.propose", "inquiry_thread_create"),
-  proposalAction("inquiry.record_conclusion", "Propose recording an Inquiry Thread conclusion", "inquiry", "InquiryConclusionProposalService.proposeConclusion", "inquiry.iteration.propose", "inquiry_conclusion"),
+  // The deterministic way for an Agent to learn a Thread's id: a read that
+  // returns the Project's active Threads with their ids, so the id a later
+  // thread-bound action carries is copied from a tool result, never composed
+  // by the model from the statement (which is how a made-up slug reached
+  // research.start_acquisition and failed as an opaque 404).
+  action("inquiry.list_threads", "List this Project's active Inquiry Threads with their ids", "inquiry", "InquiryThreadService.listThreads", "inquiry.thread.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["inquiry.list_threads"] }),
+  // Adopting the system's own recorded next step, on the user's say-so. It
+  // writes only what the Inquiry Area's Adopt button writes — the Thread's
+  // focus — so requiring a proposal here would gate a suggestion the system
+  // made behind a review of the same suggestion.
+  // The Agent's own memory, bounded rather than pre-approved (ADR 0003).
+  // Until these existed no Agent could write memory from a conversation at
+  // all, so the person was never the bottleneck there — nothing was.
+  agentAction("memory.remember", "Remember something across sessions", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("memory.revise", "Revise a memory this Agent wrote", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_input_field: "memory_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("inquiry.adopt_next_step", "Adopt the recorded next step for an Inquiry Thread", "inquiry", "InquiryAdviceService.adoptAdvice", "inquiry.advice.adopt", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  // Direct, origin-gated and bounded (ADR 0017 §2). Splitting a question into
+  // sub-questions is one judgement a person made when they asked; drafting it
+  // into N proposals they then approve one by one is that judgement taken N
+  // times, and it taught them to approve without reading. What replaces the
+  // gate is the trigger origin — an unattended run still waits — the per-turn
+  // fan-out bound, and Updates, where every Thread an Agent opens can be
+  // archived in one click.
+  agentAction("inquiry.create_thread", "Open an Inquiry Thread", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
+  // A conclusion is the Thread's own state and every Iteration keeps the
+  // position it replaced, so it is recorded and revertible rather than
+  // pre-approved.
+  agentAction("inquiry.record_conclusion", "Record an Inquiry Thread conclusion", "inquiry", "InquiryIterationService.recordIteration", "inquiry.iteration.record", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
   // (revalidation branch) depending on `supersedes_knowledge_item_id`;
   // `knowledge_create` here is descriptive metadata only — nothing currently
   // compares it for equality (see `acceptAgentProposalIfGranted`), and this
   // action is not wired into that auto-apply path in this phase.
-  proposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create"),
+  gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
   // Direct execution, no proposal gate (room-advancement-reliability-plan
   // Phase 4) — the Thread was already human-accepted at creation; starting
   // acquisition on it is execution, not an agent-drafted structure/content
@@ -290,6 +466,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.
+  action("research.list_operations", "List this Project's research Operations with their ids", "projectResearch", "ProjectOperationService.list", "research.operation.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, agentToolSurface: "research", inputSchema: proposalInputs["research.list_operations"] }),
   agentAction("research.cancel_acquisition", "Cancel a running research acquisition", "projectResearch", "ResearchOperationCancelService.cancelOperation", "research.acquisition.cancel", "durable", { resource_type: "project_operation", resource_id_input_field: "operation_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
 ] as const satisfies readonly SystemActionDefinition[];
 
@@ -324,6 +501,7 @@ function action<const Id extends string>(
     side_effects: sideEffects,
     idempotency_required: sideEffects !== "none",
     proposal_type: sideEffects === "proposal" ? "agent_delegation" : null,
+    gate_class: null,
     grantable: sideEffects === "proposal",
     agent_tool_surface: options.agentToolSurface ?? "generic",
     policy_adapter: options.policyAdapter ?? "declared_resource",
@@ -355,6 +533,7 @@ function httpAction<const Id extends string>(
     side_effects: sideEffects,
     idempotency_required: sideEffects !== "none",
     proposal_type: null,
+    gate_class: null,
     grantable: false,
   };
 }
@@ -391,6 +570,9 @@ function objectAction<const Id extends string>(
     side_effects: sideEffects,
     idempotency_required: sideEffects !== "none",
     proposal_type: sideEffects === "proposal" ? "knowledge_create" : null,
+    // An object action that drafts a Knowledge Item leaves the Project for
+    // Space-level Knowledge, which is a change in who can see it.
+    gate_class: sideEffects === "proposal" ? "exposure" : null,
     grantable: false,
     applies_to: appliesTo,
   };
@@ -404,11 +586,21 @@ function objectAction<const Id extends string>(
  * which overrides both fields), so it is the builder's default rather than
  * a per-call declaration repeated seven times.
  */
-function proposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, policyResource: Partial<Pick<SystemActionPolicyResource, "resource_type" | "resource_id_input_field" | "resource_id_fallback">> = {}): SystemActionDefinition & { readonly id: Id } {
+/**
+ * An action whose write waits for a person, and says why
+ * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1/§5).
+ *
+ * The gate class is a required argument rather than a default, because a
+ * default is how "draft a proposal" became the shape of every Agent write
+ * without anyone deciding it should be. An action that cannot name its class
+ * is not a proposal action; it is a direct write governed by trigger origin
+ * and bounds.
+ */
+function gatedProposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, gateClass: SystemActionGateClass, policyResource: Partial<Pick<SystemActionPolicyResource, "resource_type" | "resource_id_input_field" | "resource_id_fallback">> = {}): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool", "public_api"),
     allowed_actor_types: ["user", "agent"], input_schema: proposalInputs[id]??objectInput, output_schema: proposalOutput,
     owning_module: owningModule, application_service: applicationService, policy_action: policyAction,
-    side_effects: "proposal", idempotency_required: true, proposal_type: proposalType, grantable: true,
+    side_effects: "proposal", idempotency_required: true, proposal_type: proposalType, gate_class: gateClass, grantable: true,
     agent_tool_surface: "generic", policy_adapter: "declared_resource",
     policy_resource: { resource_id_fallback: "project_or_run", check_action_approval_grant: true, ...policyResource } };
 }
@@ -417,12 +609,12 @@ function agentAction<const Id extends string>(id: Id, title: string, owningModul
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool"), allowed_actor_types: ["agent"],
     input_schema: proposalInputs[id] ?? objectInput, output_schema: proposalOutput, owning_module: owningModule,
     application_service: applicationService, policy_action: policyAction, side_effects: sideEffects,
-    idempotency_required: true, proposal_type: null, grantable: false, policy_resource: policyResource,
+    idempotency_required: true, proposal_type: null, gate_class: null, grantable: false, policy_resource: policyResource,
     agent_tool_surface: agentToolSurface, policy_adapter: "declared_resource" };
 }
 
 function internalAction<const Id extends string>(id:Id,title:string,owningModule:string,applicationService:string,policyAction:PolicyActionId):SystemActionDefinition&{readonly id:Id}{
-  return{id,version:1,title,description:title,visibility:visibility("internal_only","system_job"),allowed_actor_types:["user","system"],input_schema:objectInput,output_schema:objectOutput,owning_module:owningModule,application_service:applicationService,policy_action:policyAction,side_effects:"durable",idempotency_required:true,proposal_type:null,grantable:false};
+  return{id,version:1,title,description:title,visibility:visibility("internal_only","system_job"),allowed_actor_types:["user","system"],input_schema:objectInput,output_schema:objectOutput,owning_module:owningModule,application_service:applicationService,policy_action:policyAction,side_effects:"durable",idempotency_required:true,proposal_type:null,gate_class:null,grantable:false};
 }
 
 /**

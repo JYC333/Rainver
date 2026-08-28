@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ProjectDetailPage from '../ProjectDetailPage'
-import { activityApi, projectsApi } from '../../../api/client'
+import { projectsApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn() },
@@ -41,9 +41,8 @@ vi.mock('../../../api/client', () => ({
     submitInstructionForReview: vi.fn(),
     publishInstruction: vi.fn(),
     archive: vi.fn(),
-  },
-  activityApi: {
-    list: vi.fn(),
+    getBoard: vi.fn(),
+    updates: vi.fn(),
   },
 }))
 
@@ -81,25 +80,16 @@ function setup(overrides: {
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
     project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
     brief: { version: '1', goal: 'Understand agent evidence use', scope_included: null, success_definition: null },
-    mode_projection: {
-      mode: 'research',
-      current_state_summary: 'No research under way.',
-      progress_indicators: [],
-      focus_set: [],
-      next_actions: [{ id: 'action-1', label: 'Define a question to research', href: '/projects/project-1/inquiry', kind: 'create' }],
-    },
     available_modes: ['research'],
-    attention: [{ id: 'attention-1', title: 'Screening gate waiting', summary: null, href: '/projects/project-1/operations' }],
-    setup_checklist: [{ id: 'brief', label: 'Project Brief goal', status: 'ready', required: true, href: '/x', detail: 'Goal recorded' }],
-    entity_summaries: [
-      { entity_type: 'research_workflow', label: 'Research workflows', detail: 'Questions being searched and screened', href: '/projects/project-1/research', count: 0, status: 'ok' },
-      { entity_type: 'inquiry_thread', label: 'Inquiry Threads', detail: 'Open questions and hypotheses', href: '/projects/project-1/inquiry', count: 2, status: 'attention' },
-      { entity_type: 'project_folder', label: 'Project Folders', detail: 'Files & Code', href: '/projects/project-1/files', count: 4, status: 'ok' },
-      { entity_type: 'memory_entry', label: 'Memory', detail: 'Project-scoped entries', href: '/memory?project_id=project-1', count: 7, status: 'ok' },
-    ],
+    attention: [{ id: 'attention-1', attention_class: 'gate', title: 'Screening gate waiting', summary: null, href: '/projects/project-1/research?tab=runs&open=op-1' }],
     ...overrides.overview,
   } as never)
-  vi.mocked(activityApi.list).mockResolvedValue([] as never)
+  vi.mocked(projectsApi.getBoard).mockResolvedValue({
+    project: { id: 'project-1', name: 'Project One', primary_mode: 'research' },
+    columns: [], cards: [], viewer_user_id: 'user-1', viewer_can_write: true,
+    filters: { all: 0, mine: 0, agent_held: 0, needs_me: 0 },
+  } as never)
+  vi.mocked(projectsApi.updates).mockResolvedValue({ items: [], next_cursor: null, viewer_can_write: true } as never)
   vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([])
   vi.mocked(projectsApi.listInstructionVersions).mockResolvedValue([])
 }
@@ -118,71 +108,56 @@ function renderPage() {
 }
 
 /**
- * The Overview is a thin aggregation layer over Areas: goal and focus, what
- * to do next, what just happened, and one summary row per kind of thing.
+ * Pulse: the header and goal line are the page's own; the situation comes
+ * from `ProjectPulse`. Nothing here duplicates the sidebar or an Area.
  */
-describe('ProjectDetailPage overview', () => {
-  it('answers goal, next, recent, and how much — and fetches nothing else', async () => {
+describe('ProjectDetailPage (Pulse)', () => {
+  it('shows the goal and the situation, and fetches nothing an Area owns', async () => {
     setup()
     renderPage()
 
     expect(await screen.findByText('Project One')).toBeInTheDocument()
     expect(screen.getByText('Understand agent evidence use')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Define a question to research' })).toHaveAttribute('href', '/projects/project-1/inquiry')
-    expect(screen.getByRole('heading', { name: 'Recent activity' })).toBeInTheDocument()
-
-    // Rows come from the Overview response — the Mode's placeholders plus
-    // whatever the Project has data for — so the page composes none itself.
-    expect(screen.getByRole('link', { name: /Research workflows/ })).toHaveAttribute('href', '/projects/project-1/research')
-    expect(screen.getByRole('link', { name: /Project Folders/ })).toHaveAttribute('href', '/projects/project-1/files')
-    expect(screen.getByRole('link', { name: /Memory/ })).toHaveAttribute('href', '/memory?project_id=project-1')
-
+    // The same attention list the sidebar shows, unfiltered, so the two cannot
+    // disagree about whether anything is pending.
+    expect(await screen.findByText('Screening gate waiting')).toBeInTheDocument()
     await waitFor(() => {
       expect(projectsApi.get).toHaveBeenCalledWith('project-1')
-      expect(activityApi.list).toHaveBeenCalledWith({ project_id: 'project-1', limit: 8 })
+      expect(projectsApi.getBoard).toHaveBeenCalledWith('project-1')
     })
-    // Every count it renders arrives with the Overview; the page fetches no
-    // per-domain totals of its own.
     expect(projectsApi.operations).not.toHaveBeenCalled()
   })
 
-  /** A placeholder row is how a research Project sees where its evidence work
-   *  goes before any of it exists; a non-`ok` row says so on its face. */
-  it('renders empty placeholder rows and flags the ones needing attention', async () => {
+  it('carries none of the old Overview blocks', async () => {
     setup()
     renderPage()
-
-    const workflows = await screen.findByRole('link', { name: /Research workflows/ })
-    expect(workflows).toHaveTextContent('0')
-    expect(screen.getByRole('link', { name: /Inquiry Threads/ })).toHaveTextContent('attention')
-    expect(workflows).not.toHaveTextContent('attention')
+    expect(await screen.findByText('Project One')).toBeInTheDocument()
+    // "Next" was Mode-generated links to Areas the sidebar lists; "Recent
+    // activity" was the raw-material queue under another name; "In this
+    // project" was the Areas list again with counts. Each doubled something
+    // already on the screen.
+    expect(screen.queryByRole('heading', { name: 'Next' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Recent activity' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'In this project' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Define a question to research' })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Research workflows/ })).toBeNull()
+    // The Room has its own ways in (the sidecar, the Rooms Area); a third
+    // button on the front page was one more copy of the same door.
+    expect(screen.queryByRole('link', { name: 'Rooms' })).toBeNull()
   })
 
-  it('keeps all four Overview blocks visible when a Mode has no suggested next action or summaries', async () => {
-    setup({
-      overview: {
-        mode_projection: {
-          mode: 'learning',
-          current_state_summary: 'Nothing scheduled.',
-          progress_indicators: [],
-          focus_set: [],
-          next_actions: [],
-        },
-        entity_summaries: [],
-      },
-    })
+  it('keeps how the Project advances in Settings, not on the front page', async () => {
+    setup()
     renderPage()
-
-    expect(await screen.findByRole('heading', { name: 'Next' })).toBeInTheDocument()
-    expect(screen.getByText('No next action suggested for this mode yet.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Recent activity' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'In this project' })).toBeInTheDocument()
-    expect(screen.getByText('This Project has no entity summaries yet.')).toBeInTheDocument()
+    expect(await screen.findByText('Project One')).toBeInTheDocument()
+    expect(screen.queryByLabelText('How this Project advances')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
+    expect(await screen.findByLabelText('How this Project advances')).toBeInTheDocument()
   })
 
   /**
    * Each of these has a dedicated Area with its own route. Rendering them here
-   * too made the Overview a second, weaker copy of four other pages and made
+   * too made the front page a second, weaker copy of four other pages and made
    * every Project visit pay for their data.
    */
   it('hosts no surface that a dedicated Area owns', async () => {
@@ -197,18 +172,6 @@ describe('ProjectDetailPage overview', () => {
     expect(screen.queryByRole('button', { name: /^save url$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^new folder$/i })).toBeNull()
     expect(screen.queryByText('Saved intake configuration')).toBeNull()
-  })
-
-  /** The shell sidebar renders both from every Area, so a second copy here is
-   *  the same list twice on one screen. */
-  it('leaves the setup checklist and attention list to the shell sidebar', async () => {
-    setup()
-    renderPage()
-
-    expect(await screen.findByText('Project One')).toBeInTheDocument()
-    expect(screen.queryByText('Setup checklist')).toBeNull()
-    expect(screen.queryByText('Needs attention')).toBeNull()
-    expect(screen.queryByText('Screening gate waiting')).toBeNull()
   })
 
   it('keeps project current_focus visibly separate from the Inquiry-owned research question', async () => {

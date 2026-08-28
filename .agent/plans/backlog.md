@@ -96,6 +96,32 @@ Constraint: the graph stays read-only and the projection contract stays the
 producer's; this is navigation and defaulting, not a graph feature. Distinct from
 the Inquiry Area's Map view, which projects Thread-to-Thread structure.
 
+### G1.3 — Loose ends from the Project workbench build
+
+Recorded 2026-08-27 when `project-workbench-plan.md` was retired. Current state
+is in [`../architecture/PROJECT_WORK.md`](../architecture/PROJECT_WORK.md) §9,
+which carries the reasoning; these are the items that want an actual change.
+
+- [ ] Pin the Board's lane set to the flow-status set. `ck_tasks_status` and
+  `ck_board_columns_status_key` carry the same list and `COLUMN_FOR_STATUS`
+  maps the one deliberate exception (`blocked` as an overlay), so a status with
+  no lane is unreachable — but nothing asserts the correspondence, and a card
+  that is counted and never drawn is exactly the defect P2 shipped once
+  already.
+- [ ] Give the Delivery attention adapter real-database coverage. It uses the
+  same responsibility SQL the Board does, and that SQL *is* exercised against
+  real Postgres through the Board — but the adapter's own tests stage their
+  rows, so a change to how it consumes the chain would not be caught. This is
+  the surface that decides whether a person is interrupted at all.
+- [ ] Decide whether a Project's Assistant should be able to act on another
+  Project's Tasks. The four Task-addressed Agent actions carry no
+  Run-to-Project constraint (`task.create` does), which `SYSTEM_ACTIONS.md`
+  records as intended — an Agent's reach is the instructing person's — but it
+  sits awkwardly beside one-Assistant-per-Project, where the Assistant is
+  named for and scoped to one Project.
+- [x] Re-materialize a managed Assistant when its seed changes — done at boot
+  (`reconcileSeedFollowersForAllSpaces`), daily as a backstop.
+
 ### G1.2 — Two loose ends left by the Inquiry Step model
 
 Both are unreachable today and neither blocks anything; they are recorded so the

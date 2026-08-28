@@ -175,6 +175,10 @@ export interface ResearchOperationState {
   monitoring_active: boolean;
   awaiting_source_scan?: boolean;
   pending_incremental_source_item_ids?: string[];
+  /** How many scanned items this update deferred to the next one because it
+   *  reached its own screening budget. Recorded so a monitor that is falling
+   *  behind is visible rather than silently growing a backlog. */
+  deferred_incremental_items?: number;
   post_processing_recovery_requested_at?: string;
   empty_result?: {
     kind: "no_source_items" | "no_relevant_sources" | "no_coherent_synthesis";

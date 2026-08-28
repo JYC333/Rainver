@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ArrowLeft } from 'lucide-react'
 import { useParams } from 'react-router-dom'
 import { notesCollectionsApi, providersApi, type ModelProviderOut } from '../../../api/client'
 import { useSpace } from '../../../contexts/SpaceContext'
-import { SpaceLink as Link } from '../../../core/spaceNav'
-import { Button } from '../../../components/ui/button'
 import { EmptyState } from '../../../components/ui/empty-state'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { errMsg } from '../../../lib/utils'
@@ -15,7 +12,7 @@ import { ThreadOriginBar } from '../inquiryArea/ThreadOriginBar'
 
 /**
  * The Project's notes (U1). Notes are a Project-level surface, reachable from
- * every Area — doing an experiment, weighing a decision or shipping a delivery,
+ * every Area — doing an experiment, weighing a decision or finishing a Task,
  * there is somewhere in the Project to write it down.
  *
  * It is the *same* page as `/knowledge/notes`, hoisted to the Project's folder
@@ -69,9 +66,6 @@ export default function ProjectNotesPage() {
       renderHeader: (actions: ReactNode) => (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Link to={`/projects/${projectId}`}>
-              <Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button>
-            </Link>
             <h1 className="text-lg font-semibold">Notes</h1>
           </div>
           {actions}
@@ -100,9 +94,6 @@ export default function ProjectNotesPage() {
   if (!scope) {
     return (
       <div className="p-6">
-        <Link to={`/projects/${projectId}`}>
-          <Button variant="ghost" size="sm"><ArrowLeft className="size-4" />Project</Button>
-        </Link>
         <EmptyState
           title="Project notes unavailable"
           description={error ?? 'A project writer opens this page once to create the notes folder.'}

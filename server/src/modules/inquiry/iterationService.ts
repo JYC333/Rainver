@@ -20,7 +20,9 @@ import {
 } from "./stepService.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
+import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 
 // Protected cognitive fields. Only `recordIteration` may write these — the
@@ -68,6 +70,8 @@ export class InquiryIterationService {
     projectId: string,
     threadId: string,
     body: Record<string, unknown>,
+    /** Set by a Run so the Project's account can say the Agent concluded. */
+    provenance?: ThreadEventProvenance,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const changeSummary = requiredString(body.change_summary, "change_summary");
@@ -80,8 +84,16 @@ export class InquiryIterationService {
     const result = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const threadRow = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3 FOR UPDATE OF t`,
-        [threadId, identity.spaceId, projectId],
+        // The reader's own content gate, not Project membership alone. A
+        // conclusion on a Thread the person cannot read would commit and then
+        // produce no row in the Project's updates, which the read model drops
+        // for exactly that reason — a direct write with no review-after is the
+        // one thing ADR 0017 §4 does not allow.
+        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+          WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3
+            AND ${contentReadSql("space_object", "so", "$4")}
+          FOR UPDATE OF t`,
+        [threadId, identity.spaceId, projectId, identity.userId],
       );
       const thread = threadRow.rows[0];
       if (!thread) throw new HttpError(404, "Thread not found");
@@ -254,6 +266,26 @@ export class InquiryIterationService {
       });
 
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
+      // Both positions travel with the event: reverting a conclusion is
+      // recording the previous position again, and the feed is where the
+      // person asks for that.
+      await recordThreadWorkEvent(db, {
+        spaceId: identity.spaceId,
+        projectId,
+        threadId,
+        userId: identity.userId,
+        eventKind: "thread.concluded",
+        occurredAt: now,
+        idempotencySuffix: iterationId,
+        data: {
+          statement: finalThread.statement,
+          iteration_id: iterationId,
+          change_summary: changeSummary,
+          previous_position: previousPosition,
+          new_position: newPosition,
+        },
+        ...(provenance ? { provenance } : {}),
+      });
       return { ...inserted.rows[0], thread: threadToOut(finalThread) };
     });
 
@@ -741,6 +773,7 @@ export class InquiryIterationService {
     projectId: string,
     threadId: string,
     body: Record<string, unknown>,
+    provenance?: ThreadEventProvenance,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const toStatus = requiredString(body.lifecycle_status, "lifecycle_status");
@@ -761,11 +794,12 @@ export class InquiryIterationService {
       if (current.lifecycle_status === toStatus) throw new HttpError(409, `Thread is already ${toStatus}`);
       const attention = toStatus === "active" ? "backlog" : toStatus;
       const now = new Date().toISOString();
+      const lifecycleEventId = randomUUID();
       await db.query(
         `INSERT INTO inquiry_thread_lifecycle_events
           (id, space_id, project_id, thread_id, from_status, to_status, reason, actor_user_id, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [randomUUID(), identity.spaceId, projectId, threadId, current.lifecycle_status, toStatus, optionalString(body.reason), identity.userId, now],
+        [lifecycleEventId, identity.spaceId, projectId, threadId, current.lifecycle_status, toStatus, optionalString(body.reason), identity.userId, now],
       );
       // A Thread leaving `active` stops doing anything at all, so its open
       // steps end here. Nulling the projection without them would leave rows
@@ -792,6 +826,36 @@ export class InquiryIterationService {
         [threadId, identity.spaceId],
       );
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
+      // Only the two transitions a person reverses from the feed are recorded
+      // as updates. `resolved`/`rejected` are conclusions of the work, not
+      // something the account offers to put back.
+      const lifecycleEventKind = toStatus === "archived"
+        ? "thread.archived" as const
+        : (toStatus === "active" && current.lifecycle_status === "archived")
+            ? "thread.reopened" as const
+            : null;
+      if (lifecycleEventKind) {
+        await recordThreadWorkEvent(db, {
+          spaceId: identity.spaceId,
+          projectId,
+          threadId,
+          userId: identity.userId,
+          eventKind: lifecycleEventKind,
+          occurredAt: now,
+          // The lifecycle event row this transition just wrote: unique per
+          // successful transition, which is all this key can be here. A replay
+          // never reaches this line — `transitionLifecycle` rejects a repeat
+          // with 409 before it, because the Thread is already in the target
+          // status — so the domain guard, not the key, is what makes the
+          // transition idempotent.
+          idempotencySuffix: lifecycleEventId,
+          data: {
+            statement: current.statement,
+            ...(optionalString(body.reason) ? { reason: optionalString(body.reason) } : {}),
+          },
+          ...(provenance ? { provenance } : {}),
+        });
+      }
       return threadToOut(updated.rows[0]!);
     });
   }

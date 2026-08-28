@@ -288,6 +288,30 @@ relations:
     - server/src/db/schema/academic.ts
     - server/src/db/schema/projectResearch.ts
 
+project_work:
+  docs:
+    - .agent/architecture/PROJECT_WORK.md
+    - .agent/architecture/TASK_BOARD_MODEL.md
+    - .agent/architecture/EXECUTION_MODEL.md
+  code_roots:
+    - server/src/modules/projectWork
+    - server/src/modules/tasks
+    - server/src/db/schema/projectWork.ts
+    - packages/protocol/src/projectWork.ts
+    - server/test/projectWorkContracts.test.ts
+    - server/test/projectWorkSettlementDb.test.ts
+
+ontology:
+  docs:
+    - .agent/architecture/ONTOLOGY.md
+    - .agent/decisions/0012-ontology-ownership-and-language-alignment.md
+    - .agent/BOUNDARIES.md            # B12A-B12H
+  code_roots:
+    - server/src/modules/ontology
+    - server/src/db/spaceObjectWriter.ts
+    - server/test/ontologyRegistry.test.ts
+    - server/test/spaceObjectWriter.test.ts
+
 cards:
   docs:
     - .agent/modules/spaced-repetition.md

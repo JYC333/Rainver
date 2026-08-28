@@ -9,8 +9,11 @@ Runtime Context continuity, a prompt cache, or an adapter-owned store.
 
 - `server/src/modules/memory/` owns Memory read/proposal/apply behavior and its
   Retrieval domain adapter.
-- Active `memory_entries` are created, superseded, or archived only after normal
-  Proposal review; public Memory commands create proposals, never active rows.
+- The Memory applier is the only writer of active `memory_entries`, by either
+  of two routes ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a
+  proposal a person approved, or an Agent's own bounded write
+  (`applyDirect`) that stays private, normal-sensitivity and about the person
+  in the turn. No adapter, job or route inserts around it.
 - User Memory is human-owned and Project-free. Project Memory is Project-owned
   and shared only through the Project access boundary. `agent_id` is producing
   Agent provenance, never an ownership or read-expansion key.
@@ -30,21 +33,40 @@ persisting an accepted Delivery. Adapters cannot query Memory directly.
 Accepted source ownership/visibility contributes to the Run taint summary used
 as an output-publication ceiling. Safe Invocation Snapshots retain canonical
 source refs for audit and content-demotion disclosure. Context Events and
-checkpoints never promote content into Memory; any promotion still requires a
-proposal and approval.
+checkpoints never promote content into Memory; promotion is a write under ADR
+0003, and one that carries no rationale of its own is a proposal.
 
 The retired Context Builder/Compiler/Prepare service, Context Snapshots/Digests,
 manual context attachments, chat candidate bundle, and vendor context files are
 not Memory responsibilities and must not be reintroduced.
 
-## Main write flow
+## Main write flows
 
-1. `POST /memory`, `PATCH /memory/{id}`, or `DELETE /memory/{id}` creates a
-   pending create/update/archive proposal.
-2. Proposal review verifies placement, source trust, provenance, and policy.
-3. The Memory applier writes the canonical version and provenance links.
-4. Retrieval projections are derived and rebuildable; they never become the
-   canonical Memory store.
+**A person, through the public API.** `POST /memory` and `PATCH /memory/{id}`
+create a pending create/update proposal; proposal review verifies placement,
+source trust, provenance and policy; the applier writes the canonical version
+and its provenance links. `DELETE /memory/{id}` archives the caller's **own**
+entry outright and answers 200 with it (ADR 0003 §3 — a proposal there was
+the person filing a request with themselves); someone else's still creates an
+archive proposal and answers 202. `POST /memory/{id}/restore` is the reverse,
+owner-only, and also restores the version a revision replaced once no newer
+version is active.
+
+**An Agent, in a person's turn.** `memory.remember` / `memory.revise` go
+through `applyDirect`: a new version, `created_by = agent:<id>`,
+`approved_by = null`, `created_from_proposal_id = null`, and one `run`
+provenance link carrying the rationale and the session. It is bounded rather
+than pre-approved — private, normal-sensitivity, about the acting person, and
+a revision only of what the Agent itself wrote and the person owns. Anything
+that would change reach becomes a proposal instead of an error, and takes the
+review above, where the person's accept is what the source-monitoring gate
+reads as confirmation. The direct route does not run that gate: what stands
+in for it is §2's bounds — the write is private to one person, versioned,
+attributable, and archived in one action from the Memory page or the
+Project's updates.
+
+Retrieval projections are derived and rebuildable in both flows; they never
+become the canonical Memory store.
 
 ## Related files
 

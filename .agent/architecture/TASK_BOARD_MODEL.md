@@ -19,7 +19,11 @@ This document describes the **agent-native task board** domain layer. It is back
 - **Job** — An **infrastructure queue row** (`jobs` table). Used for workers, retries, and dispatch plumbing. **Jobs are not product tasks** and must not be used as the source of truth for user-visible task state.
 - **Artifact** — Output attached to a run or task (files, reports, logs). Linked to tasks through `task_artifacts` when needed.
 - **Proposal** — A requested system change (for example memory updates). Linked to tasks through `task_proposals`. **Task done does not imply a proposal was applied** — approval is a separate workflow.
-- **Evaluation** — Future self/human/system review of a task or run. The `task_evaluations` table exists but APIs are minimal today.
+- **Evaluation** — Review of a task or run. `RunFinalization` projects every run
+  evaluation into a `task_evaluations` row carrying `recommendation` ∈ `accept` /
+  `review` / `retry` / `needs_evidence`, and Run settlement reads it: a Task closes
+  only when the evaluation accepted the result. See
+  [`PROJECT_WORK.md`](PROJECT_WORK.md).
 
 ## Relationships
 
@@ -64,9 +68,18 @@ Boards and tasks are scoped by **space** (and optionally **Project Folder**). As
 
 `POST /api/v1/tasks/{id}/runs` creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
 
+A Run finishing is not the Task finishing. Settlement runs when every Run of the Task has stopped advancing, reads the **latest** one, and closes the Task only on an accepted evaluation with its declared outputs present; everything else holds the Task in `waiting_for_review` for a person. `blocked` is no longer written by a Run outcome — it means held up by something else. See [`PROJECT_WORK.md`](PROJECT_WORK.md).
+
 ## Frontend
 
-Task board **UI** (Kanban, drag-and-drop) is explicitly out of scope for the first surface slice and remains a future frontend effort.
+The Project Board at `/projects/:projectId/board` is the Task surface: a
+drag-and-drop Kanban over the ACL-filtered server read model
+(`GET /projects/:id/board`), with lanes from `board_columns` or the defaults,
+`blocked` drawn as an overlay in the lane the work sits in, and a drag to Done
+refused when the Task has not met what it declared. A Project's Task also opens
+inside the Project shell at `/projects/:projectId/tasks/:taskId`. See
+[`PROJECT_WORK.md`](PROJECT_WORK.md) and
+[`FRONTEND_INFORMATION_ARCHITECTURE.md`](FRONTEND_INFORMATION_ARCHITECTURE.md).
 
 ## Obsolete patterns (do not reintroduce)
 

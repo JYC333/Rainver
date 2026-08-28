@@ -247,6 +247,7 @@ import type {
   SpaceObjectProfileRelationHintRequest,
   SpaceObjectProfileStatus,
   SpaceObjectProfileUpdateProposalRequest,
+  MemoryVersion,
   SpaceObjectProfileUpdateProposalRequestInput,
   SpaceOversightMode,
   SpaceRetrievalSettings,
@@ -255,6 +256,7 @@ import type {
   UpdateAgentRunGroupResponse,
 } from '@rainver/protocol'
 export type {
+  MemoryVersion,
   AgentRunGroup,
   AgentRunGroupMember,
   AgentRunGroupTimeline,
@@ -3638,40 +3640,22 @@ export interface ProjectOverview {
     basis: 'published_brief_goal' | 'missing_published_brief_goal'
     goal_or_problem: string | null
   }
-  mode_projection: {
-    mode: ProjectPrimaryMode
-    current_state_summary: string
-    progress_indicators: Array<{ metric: string; value: number; trend?: string }>
-    focus_set: Array<{ id: string; label: string; href: string }>
-    next_actions: Array<{ id: string; label: string; href: string; kind: string }>
-  }
   available_modes: ProjectPrimaryMode[]
   attention: Array<{
     id: string
     title: string
     summary: string | null
     href: string
+    severity: 'low' | 'normal' | 'high' | 'critical'
     source_type?: string
     source_id?: string
     reason?: string
     action_descriptors?: Array<{ label: string; href: string }>
+    /** Why this needs a person — see ADR 0017 §4. */
+    attention_class: 'gate' | 'remainder' | 'next_step' | 'uncertain'
   }>
-  setup_checklist: Array<{
-    id: string
-    label: string
-    status: 'ready' | 'missing'
-    required: boolean
-    href: string
-    detail: string
-  }>
-  entity_summaries: Array<{
-    entity_type: string
-    label: string
-    detail: string
-    href: string
-    count: number
-    status: 'ok' | 'attention' | 'blocked'
-  }>
+  /** Unfinished Operations — what is running, for the front page. */
+  in_progress?: Array<Pick<ProjectOperation, 'id' | 'project_id' | 'kind' | 'title' | 'status' | 'progress_json' | 'created_at' | 'updated_at'>>
 }
 
 // ---------------------------------------------------------------------------
@@ -5072,3 +5056,24 @@ export interface FocusAreaContents {
   projects: Array<{ id: string; name: string; status: string }>
   objects: Array<{ id: string; object_type: string; title: string | null }>
 }
+
+
+// --- Project work (Board, Loop, work events) -------------------------------
+//
+// Re-exported from the protocol package rather than copied: the package is
+// already a web dependency, and a copy had already drifted (`severity` went
+// optional here while the server sorts on it).
+export type {
+  WorkLoopStageKey,
+  ResponsibleActor,
+  TaskCompletion,
+  ProjectBoardCard,
+  ProjectBoardColumn,
+  TaskWorkEvent,
+  ProjectWorkUpdate,
+  ProjectWorkUpdatesResponse,
+  ProjectMainlineRoomResponse,
+  ProjectConversation,
+  ProjectConversationsResponse,
+} from '@rainver/protocol'
+export type { ProjectBoardResponse as ProjectBoard, TaskWorkViewResponse as TaskWorkView } from '@rainver/protocol'

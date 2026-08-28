@@ -3,9 +3,8 @@ import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DecisionAreaPage from '../DecisionAreaPage'
-import LearningAreaPage from '../LearningAreaPage'
 import KnowledgeReviewPage from '../KnowledgeReviewPage'
-import { agentsApi, decisionCasesApi, experimentsApi, inquiryApi, knowledgeApi, knowledgePromotionApi, learningApi, notesApi } from '../../../api/client'
+import { agentsApi, decisionCasesApi, experimentsApi, inquiryApi, knowledgeApi, knowledgePromotionApi, notesApi } from '../../../api/client'
 
 vi.mock('../../../api/client', () => ({
   decisionCasesApi: {
@@ -25,13 +24,6 @@ vi.mock('../../../api/client', () => ({
   experimentsApi: { listDefinitions: vi.fn(), listInterpretations: vi.fn() },
   knowledgeApi: { list: vi.fn() },
   notesApi: { list: vi.fn() },
-  learningApi: {
-    objectives: vi.fn(),
-    items: vi.fn(),
-    createObjective: vi.fn(),
-    createItem: vi.fn(),
-    review: vi.fn(),
-  },
   knowledgePromotionApi: {
     list: vi.fn(),
     summary: vi.fn(),
@@ -56,8 +48,6 @@ beforeEach(() => {
   vi.mocked(experimentsApi.listDefinitions).mockResolvedValue([])
   vi.mocked(knowledgeApi.list).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
   vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
-  vi.mocked(learningApi.objectives).mockResolvedValue([])
-  vi.mocked(learningApi.items).mockResolvedValue([])
   vi.mocked(knowledgePromotionApi.summary).mockResolvedValue({
     pending: 0, promotion: 0, revalidation: 0, no_impact: 3,
     summary: '3 source changes were checked with no review required.',
@@ -67,7 +57,7 @@ beforeEach(() => {
   })
 })
 
-describe('Decision, Learning, and Knowledge Review Project Areas', () => {
+describe('Decision and Knowledge Review Project surfaces', () => {
   it('renders the Decision Area as a reachable Project route', async () => {
     renderPage('/projects/project-1/decisions', <DecisionAreaPage />)
     expect(await screen.findByRole('heading', { name: 'Decisions' })).toBeInTheDocument()
@@ -89,22 +79,6 @@ describe('Decision, Learning, and Knowledge Review Project Areas', () => {
       framing: '',
       source_thread_ids: ['thread-1'],
     }))
-  })
-
-  it('renders the Learning Area as a reachable Project route', async () => {
-    renderPage('/projects/project-1/learning', <LearningAreaPage />)
-    expect(await screen.findByRole('heading', { name: 'Learning' })).toBeInTheDocument()
-    await waitFor(() => expect(learningApi.items).toHaveBeenCalledWith('project-1'))
-  })
-
-  it('selects Learning Knowledge by title and version', async () => {
-    vi.mocked(knowledgeApi.list).mockResolvedValue({
-      items: [{ id: 'knowledge-1', project_id: null, title: 'Caching fundamentals', version: 3 } as never],
-      total: 1, limit: 100, offset: 0,
-    })
-    renderPage('/projects/project-1/learning', <LearningAreaPage />)
-    expect(await screen.findByRole('option', { name: 'Caching fundamentals · v3 · shared' })).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText(/Knowledge item ID/i)).not.toBeInTheDocument()
   })
 
   it('opens a bounded Knowledge review checkpoint and renders its summary', async () => {
