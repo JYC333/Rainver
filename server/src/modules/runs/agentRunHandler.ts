@@ -13,7 +13,7 @@ import type { JobHandlerResult } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import type { RuntimeHostLogger } from "../runtimeHost/index.js";
 import { finalizeChatTurn } from "./chatTurnFinalizer.js";
-import { recordHostTaskThreadOutcome } from "../hosts/threadOutcome.js";
+import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { protocolRunStatus } from "./orchestrationResults.js";
 import { withDbTransaction } from "../routeUtils/common.js";
 
@@ -183,7 +183,7 @@ async function handleAgentRun(
             await finalizeChatTurn(config, repository, currentTerminal);
             const exhaustedThreadId = stringValue(job.payload.host_task_thread_id);
             if (exhaustedThreadId) {
-              await recordHostTaskThreadOutcome(
+              await recordHostThreadOutcome(
                 config,
                 exhaustedThreadId,
                 currentTerminal,
@@ -221,7 +221,7 @@ async function handleAgentRun(
   // happen here instead, gated on the run actually carrying a thread.
   const hostTaskThreadId = stringValue(job.payload.host_task_thread_id);
   if (completedRun && hostTaskThreadId) {
-    await recordHostTaskThreadOutcome(
+    await recordHostThreadOutcome(
       config,
       hostTaskThreadId,
       completedRun,

@@ -40,6 +40,9 @@ export * from "./credentials.js";
 export * from "./networkProfiles.js";
 export * from "./hosts.js";
 
+// Agent runtime profile contracts
+export * from "./agents.js";
+
 // Ambient CLI session import contracts
 export * from "./ambientSessions.js";
 

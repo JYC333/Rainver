@@ -471,7 +471,7 @@ to), `ambient` (the copy's own login), each eligible ModelProvider — with
 that and sends back the choice; it no longer reconstructs eligibility,
 inheritance or login gating from bindings, providers and capabilities.
 
-A thread pins its copy (`host_task_threads.runtime_installation`, default
+A thread pins its copy (`host_threads.runtime_installation`, default
 `own`) the way it pins its adapter: the vendor session lives in that copy's
 login state. Dispatch takes `installation` on a new thread, validates it
 against the host's `installations`, and stamps it into the Run's
@@ -689,23 +689,35 @@ reconciliation-on-reconnect lifecycle (adding a new terminal run status would
 touch retry policy, the supervisor, and finalization across the whole run
 subsystem). See the deferred register.
 
-## Task threads (D14, `server/src/modules/hosts/taskThreadRepository.ts`)
+## Host threads (D14, `server/src/modules/hosts/threadRepository.ts`)
 
-A `host_task_threads` row pins a vendor-CLI conversation to one
+A `host_threads` row pins a vendor-CLI conversation to one
 `workspace_location_id` for session resume via ACP's own `session/resume` (the
 general `AcpController` in `server/src/modules/runs/cliConversationProtocol.ts`
 drives this for every adapter now) — not server-side Runtime Context
 continuity (remote runs get none of that; see
 "No server-brokered Runtime Context" below). `getForLocation` is scoped by
 `workspace_location_id` so a thread from one physical checkout can never be
-resumed against another. `recordRunOutcome` clears `vendor_session_id` outright (not
+resumed against another. A row is either a legacy/new Task-shaped thread
+(`task_id` with null Room/Agent ownership, although legacy rows may have a
+null task id) or a Room-specialist thread (`room_id` and `agent_id`, with no
+Task owner). The partial unique index permits one active/session-reset Room ×
+Agent conversation and releases it when the thread is closed. `last_session_id`
+tracks the Room conversation that last established prompt continuity.
+`dispatch_lock_id` is the persistent atomic in-flight claim: a Room × Agent
+thread is claimed before its Run exists, bound to that Run before commit, and
+released only by the terminal outcome hook. This prevents two conversations
+from concurrently sharing or overwriting one vendor session; explicit context
+reset waits until that claim is released.
+
+`recordRunOutcome` clears `vendor_session_id` outright (not
 COALESCE) whenever a resume degrades (`session_reset`) — retrying an already-
 broken vendor session id forever was a real P3 discovery-review bug, fixed
 before this landed. **Since the phase-2 event-pipeline work**, it is called
 from `agentRunHandler.ts`'s `handleAgentRun` (via
-`server/src/modules/hosts/threadOutcome.ts`'s `recordHostTaskThreadOutcome`)
+`server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
 once the dispatched Run's `agent_run` job reaches terminal — not from the
-dispatch route itself, which no longer waits around for that.
+dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
 
 The Command Center displays the thread's opaque `vendor_session_id` so a
 successful remote Run and its resume target are visible without confusing
@@ -715,7 +727,7 @@ mechanism — `apps/web/src/modules/command_center/runOutput.ts` — was deleted
 in P1, superseded by the normalized event log below); the P3 conversation UI
 is what renders it.
 
-`host_task_threads.queue_paused_at` (P2, non-null while the message queue is
+`host_threads.queue_paused_at` (P2, non-null while the message queue is
 paused) is a separate concern from `status`/`session_reset` — a thread can be
 `active` (vendor session fine) and queue-paused (something needs the user's
 attention) at the same time.
@@ -789,8 +801,8 @@ to do with a placeholder whose `adapter_type` is inert; paying either cost
 would make remote dispatch depend on unrelated server-host configuration.
 
 This is a registered cleanup item (deferred-register.md), not a permanent
-model — it must be replaced when the next-phase agent/Room-supervision model
-lands.
+  model — it remains the Task path's placeholder. Room specialists now carry
+  their real Agent identity and use the generalized `host_threads` Room path.
 
 ## Thread events (P1, `server/src/modules/hosts/threadEventRepository.ts` /
 `threadEventNormalization.ts`)

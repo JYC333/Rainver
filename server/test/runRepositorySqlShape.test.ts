@@ -189,10 +189,10 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert).toBeTruthy();
     const { columns, values } = insertColumnsAndValues(runInsert!.sql);
     expect(values).toHaveLength(columns.length);
-    expect(runInsert!.params).toHaveLength(38);
+    expect(runInsert!.params).toHaveLength(39);
     expect(runInsert!.params[34]).toBe("default");
     expect(runInsert!.params[35]).toBe('{"tool_grants":[]}');
-    expect(columns.at(-1)).toBe("trust_mode");
+    expect(columns.at(-1)).toBe("host_task_thread_id");
     expect(columns.slice(15, 18)).toEqual(["run_type", "trigger_origin", "status"]);
     expect(values.slice(15, 18)).toEqual(["$16", "$17", "'queued'"]);
     expect(runInsert!.params.slice(15, 18)).toEqual(["agent", "manual", "live"]);

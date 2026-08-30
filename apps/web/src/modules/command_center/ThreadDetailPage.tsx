@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { hostsApi, projectFoldersApi, providersApi, runsApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostRuntimeAdapterOption, HostTaskThread, ProjectFolder, Run } from '../../types/api'
+import type { Host, HostRuntimeAdapterOption, HostThread, ProjectFolder, Run } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Card } from '../../components/ui/card'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -17,7 +17,7 @@ export default function ThreadDetailPage() {
   const projectId = searchParams.get('project_id') ?? ''
   const folderId = searchParams.get('folder_id') ?? ''
 
-  const [thread, setThread] = useState<HostTaskThread | null>(null)
+  const [thread, setThread] = useState<HostThread | null>(null)
   const [host, setHost] = useState<Host | null>(null)
   const [folder, setFolder] = useState<ProjectFolder | null>(null)
   const [runs, setRuns] = useState<Run[]>([])

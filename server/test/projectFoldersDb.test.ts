@@ -13,6 +13,7 @@ import type { RunRecord } from "../src/modules/runs/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import type { FolderReadResult } from "../src/modules/hosts/connectionRegistry.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -322,7 +323,7 @@ describe("Project Folder database invariants", () => {
       ok: true,
       kind: frame.kind as "tree" | "file" | "git_status" | "git_diff",
       result: remoteResults[String(frame.kind)]!,
-    }));
+    }) as FolderReadResult);
     try {
       const repo = new PgProjectFolderRepository(db.pool, loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }));
       const identity = { spaceId: SPACE, userId: USER };

@@ -209,6 +209,15 @@ lets one Agent keep the same identity, prompt, capability policy, and safety
 ceiling while offering named runtime choices such as "Model API default",
 "Codex CLI", or "Claude Code".
 
+A profile may also be host-bound with `execution_host_id`,
+`workspace_location_id`, and a pinned `runtime_installation`. Such an Agent
+must belong to the Project represented by that Location, and the selected
+remote host and installation are validated against the caller's ownership and
+the daemon's reported capabilities. Host-bound profiles do not require a
+server ModelProvider or server runtime-tool installation: the paired host
+owns the CLI login and runtime process. Room dispatch applies the profile's
+owner-only trigger and records the real Agent id on the remote Run.
+
 Rules:
 
 - Creating an Agent also creates one default runtime profile from the initial

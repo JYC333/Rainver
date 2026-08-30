@@ -207,6 +207,27 @@ re-check that ACL, so Project revocation immediately removes Room access. A
 Room's optional Project Folder binding is fixed at creation and governed by
 the normal read-only sandbox boundary (`architecture/EXECUTION_MODEL.md`).
 
+### Host-bound specialists
+
+A specialist Agent may bind its runtime profile to one of the caller's own
+remote Hosts and a Workspace Location in this Project. The Room roster keeps
+the normal Agent identity and uses `trigger_policy = owner_only`: only the
+Host owner can dispatch it, while another member sees a visible system notice
+and no Run is created. A stale or offline Host is handled the same way, with
+no queueing or replay when it returns.
+
+Each Room × Agent owns one live `host_threads` row. It pins the Location,
+adapter, installation, and opaque vendor session. A first turn, a changed
+conversation, or a reset sends Project state plus that conversation's summary
+and uncovered messages, preceded by the conversation title. Later turns in
+the same conversation send only messages since that Agent's previous turn.
+Reset context clears the vendor session and marks the thread `session_reset`;
+resuming a broken vendor session also publishes a visible reset notice.
+Removing the specialist closes the thread, and re-adding it creates a fresh
+one. Room prompt context is prompt content, not server-brokered Runtime
+Context; credentials, memory reads, and provider state do not cross to the
+Host.
+
 ### Mutable roster and Room-only privacy
 
 The managed `system_assistant` participant is the hidden, system-controlled
@@ -606,6 +627,8 @@ recent ones fails as soon as the thread grows past that page.
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
   revoke future Room grants
+- `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
+  host-bound specialist's vendor session (Host owner and Project writer)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
   invitations; pending invitations carry owner approvals
 - `POST /api/v1/rooms/:roomId/invitations/:invitationId/decision` — approve or
@@ -624,6 +647,9 @@ recent ones fails as soon as the thread grows past that page.
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
   coordination, and optional explicit per-recipient backend selection
+- `GET /api/v1/projects/:projectId/host-execution-targets` — the caller's
+  online remote Hosts, this Project's Locations, and reported CLI
+  adapter/installation choices for the host-bound Agent selector
 
 ## Invariants
 

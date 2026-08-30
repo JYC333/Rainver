@@ -199,6 +199,9 @@ CREATE TABLE "agent_runtime_profiles" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
 	"agent_id" varchar(36) NOT NULL,
+	"execution_host_id" varchar(36),
+	"workspace_location_id" varchar(36),
+	"runtime_installation" varchar(64),
 	"name" varchar(128) NOT NULL,
 	"adapter_type" varchar(64) NOT NULL,
 	"model_provider_id" varchar(36),
@@ -210,7 +213,8 @@ CREATE TABLE "agent_runtime_profiles" (
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_agent_runtime_profiles_id_space_agent" UNIQUE("id","space_id","agent_id"),
-	CONSTRAINT "uq_agent_runtime_profiles_agent_name" UNIQUE("agent_id","name")
+	CONSTRAINT "uq_agent_runtime_profiles_agent_name" UNIQUE("agent_id","name"),
+	CONSTRAINT "ck_agent_runtime_profiles_host_binding" CHECK ((execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL))
 );
 --> statement-breakpoint
 CREATE TABLE "agent_versions" (
@@ -4165,11 +4169,13 @@ CREATE TABLE "room_agent_members" (
 	"agent_id" varchar(36) NOT NULL,
 	"role" varchar(32) NOT NULL,
 	"status" varchar(32) NOT NULL,
+	"trigger_policy" varchar(24) DEFAULT 'owner_only' NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_room_agent_members_room_agent" UNIQUE("room_id","agent_id"),
 	CONSTRAINT "ck_room_agent_members_role" CHECK (role IN ('manager', 'member')),
-	CONSTRAINT "ck_room_agent_members_status" CHECK (status IN ('active', 'removed'))
+	CONSTRAINT "ck_room_agent_members_status" CHECK (status IN ('active', 'removed')),
+	CONSTRAINT "ck_room_agent_members_trigger_policy" CHECK (trigger_policy IN ('owner_only'))
 );
 --> statement-breakpoint
 CREATE TABLE "room_agent_preset_idempotencies" (
@@ -5842,20 +5848,28 @@ CREATE TABLE "hosts" (
 	CONSTRAINT "ck_hosts_server_environment" CHECK (kind <> 'server' OR environment_kind = 'server')
 );
 --> statement-breakpoint
-CREATE TABLE "host_task_threads" (
+CREATE TABLE "host_threads" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"workspace_location_id" varchar(36) NOT NULL,
+	"task_id" varchar(36),
+	"room_id" varchar(36),
+	"agent_id" varchar(36),
 	"adapter_type" varchar(64) NOT NULL,
 	"runtime_installation" varchar(64) DEFAULT 'own' NOT NULL,
 	"vendor_session_id" varchar(256),
 	"last_run_id" varchar(36),
+	"last_session_id" varchar(36),
+	"dispatch_lock_id" varchar(36),
+	"retired_vendor_session_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"status" varchar(24) DEFAULT 'active' NOT NULL,
 	"created_by_user_id" varchar(36) NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"queue_paused_at" timestamp with time zone,
-	CONSTRAINT "uq_host_task_threads_id_location" UNIQUE("id","workspace_location_id"),
-	CONSTRAINT "ck_host_task_threads_status" CHECK (status IN ('active', 'session_reset'))
+	CONSTRAINT "uq_host_threads_id_location" UNIQUE("id","workspace_location_id"),
+	CONSTRAINT "ck_host_threads_owner" CHECK (NOT (room_id IS NULL) = NOT (agent_id IS NULL) AND NOT (task_id IS NOT NULL AND room_id IS NOT NULL)),
+	CONSTRAINT "ck_host_threads_status" CHECK (status IN ('active', 'session_reset', 'closed')),
+	CONSTRAINT "ck_host_threads_retired_sessions_array" CHECK (jsonb_typeof(retired_vendor_session_ids) = 'array')
 );
 --> statement-breakpoint
 CREATE TABLE "host_thread_events" (
@@ -6039,6 +6053,8 @@ ALTER TABLE "actors" ADD CONSTRAINT "actors_space_id_fkey" FOREIGN KEY ("space_i
 ALTER TABLE "actors" ADD CONSTRAINT "actors_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_agent_scope_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_execution_host_id_fkey" FOREIGN KEY ("execution_host_id") REFERENCES "public"."hosts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_runtime_profiles" ADD CONSTRAINT "agent_runtime_profiles_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_versions" ADD CONSTRAINT "agent_versions_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_versions" ADD CONSTRAINT "agent_versions_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -6882,7 +6898,7 @@ ALTER TABLE "runs" ADD CONSTRAINT "fk_runs_project_id_projects" FOREIGN KEY ("pr
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_agent_version_id_fkey" FOREIGN KEY ("agent_version_id","agent_id","space_id") REFERENCES "public"."agent_versions"("id","agent_id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_delegation_id_fkey" FOREIGN KEY ("delegation_id") REFERENCES "public"."run_delegations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "runs" ADD CONSTRAINT "runs_host_task_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "runs" ADD CONSTRAINT "runs_host_task_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_threads"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_instructed_by_agent_id_fkey" FOREIGN KEY ("instructed_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_instructed_by_user_id_fkey" FOREIGN KEY ("instructed_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runs" ADD CONSTRAINT "runs_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7114,11 +7130,14 @@ ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_owner_us
 ALTER TABLE "machines" ADD CONSTRAINT "machines_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosts" ADD CONSTRAINT "hosts_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosts" ADD CONSTRAINT "hosts_machine_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "public"."machines"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "host_task_threads" ADD CONSTRAINT "host_task_threads_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_task_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_messages" ADD CONSTRAINT "host_thread_messages_model_provider_id_fkey" FOREIGN KEY ("model_provider_id") REFERENCES "public"."model_providers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -8163,7 +8182,8 @@ CREATE INDEX "ix_hosts_status" ON "hosts" USING btree ("status");--> statement-b
 CREATE INDEX "ix_hosts_machine_id" ON "hosts" USING btree ("machine_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_hosts_single_server" ON "hosts" USING btree ("kind") WHERE kind = 'server';--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_hosts_owner_name" ON "hosts" USING btree ("owner_user_id","name") WHERE owner_user_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "ix_host_task_threads_workspace_location_id" ON "host_task_threads" USING btree ("workspace_location_id");--> statement-breakpoint
+CREATE INDEX "ix_host_threads_workspace_location_id" ON "host_threads" USING btree ("workspace_location_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_host_threads_room_agent_active" ON "host_threads" USING btree ("room_id","agent_id") WHERE status IN ('active', 'session_reset');--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_thread_id" ON "host_thread_events" USING btree ("host_task_thread_id");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_run_id" ON "host_thread_events" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_project_id" ON "host_thread_events" USING btree ("project_id");--> statement-breakpoint

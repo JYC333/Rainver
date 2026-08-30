@@ -98,7 +98,7 @@ export class PgHostThreadEventRepository {
            VALUES (
              $1, $2, $3,
              (SELECT pf.project_id
-                FROM host_task_threads t
+                FROM host_threads t
                 JOIN workspace_locations wl ON wl.id = t.workspace_location_id
                 JOIN project_folders pf ON pf.id = wl.project_folder_id
                WHERE t.id = $2::varchar),

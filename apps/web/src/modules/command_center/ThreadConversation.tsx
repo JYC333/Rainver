@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { artifactsApi, hostsApi, runsApi, type ModelProviderOut } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { HostThreadEvent, HostThreadMessage, HostTaskThread, Run } from '../../types/api'
+import type { HostThreadEvent, HostThreadMessage, HostThread, Run } from '../../types/api'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -457,7 +457,7 @@ export default function ThreadConversation({
   providers,
   onThreadChanged,
 }: {
-  thread: HostTaskThread
+  thread: HostThread
   runs: Run[]
   /** Named so a turn can say which backend answered it. Passed in rather than
    *  fetched here: this screen mounts the composer alongside, and the same

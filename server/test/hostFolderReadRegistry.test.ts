@@ -51,7 +51,11 @@ describe("HostConnectionRegistry folder reads", () => {
     const connection = sink(frames);
     registry.registerConnection("host-1", connection);
     const pending = registry.requestFolderRead("host-1", { workspace_location_id: "loc-1", kind: "tree", protected: false });
-    registry.receiveFolderReadResult("host-1", String(frames[0]!.request_id), { ok: true, kind: "file", result: { content: "wrong" } });
+    registry.receiveFolderReadResult("host-1", String(frames[0]!.request_id), {
+      ok: true,
+      kind: "file",
+      result: { path: "wrong", content: "wrong", size: 5, line_count: 1 },
+    });
     registry.unregisterConnection("host-1", connection);
     await expect(pending).resolves.toMatchObject({ ok: false, error: "host_offline" });
   });

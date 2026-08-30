@@ -22,6 +22,7 @@ import { acpRuntimeProbes } from "../hosts/runtimeProbes.js";
 import { recordAttributedUsageObservation, resolveUsageObservationAttribution } from "../usage/index.js";
 import { PgActivityRepository } from "../activity/repository.js";
 import { PgImportedSessionRepository, type ImportedSessionRow } from "./repository.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 
 /**
  * A ceiling on one sync's in-flight sessions.
@@ -330,8 +331,17 @@ export class ImportedSessionService {
         else report.malformed_sessions += 1;
       },
     );
+    const hostThreadSessionIds = await new PgHostThreadRepository(this.db).listVendorSessionIds({
+      workspaceLocationId: locationId,
+      adapterType: input.adapter_type,
+      runtimeInstallation: installation,
+    });
 
     for (const replay of replays) {
+      // A Room/Task Agent's vendor session is already represented by a host
+      // thread. It is the runtime's own conversation, not ambient history the
+      // owner asked to publish into the Project.
+      if (hostThreadSessionIds.has(replay.session.session_id)) continue;
       report.sessions_seen += 1;
       try {
       // One short transaction per session: the ACP round trip is already done,

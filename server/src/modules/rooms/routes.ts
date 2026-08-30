@@ -22,6 +22,7 @@ type RoomServicePort = Pick<
   | "addAgent"
   | "addAgentPreset"
   | "removeAgent"
+  | "resetAgentContext"
   | "inviteUser"
   | "listInvitations"
   | "listPendingApprovals"
@@ -179,6 +180,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await service(context).removeAgent(identity, roomId(request), agentId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/agents/:agentId/reset-context", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).resetAgentContext(identity, roomId(request), agentId(request)));
     } catch (error) {
       return sendRoomError(reply, error);
     }

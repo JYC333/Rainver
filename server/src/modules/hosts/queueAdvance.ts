@@ -3,7 +3,7 @@ import type { Pool } from "../../db/pool.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { withDbTransaction } from "../routeUtils/common.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadRepository } from "./threadRepository.js";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 import { hostInstallationIds } from "./capabilities.js";
 import { ensureRemoteDispatchAgent } from "./remoteDispatchAgent.js";
@@ -74,8 +74,8 @@ export async function advanceThreadQueue(
   threadId: string,
   timeoutMsForNewMessage?: { messageId: string; timeoutMs: number | null },
 ): Promise<AdvanceResult> {
-  const threads = new PgHostTaskThreadRepository(pool);
-  const thread = await threads.getById(threadId);
+  const threads = new PgHostThreadRepository(pool);
+  const thread = await threads.getTaskById(threadId);
   if (!thread) return { advanced: false, reason: "thread_not_found" };
 
   const locations = new PgWorkspaceLocationRepository(pool);
@@ -89,7 +89,7 @@ export async function advanceThreadQueue(
     // Re-read pause state and the latest run's status under the lock — both
     // could have changed since the reads above, by the very race this lock
     // exists to close.
-    const freshThread = await new PgHostTaskThreadRepository(client).getById(threadId);
+    const freshThread = await new PgHostThreadRepository(client).getTaskById(threadId);
     if (!freshThread) return { advanced: false, reason: "thread_not_found" };
     if (freshThread.queue_paused_at) return { advanced: false, reason: "paused" };
 

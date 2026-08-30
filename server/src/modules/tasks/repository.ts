@@ -27,7 +27,7 @@ import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "..
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
-import { PgHostTaskThreadRepository } from "../hosts/taskThreadRepository.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository.js";
 import { advanceThreadQueue } from "../hosts/queueAdvance.js";
 import {
@@ -834,7 +834,7 @@ export class PgTaskRepository {
    * The remote-host half of the merged dispatch endpoint (D5) — what used
    * to be the former host-dispatch route. Unlike the server-host branch
    * above, this never creates a Run synchronously: it enqueues a message on
-   * the Task's HostTaskThread for `target.location_id` and lets
+   * the Task's HostThread for `target.location_id` and lets
    * `advanceThreadQueue` create the Run (and this Task's `task_runs` link)
    * once nothing blocks it, exactly as the old route did — merging the
    * routes did not merge the two adapters' execution shape (D5), only where
@@ -868,7 +868,7 @@ export class PgTaskRepository {
     const prompt = optionalString(body.prompt);
     if (!prompt) throw new HttpError(422, "prompt is required");
 
-    const threads = new PgHostTaskThreadRepository(client);
+    const threads = new PgHostThreadRepository(client);
     const threadId = optionalString(body.thread_id);
     let thread = threadId ? await threads.getForLocation(threadId, target.location_id) : null;
     if (threadId && !thread) throw new HttpError(404, "Task thread not found for this Workspace Location");
@@ -892,6 +892,7 @@ export class PgTaskRepository {
         adapterType,
         runtimeInstallation: installation,
         createdByUserId: identity.userId,
+        taskId: task.id,
       });
     }
 

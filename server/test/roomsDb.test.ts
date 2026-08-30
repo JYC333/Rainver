@@ -15,6 +15,8 @@ import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgAgentRepository } from "../src/modules/agents/repository.js";
+import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
@@ -2021,6 +2023,300 @@ describe("Room workflow (real Postgres)", () => {
     );
     await expect(groups.listAgentStatuses("space-1", "user-2", ["agent-private"], created.room.id))
       .resolves.toEqual([]);
+  });
+
+  it("dispatches a Room host-bound Agent only for its owner and manages its thread lifecycle", async () => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const member = { spaceId: "space-1", userId: "user-2" };
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Host conversation" });
+    await addRoomMember(created.room.id, member.userId);
+
+    await db.pool.query(
+      `UPDATE machines SET owner_user_id = 'user-1' WHERE id = 'machine-1';
+       INSERT INTO hosts (
+         id, owner_user_id, machine_id, name, kind, environment_kind, status,
+         last_heartbeat_at, capabilities_json, created_at, updated_at
+       ) VALUES (
+         'host-room-bound', 'user-1', 'machine-1', 'Room host', 'remote',
+         'linux_native', 'online', now(),
+         '{"installations":{"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
+         now(), now()
+       );
+       UPDATE workspace_locations
+          SET execution_host_id = 'host-room-bound', execution_host_kind = 'remote', execution_ready = true
+        WHERE id = 'location-1'`,
+    );
+    const agent = await new PgAgentRepository(db.pool, loadConfig({ RAINVER_HOME: testRoot }))
+      .create({
+        spaceId: owner.spaceId,
+        projectId: "project-1",
+        userId: owner.userId,
+        ownerUserId: owner.userId,
+        name: "Remote Researcher",
+        visibility: "private",
+        adapterType: "claude_code",
+        runtimePolicyJson: { default_adapter_type: "claude_code" },
+        executionHostId: "host-room-bound",
+        workspaceLocationId: "location-1",
+        runtimeInstallation: "own",
+      });
+    await service.addAgent(owner, created.room.id, {
+      agent_id: agent.id,
+      share_private_with_member_ids: [member.userId],
+      confirm_room_share: true,
+    });
+    const profile = await db.pool.query<{ id: string }>(
+      `SELECT id FROM agent_runtime_profiles
+        WHERE space_id = 'space-1' AND agent_id = $1 AND enabled = true
+        ORDER BY is_default DESC, id ASC LIMIT 1`,
+      [agent.id],
+    );
+    await db.pool.query(
+      `INSERT INTO agent_runtime_profiles (
+         id, space_id, agent_id, name, adapter_type, model_provider_id, model_name,
+         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+       ) VALUES (
+         'runtime-server-bypass', 'space-1', $1, 'Server fallback', 'model_api', 'provider-1',
+         'test-model', '{}'::jsonb, '{}'::jsonb, true, false, now(), now()
+       )`,
+      [agent.id],
+    );
+    await expect(service.sendMessage(owner, created.room.id, created.conversation.id, {
+      content: "Do not switch this specialist to the server.",
+      recipient_segments: [{ recipient_agent_ids: [agent.id], content: "Use the server fallback." }],
+      backends: [{ agent_id: agent.id, runtime_profile_id: "runtime-server-bypass" }],
+    })).rejects.toMatchObject({ statusCode: 409 });
+
+    const delegatedAgent = await new PgAgentRepository(db.pool, loadConfig({ RAINVER_HOME: testRoot }))
+      .create({
+        spaceId: owner.spaceId,
+        projectId: "project-1",
+        userId: owner.userId,
+        ownerUserId: owner.userId,
+        name: "Remote Delegate",
+        visibility: "private",
+        adapterType: "claude_code",
+        runtimePolicyJson: { default_adapter_type: "claude_code" },
+        executionHostId: "host-room-bound",
+        workspaceLocationId: "location-1",
+        runtimeInstallation: "own",
+      });
+    await service.addAgent(owner, created.room.id, {
+      agent_id: delegatedAgent.id,
+      share_private_with_member_ids: [member.userId],
+      confirm_room_share: true,
+    });
+    const backend = {
+      agent_id: agent.id,
+      runtime_profile_id: profile.rows[0]!.id,
+    };
+    const segment = { recipient_agent_ids: [agent.id], content: "Research this remotely." };
+
+    const first = await service.sendMessage(owner, created.room.id, created.conversation.id, {
+      content: "Please research this remotely.",
+      recipient_segments: [segment],
+      backends: [backend],
+    });
+    expect(first.run_ids).toHaveLength(1);
+    const firstRun = await db.pool.query<{
+      agent_id: string;
+      workspace_location_id: string | null;
+      trust_mode: string | null;
+      prompt: string;
+      capabilities_json: unknown;
+      permission_snapshot_json: { tool_grants?: unknown[] } | null;
+    }>(
+      `SELECT agent_id, workspace_location_id, trust_mode, prompt,
+              capabilities_json, permission_snapshot_json
+         FROM runs WHERE id = $1`,
+      [first.run_ids[0]],
+    );
+    expect(firstRun.rows[0]).toMatchObject({
+      agent_id: agent.id,
+      workspace_location_id: "location-1",
+      trust_mode: "trusted_host",
+    });
+    expect(firstRun.rows[0]!.prompt).toContain('You are now in "research this remotely.".');
+    expect(firstRun.rows[0]!.capabilities_json).toEqual([]);
+    expect(firstRun.rows[0]!.permission_snapshot_json?.tool_grants ?? []).toEqual([]);
+    const firstRunRecord = await new PgRunRepository(db.pool).getRun("space-1", first.run_ids[0]!);
+    if (!firstRunRecord) throw new Error("host-bound Room Run was not persisted");
+    await expect(new PgRouteDecisionRepository(db.pool).routeRun(firstRunRecord))
+      .resolves.toMatchObject({ runtime_profile_id: profile.rows[0]!.id });
+    const thread = await db.pool.query<{
+      id: string;
+      last_run_id: string;
+      last_session_id: string;
+      status: string;
+    }>(
+      `SELECT id, last_run_id, last_session_id, status
+         FROM host_threads
+        WHERE room_id = $1 AND agent_id = $2`,
+      [created.room.id, agent.id],
+    );
+    expect(thread.rows[0]).toMatchObject({
+      last_run_id: first.run_ids[0],
+      last_session_id: created.conversation.id,
+      status: "active",
+    });
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
+      [first.run_ids[0]],
+    );
+    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0]!.id, {
+      lastRunId: first.run_ids[0]!,
+      vendorSessionId: null,
+      sessionReset: false,
+    });
+
+    const roomGroup = await new PgAgentGroupRepository(db.pool).getGroup("space-1", first.task_group_ids[0]!);
+    if (!roomGroup?.root_run_id || !groupService) throw new Error("host Room group was not created");
+    const delegated = await groupService.spawnChildRun(owner, {
+      space_id: "space-1",
+      group_id: roomGroup.id,
+      parent_run_id: first.run_ids[0]!,
+      root_run_id: roomGroup.root_run_id,
+      requesting_agent_id: agent.id,
+      target_agent_id: delegatedAgent.id,
+      manager_user_id: owner.userId,
+      instruction: "Delegate this host-bound investigation.",
+    });
+    expect(delegated.child_run_id).toBeTruthy();
+    const delegatedRun = await db.pool.query<{
+      agent_id: string;
+      workspace_location_id: string | null;
+      trust_mode: string | null;
+      host_task_thread_id: string | null;
+      requested_runtime_profile_id: string | null;
+      runtime_profile_selection_source: string | null;
+      model_override_json: Record<string, unknown>;
+    }>(
+      `SELECT agent_id, workspace_location_id, trust_mode, host_task_thread_id,
+              requested_runtime_profile_id, runtime_profile_selection_source, model_override_json
+         FROM runs WHERE id = $1`,
+      [delegated.child_run_id],
+    );
+    expect(delegatedRun.rows[0]).toMatchObject({
+      agent_id: delegatedAgent.id,
+      workspace_location_id: "location-1",
+      trust_mode: "trusted_host",
+      host_task_thread_id: expect.any(String),
+      runtime_profile_selection_source: "explicit",
+    });
+    expect(delegatedRun.rows[0]?.model_override_json).toMatchObject({
+      execution_mode: "room_conversation.v1",
+      host_thread: { schema_version: "host_thread.v1" },
+    });
+    const delegatedThread = await db.pool.query<{ id: string; last_run_id: string; dispatch_lock_id: string | null }>(
+      `SELECT id, last_run_id, dispatch_lock_id FROM host_threads
+        WHERE room_id = $1 AND agent_id = $2`,
+      [created.room.id, delegatedAgent.id],
+    );
+    expect(delegatedThread.rows[0]).toMatchObject({
+      last_run_id: delegated.child_run_id,
+      dispatch_lock_id: delegated.child_run_id,
+    });
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
+      [delegated.child_run_id],
+    );
+    await new PgHostThreadRepository(db.pool).recordRunOutcome(delegatedThread.rows[0]!.id, {
+      lastRunId: delegated.child_run_id!,
+      vendorSessionId: null,
+      sessionReset: false,
+    });
+
+    const second = await service.sendMessage(owner, created.room.id, created.conversation.id, {
+      content: "Continue the remote research.",
+      recipient_segments: [segment],
+      backends: [backend],
+    });
+    expect(second.run_ids).toHaveLength(1);
+    const secondRun = await db.pool.query<{ prompt: string }>(
+      `SELECT prompt FROM runs WHERE id = $1`,
+      [second.run_ids[0]],
+    );
+    expect(secondRun.rows[0]!.prompt).not.toContain("You are now in");
+    expect(secondRun.rows[0]!.prompt).not.toContain("[Internal Project guidance");
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
+      [second.run_ids[0]],
+    );
+    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0]!.id, {
+      lastRunId: second.run_ids[0]!,
+      vendorSessionId: null,
+      sessionReset: false,
+    });
+
+    const switchedConversation = await service.sendMessage(owner, created.room.id, null, {
+      content: "Start a new remote topic.",
+      recipient_segments: [segment],
+      backends: [backend],
+    });
+    expect(switchedConversation.run_ids).toHaveLength(1);
+    const switchedRun = await db.pool.query<{ prompt: string }>(
+      `SELECT prompt FROM runs WHERE id = $1`,
+      [switchedConversation.run_ids[0]],
+    );
+    expect(switchedRun.rows[0]!.prompt).toContain('You are now in "Start a new remote topic.".');
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
+      [switchedConversation.run_ids[0]],
+    );
+    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0]!.id, {
+      lastRunId: switchedConversation.run_ids[0]!,
+      vendorSessionId: null,
+      sessionReset: false,
+    });
+
+    await db.pool.query(
+      `UPDATE hosts SET last_heartbeat_at = now() - interval '2 minutes' WHERE id = 'host-room-bound'`,
+    );
+    const offline = await service.sendMessage(owner, created.room.id, switchedConversation.conversation.id, {
+      content: "This must not queue while the host is offline.",
+      recipient_segments: [segment],
+      backends: [backend],
+    });
+    expect(offline.run_ids).toEqual([]);
+    const offlineVisible = await service.listMessages(owner, created.room.id, switchedConversation.conversation.id, {
+      limit: 50,
+      offset: 0,
+    });
+    expect(offlineVisible.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: "Remote Researcher is on Room host, which is offline, and did not respond.",
+      }),
+    ]));
+
+    const denied = await service.sendMessage(member, created.room.id, created.conversation.id, {
+      content: "Try the remote researcher.",
+      recipient_segments: [segment],
+      backends: [backend],
+    });
+    expect(denied.run_ids).toEqual([]);
+    const visible = await service.listMessages(member, created.room.id, created.conversation.id, {
+      limit: 50,
+      offset: 0,
+    });
+    expect(visible.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: "Remote Researcher runs on Room host and answers only its owner.",
+      }),
+    ]));
+
+    await service.resetAgentContext(owner, created.room.id, agent.id);
+    await expect(db.pool.query<{ status: string; vendor_session_id: string | null }>(
+      `SELECT status, vendor_session_id FROM host_threads WHERE room_id = $1 AND agent_id = $2`,
+      [created.room.id, agent.id],
+    )).resolves.toMatchObject({ rows: [{ status: "session_reset", vendor_session_id: null }] });
+    await service.removeAgent(owner, created.room.id, agent.id);
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM host_threads WHERE room_id = $1 AND agent_id = $2`,
+      [created.room.id, agent.id],
+    )).resolves.toMatchObject({ rows: [{ status: "closed" }] });
   });
 
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async () => {

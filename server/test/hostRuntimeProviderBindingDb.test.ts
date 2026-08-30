@@ -80,7 +80,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["host_runtime_provider_bindings", "host_thread_messages", "host_task_threads", "runs", "agent_versions", "agents", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
+    ["host_runtime_provider_bindings", "host_thread_messages", "host_threads", "runs", "agent_versions", "agents", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -477,7 +477,7 @@ async function seedDispatchableThread(): Promise<void> {
     [TASK, SPACE, PROJECT, FOLDER, OWNER, now],
   );
   await db.pool.query(
-    `INSERT INTO host_task_threads (id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at)
+      `INSERT INTO host_threads (id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at)
      VALUES ($1,$2,'claude_code','active',$3,$4,$4)`,
     [THREAD, LOCATION, OWNER, now],
   );

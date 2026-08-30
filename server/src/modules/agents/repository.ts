@@ -19,6 +19,8 @@ import {
   BUILTIN_RUNTIME_ADAPTER_SPECS,
   type RuntimeAdapterType,
 } from "../runtimeAdapters/specs.js";
+import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { hostInstallationIds } from "../hosts/capabilities.js";
 import type { PromptProvenance } from "../prompts/provenance.js";
 import {
   contentOwnerFilterSql,
@@ -83,6 +85,9 @@ export interface AgentRuntimeProfileRecord {
   agent_id: string;
   name: string;
   adapter_type: string;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
   model_provider_id: string | null;
   provider_name?: string | null;
   provider_type?: string | null;
@@ -171,6 +176,9 @@ export interface AgentRuntimeProfileOut {
   agent_id: string;
   name: string;
   adapter_type: string;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
   model: {
     provider_id: string | null;
     provider_name: string | null;
@@ -213,6 +221,9 @@ export interface AgentCreateInput {
   outputSchemaJson?: Record<string, unknown> | null;
   agentKind?: string | null;
   ownerUserId?: string | null;
+  executionHostId?: string | null;
+  workspaceLocationId?: string | null;
+  runtimeInstallation?: string | null;
 }
 
 const AGENT_COLUMNS = `
@@ -229,6 +240,7 @@ const AGENT_COLUMNS = `
 
 const RUNTIME_PROFILE_COLUMNS = `
   arp.id, arp.space_id, arp.agent_id, arp.name, arp.adapter_type,
+  arp.execution_host_id, arp.workspace_location_id, arp.runtime_installation,
   arp.model_provider_id, arp.model_name,
   arp.runtime_config_json, arp.runtime_policy_json, arp.enabled, arp.is_default,
   arp.created_at, arp.updated_at,
@@ -638,14 +650,18 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: string;
       modelProviderId?: string | null;
       modelName?: string | null;
+      executionHostId?: string | null;
+      workspaceLocationId?: string | null;
+      runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
       isDefault?: boolean;
+      actorUserId?: string;
     },
   ): Promise<AgentRuntimeProfileOut> {
     await this.requireAgent(spaceId, agentId);
-    const normalized = await this.normalizeRuntimeProfileInput(spaceId, input);
+    const normalized = await this.normalizeRuntimeProfileInput(spaceId, { ...input, agentId });
     return withTransaction(this.pool, async (client) => {
       if (normalized.isDefault) {
         await this.clearDefaultRuntimeProfile(client, spaceId, agentId);
@@ -668,15 +684,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType?: string;
       modelProviderId?: string | null;
       modelName?: string | null;
+      executionHostId?: string | null;
+      workspaceLocationId?: string | null;
+      runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
       isDefault?: boolean;
+      actorUserId?: string;
     },
   ): Promise<AgentRuntimeProfileOut> {
     const existing = await this.getRuntimeProfile(spaceId, agentId, profileId);
     if (!existing) throw new HttpError(404, "Runtime profile not found");
     const normalized = await this.normalizeRuntimeProfileInput(spaceId, {
+      agentId,
       name: patch.name ?? existing.name,
       adapterType: patch.adapterType ?? existing.adapter_type,
       modelProviderId: Object.hasOwn(patch, "modelProviderId")
@@ -685,6 +706,15 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: Object.hasOwn(patch, "modelName")
         ? patch.modelName ?? null
         : existing.model_name,
+      executionHostId: Object.hasOwn(patch, "executionHostId")
+        ? patch.executionHostId ?? null
+        : existing.execution_host_id,
+      workspaceLocationId: Object.hasOwn(patch, "workspaceLocationId")
+        ? patch.workspaceLocationId ?? null
+        : existing.workspace_location_id,
+      runtimeInstallation: Object.hasOwn(patch, "runtimeInstallation")
+        ? patch.runtimeInstallation ?? null
+        : existing.runtime_installation,
       runtimeConfigJson: patch.runtimeConfigJson
         ? { ...recordValue(existing.runtime_config_json), ...patch.runtimeConfigJson }
         : recordValue(existing.runtime_config_json),
@@ -693,6 +723,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         : recordValue(existing.runtime_policy_json),
       enabled: Object.hasOwn(patch, "enabled") ? patch.enabled : existing.enabled,
       isDefault: Object.hasOwn(patch, "isDefault") ? patch.isDefault : existing.is_default,
+      actorUserId: patch.actorUserId,
     });
     return withTransaction(this.pool, async (client) => {
       if (normalized.isDefault) {
@@ -705,11 +736,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
                 adapter_type = $5,
                 model_provider_id = $6,
                 model_name = $7,
-                runtime_config_json = $8::jsonb,
-                runtime_policy_json = $9::jsonb,
-                enabled = $10,
-                is_default = $11,
-                updated_at = $12
+                execution_host_id = $8,
+                workspace_location_id = $9,
+                runtime_installation = $10,
+                runtime_config_json = $11::jsonb,
+                runtime_policy_json = $12::jsonb,
+                enabled = $13,
+                is_default = $14,
+                updated_at = $15
           WHERE space_id = $1 AND agent_id = $2 AND id = $3
           RETURNING id`,
         [
@@ -720,6 +754,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           normalized.adapterType,
           normalized.modelProviderId,
           normalized.modelName,
+          normalized.executionHostId,
+          normalized.workspaceLocationId,
+          normalized.runtimeInstallation,
           JSON.stringify(normalized.runtimeConfigJson),
           JSON.stringify(normalized.runtimePolicyJson),
           normalized.enabled,
@@ -746,13 +783,31 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const providerId = input.defaultModelProviderId ?? null;
     const modelName = input.defaultModel ?? null;
-    await this.validateModelSelection(client, input.spaceId, adapterType, providerId, modelName);
+    const hostBound = input.executionHostId != null
+      || input.workspaceLocationId != null
+      || input.runtimeInstallation != null;
+    if (hostBound) {
+      if (providerId !== null || modelName !== null) {
+        throw new HttpError(422, "Host-bound runtime profiles cannot use a server ModelProvider or model selection");
+      }
+      await this.validateHostExecutionBinding(client, {
+        spaceId: input.spaceId,
+        projectId: input.projectId ?? null,
+        actorUserId: input.userId,
+        executionHostId: input.executionHostId ?? null,
+        workspaceLocationId: input.workspaceLocationId ?? null,
+        runtimeInstallation: input.runtimeInstallation ?? null,
+        adapterType,
+      });
+    }
+    await this.validateModelSelection(client, input.spaceId, adapterType, providerId, modelName, hostBound);
     const runtimeConfigJson = await this.resolveRuntimeConfig(
       client,
       input.spaceId,
       adapterType,
       input.runtimeConfigJson ?? DEFAULT_RUNTIME_CONFIG,
       input.runtimeToolVersion,
+      hostBound,
     );
     return this.createAgentWithVersion(client, {
       spaceId: input.spaceId,
@@ -779,6 +834,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputPolicyJson: input.outputPolicyJson ?? {},
       scheduleConfigJson: input.scheduleConfigJson ?? {},
       outputSchemaJson: input.outputSchemaJson ?? {},
+      executionHostId: input.executionHostId ?? null,
+      workspaceLocationId: input.workspaceLocationId ?? null,
+      runtimeInstallation: input.runtimeInstallation ?? null,
     });
   }
 
@@ -787,15 +845,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     spaceId: string,
     agentId: string,
     input: {
+      agentId?: string;
       name: string;
       adapterType: string;
       modelProviderId?: string | null;
       modelName?: string | null;
+      executionHostId?: string | null;
+      workspaceLocationId?: string | null;
+      runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       isDefault?: boolean;
       /** Pre-resolved by the caller outside the transaction for CLI profiles. */
       runtimeToolVersion?: string | null;
+      actorUserId?: string;
     },
   ): Promise<AgentRuntimeProfileOut> {
     const existing = await client.query<AgentRuntimeProfileRecord>(
@@ -806,6 +869,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           AND arp.agent_id = $2
           AND arp.adapter_type = $3
           AND arp.model_provider_id IS NOT DISTINCT FROM $4
+          AND arp.execution_host_id IS NOT DISTINCT FROM $5
+          AND arp.workspace_location_id IS NOT DISTINCT FROM $6
+          AND arp.runtime_installation IS NOT DISTINCT FROM $7
         ORDER BY arp.enabled DESC, arp.is_default DESC, arp.created_at ASC, arp.id ASC
         LIMIT 1`,
       [
@@ -813,6 +879,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         agentId,
         normalizeAdapterType(input.adapterType),
         input.modelProviderId ?? null,
+        input.executionHostId ?? null,
+        input.workspaceLocationId ?? null,
+        input.runtimeInstallation ?? null,
       ],
     );
     const normalized = await this.normalizeRuntimeProfileInput(spaceId, {
@@ -820,11 +889,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: input.adapterType,
       modelProviderId: input.modelProviderId,
       modelName: input.modelName,
+      executionHostId: input.executionHostId,
+      workspaceLocationId: input.workspaceLocationId,
+      runtimeInstallation: input.runtimeInstallation,
       runtimeConfigJson: input.runtimeConfigJson,
       runtimePolicyJson: input.runtimePolicyJson,
       enabled: true,
       isDefault: input.isDefault ?? false,
       runtimeToolVersion: input.runtimeToolVersion,
+      agentId,
+      actorUserId: input.actorUserId,
     }, client);
     if (existing.rows[0]) {
       if (normalized.isDefault) await this.clearDefaultRuntimeProfile(client, spaceId, agentId);
@@ -832,10 +906,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         `UPDATE agent_runtime_profiles
             SET name = $4,
                 model_name = $5,
-                runtime_config_json = $6::jsonb,
-                runtime_policy_json = $7::jsonb,
+                execution_host_id = $6,
+                workspace_location_id = $7,
+                runtime_installation = $8,
+                runtime_config_json = $9::jsonb,
+                runtime_policy_json = $10::jsonb,
                 enabled = true,
-                is_default = $8,
+                is_default = $11,
                 updated_at = now()
           WHERE space_id = $1 AND agent_id = $2 AND id = $3
           RETURNING id`,
@@ -845,6 +922,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           existing.rows[0].id,
           normalized.name,
           normalized.modelName,
+          normalized.executionHostId,
+          normalized.workspaceLocationId,
+          normalized.runtimeInstallation,
           JSON.stringify(normalized.runtimeConfigJson),
           JSON.stringify(normalized.runtimePolicyJson),
           normalized.isDefault,
@@ -1376,13 +1456,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     adapterType: string,
     providerId: string | null,
     modelName: string | null,
+    hostBound = false,
   ): Promise<void> {
     const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
-    if (modelName && !providerId) {
+    if (modelName && !providerId && !hostBound) {
       throw new HttpError(400, "default_model_provider_id is required when default_model is set");
     }
-    if (spec.model.model_provider_mode === "required" && !providerId) {
+    if (spec.model.model_provider_mode === "required" && !providerId && !hostBound) {
       throw new HttpError(
         400,
         `adapter_type ${JSON.stringify(adapterType)} requires a model provider; set default_model_provider_id.`,
@@ -1426,15 +1507,84 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     }
   }
 
+  private async validateHostExecutionBinding(
+    db: Queryable,
+    input: {
+      spaceId: string;
+      projectId: string | null;
+      actorUserId: string | null;
+      executionHostId: string | null;
+      workspaceLocationId: string | null;
+      runtimeInstallation: string | null;
+      adapterType: string;
+    },
+  ): Promise<void> {
+    if (!input.executionHostId || !input.workspaceLocationId || !input.runtimeInstallation) {
+      throw new HttpError(422, "Host-bound runtime profiles require execution_host_id, workspace_location_id, and runtime_installation");
+    }
+    if (!input.projectId) throw new HttpError(422, "A host-bound Agent must belong to a Project");
+    if (!input.actorUserId) throw new HttpError(403, "Host-bound execution requires an owning user");
+    const target = await db.query<{
+      host_owner_user_id: string | null;
+      host_kind: string;
+      host_status: string;
+      capabilities_json: unknown;
+      location_host_id: string;
+      location_space_id: string;
+      location_status: string;
+      folder_space_id: string;
+      folder_project_id: string | null;
+    }>(
+      `SELECT host.owner_user_id AS host_owner_user_id, host.kind AS host_kind,
+              host.status AS host_status, host.capabilities_json,
+              location.execution_host_id AS location_host_id,
+              location.space_id AS location_space_id, location.status AS location_status,
+              folder.space_id AS folder_space_id, folder.project_id AS folder_project_id
+         FROM hosts host
+         JOIN workspace_locations location ON location.execution_host_id = host.id
+         JOIN project_folders folder ON folder.id = location.project_folder_id
+        WHERE host.id = $1 AND location.id = $2
+        LIMIT 1`,
+      [input.executionHostId, input.workspaceLocationId],
+    );
+    const row = target.rows[0];
+    if (!row) throw new HttpError(404, "Host or Workspace Location not found");
+    if (row.location_space_id !== input.spaceId
+      || row.folder_space_id !== input.spaceId) {
+      throw new HttpError(404, "Host or Workspace Location not found");
+    }
+    if (row.host_owner_user_id !== input.actorUserId) {
+      throw new HttpError(403, "The execution host must belong to the caller");
+    }
+    if (row.host_kind !== "remote" || row.host_status === "revoked") {
+      throw new HttpError(422, "Host-bound Agents require a paired remote execution host");
+    }
+    if (row.location_host_id !== input.executionHostId || row.location_status !== "active") {
+      throw new HttpError(422, "Workspace Location is not active on the selected host");
+    }
+    if (row.folder_project_id !== input.projectId) {
+      throw new HttpError(422, "Workspace Location must belong to the Agent's Project");
+    }
+    const spec = getLocalCliRuntimeAdapterSpec(input.adapterType);
+    if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
+      throw new HttpError(422, `Runtime adapter '${input.adapterType}' is not supported on a paired host`);
+    }
+    if (!hostInstallationIds(row.capabilities_json, input.adapterType).includes(input.runtimeInstallation)) {
+      throw new HttpError(422, `Host does not report installation '${input.runtimeInstallation}' of '${input.adapterType}'`);
+    }
+  }
+
   private async resolveRuntimeConfig(
     db: Queryable,
     spaceId: string,
     adapterType: string,
     input: Record<string, unknown>,
     preparedRuntimeToolVersion?: string | null,
+    hostBound = false,
   ): Promise<Record<string, unknown>> {
     const config: Record<string, unknown> = { ...input, adapter_type: adapterType };
     if (!isCliRuntimeTool(adapterType)) return config;
+    if (hostBound) return config;
     if (preparedRuntimeToolVersion) {
       const requestedVersion = stringValue(config["runtime_tool_version"]);
       if (requestedVersion && requestedVersion !== preparedRuntimeToolVersion) {
@@ -1525,6 +1675,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputPolicyJson: Record<string, unknown>;
       scheduleConfigJson: Record<string, unknown>;
       outputSchemaJson: Record<string, unknown>;
+      executionHostId: string | null;
+      workspaceLocationId: string | null;
+      runtimeInstallation: string | null;
     },
   ): Promise<AgentOut> {
     const agentId = randomUUID();
@@ -1581,6 +1734,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: input.modelName,
       runtimeConfigJson: input.runtimeConfigJson,
       runtimePolicyJson: input.runtimePolicyJson,
+      executionHostId: input.executionHostId,
+      workspaceLocationId: input.workspaceLocationId,
+      runtimeInstallation: input.runtimeInstallation,
       enabled: true,
       isDefault: true,
     });
@@ -1638,6 +1794,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       adapterType: string;
       modelProviderId: string | null;
       modelName: string | null;
+      executionHostId: string | null;
+      workspaceLocationId: string | null;
+      runtimeInstallation: string | null;
       runtimeConfigJson: Record<string, unknown>;
       runtimePolicyJson: Record<string, unknown>;
       enabled: boolean;
@@ -1656,12 +1815,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     await db.query(
       `INSERT INTO agent_runtime_profiles (
          id, space_id, agent_id, name, adapter_type, model_provider_id,
-         model_name, runtime_config_json,
-         runtime_policy_json, enabled, is_default, created_at, updated_at
+         model_name, execution_host_id, workspace_location_id, runtime_installation,
+         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
-         $7, $8::jsonb,
-         $9::jsonb, $10, $11, $12, $12
+         $7, $8, $9, $10,
+         $11::jsonb, $12::jsonb, $13, $14, $15, $15
        )`,
       [
         id,
@@ -1671,6 +1830,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.adapterType,
         input.modelProviderId,
         input.modelName,
+        input.executionHostId,
+        input.workspaceLocationId,
+        input.runtimeInstallation,
         JSON.stringify(runtimeConfigJson),
         JSON.stringify(input.runtimePolicyJson),
         input.enabled,
@@ -1686,15 +1848,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   private async normalizeRuntimeProfileInput(
     spaceId: string,
     input: {
+      agentId?: string;
       name: string;
       adapterType: string;
       modelProviderId?: string | null;
       modelName?: string | null;
+      executionHostId?: string | null;
+      workspaceLocationId?: string | null;
+      runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
       isDefault?: boolean;
       runtimeToolVersion?: string | null;
+      actorUserId?: string;
     },
     db: Queryable = this.pool,
   ): Promise<{
@@ -1702,6 +1869,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     adapterType: string;
     modelProviderId: string | null;
     modelName: string | null;
+    executionHostId: string | null;
+    workspaceLocationId: string | null;
+    runtimeInstallation: string | null;
     runtimeConfigJson: Record<string, unknown>;
     runtimePolicyJson: Record<string, unknown>;
     enabled: boolean;
@@ -1712,19 +1882,46 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const modelProviderId = input.modelProviderId ?? null;
     const modelName = input.modelName ?? null;
-    await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName, db);
+    const hostBound = input.executionHostId != null
+      || input.workspaceLocationId != null
+      || input.runtimeInstallation != null;
+    if (hostBound) {
+      if (modelProviderId !== null || modelName !== null) {
+        throw new HttpError(422, "Host-bound runtime profiles cannot use a server ModelProvider or model selection");
+      }
+      const agent = await db.query<{ project_id: string | null; owner_user_id: string | null }>(
+        `SELECT project_id, owner_user_id FROM agents WHERE space_id = $1 AND id = $2 LIMIT 1`,
+        [spaceId, input.agentId ?? ""],
+      );
+      const agentRow = agent.rows[0];
+      if (!agentRow) throw new HttpError(404, "Agent not found");
+      await this.validateHostExecutionBinding(db, {
+        spaceId,
+        projectId: agentRow.project_id,
+        actorUserId: input.actorUserId ?? agentRow.owner_user_id,
+        executionHostId: input.executionHostId ?? null,
+        workspaceLocationId: input.workspaceLocationId ?? null,
+        runtimeInstallation: input.runtimeInstallation ?? null,
+        adapterType,
+      });
+    }
+    await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName, db, hostBound);
     const runtimeConfigJson = await this.resolveRuntimeConfig(
       db,
       spaceId,
       adapterType,
       normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType),
       input.runtimeToolVersion,
+      hostBound,
     );
     return {
       name,
       adapterType,
       modelProviderId,
       modelName,
+      executionHostId: input.executionHostId ?? null,
+      workspaceLocationId: input.workspaceLocationId ?? null,
+      runtimeInstallation: input.runtimeInstallation ?? null,
       runtimeConfigJson,
       runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
       enabled: input.enabled ?? true,
@@ -1738,10 +1935,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     providerId: string | null,
     modelName: string | null,
     db: Queryable = this.pool,
+    hostBound = false,
   ): Promise<void> {
     const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
-    if (modelName && !providerId) {
+    if (modelName && !providerId && !hostBound) {
       throw new HttpError(400, "model_provider_id is required when model_name is set");
     }
     if (providerId) {
@@ -1904,6 +2102,9 @@ function runtimeProfileOut(row: AgentRuntimeProfileRecord): AgentRuntimeProfileO
     agent_id: row.agent_id,
     name: row.name,
     adapter_type: row.adapter_type,
+    execution_host_id: row.execution_host_id,
+    workspace_location_id: row.workspace_location_id,
+    runtime_installation: row.runtime_installation,
     model: hasModel
       ? {
           provider_id: row.model_provider_id,

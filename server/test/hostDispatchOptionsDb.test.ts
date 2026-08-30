@@ -8,7 +8,7 @@ import { hostsModule } from "../src/modules/hosts/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository, type CurrentUser } from "../src/modules/auth/identity.js";
 import { PgHostRuntimeProviderBindingRepository } from "../src/modules/hosts/runtimeProviderBindingRepository.js";
-import { PgHostTaskThreadRepository } from "../src/modules/hosts/taskThreadRepository.js";
+import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository.js";
 import type { DispatchOptions } from "../src/modules/hosts/dispatchOptions.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
@@ -68,7 +68,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["host_runtime_provider_bindings", "host_thread_messages", "host_task_threads", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
+    ["host_runtime_provider_bindings", "host_thread_messages", "host_threads", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -168,7 +168,7 @@ describe("dispatch options", () => {
 
   it("follows a thread's pin and names the conversation's own backend", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
-    const thread = await new PgHostTaskThreadRepository(db.pool).create({ workspaceLocationId: locationId, adapterType: "opencode", runtimeInstallation: "own", createdByUserId: OWNER });
+    const thread = await new PgHostThreadRepository(db.pool).create({ workspaceLocationId: locationId, adapterType: "opencode", runtimeInstallation: "own", createdByUserId: OWNER });
     await new PgHostThreadMessageRepository(db.pool).enqueue(thread.id, TASK, "hi", OWNER, { provider_id: OPENAI_PROVIDER, model: "deepseek-chat" });
     // The query's adapter is ignored: the thread decides.
     const result = await options(`?adapter_type=claude_code&thread_id=${thread.id}`);

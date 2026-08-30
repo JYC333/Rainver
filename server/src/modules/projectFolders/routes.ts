@@ -3,6 +3,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   jsonBody,
+  dbPool,
   params,
   parsePage,
   query,
@@ -10,6 +11,7 @@ import {
   sendRouteError,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
+import { assertProjectReadable } from "../projects/access.js";
 import { PgProjectFolderRepository } from "./repository.js";
 
 interface ProjectFolderServices {
@@ -26,7 +28,7 @@ interface ProjectFolderServices {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-  > & Partial<Pick<PgProjectFolderRepository, "listLocations">>;
+  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets">>;
 }
 
 type ProjectFolderServicesFactory = (context: ModuleContext) => ProjectFolderServices;
@@ -78,6 +80,21 @@ function folderId(request: FastifyRequest): string {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  app.get("/api/v1/projects/:projectId/host-execution-targets", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      const listTargets = repository.listHostExecutionTargets;
+      if (!listTargets) return reply.code(501).send({ detail: "Host execution target listing is unavailable" });
+      const selectedProjectId = projectId(request);
+      await assertProjectReadable(dbPool(context.config), id.spaceId, selectedProjectId, id.userId);
+      return reply.send({ targets: await listTargets.call(repository, id, selectedProjectId) });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/projects/:projectId/folders", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);

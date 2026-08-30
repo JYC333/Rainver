@@ -1,0 +1,86 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import React from 'react'
+import HostExecutionTargetPicker, { type HostExecutionSelection } from '../HostExecutionTargetPicker'
+
+const mockedApi = vi.hoisted(() => ({
+  hostExecutionTargets: vi.fn(),
+  listRuntimeAdapters: vi.fn(),
+  installRuntime: vi.fn(),
+  loginStream: vi.fn(),
+  loginInput: vi.fn(),
+}))
+
+vi.mock('../../../api/client', () => ({
+  projectsApi: { hostExecutionTargets: mockedApi.hostExecutionTargets },
+  hostsApi: {
+    listRuntimeAdapters: mockedApi.listRuntimeAdapters,
+    installRuntime: mockedApi.installRuntime,
+    loginStream: mockedApi.loginStream,
+    loginInput: mockedApi.loginInput,
+  },
+}))
+
+function Harness() {
+  const [value, setValue] = React.useState<HostExecutionSelection | null>(null)
+  return <HostExecutionTargetPicker projectId="project-1" value={value} onChange={setValue} />
+}
+
+describe('HostExecutionTargetPicker', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mockedApi.hostExecutionTargets.mockResolvedValue({
+      targets: [{
+        host_id: 'host-1',
+        host_name: 'Workstation',
+        host_online: true,
+        locations: [{
+          id: 'location-1',
+          project_folder_id: 'folder-1',
+          folder_name: 'Financial System',
+          display_path: '/workspace/financial-system',
+          execution_ready: true,
+        }],
+        adapters: [{
+          adapter_type: 'claude_code',
+          display_name: 'Claude Code',
+          installations: [{ id: 'own', version: '1.0.0', logged_in: false }],
+        }],
+      }],
+    })
+    mockedApi.listRuntimeAdapters.mockResolvedValue({ items: [{
+      adapter_type: 'claude_code',
+      display_name: 'Claude Code',
+      command: 'claude',
+      capability_probe: 'claude',
+      remote_eligible: true,
+    }] })
+    mockedApi.loginStream.mockImplementation(async function* () {
+      yield { type: 'hint', text: 'Sign in in the terminal.' }
+    })
+  })
+
+  it('says why no host is offered: no Project yet, or no directory registered for it', async () => {
+    const { rerender } = render(<HostExecutionTargetPicker projectId="" value={null} onChange={() => undefined} />)
+    expect(screen.getByText(/Choose a Project first/)).toBeInTheDocument()
+    expect(mockedApi.hostExecutionTargets).not.toHaveBeenCalled()
+
+    mockedApi.hostExecutionTargets.mockResolvedValueOnce({ targets: [] })
+    mockedApi.listRuntimeAdapters.mockResolvedValueOnce({ items: [] })
+    rerender(<HostExecutionTargetPicker projectId="project-2" value={null} onChange={() => undefined} />)
+    expect(await screen.findByText(/has a directory registered for this Project/)).toBeInTheDocument()
+  })
+
+  it('selects a Project Location and exposes the host copy login flow', async () => {
+    render(<Harness />)
+
+    fireEvent.click(await screen.findByLabelText('Execution host'))
+    fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))
+
+    await waitFor(() => expect(screen.getByLabelText('Execution Location')).toHaveTextContent('Financial System'))
+    expect(screen.getByText('Login required')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Login' }))
+    expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
+    expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own')
+  })
+})

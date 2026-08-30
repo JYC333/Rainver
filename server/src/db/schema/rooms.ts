@@ -120,6 +120,7 @@ export const roomAgentMembers = pgTable("room_agent_members", {
   agentId: varchar("agent_id", { length: 36 }).notNull(),
   role: varchar({ length: 32 }).notNull(),
   status: varchar({ length: 32 }).notNull(),
+  triggerPolicy: varchar("trigger_policy", { length: 24 }).default("owner_only").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -139,6 +140,7 @@ export const roomAgentMembers = pgTable("room_agent_members", {
   }).onDelete("cascade"),
   check("ck_room_agent_members_role", sql`role IN ('manager', 'member')`),
   check("ck_room_agent_members_status", sql`status IN ('active', 'removed')`),
+  check("ck_room_agent_members_trigger_policy", sql`trigger_policy IN ('owner_only')`),
 ]);
 
 /** Room-only sharing grants; never consumed by generic Agent visibility. */

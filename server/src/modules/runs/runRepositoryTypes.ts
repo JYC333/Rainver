@@ -234,6 +234,7 @@ export interface RunCreateInput {
   project_folder_id?: string | null;
   workspace_location_id?: string | null;
   trust_mode?: "sandboxed" | "trusted_host" | null;
+  host_task_thread_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;
@@ -273,6 +274,9 @@ export interface DelegatedChildRunCreateInput {
   instructed_by_agent_id: string;
   session_id?: string | null;
   project_folder_id?: string | null;
+  workspace_location_id?: string | null;
+  trust_mode?: "sandboxed" | "trusted_host" | null;
+  host_task_thread_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;

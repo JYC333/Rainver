@@ -307,6 +307,9 @@ export class PgRunRepository {
         trigger_origin: "delegation",
         session_id: input.session_id ?? null,
         project_folder_id: input.project_folder_id ?? null,
+        workspace_location_id: input.workspace_location_id ?? null,
+        trust_mode: input.trust_mode ?? null,
+        host_task_thread_id: input.host_task_thread_id ?? null,
         project_id: input.project_id ?? null,
         prompt: input.prompt ?? null,
         instruction: input.instruction ?? null,
@@ -343,6 +346,9 @@ export class PgRunRepository {
     project_folder_id?: string | null;
     session_id?: string | null;
     project_id?: string | null;
+    workspace_location_id?: string | null;
+    trust_mode?: "sandboxed" | "trusted_host" | null;
+    host_task_thread_id?: string | null;
     prompt: string;
     instruction?: string | null;
     runtime_profile_id?: string | null;
@@ -369,6 +375,9 @@ export class PgRunRepository {
         trigger_origin: "manual",
         session_id: input.session_id ?? null,
         project_folder_id: input.project_folder_id ?? null,
+        workspace_location_id: input.workspace_location_id ?? null,
+        trust_mode: input.trust_mode ?? null,
+        host_task_thread_id: input.host_task_thread_id ?? null,
         project_id: input.project_id ?? null,
         prompt: input.prompt,
         instruction: input.instruction ?? null,
@@ -544,14 +553,14 @@ export class PgRunRepository {
                   capabilities_json, model_provider_id, model_override_json, runtime_profile_snapshot_json,
                   required_sandbox_level, owner_user_id, visibility, access_level, project_id,
                   contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source,
-                  permission_snapshot_json, workspace_location_id, trust_mode
+                  permission_snapshot_json, workspace_location_id, trust_mode, host_task_thread_id
        )
        VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
           $11, $12, $13, $14, $15, $16, $17, 'queued', $18, $19, $20, $21, $22, $22,
           $23, $24, $25::jsonb, $26, $27::jsonb, $28::jsonb, $29,
           $14, $30, $31, $32, $33::jsonb, $34, 'managed', $35,
-          $36::jsonb, $37, $38
+                 $36::jsonb, $37, $38, $39
        )
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
@@ -566,7 +575,7 @@ export class PgRunRepository {
                  started_at, ended_at, created_at, updated_at,
                  owner_user_id, visibility, access_level, contract_snapshot_json,
                  workflow_version_id, route_decision_id, runtime_profile_selection_source,
-                 permission_snapshot_json, workspace_location_id, trust_mode`,
+                 permission_snapshot_json, workspace_location_id, trust_mode, host_task_thread_id`,
       [
         runId,
         input.space_id,
@@ -607,6 +616,7 @@ export class PgRunRepository {
         permissionSnapshotJson,
         input.workspace_location_id ?? null,
         input.trust_mode ?? null,
+        input.host_task_thread_id ?? null,
       ],
     );
     const row = result.rows[0];

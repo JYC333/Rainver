@@ -9,6 +9,7 @@
  */
 
 import { z } from "zod";
+import { IdSchema } from "./common.js";
 
 export const RuntimeOptionChoiceSchema = z.object({
   value: z.string(),
@@ -93,3 +94,33 @@ export const DispatchOptionsSchema = z.object({
   backends: z.array(DispatchBackendSchema),
 });
 export type DispatchOptions = z.infer<typeof DispatchOptionsSchema>;
+
+export const HostExecutionTargetLocationSchema = z.object({
+  id: IdSchema,
+  project_folder_id: IdSchema,
+  folder_name: z.string().trim().min(1),
+  display_path: z.string().nullable(),
+  execution_ready: z.boolean(),
+}).strict();
+export type HostExecutionTargetLocation = z.infer<typeof HostExecutionTargetLocationSchema>;
+
+export const HostExecutionTargetAdapterSchema = z.object({
+  adapter_type: z.string().trim().min(1),
+  display_name: z.string().trim().min(1),
+  installations: z.array(RuntimeInstallationSchema.pick({ id: true, version: true, logged_in: true })),
+}).strict();
+export type HostExecutionTargetAdapter = z.infer<typeof HostExecutionTargetAdapterSchema>;
+
+export const HostExecutionTargetSchema = z.object({
+  host_id: IdSchema,
+  host_name: z.string().trim().min(1),
+  host_online: z.boolean(),
+  locations: z.array(HostExecutionTargetLocationSchema),
+  adapters: z.array(HostExecutionTargetAdapterSchema),
+}).strict();
+export type HostExecutionTarget = z.infer<typeof HostExecutionTargetSchema>;
+
+export const HostExecutionTargetsResponseSchema = z.object({
+  targets: z.array(HostExecutionTargetSchema),
+}).strict();
+export type HostExecutionTargetsResponse = z.infer<typeof HostExecutionTargetsResponseSchema>;

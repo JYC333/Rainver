@@ -3219,34 +3219,6 @@ export interface AgentVersionOut {
   archived_at: string | null
 }
 
-export interface AgentRuntimeProfileOut {
-  id: string
-  space_id: string
-  agent_id: string
-  name: string
-  adapter_type: string
-  model: AgentModelSummary | null
-  runtime_config_json: Record<string, unknown>
-  runtime_policy_json: Record<string, unknown>
-  enabled: boolean
-  is_default: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface AgentRuntimeProfileCreateBody {
-  name: string
-  adapter_type: string
-  model_provider_id?: string | null
-  model_name?: string | null
-  runtime_config_json?: Record<string, unknown> | null
-  runtime_policy_json?: Record<string, unknown> | null
-  enabled?: boolean
-  is_default?: boolean
-}
-
-export type AgentRuntimeProfileUpdateBody = Partial<AgentRuntimeProfileCreateBody>
-
 export interface AgentTemplateOut {
   id: string
   key: string
@@ -3362,6 +3334,9 @@ export interface AgentCreateBody {
   output_policy_json?: Record<string, unknown> | null
   schedule_config_json?: Record<string, unknown> | null
   output_schema_json?: Record<string, unknown> | null
+  execution_host_id?: string | null
+  workspace_location_id?: string | null
+  runtime_installation?: string | null
 }
 
 export interface AgentUpdateBody {
@@ -3492,7 +3467,8 @@ export interface ProjectFolderScanCandidate {
 /** One choice as the runtime describes it: its own name, and what it means. */
 // The host/dispatch contract is the protocol's; one shape for server and web.
 import type { HostCapabilities } from '@rainver/protocol'
-export type { DispatchBackend, DispatchOptions, HostCapabilities, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions } from '@rainver/protocol'
+export type { DispatchBackend, DispatchOptions, HostCapabilities, HostExecutionTarget, HostExecutionTargetAdapter, HostExecutionTargetLocation, HostExecutionTargetsResponse, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions } from '@rainver/protocol'
+export type { AgentRuntimeProfileOut, AgentRuntimeProfileCreateBody, AgentRuntimeProfileUpdateBody } from '@rainver/protocol'
 
 export interface Host {
   id: string
@@ -3524,16 +3500,20 @@ export interface HostPairingCode {
   expires_at: string
 }
 
-export interface HostTaskThread {
+export interface HostThread {
   id: string
   workspace_location_id?: string
+  task_id: string | null
+  room_id: string | null
+  agent_id: string | null
   project_folder_id: string
   host_id: string
   adapter_type: string
   runtime_installation?: string
   vendor_session_id: string | null
   last_run_id: string | null
-  status: 'active' | 'session_reset'
+  last_session_id: string | null
+  status: 'active' | 'session_reset' | 'closed'
   created_by_user_id: string
   created_at: string
   updated_at: string
@@ -3542,7 +3522,7 @@ export interface HostTaskThread {
 }
 
 /** control-center-phase2-plan.md P3 (C10): a `GET /hosts/threads/recent` row — cross-project, joined summary fields included. */
-export interface HostRecentThread extends HostTaskThread {
+export interface HostRecentThread extends HostThread {
   project_id: string
   project_name: string
   folder_name: string

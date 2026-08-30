@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
@@ -16,6 +16,9 @@ import {
   type ConversationRuntimeSession,
 } from "../sessions/conversationRuntimeSessionRepository.js";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { hostInstallationIds } from "../hosts/capabilities.js";
+import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
+import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import {
   loadRoomConversationReplayThroughMessage,
 } from "../runtimeContext/conversationContinuity.js";
@@ -325,6 +328,7 @@ export class AgentGroupRunService {
   }> {
     assertIdentitySpace(identity, input.space_id);
       const repos = this.repos(client);
+      const hostThreads = new PgHostThreadRepository(client);
       const group = await repos.groups.lockGroup(input.space_id, input.group_id);
       if (!group || !(await this.canManageGroup(repos.groups, identity, group))) {
         throw new HttpError(404, "Agent group not found in this space");
@@ -429,6 +433,10 @@ export class AgentGroupRunService {
         for (let segmentIndex = 0; segmentIndex < routingSegments.length; segmentIndex += 1) {
           const segment = routingSegments[segmentIndex]!;
           for (const recipientAgentId of segment.recipient_agent_ids) {
+            const preparedBackend = backends.get(recipientAgentId);
+            const runToolAllowance = preparedBackend?.host_thread
+              ? [] as const
+              : conversationToolAllowance;
             const run = await repos.runs.createGroupedAgentRun({
               agent_id: recipientAgentId,
               space_id: input.space_id,
@@ -436,13 +444,16 @@ export class AgentGroupRunService {
               parent_run_id: rootRunId,
               root_run_id: rootRunId,
               run_group_id: group.id,
-              project_folder_id: rootRun.project_folder_id,
+              project_folder_id: preparedBackend?.host_project_folder_id ?? rootRun.project_folder_id,
               session_id: rootRun.session_id,
               project_id: rootRun.project_id,
-              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content, input.project_state_context),
+              workspace_location_id: preparedBackend?.workspace_location_id ?? null,
+              trust_mode: preparedBackend?.host_thread ? "trusted_host" : null,
+              host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
+              prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
-              runtime_profile_id: backends.get(recipientAgentId)?.runtime_profile_id ?? null,
-              model_override_json: roomRunModelOverride(backends.get(recipientAgentId), {
+              runtime_profile_id: preparedBackend?.runtime_profile_id ?? null,
+              model_override_json: roomRunModelOverride(preparedBackend, {
                 content,
                 routingMode,
                 routingSegments,
@@ -451,16 +462,24 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: [...conversationToolAllowance],
-              scenario_tool_allowance: conversationToolAllowance,
+              capabilities_json: [...runToolAllowance],
+              scenario_tool_allowance: runToolAllowance,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
-              contract_snapshot: roomRunContract(group, backends.get(recipientAgentId)),
+              contract_snapshot: roomRunContract(group, preparedBackend),
               visibility: roomRunVisibility,
               grantee_user_ids: roomRunGranteeUserIds,
             });
             recipientRuns.push({ run, segment_index: segmentIndex });
+            const hostThread = preparedBackend?.host_thread;
+            if (hostThread) {
+              await hostThreads.recordDispatch(hostThread.id, {
+                lastRunId: run.id,
+                sessionId: group.session_id!,
+                dispatchLockId: preparedBackend!.host_dispatch_lock_id!,
+              });
+            }
           }
         }
       } else {
@@ -469,6 +488,10 @@ export class AgentGroupRunService {
         if (!firstSegment || !firstRecipientAgentId) {
           throw new HttpError(422, "recipient_segments is required");
         }
+        const preparedRootBackend = backends.get(firstRecipientAgentId);
+        const rootRunToolAllowance = preparedRootBackend?.host_thread
+          ? [] as const
+          : conversationToolAllowance;
         const rootRun = await repos.runs.createQueuedRun({
           agent_id: firstRecipientAgentId,
           space_id: input.space_id,
@@ -476,17 +499,20 @@ export class AgentGroupRunService {
           mode: "live",
           run_type: "agent",
           trigger_origin: "manual",
-              prompt: roomRunPrompt(backends.get(firstRecipientAgentId), firstSegment.content, input.project_state_context),
+              prompt: roomRunPrompt(preparedRootBackend, firstSegment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
               session_id: group.session_id,
               project_id: group.project_id,
-              project_folder_id: group.project_folder_id,
-              runtime_profile_id: backends.get(firstRecipientAgentId)?.runtime_profile_id ?? null,
-              runtime_profile_selection_source: backends.has(firstRecipientAgentId)
+          project_folder_id: preparedRootBackend?.host_project_folder_id ?? group.project_folder_id,
+          workspace_location_id: preparedRootBackend?.workspace_location_id ?? null,
+          trust_mode: preparedRootBackend?.host_thread ? "trusted_host" : null,
+          host_task_thread_id: preparedRootBackend?.host_thread?.id ?? null,
+              runtime_profile_id: preparedRootBackend?.runtime_profile_id ?? null,
+              runtime_profile_selection_source: preparedRootBackend
                 ? "explicit"
                 : "default",
-              contract_snapshot: roomRunContract(group, backends.get(firstRecipientAgentId)),
-              model_override_json: roomRunModelOverride(backends.get(firstRecipientAgentId), {
+              contract_snapshot: roomRunContract(group, preparedRootBackend),
+              model_override_json: roomRunModelOverride(preparedRootBackend, {
             content,
             routingMode,
             routingSegments,
@@ -497,8 +523,8 @@ export class AgentGroupRunService {
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
-          capabilities_json: [...conversationToolAllowance],
-          scenario_tool_allowance: conversationToolAllowance,
+          capabilities_json: [...rootRunToolAllowance],
+          scenario_tool_allowance: rootRunToolAllowance,
           allow_system_assistant: Boolean(group.room_id),
         });
         const linkedRootRun = await repos.runs.linkRunToGroupRoot({
@@ -516,11 +542,23 @@ export class AgentGroupRunService {
         });
         rootRunId = linkedRootRun.id;
         recipientRuns.push({ run: linkedRootRun, segment_index: 0 });
+        const rootHostThread = preparedRootBackend?.host_thread;
+        if (rootHostThread) {
+          await hostThreads.recordDispatch(rootHostThread.id, {
+            lastRunId: linkedRootRun.id,
+            sessionId: group.session_id!,
+            dispatchLockId: preparedRootBackend!.host_dispatch_lock_id!,
+          });
+        }
         for (let segmentIndex = 0; segmentIndex < routingSegments.length; segmentIndex += 1) {
           const segment = routingSegments[segmentIndex]!;
           for (let recipientIndex = 0; recipientIndex < segment.recipient_agent_ids.length; recipientIndex += 1) {
             if (segmentIndex === 0 && recipientIndex === 0) continue;
             const recipientAgentId = segment.recipient_agent_ids[recipientIndex]!;
+            const preparedBackend = backends.get(recipientAgentId);
+            const runToolAllowance = preparedBackend?.host_thread
+              ? [] as const
+              : conversationToolAllowance;
             const run = await repos.runs.createGroupedAgentRun({
               agent_id: recipientAgentId,
               space_id: input.space_id,
@@ -528,13 +566,16 @@ export class AgentGroupRunService {
               parent_run_id: rootRunId,
               root_run_id: rootRunId,
               run_group_id: group.id,
-              project_folder_id: linkedRootRun.project_folder_id,
+              project_folder_id: preparedBackend?.host_project_folder_id ?? linkedRootRun.project_folder_id,
               session_id: linkedRootRun.session_id,
               project_id: linkedRootRun.project_id,
-              prompt: roomRunPrompt(backends.get(recipientAgentId), segment.content, input.project_state_context),
+              workspace_location_id: preparedBackend?.workspace_location_id ?? null,
+              trust_mode: preparedBackend?.host_thread ? "trusted_host" : null,
+              host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
+              prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
-              runtime_profile_id: backends.get(recipientAgentId)?.runtime_profile_id ?? null,
-              model_override_json: roomRunModelOverride(backends.get(recipientAgentId), {
+              runtime_profile_id: preparedBackend?.runtime_profile_id ?? null,
+              model_override_json: roomRunModelOverride(preparedBackend, {
                 content,
                 routingMode,
                 routingSegments,
@@ -543,16 +584,24 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: [...conversationToolAllowance],
-              scenario_tool_allowance: conversationToolAllowance,
+              capabilities_json: [...runToolAllowance],
+              scenario_tool_allowance: runToolAllowance,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
-              contract_snapshot: roomRunContract(group, backends.get(recipientAgentId)),
+              contract_snapshot: roomRunContract(group, preparedBackend),
               visibility: roomRunVisibility,
               grantee_user_ids: roomRunGranteeUserIds,
             });
             recipientRuns.push({ run, segment_index: segmentIndex });
+            const hostThread = preparedBackend?.host_thread;
+            if (hostThread) {
+              await hostThreads.recordDispatch(hostThread.id, {
+                lastRunId: run.id,
+                sessionId: group.session_id!,
+                dispatchLockId: preparedBackend!.host_dispatch_lock_id!,
+              });
+            }
           }
         }
       }
@@ -597,6 +646,14 @@ export class AgentGroupRunService {
           root_run_id: rootRunId,
           trigger_origin: "manual",
         };
+        const preparedBackend = backends.get(recipientRun.agent_id);
+        if (preparedBackend?.host_thread) {
+          jobPayload.adapter_config = preparedBackend.host_resume_attempted && preparedBackend.host_thread.vendor_session_id
+            ? { remote_resume_session_id: preparedBackend.host_thread.vendor_session_id }
+            : {};
+          jobPayload.host_task_thread_id = preparedBackend.host_thread.id;
+          jobPayload.host_thread_resume_attempted = preparedBackend.host_resume_attempted;
+        }
         if (recipientRun.parent_run_id) jobPayload.parent_run_id = recipientRun.parent_run_id;
 
         await repos.jobs.enqueue({
@@ -734,11 +791,13 @@ export class AgentGroupRunService {
   }
 
   private repos(client: PoolClient): {
+    db: PoolClient;
     groups: PgAgentGroupRepository;
     runs: PgRunRepository;
     jobs: PgJobQueueRepository;
   } {
     return {
+      db: client,
       groups: new PgAgentGroupRepository(client),
       runs: new PgRunRepository(client),
       jobs: new PgJobQueueRepository(client),
@@ -805,6 +864,7 @@ export class AgentGroupRunService {
 
   private async spawnChildRunInTransaction(
     repos: {
+      db: PoolClient;
       groups: PgAgentGroupRepository;
       runs: PgRunRepository;
       jobs: PgJobQueueRepository;
@@ -963,6 +1023,43 @@ export class AgentGroupRunService {
     const roomRunGranteeUserIds = group.room_id
       ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
       : [];
+    let delegatedBackend: ResolvedConversationBackend | null = null;
+    let delegatedHostDispatch: PreparedRoomHostDispatch | null = null;
+    if (group.room_id) {
+      if (!parentRun.session_id) {
+        throw new HttpError(409, "Room delegation requires a Room conversation session");
+      }
+      const backendRepository = new PgConversationBackendRepository(
+        repos.db,
+        new CliCredentialBroker(this.config),
+      );
+      const hostOption = (await backendRepository.listOptions(
+        input.space_id,
+        identity.userId,
+        input.target_agent_id,
+      )).find((option) => option.host_bound);
+      if (hostOption) {
+        delegatedBackend = await backendRepository.resolveBinding({
+          space_id: input.space_id,
+          user_id: identity.userId,
+          session_id: parentRun.session_id,
+          agent_id: input.target_agent_id,
+          requested: {
+            runtime_profile_id: hostOption.runtime_profile_id,
+            credential_profile_id: null,
+          },
+        });
+        delegatedHostDispatch = await prepareRoomHostDispatch({
+          db: repos.db,
+          backend: delegatedBackend,
+          roomId: group.room_id,
+          sessionId: parentRun.session_id,
+          projectId: parentRun.project_id,
+          agentId: input.target_agent_id,
+          userId: identity.userId,
+        });
+      }
+    }
     const childRun = await repos.runs.createDelegatedChildRun({
       agent_id: input.target_agent_id,
       space_id: input.space_id,
@@ -972,14 +1069,19 @@ export class AgentGroupRunService {
       run_group_id: input.group_id,
       delegation_id: delegation.id,
       instructed_by_agent_id: input.requesting_agent_id,
-      project_folder_id: parentRun.project_folder_id,
+      project_folder_id: delegatedHostDispatch?.project_folder_id ?? parentRun.project_folder_id,
+      workspace_location_id: delegatedBackend?.workspace_location_id ?? null,
+      trust_mode: delegatedHostDispatch ? "trusted_host" : null,
+      host_task_thread_id: delegatedHostDispatch?.host_thread.id ?? null,
       session_id: parentRun.session_id,
       project_id: parentRun.project_id,
       prompt: group.room_id ? input.instruction : null,
       instruction: input.instruction,
       model_override_json: group.room_id
-        ? delegatedRoomModelOverride(parentRun, input.target_agent_id)
+        ? delegatedRoomModelOverride(parentRun, input.target_agent_id, delegatedBackend, delegatedHostDispatch)
         : null,
+      runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
+      runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
       contract_snapshot: group.room_id ? roomRunContract(group, undefined) : undefined,
       budget_json: input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
@@ -987,6 +1089,16 @@ export class AgentGroupRunService {
       grantee_user_ids: roomRunGranteeUserIds,
       allow_system_assistant: Boolean(group.room_id),
     });
+    if (delegatedHostDispatch) {
+      await new PgHostThreadRepository(repos.db).recordDispatch(
+        delegatedHostDispatch.host_thread.id,
+        {
+          lastRunId: childRun.id,
+          sessionId: parentRun.session_id!,
+          dispatchLockId: delegatedHostDispatch.dispatch_lock_id,
+        },
+      );
+    }
     const queued = await repos.groups.updateDelegationAfterPolicy({
       space_id: input.space_id,
       delegation_id: delegation.id,
@@ -1021,6 +1133,16 @@ export class AgentGroupRunService {
         root_run_id: input.root_run_id,
         instructed_by_agent_id: input.requesting_agent_id,
         trigger_origin: "delegation",
+        ...(delegatedHostDispatch
+          ? {
+              adapter_config: delegatedHostDispatch.host_resume_attempted
+                && delegatedHostDispatch.host_thread.vendor_session_id
+                ? { remote_resume_session_id: delegatedHostDispatch.host_thread.vendor_session_id }
+                : {},
+              host_task_thread_id: delegatedHostDispatch.host_thread.id,
+              host_thread_resume_attempted: delegatedHostDispatch.host_resume_attempted,
+            }
+          : {}),
       },
     });
 
@@ -1220,6 +1342,106 @@ interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
   resume_runtime_session: boolean;
   runtime_context_fingerprint: string | null;
   message_cursor_id: string;
+  host_project_folder_id: string | null;
+  host_thread: HostThread | null;
+  host_prompt_context: string | null;
+  host_prompt_fresh: boolean;
+  host_resume_attempted: boolean;
+  host_dispatch_lock_id: string | null;
+}
+
+interface PreparedRoomHostDispatch {
+  project_folder_id: string;
+  host_thread: HostThread;
+  host_prompt_fresh: boolean;
+  host_resume_attempted: boolean;
+  dispatch_lock_id: string;
+}
+
+async function prepareRoomHostDispatch(input: {
+  db: PoolClient;
+  backend: ResolvedConversationBackend;
+  roomId: string;
+  sessionId: string;
+  projectId: string | null;
+  agentId: string;
+  userId: string;
+}): Promise<PreparedRoomHostDispatch | null> {
+  const hostFields = [
+    input.backend.execution_host_id,
+    input.backend.workspace_location_id,
+    input.backend.runtime_installation,
+  ];
+  const hostBound = hostFields.every(Boolean);
+  if (!hostBound) {
+    if (hostFields.some(Boolean)) {
+      throw new HttpError(409, `Room agent '${input.agentId}' has an incomplete host execution binding`);
+    }
+    return null;
+  }
+  if (!isLocalCliRuntimeAdapter(input.backend.adapter_type)) {
+    throw new HttpError(409, `Room agent '${input.agentId}' has a host binding for an unsupported runtime`);
+  }
+
+  const target = await new PgWorkspaceLocationRepository(input.db).resolveDispatchTarget(
+    input.backend.workspace_location_id!,
+  );
+  if (
+    !target
+    || target.execution_host_kind !== "remote"
+    || target.host_id !== input.backend.execution_host_id
+    || target.project_id !== input.projectId
+  ) {
+    throw new HttpError(409, `Room agent '${input.agentId}' has an invalid host Workspace Location`);
+  }
+  if (target.host_owner_user_id !== input.userId) {
+    throw new HttpError(403, `Room agent '${input.agentId}' can only be triggered by its host owner`);
+  }
+  if (
+    !target.host_online
+    || !target.execution_ready
+    || !hostInstallationIds(target.capabilities_json, input.backend.adapter_type).includes(
+      input.backend.runtime_installation!,
+    )
+  ) {
+    throw new HttpError(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
+  }
+
+  const threads = new PgHostThreadRepository(input.db);
+  const hostThread = await threads.getOrCreateForRoomAgent({
+    workspaceLocationId: input.backend.workspace_location_id!,
+    roomId: input.roomId,
+    agentId: input.agentId,
+    adapterType: input.backend.adapter_type,
+    runtimeInstallation: input.backend.runtime_installation!,
+    createdByUserId: input.userId,
+  });
+  if (
+    hostThread.workspace_location_id !== input.backend.workspace_location_id
+    || hostThread.adapter_type !== input.backend.adapter_type
+    || hostThread.runtime_installation !== input.backend.runtime_installation
+  ) {
+    throw new HttpError(
+      409,
+      `Room agent '${input.agentId}' has an existing host session pinned to a different runtime; remove and re-add it before changing the binding`,
+    );
+  }
+  const dispatchLockId = randomUUID();
+  if (!await threads.claimRoomDispatch(hostThread.id, dispatchLockId)) {
+    throw new HttpError(
+      409,
+      `Room agent '${input.agentId}' is already handling another Room turn; wait for it to finish before sending another message`,
+    );
+  }
+  const hostPromptFresh = hostThread.status === "session_reset"
+    || hostThread.last_session_id !== input.sessionId;
+  return {
+    project_folder_id: target.project_folder_id,
+    host_thread: { ...hostThread, dispatch_lock_id: dispatchLockId },
+    host_prompt_fresh: hostPromptFresh,
+    host_resume_attempted: Boolean(hostThread.vendor_session_id) && !hostPromptFresh,
+    dispatch_lock_id: dispatchLockId,
+  };
 }
 
 async function prepareRoomConversationBackends(input: {
@@ -1284,7 +1506,49 @@ async function prepareRoomConversationBackends(input: {
     if (!revision?.agent_version_id) {
       throw new HttpError(409, `Room agent '${agentId}' has no active version`);
     }
-    const localCli = isLocalCliRuntimeAdapter(backend.adapter_type);
+    const hostBound = Boolean(
+      backend.execution_host_id && backend.workspace_location_id && backend.runtime_installation,
+    );
+    let hostThread: HostThread | null = null;
+    let hostProjectFolderId: string | null = null;
+    let hostPromptContext: string | null = null;
+    let hostPromptFresh = false;
+    let hostResumeAttempted = false;
+    let hostDispatchLockId: string | null = null;
+    if (hostBound) {
+      const hostDispatch = await prepareRoomHostDispatch({
+        db: input.db,
+        backend,
+        roomId: input.roomId,
+        sessionId: input.sessionId,
+        projectId: input.projectId,
+        agentId,
+        userId: input.identity.userId,
+      });
+      if (!hostDispatch) throw new HttpError(409, `Room agent '${agentId}' has an incomplete host execution binding`);
+      hostProjectFolderId = hostDispatch.project_folder_id;
+      hostThread = hostDispatch.host_thread;
+      hostDispatchLockId = hostDispatch.dispatch_lock_id;
+      hostPromptFresh = hostDispatch.host_prompt_fresh;
+      hostResumeAttempted = hostDispatch.host_resume_attempted;
+      const hostMessages = hostPromptFresh
+        ? replayContext.recent_messages
+        : await listRoomMessagesSinceAgentTurn(
+            input.db,
+            input.identity.spaceId,
+            input.sessionId,
+            input.messageCursorId,
+            agentId,
+          );
+      const conversationPrefix = hostPromptFresh
+        ? `You are now in ${JSON.stringify(replayContext.conversation_title)}.`
+        : null;
+      hostPromptContext = [
+        conversationPrefix,
+        renderRoomPromptMessages(hostMessages, hostPromptFresh ? replayContext.summary_text : null),
+      ].filter(Boolean).join("\n\n") || null;
+    }
+    const localCli = isLocalCliRuntimeAdapter(backend.adapter_type) && !hostBound;
     const contextFingerprint = localCli
       ? roomRuntimeContextFingerprint(
           backend,
@@ -1333,6 +1597,12 @@ async function prepareRoomConversationBackends(input: {
       resume_runtime_session: canResume,
       runtime_context_fingerprint: contextFingerprint,
       message_cursor_id: input.messageCursorId,
+      host_project_folder_id: hostProjectFolderId,
+      host_thread: hostThread,
+      host_prompt_context: hostPromptContext,
+      host_prompt_fresh: hostPromptFresh,
+      host_resume_attempted: hostResumeAttempted,
+      host_dispatch_lock_id: hostDispatchLockId,
     });
   }
   return resolved;
@@ -1370,6 +1640,18 @@ function roomRunModelOverride(
       agent_version_id: backend.agent_version_id,
       project_id: backend.project_id,
     },
+    ...(backend.host_thread
+      ? {
+          host_thread: {
+            schema_version: "host_thread.v1",
+            thread_id: backend.host_thread.id,
+            runtime_session_id: backend.host_resume_attempted
+              ? backend.host_thread.vendor_session_id
+              : null,
+            fresh: backend.host_prompt_fresh,
+          },
+        }
+      : {}),
     ...(runtime && backend.runtime_context_fingerprint
       ? {
           conversation_runtime: {
@@ -1392,16 +1674,42 @@ function roomRunModelOverride(
 function delegatedRoomModelOverride(
   parentRun: Pick<RunRecord, "model_override_json">,
   targetAgentId: string,
+  backend?: ResolvedConversationBackend | null,
+  hostDispatch?: PreparedRoomHostDispatch | null,
 ): Record<string, unknown> {
   const parent = recordValue(parentRun.model_override_json);
   const parentTurn = recordValue(parent.chat_turn);
   return {
     execution_mode: "room_conversation.v1",
+    ...(backend
+      ? {
+          conversation_backend: {
+            schema_version: "conversation_backend.v1",
+            runtime_profile_id: backend.runtime_profile_id,
+            adapter_type: backend.adapter_type,
+            credential_profile_id: backend.credential_profile_id,
+            model_name: backend.model_name,
+            model_provider_id: backend.model_provider_id,
+          },
+        }
+      : {}),
     ...(parentTurn.schema_version === "chat_turn.v1"
       ? {
           chat_turn: {
             ...parentTurn,
             agent_id: targetAgentId,
+          },
+        }
+      : {}),
+    ...(backend && hostDispatch
+      ? {
+          host_thread: {
+            schema_version: "host_thread.v1",
+            thread_id: hostDispatch.host_thread.id,
+            runtime_session_id: hostDispatch.host_resume_attempted
+              ? hostDispatch.host_thread.vendor_session_id
+              : null,
+            fresh: hostDispatch.host_prompt_fresh,
           },
         }
       : {}),
@@ -1456,6 +1764,7 @@ async function listRoomReplayContext(
 ): Promise<{
   recent_messages: RoomPromptMessage[];
   summary_text: string | null;
+  conversation_title: string;
 }> {
   const replay = await loadRoomConversationReplayThroughMessage(db, {
     spaceId,
@@ -1466,6 +1775,10 @@ async function listRoomReplayContext(
   if (!currentMessage) {
     throw new HttpError(409, "Room task trigger message is no longer available");
   }
+  const conversation = await db.query<{ title: string | null }>(
+    `SELECT title FROM sessions WHERE space_id = $1 AND id = $2 LIMIT 1`,
+    [spaceId, sessionId],
+  );
   const context = assembleRoomConversationContext({
     messages: replay.messages,
     currentMessage,
@@ -1485,7 +1798,48 @@ async function listRoomReplayContext(
       instructed_by_user_id: null,
     })),
     summary_text: context?.summary?.summary_text ?? null,
+    conversation_title: conversation.rows[0]?.title?.trim() || "Untitled conversation",
   };
+}
+
+async function listRoomMessagesSinceAgentTurn(
+  db: PoolClient,
+  spaceId: string,
+  sessionId: string,
+  currentMessageId: string,
+  agentId: string,
+): Promise<RoomPromptMessage[]> {
+  const result = await db.query<RoomPromptMessage>(
+    `WITH current_message AS (
+       SELECT created_at, id
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND id = $3
+     ), last_agent_message AS (
+       SELECT message.created_at, message.id
+         FROM messages message
+         JOIN current_message current ON true
+        WHERE message.space_id = $1 AND message.session_id = $2
+          AND message.sender_agent_id = $4 AND message.role = 'assistant'
+          AND (message.created_at, message.id) < (current.created_at, current.id)
+        ORDER BY message.created_at DESC, message.id DESC
+        LIMIT 1
+     )
+     SELECT message.id, message.user_id, message.sender_agent_id,
+            message.role, message.content, message.created_at,
+            producer.instructed_by_user_id
+       FROM messages message
+       JOIN current_message current ON true
+       LEFT JOIN last_agent_message last_agent ON true
+       LEFT JOIN runs producer
+         ON producer.space_id = message.space_id
+        AND producer.id = message.metadata_json->>'run_id'
+      WHERE message.space_id = $1 AND message.session_id = $2
+        AND (message.created_at, message.id) <= (current.created_at, current.id)
+        AND (last_agent.id IS NULL OR (message.created_at, message.id) > (last_agent.created_at, last_agent.id))
+      ORDER BY message.created_at ASC, message.id ASC`,
+    [spaceId, sessionId, currentMessageId, agentId],
+  );
+  return result.rows;
 }
 
 async function listRoomMessagesAfterCursor(
@@ -1603,7 +1957,7 @@ function roomRuntimeContextFingerprint(
 }
 
 function roomRunPrompt(
-  _backend: PreparedRoomConversationBackend | undefined,
+  backend: PreparedRoomConversationBackend | undefined,
   assignedTask: string,
   projectStateContext?: string | null,
 ): string {
@@ -1618,7 +1972,10 @@ function roomRunPrompt(
     ACTION_RESULT_REPORTING_POLICY,
   ].join("\n");
   return [
-    projectStateContext,
+    backend?.host_thread
+      ? (backend.host_prompt_fresh ? projectStateContext : null)
+      : projectStateContext,
+    backend?.host_thread ? backend.host_prompt_context : null,
     executionRules,
     "[Assigned task for this Room turn]",
     assignedTask,
@@ -1635,7 +1992,7 @@ function roomReplayPrompt(replayPrompt: string, assignedTask: string): string {
 
 function roomRunContract(
   group: AgentRunGroupRecord,
-  backend: ResolvedConversationBackend | undefined,
+  backend: (ResolvedConversationBackend & { host_thread?: HostThread | null }) | undefined,
 ) {
   if (!group.room_id) return undefined;
   return {
@@ -1646,7 +2003,7 @@ function roomRunContract(
     required_outputs_json: [{
       name: "conversation_capture",
       path: "conversation_capture.json",
-      required: Boolean(backend && isLocalCliRuntimeAdapter(backend.adapter_type)),
+          required: Boolean(backend && !backend.host_thread && isLocalCliRuntimeAdapter(backend.adapter_type)),
       media_type: "application/vnd.rainver.proposals+json",
       max_bytes: 262_144,
       json_schema: {

@@ -69,6 +69,10 @@ export const RoomAgentMemberSchema = z.object({
   agent_kind: z.string().trim().min(1),
   role: z.enum(["manager", "member"]),
   status: z.enum(["active", "removed"]),
+  trigger_policy: z.literal("owner_only"),
+  host_name: z.string().trim().min(1).nullable().optional(),
+  host_online: z.boolean().optional(),
+  host_owner_is_me: z.boolean().optional(),
   private_shared_user_ids: z.array(IdSchema).optional(),
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
@@ -119,6 +123,12 @@ export const RoomAgentPresetRequestSchema = z.object({
   preset_id: z.string().trim().min(1),
   name: z.string().trim().min(1).max(256).nullish(),
   confirm_room_share: z.boolean().default(false),
+  execution: z.object({
+    host_id: IdSchema,
+    workspace_location_id: IdSchema,
+    adapter_type: z.string().trim().min(1),
+    installation: z.string().trim().min(1),
+  }).strict().nullish(),
 }).strict();
 export type RoomAgentPresetRequest = z.infer<typeof RoomAgentPresetRequestSchema>;
 

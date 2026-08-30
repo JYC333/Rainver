@@ -562,8 +562,20 @@ function ModelTab({
     <Card className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>Runtime profiles</CardTitle>
+        {selectedProfile?.execution_host_id ? (
+          <Badge variant="secondary">Host-bound · owner-only</Badge>
+        ) : (
+          <Badge variant="muted">Server / provider runtime</Badge>
+        )}
         <Button size="sm" variant="outline" onClick={newProfile}>New profile</Button>
       </div>
+      {selectedProfile?.execution_host_id && (
+        <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
+          Runs on host <span className="font-mono">{selectedProfile.execution_host_id}</span> at Location{' '}
+          <span className="font-mono">{selectedProfile.workspace_location_id}</span> using installation{' '}
+          <span className="font-mono">{selectedProfile.runtime_installation}</span>. Only the host owner can trigger this specialist from a Room.
+        </p>
+      )}
       {profiles.length > 0 && (
         <div className="space-y-1.5">
           <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Profile</label>

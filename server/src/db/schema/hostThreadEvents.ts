@@ -1,6 +1,6 @@
 import { pgTable, index, unique, check, foreignKey, varchar, text, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hostTaskThreads } from "./hostTaskThreads.js";
+import { hostThreads } from "./hostThreads.js";
 import { runs } from "./runs.js";
 import { projects } from "./projects.js";
 
@@ -29,7 +29,7 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// denormalized from the thread's Location's Folder's Project at the
 	// moment this event is written — a thread's Project never changes, so
 	// this cannot drift. Without it, the Project timeline (which scans this
-	// table, not `host_task_threads`, since this is the higher-volume one)
+	// table, not `host_threads`, since this is the higher-volume one)
 	// would need a three-hop join per row.
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	runId: varchar("run_id", { length: 36 }).notNull(),
@@ -65,7 +65,7 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	unique("uq_host_thread_events_thread_event_index").on(table.hostTaskThreadId, table.eventIndex),
 	foreignKey({
 			columns: [table.hostTaskThreadId],
-			foreignColumns: [hostTaskThreads.id],
+			foreignColumns: [hostThreads.id],
 			name: "host_thread_events_thread_id_fkey"
 		}).onDelete("cascade"),
 	foreignKey({

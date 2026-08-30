@@ -19,11 +19,13 @@ export async function lockTaskQueueForTerminalMutation(
   const threads = await db.query<{ thread_id: string }>(
     `SELECT DISTINCT m.host_task_thread_id AS thread_id
        FROM host_thread_messages m
-       JOIN host_task_threads t ON t.id = m.host_task_thread_id
-       JOIN workspace_locations wl ON wl.id = t.workspace_location_id
-       JOIN project_folders pf ON pf.id = wl.project_folder_id
+       JOIN host_threads t ON t.id = m.host_task_thread_id
+        JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+        JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE m.task_id = ANY($2::varchar[])
         AND pf.space_id = $1
+        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.status IN ('active', 'session_reset')
         AND m.status = 'queued'`,
     [spaceId, taskIds],
   );
@@ -41,12 +43,14 @@ export async function withdrawQueuedTaskMessages(
   await db.query(
     `UPDATE host_thread_messages m
         SET status = 'withdrawn', updated_at = now()
-       FROM host_task_threads t
+       FROM host_threads t
        JOIN workspace_locations wl ON wl.id = t.workspace_location_id
        JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE m.host_task_thread_id = t.id
         AND m.task_id = ANY($2::varchar[])
         AND pf.space_id = $1
+        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.status IN ('active', 'session_reset')
         AND m.status = 'queued'`,
     [spaceId, taskIds],
   );
@@ -113,9 +117,12 @@ export async function settleTaskAfterQueuedMessageWithdrawal(
 ): Promise<void> {
   await db.query(
     `WITH withdrawn AS (
-       SELECT task_id
-         FROM host_thread_messages
-        WHERE id = $2 AND host_task_thread_id = $3 AND status = 'withdrawn'
+       SELECT m.task_id
+         FROM host_thread_messages m
+         JOIN host_threads t ON t.id = m.host_task_thread_id
+        WHERE m.id = $2 AND m.host_task_thread_id = $3 AND m.status = 'withdrawn'
+          AND t.room_id IS NULL AND t.agent_id IS NULL
+          AND t.status IN ('active', 'session_reset')
      ), active_work AS (
        SELECT 1
          FROM host_thread_messages m

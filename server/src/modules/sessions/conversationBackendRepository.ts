@@ -8,6 +8,8 @@ import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
 } from "../providers/eligibility.js";
+import { isStale } from "../hosts/repository.js";
+import { hostInstallationIds } from "../hosts/capabilities.js";
 import type { Queryable } from "../routeUtils/common.js";
 
 interface BackendRow {
@@ -23,6 +25,18 @@ interface BackendRow {
   provider_owner_user_id: string | null;
   provider_credential_type: string | null;
   provider_has_eligible_credential: boolean | null;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
+  agent_project_id: string | null;
+  host_name: string | null;
+  host_owner_user_id: string | null;
+  host_status: string | null;
+  host_last_heartbeat_at: string | null;
+  host_capabilities_json: unknown;
+  location_status: string | null;
+  location_project_id: string | null;
+  location_execution_ready: boolean | null;
   is_default: boolean;
 }
 
@@ -53,6 +67,9 @@ interface BindingRow {
   model_provider_id: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
 }
 
 export interface ResolvedConversationBackend extends ConversationBackendBinding {
@@ -67,6 +84,9 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   model_provider_id: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
   retired_runtime_state_key: string | null;
 }
 
@@ -104,6 +124,18 @@ export class PgConversationBackendRepository {
                 provider_credential.credential_type AS provider_credential_type,
                 ${providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential")}
                   AS provider_has_eligible_credential,
+                profile.execution_host_id,
+                profile.workspace_location_id,
+                profile.runtime_installation,
+                agent.project_id AS agent_project_id,
+                host.name AS host_name,
+                host.owner_user_id AS host_owner_user_id,
+                host.status AS host_status,
+                host.last_heartbeat_at AS host_last_heartbeat_at,
+                host.capabilities_json AS host_capabilities_json,
+                location.status AS location_status,
+                location_folder.project_id AS location_project_id,
+                location.execution_ready AS location_execution_ready,
                 profile.is_default
            FROM agent_runtime_profiles profile
            JOIN agents agent
@@ -116,6 +148,13 @@ export class PgConversationBackendRepository {
             AND provider_grant.space_id = profile.space_id
            LEFT JOIN credentials provider_credential
              ON provider_credential.id = provider.credential_id
+           LEFT JOIN hosts host
+             ON host.id = profile.execution_host_id
+           LEFT JOIN workspace_locations location
+             ON location.id = profile.workspace_location_id
+            AND location.execution_host_id = profile.execution_host_id
+           LEFT JOIN project_folders location_folder
+             ON location_folder.id = location.project_folder_id
           WHERE profile.space_id = $1
             AND profile.agent_id = $2
             AND profile.enabled = true
@@ -150,17 +189,22 @@ export class PgConversationBackendRepository {
     return profiles.rows.flatMap((profile) => {
       const spec = getRuntimeAdapterSpec(profile.adapter_type);
       if (!spec || spec.implementation_status !== "implemented") return [];
-      const requiresCliCredential = isLocalCliRuntimeAdapter(profile.adapter_type);
+      const hostBound = Boolean(
+        profile.execution_host_id && profile.workspace_location_id && profile.runtime_installation,
+      );
+      const requiresCliCredential = isLocalCliRuntimeAdapter(profile.adapter_type) && !hostBound;
       const providerAvailable =
         profile.model_provider_id !== null &&
         isProviderEligibleForUser(profile, userId);
       if (
+        !hostBound &&
         spec.credentials.credential_mode === "model_provider_api_key" &&
         !providerAvailable
       ) {
         return [];
       }
       if (
+        !hostBound &&
         spec.credentials.credential_mode === "cli_profile_or_model_provider" &&
         !requiresCliCredential &&
         !providerAvailable
@@ -179,12 +223,49 @@ export class PgConversationBackendRepository {
             }))
         : [];
       if (requiresCliCredential && credentialProfiles.length === 0) return [];
+      const hostOnline = hostBound
+        && profile.host_status === "online"
+        && !isStale(profile.host_last_heartbeat_at);
+      const hostOwnerIsMe = hostBound && profile.host_owner_user_id === userId;
+      const locationMatchesAgentProject = hostBound
+        && profile.location_project_id === profile.agent_project_id;
+      const installationAvailable = hostBound
+        && hostInstallationIds(profile.host_capabilities_json, profile.adapter_type).includes(
+          profile.runtime_installation!,
+        );
+      let usable = true;
+      let reason: string | null = null;
+      if (hostBound && !hostOwnerIsMe) {
+        usable = false;
+        reason = "Only the Host owner can trigger this Agent from a Room.";
+      } else if (hostBound && !hostOnline) {
+        usable = false;
+        reason = "The execution Host is offline.";
+      } else if (hostBound && profile.location_status !== "active") {
+        usable = false;
+        reason = "The bound Workspace Location is unavailable.";
+      } else if (hostBound && !locationMatchesAgentProject) {
+        usable = false;
+        reason = "The bound Workspace Location belongs to a different Project.";
+      } else if (hostBound && profile.location_execution_ready !== true) {
+        usable = false;
+        reason = "The bound Workspace Location is not ready.";
+      } else if (hostBound && !installationAvailable) {
+        usable = false;
+        reason = "The selected runtime installation is unavailable on the Host.";
+      }
       return [{
         runtime_profile_id: profile.runtime_profile_id,
         name: profile.name,
         adapter_type: profile.adapter_type,
         model_name: profile.model_name,
         requires_cli_credential: requiresCliCredential,
+        usable,
+        reason,
+        host_bound: hostBound,
+        host_name: hostBound ? profile.host_name : null,
+        host_online: hostBound ? hostOnline : null,
+        host_owner_is_me: hostBound ? hostOwnerIsMe : null,
         credential_profiles: credentialProfiles,
       }];
     });
@@ -239,6 +320,19 @@ export class PgConversationBackendRepository {
         stored
           ? "The stored conversation backend is no longer eligible; select a new backend"
           : "No eligible conversation backend is available for this user",
+        409,
+      );
+    }
+    const hostBoundOption = options.find((candidate) => candidate.host_bound);
+    if (hostBoundOption && !option.host_bound) {
+      throw new ConversationBackendError(
+        "Host-bound Agents must use their paired execution Host from a Room",
+        409,
+      );
+    }
+    if (option.usable === false) {
+      throw new ConversationBackendError(
+        option.reason ?? "The selected conversation backend is unavailable",
         409,
       );
     }
@@ -323,7 +417,9 @@ export class PgConversationBackendRepository {
               binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
               profile.adapter_type, profile.model_name,
               profile.model_provider_id, profile.runtime_config_json,
-              profile.runtime_policy_json
+              profile.runtime_policy_json,
+              profile.execution_host_id, profile.workspace_location_id,
+              profile.runtime_installation
          FROM session_conversation_backends binding
          JOIN sessions session_row
            ON session_row.id = binding.session_id

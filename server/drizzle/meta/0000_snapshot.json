@@ -1,5 +1,5 @@
 {
-  "id": "4a32dc25-2fc2-40e9-8475-fdd3f6854962",
+  "id": "2cc22177-84df-4ad7-ab68-e670390c2742",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2913,6 +2913,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "execution_host_id": {
+          "name": "execution_host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_location_id": {
+          "name": "workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "runtime_installation": {
+          "name": "runtime_installation",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "name": {
           "name": "name",
           "type": "varchar(128)",
@@ -3070,6 +3088,32 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "agent_runtime_profiles_execution_host_id_fkey": {
+          "name": "agent_runtime_profiles_execution_host_id_fkey",
+          "tableFrom": "agent_runtime_profiles",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "agent_runtime_profiles_workspace_location_id_fkey": {
+          "name": "agent_runtime_profiles_workspace_location_id_fkey",
+          "tableFrom": "agent_runtime_profiles",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "agent_runtime_profiles_space_id_fkey": {
           "name": "agent_runtime_profiles_space_id_fkey",
           "tableFrom": "agent_runtime_profiles",
@@ -3105,7 +3149,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "ck_agent_runtime_profiles_host_binding": {
+          "name": "ck_agent_runtime_profiles_host_binding",
+          "value": "(execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.agent_versions": {
@@ -48817,6 +48866,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "trigger_policy": {
+          "name": "trigger_policy",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'owner_only'"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -48927,6 +48983,10 @@
         "ck_room_agent_members_status": {
           "name": "ck_room_agent_members_status",
           "value": "status IN ('active', 'removed')"
+        },
+        "ck_room_agent_members_trigger_policy": {
+          "name": "ck_room_agent_members_trigger_policy",
+          "value": "trigger_policy IN ('owner_only')"
         }
       },
       "isRLSEnabled": false
@@ -54765,7 +54825,7 @@
         "runs_host_task_thread_id_fkey": {
           "name": "runs_host_task_thread_id_fkey",
           "tableFrom": "runs",
-          "tableTo": "host_task_threads",
+          "tableTo": "host_threads",
           "columnsFrom": [
             "host_task_thread_id"
           ],
@@ -69086,8 +69146,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.host_task_threads": {
-      "name": "host_task_threads",
+    "public.host_threads": {
+      "name": "host_threads",
       "schema": "",
       "columns": {
         "id": {
@@ -69101,6 +69161,24 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
         },
         "adapter_type": {
           "name": "adapter_type",
@@ -69126,6 +69204,25 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
+        },
+        "last_session_id": {
+          "name": "last_session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatch_lock_id": {
+          "name": "dispatch_lock_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retired_vendor_session_ids": {
+          "name": "retired_vendor_session_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "status": {
           "name": "status",
@@ -69160,8 +69257,8 @@
         }
       },
       "indexes": {
-        "ix_host_task_threads_workspace_location_id": {
-          "name": "ix_host_task_threads_workspace_location_id",
+        "ix_host_threads_workspace_location_id": {
+          "name": "ix_host_threads_workspace_location_id",
           "columns": [
             {
               "expression": "workspace_location_id",
@@ -69174,12 +69271,34 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uq_host_threads_room_agent_active": {
+          "name": "uq_host_threads_room_agent_active",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status IN ('active', 'session_reset')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
-        "host_task_threads_workspace_location_id_fkey": {
-          "name": "host_task_threads_workspace_location_id_fkey",
-          "tableFrom": "host_task_threads",
+        "host_threads_workspace_location_id_fkey": {
+          "name": "host_threads_workspace_location_id_fkey",
+          "tableFrom": "host_threads",
           "tableTo": "workspace_locations",
           "columnsFrom": [
             "workspace_location_id"
@@ -69189,12 +69308,51 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "host_threads_task_id_fkey": {
+          "name": "host_threads_task_id_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_threads_room_id_fkey": {
+          "name": "host_threads_room_id_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_threads_agent_id_fkey": {
+          "name": "host_threads_agent_id_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uq_host_task_threads_id_location": {
-          "name": "uq_host_task_threads_id_location",
+        "uq_host_threads_id_location": {
+          "name": "uq_host_threads_id_location",
           "nullsNotDistinct": false,
           "columns": [
             "id",
@@ -69204,9 +69362,17 @@
       },
       "policies": {},
       "checkConstraints": {
-        "ck_host_task_threads_status": {
-          "name": "ck_host_task_threads_status",
-          "value": "status IN ('active', 'session_reset')"
+        "ck_host_threads_owner": {
+          "name": "ck_host_threads_owner",
+          "value": "NOT (room_id IS NULL) = NOT (agent_id IS NULL) AND NOT (task_id IS NOT NULL AND room_id IS NOT NULL)"
+        },
+        "ck_host_threads_status": {
+          "name": "ck_host_threads_status",
+          "value": "status IN ('active', 'session_reset', 'closed')"
+        },
+        "ck_host_threads_retired_sessions_array": {
+          "name": "ck_host_threads_retired_sessions_array",
+          "value": "jsonb_typeof(retired_vendor_session_ids) = 'array'"
         }
       },
       "isRLSEnabled": false
@@ -69351,7 +69517,7 @@
         "host_thread_events_thread_id_fkey": {
           "name": "host_thread_events_thread_id_fkey",
           "tableFrom": "host_thread_events",
-          "tableTo": "host_task_threads",
+          "tableTo": "host_threads",
           "columnsFrom": [
             "host_task_thread_id"
           ],
@@ -69543,7 +69709,7 @@
         "host_thread_messages_thread_id_fkey": {
           "name": "host_thread_messages_thread_id_fkey",
           "tableFrom": "host_thread_messages",
-          "tableTo": "host_task_threads",
+          "tableTo": "host_threads",
           "columnsFrom": [
             "host_task_thread_id"
           ],

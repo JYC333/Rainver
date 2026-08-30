@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ChevronDown, ChevronRight, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentTemplatesApi, agentsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
+import { agentTemplatesApi, agentsApi, projectsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
 import type {
   AgentTemplateOut,
   AgentTemplateVersionOut,
   CreateAgentFromTemplateBody,
+  Project,
   SpaceRuntimeToolPolicyOut,
 } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -34,6 +35,7 @@ import {
   isMemoryOutput,
   outputTypeLabel,
 } from './policyMap'
+import HostExecutionTargetPicker, { type HostExecutionSelection } from '../command_center/HostExecutionTargetPicker'
 
 const CREATE_NOTE: Record<string, string> = {
   activity_reflector: 'This agent processes captures / activity records into typed proposals and a reflection summary for review.',
@@ -106,8 +108,19 @@ function scheduleFromConfig(config: Record<string, unknown> | null | undefined) 
   }
 }
 
+function hostSelectionFromQuery(params: URLSearchParams): HostExecutionSelection | null {
+  const host_id = params.get('host') ?? ''
+  const workspace_location_id = params.get('location') ?? ''
+  const adapter_type = params.get('adapter') ?? ''
+  const installation = params.get('installation') ?? ''
+  return host_id && workspace_location_id && adapter_type && installation
+    ? { host_id, workspace_location_id, adapter_type, installation }
+    : null
+}
+
 export default function AgentFormPage() {
   const { templateId } = useParams()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { activeSpaceId } = useSpace()
   const [template, setTemplate] = useState<AgentTemplateOut | null>(null)
@@ -115,13 +128,18 @@ export default function AgentFormPage() {
   const [loading, setLoading] = useState(Boolean(templateId))
   const [saving, setSaving] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get('project') ?? '')
+  // A Room roster that already chose where the Agent runs hands the choice
+  // over in the URL, so the form opens with the host binding in place.
+  const [hostExecution, setHostExecution] = useState<HostExecutionSelection | null>(() => hostSelectionFromQuery(searchParams))
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [modelSelection, setModelSelection] = useState<{ provider_id: string; model: string } | null>(null)
   const [defaultProvider, setDefaultProvider] = useState<ModelProviderOut | null>(null)
-  const [runtime, setRuntime] = useState<string>('model_api')
+  const [runtime, setRuntime] = useState<string>(() => hostSelectionFromQuery(searchParams)?.adapter_type ?? 'model_api')
   const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
   const [runtimeToolVersion, setRuntimeToolVersion] = useState<string>('')
   const [scheduleMode, setScheduleMode] = useState<'manual' | 'daily' | 'cron'>('manual')
@@ -156,6 +174,13 @@ export default function AgentFormPage() {
         setDefaultProvider(null)
       })
   }, [])
+
+  useEffect(() => {
+    if (templateId) return
+    projectsApi.list({ status: 'active', limit: 100 })
+      .then(page => setProjects(page.items))
+      .catch(() => setProjects([]))
+  }, [templateId])
 
   useEffect(() => {
     if (!templateId) {
@@ -219,8 +244,8 @@ export default function AgentFormPage() {
   const isCli = runtime !== 'model_api'
   const isClaudeCli = runtime === 'claude_code'
   const isCodexCli = runtime === 'codex_cli'
-  const providerRequired = !isCli
-  const showProviderSelector = !isCli || isClaudeCli || isCodexCli
+  const providerRequired = !isCli && !hostExecution
+  const showProviderSelector = !hostExecution && (!isCli || isClaudeCli || isCodexCli)
   function buildScheduleConfig(): Record<string, unknown> {
     if (scheduleMode === 'manual') return { enabled: false, cron: null }
     if (scheduleMode === 'daily') return { enabled: scheduleEnabled, cron: `0 ${Number(dailyHour)} * * *` }
@@ -284,10 +309,14 @@ export default function AgentFormPage() {
           } satisfies CreateAgentFromTemplateBody)
         : await agentsApi.create({
             ...common,
+            project_id: selectedProjectId || null,
             adapter_type: runtime,
             runtime_config_json: runtimeConfigWithTools,
-            default_model_provider_id: showProviderSelector ? (modelSelection?.provider_id ?? null) : null,
-            default_model: showProviderSelector ? (modelSelection?.model || null) : null,
+            default_model_provider_id: hostExecution ? null : showProviderSelector ? (modelSelection?.provider_id ?? null) : null,
+            default_model: hostExecution ? null : showProviderSelector ? (modelSelection?.model || null) : null,
+            execution_host_id: hostExecution?.host_id ?? null,
+            workspace_location_id: hostExecution?.workspace_location_id ?? null,
+            runtime_installation: hostExecution?.installation ?? null,
           })
       toast.success('Agent created')
       navigate(`/agents/${created.id}`)
@@ -300,8 +329,21 @@ export default function AgentFormPage() {
 
   function handleRuntimeChange(next: string) {
     setRuntime(next)
+    setHostExecution(null)
     const policy = runtimePolicies.find(p => p.runtime === next)
     setRuntimeToolVersion(policy?.default_version ?? '')
+  }
+
+  function handleHostExecutionChange(next: HostExecutionSelection | null) {
+    setHostExecution(next)
+    if (next) {
+      setRuntime(next.adapter_type)
+      setRuntimeToolVersion('')
+      setModelSelection(null)
+    } else if (hostExecution) {
+      setRuntime('model_api')
+      setRuntimeToolVersion('')
+    }
   }
 
   if (loading) {
@@ -349,6 +391,20 @@ export default function AgentFormPage() {
               placeholder="You are a daily news summarizer. Be concise and factual..."
             />
           </div>
+          {!templateId && (
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project (optional · required to run on a paired host)</label>
+              <select
+                value={selectedProjectId}
+                onChange={e => { setSelectedProjectId(e.target.value); setHostExecution(null) }}
+                className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
+              >
+                <option value="">No Project — personal Agent</option>
+                {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>
+              <p className="text-xs text-muted-foreground">A Project is required before choosing one of your paired host Locations.</p>
+            </div>
+          )}
         </Card>
 
         <Card className="p-4 space-y-4">
@@ -374,6 +430,13 @@ export default function AgentFormPage() {
                 : 'Runs a prompt against a configured model provider. Pick the provider below.'}
             </p>
           </div>
+          {!templateId && (
+            <HostExecutionTargetPicker
+              projectId={selectedProjectId}
+              value={hostExecution}
+              onChange={handleHostExecutionChange}
+            />
+          )}
           {isCli && (
             <RuntimeVersionSelector
               runtime={runtime}

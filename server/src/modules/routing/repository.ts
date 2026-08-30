@@ -18,6 +18,9 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
   runtime_profile_id: string;
   profile_name: string;
   adapter_type: string;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  runtime_installation: string | null;
   model_provider_id: string | null;
   provider_type: string | null;
   provider_credential_type: string | null;
@@ -63,12 +66,19 @@ export class PgRouteDecisionRepository {
     const hints = routeHintsForRun(run);
     const requiredCapabilities = await runtimeRequiredCapabilities(run.capabilities_json);
     const requestedCredentialProfileId = conversationCredentialProfileId(run.model_override_json);
-    const candidates = await this.listCandidates(
+    const allCandidates = await this.listCandidates(
       run.space_id,
       run.agent_id,
       run.owner_user_id ?? null,
       requestedCredentialProfileId,
     );
+    const override = record(run.model_override_json);
+    const hostThread = record(override.host_thread);
+    const roomHostBoundRun = override.execution_mode === "room_conversation.v1"
+      && hostThread.schema_version === "host_thread.v1";
+    const candidates = allCandidates.filter((candidate) => roomHostBoundRun
+      ? candidate.host_bound === true && candidate.workspace_location_id === run.workspace_location_id
+      : candidate.host_bound !== true);
     const attemptNumber = await this.currentAttemptNumber(run);
     const retryRoute = attemptNumber > 1 ? await this.retryRouteContext(run, attemptNumber) : null;
     const decision = this.selector.select({
@@ -276,6 +286,7 @@ export class PgRouteDecisionRepository {
       SELECT a.agent_kind,
              arp.id AS runtime_profile_id, arp.name AS profile_name,
               arp.adapter_type, arp.model_provider_id, arp.model_name,
+              arp.execution_host_id, arp.workspace_location_id, arp.runtime_installation,
               cp.id AS credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
               mp.provider_type,
               mp.enabled AS provider_enabled,
@@ -343,7 +354,7 @@ export class PgRouteDecisionRepository {
       [spaceId, agentId, ownerUserId, requestedCredentialProfileId],
     );
     const hasCliCandidates = result.rows.some((row) =>
-      isLocalCliRuntimeAdapter(row.adapter_type));
+      isLocalCliRuntimeAdapter(row.adapter_type) && !isHostBoundRuntime(row));
     let loggedInCredentialIds: Set<string> | null = null;
     if (hasCliCandidates) {
       if (!ownerUserId || !this.cliCredentials) {
@@ -364,7 +375,8 @@ export class PgRouteDecisionRepository {
       candidateFromRow(
         row,
         ownerUserId,
-        !isLocalCliRuntimeAdapter(row.adapter_type) ||
+        isHostBoundRuntime(row) ||
+          !isLocalCliRuntimeAdapter(row.adapter_type) ||
           Boolean(row.credential_profile_id && loggedInCredentialIds?.has(row.credential_profile_id)),
       ));
     return requestedCredentialProfileId
@@ -474,6 +486,7 @@ function candidateFromRow(
   cliCredentialLoggedIn = true,
 ): RouteCandidate {
   const spec = getRuntimeAdapterSpec(row.adapter_type);
+  const hostBound = isHostBoundRuntime(row);
   const runtimeConfig = record(row.runtime_config_json);
   const runtimePolicy = record(row.runtime_policy_json);
   const providerAvailable = row.model_provider_id !== null &&
@@ -481,7 +494,9 @@ function candidateFromRow(
   const isDefault = row.agent_kind === "system_assistant"
     ? effectiveProviderDefault(row.provider_is_default, row.is_default)
     : row.is_default;
-  const credentialAvailable = spec?.credentials.credential_mode === "none"
+  const credentialAvailable = hostBound
+    ? true
+    : spec?.credentials.credential_mode === "none"
     ? true
     : isLocalCliRuntimeAdapter(row.adapter_type)
       ? spec?.credentials.credential_mode === "cli_profile_or_model_provider"
@@ -495,6 +510,8 @@ function candidateFromRow(
     runtime_profile_id: row.runtime_profile_id,
     profile_name: row.profile_name,
     adapter_type: row.adapter_type,
+    host_bound: hostBound,
+    workspace_location_id: row.workspace_location_id,
     model_provider_id: row.model_provider_id,
     model_name: row.model_name,
     credential_profile_id: row.credential_profile_id,
@@ -521,6 +538,10 @@ function candidateFromRow(
     estimated_latency_ms: numberOrNull(row.estimated_latency_ms),
     historical_verification_pass_rate: numberOrNull(row.historical_verification_pass_rate),
   };
+}
+
+function isHostBoundRuntime(row: Pick<RuntimeCandidateRow, "execution_host_id" | "workspace_location_id" | "runtime_installation">): boolean {
+  return Boolean(row.execution_host_id && row.workspace_location_id && row.runtime_installation);
 }
 
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }

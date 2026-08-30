@@ -153,10 +153,19 @@ export interface ResolvedRemoteBinding {
  */
 export async function resolveRemoteRunBinding(
   db: Queryable,
-  run: { id: string },
+  run: { id: string; host_task_thread_id?: string | null },
   hostId: string,
   adapterType: string,
 ): Promise<ResolvedRemoteBinding | null> {
+  // Room host-bound specialists deliberately use only the vendor runtime's
+  // own host login. Their rendered Room prompt is the only control-plane
+  // context allowed across the boundary; a Room thread must never inherit a
+  // Host × adapter ModelProvider default or mint a proxy lease.
+  const roomThread = await db.query<{ room_id: string | null }>(
+    `SELECT room_id FROM host_threads WHERE id = $1 AND room_id IS NOT NULL LIMIT 1`,
+    [run.host_task_thread_id ?? null],
+  );
+  if (roomThread.rows[0]?.room_id) return null;
   const message = await db.query<{ model_provider_id: string | null; model: string | null }>(
     `SELECT model_provider_id, model FROM host_thread_messages WHERE run_id = $1 LIMIT 1`,
     [run.id],

@@ -38,8 +38,9 @@ const FOLDER = {
   created_at: '', updated_at: '',
 }
 const THREAD = {
-  id: 'thread-1', project_folder_id: 'folder-1', host_id: 'host-1', adapter_type: 'claude_code',
+  id: 'thread-1', task_id: null, room_id: null, agent_id: null, project_folder_id: 'folder-1', host_id: 'host-1', adapter_type: 'claude_code',
   vendor_session_id: 'vs-1', last_run_id: 'run-1', status: 'active' as const,
+  last_session_id: null,
   created_by_user_id: 'user-1', created_at: '', updated_at: '', queue_paused_at: null,
 }
 const RUN = {

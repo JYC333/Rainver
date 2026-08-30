@@ -815,7 +815,7 @@ function selectedBackend(catalog: ConversationBackendCatalog): BackendSelection 
       credential_profile_id: catalog.binding.credential_profile_id ?? null,
     }
   }
-  const option = catalog.options[0]
+  const option = catalog.options.find(candidate => candidate.usable !== false) ?? catalog.options[0]
   if (!option) return null
   return {
     runtime_profile_id: option.runtime_profile_id,
@@ -830,6 +830,13 @@ function selectedBackend(catalog: ConversationBackendCatalog): BackendSelection 
 function backendChoices(catalog: ConversationBackendCatalog | undefined) {
   if (!catalog) return []
   return catalog.options.flatMap(option => {
+    const statusSuffix = option.host_bound && option.host_name
+      ? ` · on ${option.host_name}`
+      : ''
+    const reasonSuffix = option.usable === false && option.reason
+      ? ` — ${option.reason}`
+      : ''
+    const disabled = option.usable === false
     if (!option.requires_cli_credential) {
       const selection = {
         runtime_profile_id: option.runtime_profile_id,
@@ -837,7 +844,8 @@ function backendChoices(catalog: ConversationBackendCatalog | undefined) {
       }
       return [{
         value: backendSelectionValue(selection),
-        label: option.model_name ? `${option.name} · ${option.model_name}` : option.name,
+        label: `${option.model_name ? `${option.name} · ${option.model_name}` : option.name}${statusSuffix}${reasonSuffix}`,
+        disabled,
       }]
     }
     return option.credential_profiles.map(profile => {
@@ -847,7 +855,8 @@ function backendChoices(catalog: ConversationBackendCatalog | undefined) {
       }
       return {
         value: backendSelectionValue(selection),
-        label: `${option.name} · ${profile.name}`,
+        label: `${option.name} · ${profile.name}${statusSuffix}${reasonSuffix}`,
+        disabled,
       }
     })
   })

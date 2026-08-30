@@ -73,9 +73,17 @@ write-once denormalisation with composite constraints preventing drift.
 
 **Hard rule, not relaxable without a new decision:** a host accepts Runs and
  serves live file reads only for that host's registered owner. There is no
- multi-user host sharing. Run-end diffs are bounded `space_shared` work
- products because the owner deliberately dispatched the Run; live tree/file/
- Git reads are machine state and remain owner-only.
+multi-user host sharing. Run-end diffs are bounded `space_shared` work
+products because the owner deliberately dispatched the Run; live tree/file/
+Git reads are machine state and remain owner-only.
+
+A Room specialist bound to a remote Workspace Location is still an Agent
+identity, but its Room turns are sent through the same host daemon and one
+opaque vendor session is kept per Room × Agent. The trigger is owner-only;
+there is no queue or replay while the host is offline. A rendered Room prompt
+(Project state plus Room summary/recent messages) is prompt content the owner
+already may read, not Runtime Context, memory, credentials, or provider state;
+none of those cross the host boundary.
 
 ### 3. Paths are host-owned
 
@@ -141,6 +149,12 @@ converted into API billing.
 `session/resume`, driven by the general ACP controller for every runtime,
 tracked by the control plane only as an opaque `vendor_session_id` per task
 thread pinned to one (host, workspace, installation).
+
+Room continuity uses the same host-thread authority, generalized from Task
+threads: one live `host_threads` row per Room × Agent, resettable by the host
+owner, and closed when the specialist leaves the Room. The daemon still
+receives only the existing launch frame; the Room identity and prompt stay in
+the control plane's Run record.
 
 ### 5. The daemon is identity, connectivity, and supervision — nothing more
 
@@ -251,3 +265,6 @@ probing, and full local-first replication are likewise out of scope.
 - **2026-08-30** — the owner-only rule covers live remote Folder reads; the
   `folder_read` pull channel and shared `@rainver/folder-read` policy keep
   paths host-owned while returning bounded tree/file/Git data to Files & Code.
+- **2026-08-30** — Room specialists are host-bound Agent records with one
+  owner-only Room × Agent host thread; Room prompt context remains prompt
+  content and never becomes server-brokered Runtime Context.

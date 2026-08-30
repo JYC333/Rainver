@@ -26,6 +26,8 @@ import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
 import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
+import { isStale } from "../hosts/repository.js";
+import { hostInstallationIds } from "../hosts/capabilities.js";
 
 export interface RoomIdentity {
   spaceId: string;
@@ -134,7 +136,7 @@ export class RoomService {
           return {
             room: existingRoom,
             user_members: await existingRepository.listUserMembers(identity.spaceId, existingRoom.id),
-            agent_members: await existingRepository.listAgentMembers(identity.spaceId, existingRoom.id),
+            agent_members: await existingRepository.listAgentMembers(identity.spaceId, existingRoom.id, identity.userId),
             viewer_can_write: true,
             ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, existingRoom.id, identity.userId)),
           };
@@ -168,7 +170,7 @@ export class RoomService {
           return {
             room: existingPersonal,
             user_members: await repository.listUserMembers(identity.spaceId, existingPersonal.id),
-            agent_members: await repository.listAgentMembers(identity.spaceId, existingPersonal.id),
+            agent_members: await repository.listAgentMembers(identity.spaceId, existingPersonal.id, identity.userId),
             viewer_can_write: true,
             ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, existingPersonal.id, identity.userId)),
           };
@@ -208,7 +210,7 @@ export class RoomService {
       return {
         room,
         user_members: await repository.listUserMembers(identity.spaceId, room.id),
-        agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
+        agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
         // Whoever just opened it can write the Project — `createRoom` asserts
         // that above — but it is stated rather than assumed, because the
         // response is a `RoomDetail` and every one of those carries it.
@@ -250,12 +252,22 @@ export class RoomService {
     name?: string | null;
     idempotency_key?: string | null;
     confirm_room_share?: boolean;
+    execution?: {
+      host_id: string;
+      workspace_location_id: string;
+      adapter_type: string;
+      installation: string;
+    } | null;
   }) {
     return this.rosterService().addPresetAgent(identity, roomId, input);
   }
 
   removeAgent(identity: RoomIdentity, roomId: string, agentId: string) {
     return this.rosterService().removeAgent(identity, roomId, agentId);
+  }
+
+  resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
+    return this.rosterService().resetAgentContext(identity, roomId, agentId);
   }
 
   inviteUser(identity: RoomIdentity, roomId: string, input: {
@@ -454,7 +466,7 @@ export class RoomService {
     return {
       room,
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
-      agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
+      agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
       // What every roster mutation is gated on, so the page can show only the
       // controls the server will accept.
       viewer_can_write: await canWriteProject(this.pool, identity.spaceId, room.project_id, identity.userId),
@@ -788,7 +800,7 @@ export class RoomService {
   ): Promise<void> {
     // Re-read under the Room lock: another first message may have provisioned
     // one between the pre-transaction check and here.
-    const members = await rooms.listAgentMembers(identity.spaceId, room.id);
+    const members = await rooms.listAgentMembers(identity.spaceId, room.id, identity.userId);
     if (members.some((member) => member.role === "manager")) return;
     // The Room's Project, so each Project talks to its own instance.
     const assistant = await new SpaceAssistantService(client, this.pool)
@@ -1005,7 +1017,7 @@ export class RoomService {
         input.focus_refs ?? null,
       );
       const projectStateContext = projectState.text;
-      const agentMembers = await rooms.listAgentMembers(identity.spaceId, roomId);
+      const agentMembers = await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId);
       const manager = agentMembers.find((member) => member.role === "manager");
       if (!manager) throw new HttpError(409, "Room has no active manager agent");
       const activeAgentIds = new Set(agentMembers.map((member) => member.agent_id));
@@ -1082,6 +1094,40 @@ export class RoomService {
           })
         : null;
 
+      const hostDispatch = await filterHostBoundRoomRecipients({
+        client,
+        spaceId: identity.spaceId,
+        roomId,
+        projectId: room.project_id,
+        userId: identity.userId,
+        sessionId,
+        segments: segments ?? [{ recipient_agent_ids: [manager.agent_id], content }],
+        requestedBackends: input.backends,
+        agentMembers,
+        sessions,
+      });
+      const effectiveSegments = input.recipient_segments?.length
+        ? hostDispatch.segments
+        : null;
+      if (hostDispatch.recipientAgentIds.length === 0) {
+        await client.query(
+          `UPDATE messages
+              SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
+                || $4::jsonb
+            WHERE space_id = $1 AND session_id = $2 AND id = $3`,
+          [identity.spaceId, sessionId, roomMessage.id, JSON.stringify({ host_dispatch_skipped: true })],
+        );
+        return {
+          message: {
+            ...roomMessage,
+            metadata_json: { ...(roomMessage.metadata_json ?? {}), host_dispatch_skipped: true },
+          },
+          task_group_ids: [],
+          run_ids: [],
+          conversation: renamedConversation ?? await requireConversation(rooms, identity, roomId, sessionId),
+        };
+      }
+
       const groups = new AgentGroupRunService(this.config, this.pool);
       const created = await groups.createGroupInTransaction(client, identity, {
         space_id: identity.spaceId,
@@ -1105,7 +1151,7 @@ export class RoomService {
         group_id: created.group.id,
         content,
         routing_mode: input.routing_mode,
-        recipient_segments: segments,
+        recipient_segments: effectiveSegments,
         metadata_json: {
           room_id: roomId,
           session_id: sessionId,
@@ -1156,6 +1202,118 @@ export class RoomService {
           ?? await requireConversation(rooms, identity, roomId, sessionId),
       };
   }
+}
+
+type HostRoomRecipientSegment = AgentGroupMessageRecipientSegment;
+
+async function filterHostBoundRoomRecipients(input: {
+  client: PoolClient;
+  spaceId: string;
+  roomId: string;
+  projectId: string;
+  userId: string;
+  sessionId: string;
+  segments: readonly HostRoomRecipientSegment[];
+  requestedBackends: readonly { agent_id: string; runtime_profile_id: string }[];
+  agentMembers: RoomDetail["agent_members"];
+  sessions: PgSessionRepository;
+}): Promise<{ segments: HostRoomRecipientSegment[]; recipientAgentIds: string[] }> {
+  const requested = new Map(input.requestedBackends.map((backend) => [backend.agent_id, backend.runtime_profile_id]));
+  const blocked = new Set<string>();
+  const memberName = (agentId: string) =>
+    input.agentMembers.find((member) => member.agent_id === agentId)?.agent_name ?? agentId;
+
+  for (const agentId of [...new Set(input.segments.flatMap((segment) => segment.recipient_agent_ids))]) {
+    const profile = await input.client.query<{
+      execution_host_id: string | null;
+      workspace_location_id: string | null;
+      adapter_type: string;
+      runtime_installation: string | null;
+      host_name: string | null;
+      host_owner_user_id: string | null;
+      host_status: string | null;
+      last_heartbeat_at: string | null;
+      location_status: string | null;
+      folder_project_id: string | null;
+      execution_ready: boolean | null;
+      capabilities_json: unknown;
+    }>(
+      `SELECT profile.execution_host_id, profile.workspace_location_id,
+              profile.adapter_type,
+              profile.runtime_installation, host.name AS host_name,
+              host.owner_user_id AS host_owner_user_id, host.status AS host_status,
+              host.last_heartbeat_at, location.status AS location_status,
+              folder.project_id AS folder_project_id,
+              location.execution_ready, host.capabilities_json
+         FROM agent_runtime_profiles profile
+         LEFT JOIN hosts host ON host.id = profile.execution_host_id
+         LEFT JOIN workspace_locations location ON location.id = profile.workspace_location_id
+         LEFT JOIN project_folders folder ON folder.id = location.project_folder_id
+        WHERE profile.space_id = $1 AND profile.agent_id = $2
+          AND profile.enabled = true
+          AND ($3::varchar IS NULL OR profile.id = $3)
+        ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
+        LIMIT 1`,
+      [input.spaceId, agentId, requested.get(agentId) ?? null],
+    );
+    const binding = profile.rows[0];
+    if (!binding?.execution_host_id) continue;
+    const label = memberName(agentId);
+    const hostLabel = binding.host_name ?? binding.execution_host_id;
+    const owner = binding.host_owner_user_id === input.userId;
+    const online = binding.host_status === "online"
+      && !isStale(binding.last_heartbeat_at)
+      && binding.location_status === "active"
+      && binding.folder_project_id === input.projectId
+      && binding.execution_ready === true
+      && hostInstallationIds(binding.capabilities_json, binding.adapter_type).includes(binding.runtime_installation!);
+    if (!owner) {
+      blocked.add(agentId);
+      await input.sessions.addRoomSystemNotice(
+        input.spaceId,
+        input.userId,
+        input.roomId,
+        input.sessionId,
+        {
+          content: `${label} runs on ${hostLabel} and answers only its owner.`,
+          metadata: {
+            room_id: input.roomId,
+            agent_id: agentId,
+            host_dispatch_event: "owner_only_denied",
+            policy_denial: true,
+          },
+        },
+      );
+    } else if (!online) {
+      blocked.add(agentId);
+      await input.sessions.addRoomSystemNotice(
+        input.spaceId,
+        input.userId,
+        input.roomId,
+        input.sessionId,
+        {
+          content: `${label} is on ${hostLabel}, which is offline, and did not respond.`,
+          metadata: {
+            room_id: input.roomId,
+            agent_id: agentId,
+            host_dispatch_event: "host_offline",
+            policy_denial: true,
+          },
+        },
+      );
+    }
+  }
+
+  const filteredSegments = input.segments
+    .map((segment) => ({
+      ...segment,
+      recipient_agent_ids: segment.recipient_agent_ids.filter((agentId) => !blocked.has(agentId)),
+    }))
+    .filter((segment) => segment.recipient_agent_ids.length > 0);
+  return {
+    segments: filteredSegments,
+    recipientAgentIds: [...new Set(filteredSegments.flatMap((segment) => segment.recipient_agent_ids))],
+  };
 }
 
 function normalizeIdempotencyKey(value: string | null | undefined): string | null {

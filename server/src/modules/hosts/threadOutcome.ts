@@ -1,8 +1,9 @@
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadRepository } from "./threadRepository.js";
 import { advanceThreadQueue } from "./queueAdvance.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 
 /**
  * control-center-phase2-plan.md P1: moved out of the (now-async) dispatch
@@ -19,7 +20,7 @@ import { runOutputResult } from "../runs/orchestrationResults.js";
  * pauses the queue instead of silently firing the next message on top of
  * whatever just went wrong.
  */
-export async function recordHostTaskThreadOutcome(
+export async function recordHostThreadOutcome(
   config: ServerConfig,
   threadId: string,
   completedRun: { id: string; status: string; output_json?: unknown },
@@ -27,7 +28,7 @@ export async function recordHostTaskThreadOutcome(
 ): Promise<void> {
   if (!config.databaseUrl) return;
   const pool = getDbPool(config.databaseUrl);
-  const threads = new PgHostTaskThreadRepository(pool);
+  const threads = new PgHostThreadRepository(pool);
   const rawSessionId = runOutputResult(completedRun.output_json).external_session_id;
   const externalSessionId = typeof rawSessionId === "string" && rawSessionId ? rawSessionId : null;
   await threads.recordRunOutcome(threadId, {
@@ -39,6 +40,55 @@ export async function recordHostTaskThreadOutcome(
     // reset, even though it also produces no prior session id.
     sessionReset: resumeAttempted && !externalSessionId,
   });
+
+  if (resumeAttempted && !externalSessionId) {
+    const room = await pool.query<{
+      space_id: string;
+      room_id: string;
+      session_id: string | null;
+      agent_name: string;
+      created_by_user_id: string;
+    }>(
+      `SELECT pf.space_id, thread.room_id, thread.last_session_id AS session_id,
+              COALESCE(NULLIF(agent.name, ''), thread.agent_id) AS agent_name,
+              thread.created_by_user_id
+         FROM host_threads thread
+         JOIN workspace_locations location ON location.id = thread.workspace_location_id
+         JOIN project_folders pf ON pf.id = location.project_folder_id
+         JOIN agents agent ON agent.id = thread.agent_id AND agent.space_id = pf.space_id
+        WHERE thread.id = $1 AND thread.room_id IS NOT NULL AND thread.agent_id IS NOT NULL
+          AND thread.status <> 'closed'
+        LIMIT 1`,
+      [threadId],
+    );
+    const owner = room.rows[0];
+    if (owner?.session_id) {
+      const existing = await pool.query(
+        `SELECT 1 FROM messages
+          WHERE space_id = $1 AND session_id = $2
+            AND metadata_json->>'host_thread_id' = $3
+            AND metadata_json->>'host_thread_event' = 'session_reset'
+          LIMIT 1`,
+        [owner.space_id, owner.session_id, threadId],
+      );
+      if (!existing.rows[0]) {
+        await new PgSessionRepository(pool).addRoomSystemNotice(
+          owner.space_id,
+          owner.created_by_user_id,
+          owner.room_id,
+          owner.session_id,
+          {
+            content: `${owner.agent_name}'s context was reset`,
+            metadata: {
+              host_thread_id: threadId,
+              host_thread_event: "session_reset",
+              room_display: "system",
+            },
+          },
+        );
+      }
+    }
+  }
 
   if (completedRun.status === "succeeded") {
     await advanceThreadQueue(pool, threadId);

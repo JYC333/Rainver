@@ -393,6 +393,130 @@ describe("agents CRUD routes", () => {
     ]);
   });
 
+  it("passes host binding fields through runtime profile creation", async () => {
+    let inserted: readonly unknown[] = [];
+    const client = {
+      query: vi.fn(async (sql: string, params: readonly unknown[] = []) => {
+        const norm = sql.replace(/\s+/g, " ").trim();
+        if (norm === "BEGIN" || norm === "COMMIT" || norm === "ROLLBACK") {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.startsWith("INSERT INTO agent_runtime_profiles")) {
+          inserted = params;
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.includes("SELECT project_id, owner_user_id FROM agents")) {
+          return { rows: [{ project_id: "project-1", owner_user_id: "user-1" }], rowCount: 1 };
+        }
+        if (sql.includes("SELECT host.owner_user_id AS host_owner_user_id")) {
+          return {
+            rows: [{
+              host_owner_user_id: "user-1",
+              host_kind: "remote",
+              host_status: "online",
+              capabilities_json: {
+                installations: {
+                  claude_code: [{ id: "own", version: "1.0.0", logged_in: true }],
+                },
+              },
+              location_host_id: "host-1",
+              location_space_id: "space-1",
+              location_status: "active",
+              folder_space_id: "space-1",
+              folder_project_id: "project-1",
+            }],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("FROM agent_runtime_profiles arp")) {
+          return {
+            rows: [{
+              id: "runtime-profile-1",
+              space_id: "space-1",
+              agent_id: "agent-1",
+              name: "Host Reviewer",
+              adapter_type: "claude_code",
+              execution_host_id: "host-1",
+              workspace_location_id: "location-1",
+              runtime_installation: "own",
+              model_provider_id: null,
+              provider_name: null,
+              provider_type: null,
+              model_name: null,
+              credential_profile_id: null,
+              runtime_config_json: { adapter_type: "claude_code" },
+              runtime_policy_json: { default_adapter_type: "claude_code" },
+              enabled: true,
+              is_default: false,
+              created_at: "2026-06-20T00:00:00.000Z",
+              updated_at: "2026-06-20T00:00:00.000Z",
+            }],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+    const pool = {
+      connect: vi.fn(async () => client),
+      query: vi.fn(async (sql: string) => {
+        const normalized = sql.replace(/\s+/g, " ").trim();
+        if (normalized.startsWith("SELECT id FROM agents")) {
+          return { rows: [{ id: "agent-1" }], rowCount: 1 };
+        }
+        if (normalized.includes("SELECT project_id, owner_user_id FROM agents")) {
+          return { rows: [{ project_id: "project-1", owner_user_id: "user-1" }], rowCount: 1 };
+        }
+        if (normalized.includes("SELECT host.owner_user_id AS host_owner_user_id")) {
+          return {
+            rows: [{
+              host_owner_user_id: "user-1",
+              host_kind: "remote",
+              host_status: "online",
+              capabilities_json: {
+                installations: {
+                  claude_code: [{ id: "own", version: "1.0.0", logged_in: true }],
+                },
+              },
+              location_host_id: "host-1",
+              location_space_id: "space-1",
+              location_status: "active",
+              folder_space_id: "space-1",
+              folder_project_id: "project-1",
+            }],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+    };
+    vi.mocked(getDbPool).mockReturnValue(pool as never);
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/runtime-profiles",
+      payload: {
+        name: "Host Reviewer",
+        adapter_type: "claude_code",
+        execution_host_id: "host-1",
+        workspace_location_id: "location-1",
+        runtime_installation: "own",
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      execution_host_id: "host-1",
+      workspace_location_id: "location-1",
+      runtime_installation: "own",
+    });
+    expect(inserted[7]).toBe("host-1");
+    expect(inserted[8]).toBe("location-1");
+    expect(inserted[9]).toBe("own");
+  });
+
   it("rejects user credentials on shared Agent runtime profiles", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);

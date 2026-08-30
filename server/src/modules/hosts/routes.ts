@@ -15,7 +15,7 @@ import { HttpError, withDbTransaction,
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadRepository } from "./threadRepository.js";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 import {
   PgHostRuntimeProviderBindingRepository,
@@ -148,10 +148,12 @@ async function requireThreadProjectWriter(
 ): Promise<{ spaceId: string; projectId: string } | { error: true; statusCode: number; detail: string }> {
   const row = await pool.query<{ space_id: string; project_id: string }>(
     `SELECT pf.space_id, pf.project_id
-       FROM host_task_threads t
-       JOIN workspace_locations wl ON wl.id = t.workspace_location_id
-       JOIN project_folders pf ON pf.id = wl.project_folder_id
+       FROM host_threads t
+      JOIN workspace_locations wl ON wl.id = t.workspace_location_id
+      JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE t.id = $1
+        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.status IN ('active', 'session_reset')
       LIMIT 1`,
     [threadId],
   );
@@ -305,7 +307,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
       throw error;
     }
-    const threads = new PgHostTaskThreadRepository(pool);
+    const threads = new PgHostThreadRepository(pool);
     return reply.send({ items: await threads.listForProject(identity.spaceId, projectId) });
   });
 
@@ -334,7 +336,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const limitRaw = (request.query as Record<string, string | undefined>).limit;
     const limit = limitRaw && /^\d+$/.test(limitRaw) ? Math.min(Number.parseInt(limitRaw, 10), 100) : 20;
     const pool = getDbPool(context.config.databaseUrl);
-    const threads = new PgHostTaskThreadRepository(pool);
+    const threads = new PgHostThreadRepository(pool);
     return reply.send({ items: await threads.listRecentForSpace(identity.spaceId, identity.userId, limit) });
   });
 
@@ -796,7 +798,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const projectAccess = await requireThreadProjectWriter(pool, threadId, user.id);
     if ("error" in projectAccess) return reply.code(projectAccess.statusCode).send({ detail: projectAccess.detail });
 
-    const threads = new PgHostTaskThreadRepository(pool);
+    const threads = new PgHostThreadRepository(pool);
     await threads.resumeQueue(threadId);
     const advance = await advanceThreadQueue(pool, threadId);
     return reply.send({
@@ -877,7 +879,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const pool = getDbPool(context.config.databaseUrl);
     const projectRow = await pool.query<{ project_id: string }>(
       `SELECT pf.project_id
-         FROM host_task_threads t
+         FROM host_threads t
          JOIN workspace_locations wl ON wl.id = t.workspace_location_id
          JOIN project_folders pf ON pf.id = wl.project_folder_id
         WHERE t.id = $1 AND pf.space_id = $2
@@ -924,7 +926,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const pool = getDbPool(context.config.databaseUrl);
     const projectRow = await pool.query<{ project_id: string }>(
       `SELECT pf.project_id
-         FROM host_task_threads t
+         FROM host_threads t
          JOIN workspace_locations wl ON wl.id = t.workspace_location_id
          JOIN project_folders pf ON pf.id = wl.project_folder_id
         WHERE t.id = $1 AND pf.space_id = $2

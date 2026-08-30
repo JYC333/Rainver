@@ -47,6 +47,9 @@ export interface RouteCandidate {
   runtime_profile_id: string;
   profile_name: string;
   adapter_type: string;
+  /** A Room specialist whose runtime is pinned to a paired execution Host. */
+  host_bound?: boolean;
+  workspace_location_id?: string | null;
   model_provider_id: string | null;
   model_name: string | null;
   credential_profile_id: string | null;

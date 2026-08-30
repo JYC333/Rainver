@@ -143,7 +143,8 @@ import type {
   HostRecentThread,
   HostRuntimeAdapterOption,
   HostRuntimeProviderBinding,
-  HostTaskThread,
+  HostExecutionTargetsResponse,
+  HostThread,
   HostThreadEvent,
   HostThreadMessage,
   WorkspaceLocation,
@@ -1388,6 +1389,8 @@ export const roomsApi = {
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-transfer`, body),
   claimOwner: (roomId: string) =>
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
+  resetAgentContext: (roomId: string, agentId: string) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, {}),
   conversations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1944,7 +1947,7 @@ export const hostsApi = {
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
   revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
   listThreads: (projectId: string) =>
-    get<{ items: HostTaskThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
+    get<{ items: HostThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
   /** Cross-project landing read (C10) — Project is a filter the caller applies via `listThreads`, not a precondition. */
   listRecentThreads: (limit = 20) =>
     get<{ items: HostRecentThread[] }>(`/hosts/threads/recent?limit=${limit}`),
@@ -2786,6 +2789,8 @@ export const projectsApi = {
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
+  hostExecutionTargets: (id: string) =>
+    get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
   getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
   mainlineRoom: (id: string) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`),
   /**

@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { hostsApi, projectFoldersApi, runsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostTaskThread, Run } from '../../types/api'
+import type { Host, HostThread, Run } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -11,7 +11,7 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 
 interface ThreadGroup {
-  thread: HostTaskThread
+  thread: HostThread
   projectId: string
   projectName: string | null
   folderName: string | null
@@ -33,7 +33,7 @@ function duration(run: Run): string {
 
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
 
-function threadUrl(projectId: string, thread: HostTaskThread): string {
+function threadUrl(projectId: string, thread: HostThread): string {
   return `/command-center/threads/${thread.id}?project_id=${encodeURIComponent(projectId)}&folder_id=${encodeURIComponent(thread.project_folder_id)}`
 }
 

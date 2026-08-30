@@ -75,7 +75,7 @@ export * from "./tasks.js";
 export * from "./usage.js";
 export * from "./machines.js";
 export * from "./hosts.js";
-export * from "./hostTaskThreads.js";
+export * from "./hostThreads.js";
 export * from "./hostThreadEvents.js";
 export * from "./hostThreadMessages.js";
 export * from "./hostRuntimeProviderBindings.js";

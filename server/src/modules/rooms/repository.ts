@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import type { SessionOut } from "@rainver/protocol";
+import { isStale } from "../hosts/repository.js";
 
 export interface RoomRecord {
   id: string;
@@ -38,6 +39,10 @@ export interface RoomAgentMemberRecord {
   agent_kind: string;
   role: "manager" | "member";
   status: "active" | "removed";
+  trigger_policy: "owner_only";
+  host_name: string | null;
+  host_online: boolean;
+  host_owner_is_me: boolean;
   private_shared_user_ids: string[];
   created_at: string;
   updated_at: string;
@@ -270,15 +275,15 @@ export class PgRoomRepository {
     const now = input.now ?? new Date().toISOString();
     const result = await this.db.query<RoomAgentMemberRecord>(
       `INSERT INTO room_agent_members (
-         id, space_id, room_id, agent_id, role, status, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
+         id, space_id, room_id, agent_id, role, status, trigger_policy, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, 'active', 'owner_only', $6, $6)
        RETURNING id, space_id, room_id, agent_id,
                  (SELECT name FROM agents
                    WHERE agents.space_id = $2 AND agents.id = $4) AS agent_name,
                  (SELECT agent_kind FROM agents
                    WHERE agents.space_id = $2 AND agents.id = $4) AS agent_kind,
-                 '[]'::jsonb AS private_shared_user_ids,
-                 role, status, created_at, updated_at`,
+                 role, status, trigger_policy, '[]'::jsonb AS private_shared_user_ids,
+                 created_at, updated_at`,
       [randomUUID(), input.space_id, input.room_id, input.agent_id, input.role, now],
     );
     return required(result.rows[0], "Room agent member insert returned no row");
@@ -376,8 +381,12 @@ export class PgRoomRepository {
     return result.rows;
   }
 
-  async listAgentMembers(spaceId: string, roomId: string): Promise<RoomAgentMemberRecord[]> {
-    const result = await this.db.query<RoomAgentMemberRecord>(
+  async listAgentMembers(spaceId: string, roomId: string, viewerUserId?: string): Promise<RoomAgentMemberRecord[]> {
+    const result = await this.db.query<RoomAgentMemberRecord & {
+      host_status: string | null;
+      last_heartbeat_at: string | null;
+      host_owner_user_id: string | null;
+    }>(
       `SELECT member.id, member.space_id, member.room_id, member.agent_id,
               agent.name AS agent_name, agent.agent_kind,
               COALESCE((
@@ -388,16 +397,34 @@ export class PgRoomRepository {
                    AND grant_row.agent_id = member.agent_id
                    AND grant_row.revoked_at IS NULL
               ), '[]'::jsonb) AS private_shared_user_ids,
-              member.role, member.status, member.created_at, member.updated_at
+              member.role, member.status, member.trigger_policy,
+              host.name AS host_name, host.status AS host_status,
+              host.last_heartbeat_at, host.owner_user_id AS host_owner_user_id,
+              member.created_at, member.updated_at
          FROM room_agent_members member
          JOIN agents agent
            ON agent.space_id = member.space_id AND agent.id = member.agent_id
+         LEFT JOIN LATERAL (
+           SELECT profile.execution_host_id
+             FROM agent_runtime_profiles profile
+            WHERE profile.space_id = member.space_id
+              AND profile.agent_id = member.agent_id
+              AND profile.enabled = true
+            ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
+            LIMIT 1
+         ) binding ON true
+         LEFT JOIN hosts host ON host.id = binding.execution_host_id
         WHERE member.space_id = $1 AND member.room_id = $2
           AND member.status = 'active' AND agent.status = 'active'
         ORDER BY member.role DESC, member.created_at ASC, member.id ASC`,
       [spaceId, roomId],
     );
-    return result.rows;
+    return result.rows.map((row) => ({
+      ...row,
+      host_name: row.host_name ?? null,
+      host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
+      host_owner_is_me: row.host_owner_user_id !== null && row.host_owner_user_id === viewerUserId,
+    }));
   }
 
   async getConversation(

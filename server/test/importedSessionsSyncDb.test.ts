@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -116,7 +117,7 @@ describe("ambient session sync", () => {
       db.pool,
       [
         "token_usage_events", "imported_session_records", "imported_sessions", "activity_records",
-        "workspace_locations", "project_folders", "project_members", "hosts", "machines",
+        "host_threads", "workspace_locations", "project_folders", "project_members", "hosts", "machines",
         "projects", "space_memberships", "users", "spaces",
       ],
       { cascade: true },
@@ -325,5 +326,78 @@ describe("ambient session sync", () => {
       [SPACE],
     );
     expect(activity.rows[0]!.total).toBe("1");
+  });
+
+  it("does not import a vendor session already owned by a host thread", async () => {
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const room = await db.pool.query<{ id: string }>(
+      `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline = true LIMIT 1`,
+      [SPACE, PROJECT],
+    );
+    const agentId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, project_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'Room host Agent', 'active', 'standard', 'private', now(), now())`,
+      [agentId, SPACE, PROJECT, OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, workspace_location_id, room_id, agent_id, adapter_type,
+         runtime_installation, vendor_session_id, status, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'claude_code', 'own', 'agent-session-1', 'active', $5, now(), now())`,
+      [randomUUID(), LOCATION, room.rows[0]!.id, agentId, OWNER],
+    );
+    stubHost([replay("agent-session-1")], ["agent-session-1"]);
+
+    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+
+    expect(report.sessions_seen).toBe(0);
+    expect(report.sessions_written).toBe(0);
+    await expect(db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM imported_sessions WHERE vendor_session_id = 'agent-session-1'`,
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+  });
+
+  it("keeps excluding an Agent's session after its thread was reset and closed", async () => {
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const room = await db.pool.query<{ id: string }>(
+      `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline = true LIMIT 1`,
+      [SPACE, PROJECT],
+    );
+    const agentId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, project_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'Room host Agent', 'active', 'standard', 'private', now(), now())`,
+      [agentId, SPACE, PROJECT, OWNER],
+    );
+    const threadId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, workspace_location_id, room_id, agent_id, adapter_type,
+         runtime_installation, vendor_session_id, status, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'claude_code', 'own', 'agent-session-old', 'active', $5, now(), now())`,
+      [threadId, LOCATION, room.rows[0]!.id, agentId, OWNER],
+    );
+    const threads = new PgHostThreadRepository(db.pool);
+    // Reset moves the thread on from its first session; the second session
+    // then breaks on resume; finally the specialist leaves the Room.
+    await threads.resetRoomAgent(room.rows[0]!.id, agentId);
+    await threads.recordRunOutcome(threadId, { lastRunId: randomUUID(), vendorSessionId: "agent-session-mid", sessionReset: false });
+    await threads.recordRunOutcome(threadId, { lastRunId: randomUUID(), vendorSessionId: null, sessionReset: true });
+    await threads.closeRoomAgent(room.rows[0]!.id, agentId);
+    await expect(db.pool.query<{ vendor_session_id: string | null; retired: string[] }>(
+      `SELECT vendor_session_id, retired_vendor_session_ids AS retired FROM host_threads WHERE id = $1`,
+      [threadId],
+    )).resolves.toMatchObject({ rows: [{ vendor_session_id: null, retired: ["agent-session-old", "agent-session-mid"] }] });
+
+    stubHost([replay("agent-session-old"), replay("agent-session-mid")], ["agent-session-old", "agent-session-mid"]);
+    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+
+    expect(report.sessions_written).toBe(0);
+    await expect(db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM imported_sessions WHERE vendor_session_id IN ('agent-session-old', 'agent-session-mid')`,
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 });

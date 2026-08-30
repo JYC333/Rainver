@@ -4,7 +4,7 @@ import { adapterProviderRequirement } from "../runs/runtimeProviderBinding.js";
 import { AMBIENT_BACKEND, DispatchOptionsSchema, INHERIT_BACKEND, OWN_INSTALLATION, type DispatchBackend, type DispatchOptions, type RuntimeOptionChoice } from "@rainver/protocol";
 import { normalizeHostCapabilities } from "./capabilities.js";
 import { PgHostRuntimeProviderBindingRepository } from "./runtimeProviderBindingRepository.js";
-import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
+import { PgHostThreadRepository } from "./threadRepository.js";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 
 /**
@@ -98,7 +98,7 @@ export async function dispatchOptions(input: {
 
   // A thread pins its runtime and copy; a new dispatch chooses, defaulting to
   // the machine's own copy where there is one.
-  const thread = input.threadId ? await new PgHostTaskThreadRepository(input.db).getById(input.threadId) : null;
+  const thread = input.threadId ? await new PgHostThreadRepository(input.db).getTaskById(input.threadId) : null;
   const adapterType = thread?.adapter_type ?? input.adapterType ?? (adapters.length === 1 ? adapters[0]!.adapter_type : null);
   const copies = adapters.find((adapter) => adapter.adapter_type === adapterType)?.installations ?? [];
   const installation = thread?.runtime_installation

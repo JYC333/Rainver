@@ -6,7 +6,7 @@ import { sessions } from "./sessions.js";
 import { spaces } from "./spaces.js";
 import { projectFolders } from "./projectFolders.js";
 import { workspaceLocations } from "./workspaceLocations.js";
-import { hostTaskThreads } from "./hostTaskThreads.js";
+import { hostThreads } from "./hostThreads.js";
 import { modelProviders } from "./providers.js";
 import { agentRunGroups, runDelegations } from "./agentGroups.js";
 import { artifacts } from "./artifacts.js";
@@ -150,7 +150,7 @@ export const runs = pgTable("runs", {
 		}).onDelete("set null"),
 	foreignKey({
 			columns: [table.hostTaskThreadId],
-			foreignColumns: [hostTaskThreads.id],
+			foreignColumns: [hostThreads.id],
 			name: "runs_host_task_thread_id_fkey"
 		}).onDelete("set null"),
 	foreignKey({

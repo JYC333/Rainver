@@ -5,6 +5,7 @@ import AgentGroupsPage from '../AgentGroupsPage'
 import {
   ApiRequestError,
   agentsApi,
+  hostsApi,
   projectFoldersApi,
   projectsApi,
   proposalsApi,
@@ -21,7 +22,8 @@ vi.mock('../../../api/client', async () => {
   return {
   ApiRequestError,
   agentsApi: { list: vi.fn(), conversationBackends: vi.fn() },
-  projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn() },
+  projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
+  hostsApi: { listRuntimeAdapters: vi.fn() },
   projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
   roomsApi: {
     list: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock('../../../api/client', async () => {
     removeUser: vi.fn(),
     transferOwner: vi.fn(),
     claimOwner: vi.fn(),
+    resetAgentContext: vi.fn(),
   },
   runsApi: { get: vi.fn(), streamEvents: vi.fn() },
   spacesApi: { members: vi.fn() },
@@ -133,6 +136,7 @@ const detail: RoomDetail = {
     agent_kind: 'system_assistant',
     role: 'manager',
     status: 'active',
+    trigger_policy: 'owner_only',
     created_at: room.created_at,
     updated_at: room.updated_at,
   }],
@@ -218,6 +222,8 @@ describe('Rooms page', () => {
       limit: 100,
       offset: 0,
     })
+    vi.mocked(projectsApi.hostExecutionTargets).mockResolvedValue({ targets: [] })
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [] })
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
       project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
       brief: null,
@@ -365,6 +371,31 @@ describe('Rooms page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
     expect(browserConfirm).not.toHaveBeenCalled()
+  })
+
+  it('shows host-bound specialist facts and lets the host owner reset context', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({
+      ...detail,
+      agent_members: [{
+        ...detail.agent_members[0]!,
+        agent_id: 'agent-host',
+        agent_name: 'Remote Reviewer',
+        agent_kind: 'standard',
+        role: 'member',
+        host_name: 'Workstation',
+        host_online: false,
+        host_owner_is_me: true,
+      }],
+    })
+    vi.mocked(roomsApi.resetAgentContext).mockResolvedValue(detail as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText(/on Workstation · owner-only/)).toBeInTheDocument()
+    expect(screen.getByText('offline')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset context for Remote Reviewer' }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Reset Remote Reviewer\'s context?')
+    fireEvent.click(screen.getByRole('button', { name: 'Reset context' }))
+    await waitFor(() => expect(roomsApi.resetAgentContext).toHaveBeenCalledWith('room-1', 'agent-host'))
   })
 
   it('shows a project-bound Room with persistent conversations and human/agent rosters', async () => {

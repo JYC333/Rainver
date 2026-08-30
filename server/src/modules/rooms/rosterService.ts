@@ -22,6 +22,8 @@ import {
   type RoomInvitationRecord,
 } from "./rosterRepository.js";
 import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -137,13 +139,23 @@ export class RoomRosterService {
     name?: string | null;
     idempotency_key?: string | null;
     confirm_room_share?: boolean;
+    execution?: {
+      host_id: string;
+      workspace_location_id: string;
+      adapter_type: string;
+      installation: string;
+    } | null;
   }) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       const preset = roomAgentPresetById(input.preset_id);
       if (!preset) throw new HttpError(404, `Room Agent preset '${input.preset_id}' not found`);
       const idempotencyKey = normalizeIdempotencyKey(input.idempotency_key);
       const fingerprint = idempotencyKey
-        ? createHash("sha256").update(JSON.stringify({ preset_id: input.preset_id, name: input.name?.trim() ?? null })).digest("hex")
+        ? createHash("sha256").update(JSON.stringify({
+          preset_id: input.preset_id,
+          name: input.name?.trim() ?? null,
+          execution: input.execution ?? null,
+        })).digest("hex")
         : null;
       if (idempotencyKey && fingerprint) {
         const prior = await client.query<{ request_fingerprint: string; agent_id: string }>(
@@ -172,9 +184,11 @@ export class RoomRosterService {
         });
       }
       const agentRepository = new PgAgentRepository(this.pool, this.config);
-      const runtimeProfiles = await this.presetRuntimeProfiles(client, identity.spaceId, room.id);
+      const runtimeProfiles = input.execution
+        ? []
+        : await this.presetRuntimeProfiles(client, identity.spaceId, room.id);
       const primaryProfile = runtimeProfiles[0];
-      if (!primaryProfile) {
+      if (!primaryProfile && !input.execution) {
         throw new HttpError(409, "Room has no executable backend for preset Agents", {
           code: "conversation_backend_required",
           detail: "Configure an eligible API or CLI backend before adding a preset specialist.",
@@ -183,7 +197,7 @@ export class RoomRosterService {
       }
       const agentInput: AgentCreateInput = {
         spaceId: identity.spaceId,
-        projectId: null,
+        projectId: input.execution ? room.project_id : null,
         userId: identity.userId,
         ownerUserId: identity.userId,
         name: input.name?.trim() || preset.name,
@@ -191,14 +205,19 @@ export class RoomRosterService {
         visibility: "private",
         roleInstruction: preset.role_instruction,
         systemPrompt: preset.system_prompt,
-        adapterType: primaryProfile.adapter_type,
-        defaultModelProviderId: primaryProfile.model_provider_id,
-        defaultModel: primaryProfile.model_name,
-        runtimeToolVersion: primaryProfile.runtime_tool_version,
-        runtimeConfigJson: primaryProfile.runtime_config_json,
-        runtimePolicyJson: primaryProfile.runtime_policy_json,
+        adapterType: input.execution?.adapter_type ?? primaryProfile!.adapter_type,
+        defaultModelProviderId: input.execution ? null : primaryProfile!.model_provider_id,
+        defaultModel: input.execution ? null : primaryProfile!.model_name,
+        runtimeToolVersion: input.execution ? null : primaryProfile!.runtime_tool_version,
+        runtimeConfigJson: input.execution ? {} : primaryProfile!.runtime_config_json,
+        runtimePolicyJson: input.execution
+          ? { default_adapter_type: input.execution.adapter_type }
+          : primaryProfile!.runtime_policy_json,
         capabilitiesJson: [],
         toolPermissionsJson: {},
+        executionHostId: input.execution?.host_id ?? null,
+        workspaceLocationId: input.execution?.workspace_location_id ?? null,
+        runtimeInstallation: input.execution?.installation ?? null,
       };
       const agent = await agentRepository.createInTransaction(client, agentInput);
       for (const profile of runtimeProfiles) {
@@ -261,6 +280,7 @@ export class RoomRosterService {
         );
         await repository.incrementRosterRevision(identity.spaceId, room.id);
       }
+      await new PgHostThreadRepository(client).closeRoomAgent(room.id, agentId);
       const revokedGrantCount = await repository.revokeAgentGrants({
         space_id: identity.spaceId,
         room_id: room.id,
@@ -271,6 +291,65 @@ export class RoomRosterService {
         ...(await this.roomDetail(client, identity, room.id)),
         revoked_grant_count: revokedGrantCount,
       };
+    });
+  }
+
+  async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
+    return this.withRoomWriter(identity, roomId, async (client, room) => {
+      const thread = await client.query<{
+        id: string;
+        host_owner_user_id: string | null;
+        agent_name: string;
+        dispatch_lock_id: string | null;
+      }>(
+        `SELECT thread.id, host.owner_user_id AS host_owner_user_id, agent.name AS agent_name,
+                thread.dispatch_lock_id
+           FROM host_threads thread
+           JOIN workspace_locations location ON location.id = thread.workspace_location_id
+           JOIN hosts host ON host.id = location.execution_host_id
+           JOIN agents agent ON agent.id = thread.agent_id
+          WHERE thread.room_id = $1 AND thread.agent_id = $2
+            AND thread.status IN ('active', 'session_reset')
+          LIMIT 1
+          FOR UPDATE`,
+        [room.id, agentId],
+      );
+      const current = thread.rows[0];
+      if (!current) throw new HttpError(404, "Host-bound Room Agent thread not found");
+      if (current.host_owner_user_id !== identity.userId) {
+        throw new HttpError(403, "Only the execution host owner can reset this Agent's context");
+      }
+      if (current.dispatch_lock_id) {
+        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; reset its context after it finishes");
+      }
+      const reset = await new PgHostThreadRepository(client).resetRoomAgent(room.id, agentId);
+      if (!reset) throw new HttpError(409, "Host Agent context changed before it could be reset");
+      const session = await client.query<{ id: string }>(
+        `SELECT id
+           FROM sessions
+          WHERE space_id = $1 AND room_id = $2 AND status = 'active'
+          ORDER BY updated_at DESC, created_at DESC, id DESC
+          LIMIT 1`,
+        [identity.spaceId, room.id],
+      );
+      if (session.rows[0]) {
+        await new PgSessionRepository(client).addRoomSystemNotice(
+          identity.spaceId,
+          identity.userId,
+          room.id,
+          session.rows[0].id,
+          {
+            content: `${current.agent_name}'s context was reset`,
+            metadata: {
+              room_id: room.id,
+              host_thread_id: reset.id,
+              host_thread_event: "session_reset",
+              host_thread_reset_reason: "explicit",
+            },
+          },
+        );
+      }
+      return this.roomDetail(client, identity, room.id);
     });
   }
 
@@ -874,7 +953,7 @@ export class RoomRosterService {
     return {
       room,
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
-      agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
+      agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
       viewer_can_write: await canWriteProject(client, identity.spaceId, room.project_id, identity.userId),
       ...(await repository.audienceForViewer(identity.spaceId, room.id, identity.userId)),
     };

@@ -322,6 +322,14 @@ export class PgProjectFolderRepository {
     return new PgWorkspaceLocationRepository(this.db).listForFolder(identity, folderId);
   }
 
+  async listHostExecutionTargets(identity: SpaceUserIdentity, projectId: string) {
+    return new PgWorkspaceLocationRepository(this.db).listHostExecutionTargets(
+      identity.spaceId,
+      projectId,
+      identity.userId,
+    );
+  }
+
   async update(
     identity: SpaceUserIdentity,
     projectId: string,

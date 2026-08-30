@@ -268,6 +268,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         adapterType: nullableBodyString(body, "adapter_type") ?? null,
         modelConfigJson: optionalRecordBody(body, "model_config_json"),
         runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
+        executionHostId: nullableBodyString(body, "execution_host_id"),
+        workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
+        runtimeInstallation: nullableBodyString(body, "runtime_installation"),
         contextPolicyJson: optionalRecordBody(body, "context_policy_json"),
         memoryPolicyJson: optionalRecordBody(body, "memory_policy_json"),
         capabilitiesJson: optionalArrayBody(body, "capabilities_json"),
@@ -380,10 +383,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           adapterType: requiredBodyString(body, "adapter_type"),
           modelProviderId: nullableBodyString(body, "model_provider_id"),
           modelName: nullableBodyString(body, "model_name"),
+          executionHostId: nullableBodyString(body, "execution_host_id"),
+          workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
+          runtimeInstallation: nullableBodyString(body, "runtime_installation"),
           runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
           runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
           enabled: optionalBooleanBody(body, "enabled"),
           isDefault: optionalBooleanBody(body, "is_default"),
+          actorUserId: identity.userId,
         },
       );
       return reply.code(201).send(profile);
@@ -413,10 +420,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           modelName: Object.hasOwn(body, "model_name")
             ? nullableBodyString(body, "model_name")
             : undefined,
+          executionHostId: Object.hasOwn(body, "execution_host_id")
+            ? nullableBodyString(body, "execution_host_id")
+            : undefined,
+          workspaceLocationId: Object.hasOwn(body, "workspace_location_id")
+            ? nullableBodyString(body, "workspace_location_id")
+            : undefined,
+          runtimeInstallation: Object.hasOwn(body, "runtime_installation")
+            ? nullableBodyString(body, "runtime_installation")
+            : undefined,
           runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
           runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
           enabled: optionalBooleanBody(body, "enabled"),
           isDefault: optionalBooleanBody(body, "is_default"),
+          actorUserId: identity.userId,
         },
       );
       return reply.send(profile);
@@ -648,6 +665,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           agent_id: agent.id,
           requested: req.backend ?? null,
         });
+        if (backend.execution_host_id) {
+          throw new ChatContextError(
+            "Host-bound Agents can only be addressed from an owner-authorized Room",
+            409,
+          );
+        }
         await transaction.runtimeSessions.claimTurn({
           space_id: creation.spaceId,
           session_id: session.id,

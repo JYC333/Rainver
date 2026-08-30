@@ -361,12 +361,12 @@ describe("server runner applies the baseline schema", () => {
          FROM information_schema.columns
         WHERE table_schema = 'public'
           AND ((table_name = 'project_folders' AND column_name = ANY($1::text[]))
-            OR (table_name = 'host_task_threads' AND column_name = 'workspace_location_id')
+            OR (table_name = 'host_threads' AND column_name = 'workspace_location_id')
             OR (table_name = 'runs' AND column_name = ANY($2::text[])))`,
       [["host_id", "host_kind", "root_path", "display_path"], ["workspace_location_id", "trust_mode"]],
     );
     expect(columns.rows).toEqual(expect.arrayContaining([
-      { table_name: "host_task_threads", column_name: "workspace_location_id" },
+      { table_name: "host_threads", column_name: "workspace_location_id" },
       { table_name: "runs", column_name: "workspace_location_id" },
       { table_name: "runs", column_name: "trust_mode" },
     ]));

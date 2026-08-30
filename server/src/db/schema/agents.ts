@@ -7,6 +7,8 @@ import { spaces } from "./spaces.js";
 import { modelProviders, networkProfiles } from "./providers.js";
 import { proposals } from "./proposals.js";
 import { projects } from "./projects.js";
+import { hosts } from "./hosts.js";
+import { workspaceLocations } from "./workspaceLocations.js";
 
 export const agents = pgTable("agents", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -184,6 +186,9 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
+	executionHostId: varchar("execution_host_id", { length: 36 }),
+	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
+	runtimeInstallation: varchar("runtime_installation", { length: 64 }),
 	name: varchar({ length: 128 }).notNull(),
 	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
 	modelProviderId: varchar("model_provider_id", { length: 36 }),
@@ -210,12 +215,23 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 			name: "agent_runtime_profiles_model_provider_id_fkey"
 		}),
 	foreignKey({
+			columns: [table.executionHostId],
+			foreignColumns: [hosts.id],
+			name: "agent_runtime_profiles_execution_host_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.workspaceLocationId],
+			foreignColumns: [workspaceLocations.id],
+			name: "agent_runtime_profiles_workspace_location_id_fkey"
+		}),
+	foreignKey({
 		columns: [table.spaceId],
 		foreignColumns: [spaces.id],
 		name: "agent_runtime_profiles_space_id_fkey"
 	}).onDelete("cascade"),
 	unique("uq_agent_runtime_profiles_id_space_agent").on(table.id, table.spaceId, table.agentId),
 	unique("uq_agent_runtime_profiles_agent_name").on(table.agentId, table.name),
+	check("ck_agent_runtime_profiles_host_binding", sql`(execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL)`),
 ]);
 
 export const cliCredentialProfiles = pgTable("cli_credential_profiles", {

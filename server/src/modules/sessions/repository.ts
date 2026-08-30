@@ -483,6 +483,26 @@ export class PgSessionRepository {
     }, null);
   }
 
+  /** A visible Room system notice, distinct from hidden execution instructions. */
+  async addRoomSystemNotice(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    input: Omit<AddMessageInput, "role">,
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
+    if (!session) return null;
+    return this.insertAttributedMessage(spaceId, userId, sessionId, {
+      ...input,
+      role: "system",
+      metadata: {
+        ...(input.metadata ?? {}),
+        room_display: "system_notice",
+      },
+    }, null);
+  }
+
   /**
    * Content copied in from elsewhere, as a message in this conversation.
    *

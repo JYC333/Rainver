@@ -4,8 +4,10 @@ import { isAbsolute, resolve } from "node:path";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { isStale } from "../hosts/repository.js";
-import type { AmbientSessionCount } from "@rainver/protocol";
+import type { AmbientSessionCount, HostExecutionTarget, HostExecutionTargetAdapter } from "@rainver/protocol";
 import { isGitRepo, runGit } from "@rainver/folder-read";
+import { normalizeHostCapabilities } from "../hosts/capabilities.js";
+import { getLocalCliRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D2: one
@@ -127,6 +129,85 @@ export class PgWorkspaceLocationRepository {
       [folderId, identity.spaceId],
     );
     return result.rows.map((row) => locationToOut(row, identity.userId));
+  }
+
+  /** Selector read model: only the caller's live remote hosts and this Project's registered Locations. */
+  async listHostExecutionTargets(
+    spaceId: string,
+    projectId: string,
+    userId: string,
+  ): Promise<HostExecutionTarget[]> {
+    const result = await this.db.query<{
+      host_id: string;
+      host_name: string;
+      host_status: string;
+      last_heartbeat_at: string | null;
+      capabilities_json: unknown;
+      location_id: string;
+      project_folder_id: string;
+      folder_name: string;
+      display_path: string | null;
+      execution_ready: boolean;
+    }>(
+      `SELECT host.id AS host_id, host.name AS host_name, host.status AS host_status,
+              host.last_heartbeat_at, host.capabilities_json,
+              location.id AS location_id, location.project_folder_id,
+              folder.name AS folder_name, location.display_path,
+              location.execution_ready
+         FROM hosts host
+         JOIN workspace_locations location ON location.execution_host_id = host.id
+         JOIN project_folders folder ON folder.id = location.project_folder_id
+        WHERE host.owner_user_id = $1
+          AND host.kind = 'remote'
+          AND host.status <> 'revoked'
+          AND location.status = 'active'
+          AND folder.status = 'active'
+          AND folder.space_id = $2
+          AND folder.project_id = $3
+        ORDER BY host.name ASC, folder.name ASC, location.created_at ASC`,
+      [userId, spaceId, projectId],
+    );
+    const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown }>();
+    for (const row of result.rows) {
+      let target = grouped.get(row.host_id);
+      if (!target) {
+        target = {
+          host_id: row.host_id,
+          host_name: row.host_name,
+          host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
+          locations: [],
+          adapters: [],
+          capabilities_json: row.capabilities_json,
+        };
+        grouped.set(row.host_id, target);
+      }
+      target.locations.push({
+        id: row.location_id,
+        project_folder_id: row.project_folder_id,
+        folder_name: row.folder_name,
+        display_path: row.display_path,
+        execution_ready: row.execution_ready,
+      });
+    }
+    const adapters = listRuntimeAdapterSpecs()
+      .map((spec) => getLocalCliRuntimeAdapterSpec(spec.adapter_type))
+      .filter((spec): spec is NonNullable<typeof spec> => Boolean(spec))
+      .filter((spec) => spec.implementation_status === "implemented" && spec.invocation.protocol === "acp");
+    for (const target of grouped.values()) {
+      const capabilities = normalizeHostCapabilities(target.capabilities_json);
+      target.adapters = adapters.flatMap<HostExecutionTargetAdapter>((spec) => {
+        const installations = capabilities.installations[spec.adapter_type];
+        if (!installations?.length) return [];
+        return [{
+          adapter_type: spec.adapter_type,
+          display_name: spec.display_name,
+          installations: installations.map(({ id, version, logged_in }) => ({ id, version, logged_in })),
+        }];
+      });
+    }
+    return [...grouped.values()]
+      .filter((target) => target.host_online)
+      .map(({ capabilities_json: _capabilities, ...target }) => target);
   }
 
   async get(identity: SpaceUserIdentity, folderId: string, locationId: string): Promise<WorkspaceLocationOut | null> {

@@ -1,6 +1,6 @@
 import { pgTable, index, check, foreignKey, varchar, text, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { hostTaskThreads } from "./hostTaskThreads.js";
+import { hostThreads } from "./hostThreads.js";
 import { modelProviders } from "./providers.js";
 import { runs } from "./runs.js";
 import { tasks } from "./tasks.js";
@@ -66,7 +66,7 @@ export const hostThreadMessages = pgTable("host_thread_messages", {
 	index("ix_host_thread_messages_task_id").using("btree", table.taskId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.hostTaskThreadId],
-			foreignColumns: [hostTaskThreads.id],
+			foreignColumns: [hostThreads.id],
 			name: "host_thread_messages_thread_id_fkey"
 		}).onDelete("cascade"),
 	foreignKey({

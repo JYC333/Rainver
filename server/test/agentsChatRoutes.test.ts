@@ -97,6 +97,9 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
         return {
           runtime_profile_id: "runtime-profile-1",
           adapter_type: "model_api",
+          execution_host_id: null,
+          workspace_location_id: null,
+          runtime_installation: null,
           credential_profile_id: null,
           binding_id: "binding-1",
           runtime_state_key: "11111111-1111-4111-8111-111111111111",
@@ -274,6 +277,45 @@ describe("agents asynchronous chat-turn route", () => {
     }]);
   });
 
+  it("rejects a Host-bound Agent outside an owner-authorized Room", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    __setAgentChatServicesFactoryForTests(() => services({
+      backends: {
+        async resolveBinding() {
+          return {
+            runtime_profile_id: "runtime-profile-1",
+            adapter_type: "claude_code",
+            credential_profile_id: null,
+            binding_id: "binding-1",
+            runtime_state_key: "11111111-1111-4111-8111-111111111111",
+            runtime_session_id: null,
+            runtime_context_fingerprint: null,
+            model_name: null,
+            model_provider_id: null,
+            runtime_config_json: {},
+            runtime_policy_json: {},
+            execution_host_id: "host-1",
+            workspace_location_id: "location-1",
+            runtime_installation: "own",
+            retired_runtime_state_key: null,
+          };
+        },
+      },
+    }));
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "Run remotely" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      detail: "Host-bound Agents can only be addressed from an owner-authorized Room",
+    });
+  });
+
   it("rolls back the durable turn when job enqueue fails", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const transactionEvents: string[] = [];
@@ -370,6 +412,9 @@ describe("agents asynchronous chat-turn route", () => {
             return {
               runtime_profile_id: "runtime-profile-1",
               adapter_type: "claude_code",
+              execution_host_id: null,
+              workspace_location_id: null,
+              runtime_installation: null,
               credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",
@@ -443,6 +488,9 @@ describe("agents asynchronous chat-turn route", () => {
             return {
               runtime_profile_id: "runtime-profile-1",
               adapter_type: "opencode",
+              execution_host_id: null,
+              workspace_location_id: null,
+              runtime_installation: null,
               credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",
@@ -500,6 +548,9 @@ describe("agents asynchronous chat-turn route", () => {
             return {
               runtime_profile_id: "runtime-profile-1",
               adapter_type: "claude_code",
+              execution_host_id: null,
+              workspace_location_id: null,
+              runtime_installation: null,
               credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",

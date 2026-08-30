@@ -103,6 +103,12 @@ export const ConversationBackendOptionSchema = z.object({
   adapter_type: z.string().trim().min(1),
   model_name: z.string().nullish(),
   requires_cli_credential: z.boolean(),
+  usable: z.boolean().optional(),
+  reason: z.string().nullish().optional(),
+  host_bound: z.boolean().optional(),
+  host_name: z.string().nullish().optional(),
+  host_online: z.boolean().nullish().optional(),
+  host_owner_is_me: z.boolean().nullish().optional(),
   credential_profiles: z.array(z.object({
     id: IdSchema,
     name: z.string().trim().min(1),

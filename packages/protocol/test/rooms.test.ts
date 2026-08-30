@@ -51,6 +51,7 @@ describe("Room contracts", () => {
         agent_kind: "system_assistant",
         role: "manager",
         status: "active",
+        trigger_policy: "owner_only",
         created_at: now,
         updated_at: now,
       }],
