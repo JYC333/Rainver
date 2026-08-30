@@ -52,7 +52,7 @@ and an optional `dropUp` flag.
 
 Agents may not write these directly; they must go through a `code_patch`
 Proposal. Read access is allowed. The forbidden write suffixes are declared in
-`FORBIDDEN_WRITE_SUFFIXES` in `server/src/modules/projectFolders/pathPolicy.ts`.
+`FORBIDDEN_WRITE_SUFFIXES` in `packages/folder-read/src/pathPolicy.ts`.
 
 ---
 

@@ -1,7 +1,7 @@
 # ADR 0016: Control Plane And Execution Hosts, Two-Tier Trust
 
 Date: 2026-08-21
-Rewritten: 2026-08-27
+Rewritten: 2026-08-30
 
 ## Status
 
@@ -65,22 +65,27 @@ write-once denormalisation with composite constraints preventing drift.
   path resolver.
 - **Personal host — trusted-host mode.** A thin daemon (`rainver-host`)
   registers with the control plane over the user's private network (v1:
-  Tailscale; no public exposure) and spawns CLIs natively — no bubblewrap,
-  no mount containment, no PathPolicy. This is not a smaller version of
-  server-host isolation; it is a different trust model, safe only because of
-  the hard rule below.
+  Tailscale; no public exposure) and spawns CLIs natively — no bubblewrap or
+  mount containment for Runs. Read-only browse requests do run the shared
+  `@rainver/folder-read` PathPolicy on the daemon before any file or Git data
+  leaves the machine. This is not a smaller version of server-host isolation;
+  it is a different trust model, safe only because of the hard rule below.
 
-**Hard rule, not relaxable without a new decision:** a host accepts only Runs
-whose initiating user is that host's registered owner. There is no
-multi-user host sharing.
+**Hard rule, not relaxable without a new decision:** a host accepts Runs and
+ serves live file reads only for that host's registered owner. There is no
+ multi-user host sharing. Run-end diffs are bounded `space_shared` work
+ products because the owner deliberately dispatched the Run; live tree/file/
+ Git reads are machine state and remain owner-only.
 
 ### 3. Paths are host-owned
 
 The control plane never resolves, mounts, or opens a filesystem path on a
 remote host. `root_path` is populated only for server-host Locations; a
 remote Location has only a daemon-reported `display_path` for labelling, and
-the daemon is authoritative for the real directory. `execution_host_kind` is
-a constrained denormalised copy of `hosts.kind` so the database can enforce
+the daemon is authoritative for the real directory. `folder_read` frames carry
+only a Workspace Location id and relative path; the daemon resolves the root
+from its local registration and applies the shared read policy. `execution_host_kind`
+is a constrained denormalised copy of `hosts.kind` so the database can enforce
 the remote-root invariant.
 
 ### 4. What does and does not extend to a remote host
@@ -148,6 +153,8 @@ The daemon's durable role:
   knows and whether each is logged in;
 - runtime process lifecycle: spawning a one-shot CLI turn, or relaying a
   duplex stdio frame stream through the same outbound connection.
+- bounded read-only tree, file, and Git requests for registered workspaces,
+  with the same path policy and byte/file-count limits on the daemon.
 
 There is **one** transport — a duplex stdin frame extension of the host
 WebSocket protocol — and **one** server-side protocol client, because every
@@ -241,3 +248,6 @@ probing, and full local-first replication are likewise out of scope.
   not a trust-model change — the identity is not a provider credential and
   selects no backend, so ADR 0008 and B67 are untouched, and nothing goes onto
   `PATH`.
+- **2026-08-30** — the owner-only rule covers live remote Folder reads; the
+  `folder_read` pull channel and shared `@rainver/folder-read` policy keep
+  paths host-owned while returning bounded tree/file/Git data to Files & Code.

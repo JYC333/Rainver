@@ -32,6 +32,11 @@ run_package packages/agent-cli pnpm run typecheck
 run_package packages/agent-cli pnpm test
 run_package packages/agent-cli pnpm run build
 
+echo "==> Folder read"
+run_package packages/folder-read pnpm run typecheck
+run_package packages/folder-read pnpm test
+run_package packages/folder-read pnpm run build
+
 echo "==> Database schema"
 run_package server pnpm run schema:check
 

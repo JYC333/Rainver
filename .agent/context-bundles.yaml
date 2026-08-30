@@ -157,6 +157,7 @@ project-folder-artifact:
     - server/src/modules/artifacts
     - server/src/modules/runs
     - server/src/modules/runtimeAdapters
+    - packages/folder-read/src
     - sandbox
 
 imported-cli-history:

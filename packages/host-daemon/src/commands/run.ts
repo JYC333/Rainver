@@ -16,6 +16,7 @@ import { OWN_INSTALLATION, installTool, managedInstallationId, parseInstallToolF
 import { loginSession, openLoginSession, parseLoginOpenFrame } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { DEFAULT_LIMITS, importAmbientSessions, sanitizeFailure, type AmbientImportRequest, type AmbientTrimLimits } from "../ambientSessions.js";
+import { FolderReadFrameError, parseFolderReadFrame, performFolderRead } from "../folderRead.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -363,6 +364,26 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             const message = sanitizeFailure(error);
             log(`ambient import failed: ${message}`);
             sink.send({ type: "ambient_import_result", request_id: requestId, ok: false, error: message, session_count: 0, listed_session_ids: null });
+          }
+        })();
+        return;
+      }
+      if (frame.type === "folder_read") {
+        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+        if (!requestId) return;
+        void (async () => {
+          try {
+            const request = parseFolderReadFrame(frame, await currentWorkspaces());
+            sink.send(await performFolderRead(request));
+          } catch (error) {
+            const code = error instanceof FolderReadFrameError ? error.code : "read_failed";
+            sink.send({
+              type: "folder_read_result",
+              request_id: requestId,
+              ok: false,
+              error: code,
+              message: sanitizeFailure(error),
+            });
           }
         })();
         return;

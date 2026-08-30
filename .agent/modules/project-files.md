@@ -60,6 +60,10 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - File browsing is always read-only for the UI; writes go through the agent + proposal flow
   (`code_patch` proposals).
 - Files & Code tree/file/status/diff reads enforce `project_folder.read` before data is returned.
+- A preferred remote Location is authorized on the server (including an audit
+  record with `host_id`) and served live over the `folder_read` channel by the
+  owning daemon; the daemon applies the shared `@rainver/folder-read`
+  containment, forbidden-path, and size limits.
 - Folder listing is Project-scoped and does not create one policy record per row.
 - PathPolicy validates all requested paths and blocks traversal plus secret-like paths such
   as `.env*` except committed env templates (`.env.*.example`, `.env.sample`, `.env.template`), private keys,
@@ -76,7 +80,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 ## Related Files
 - `server/src/db/schema/projectFolders.ts` — Project Folder + execution-config schema; access derives from Space/Project authority
 - `packages/protocol/src/` — Project Folder DTOs when shared
-- `server/src/modules/projectFolders/` — routes, `PgProjectFolderRepository`, PathPolicy, `PgRunSandboxManager`, code-patch collector/applier
-- `server/src/modules/projectFolders/pathPolicy.ts` — PathPolicy enforcement
+- `server/src/modules/projectFolders/` — routes, `PgProjectFolderRepository`,
+  `PgRunSandboxManager`, code-patch collector/applier
+- `packages/folder-read/` — shared tree/file/Git reads and PathPolicy used by
+  both the server-host path and the paired host daemon
 - `server/src/modules/projectFolderExecutionConfigs/` — execution-config routes
 - `apps/web/src/modules/project_files/` — Files & Code and Folder settings pages

@@ -26,11 +26,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/agent-cli/package.json ./packages/agent-cli/
+COPY packages/folder-read/package.json ./packages/folder-read/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile \
     --filter @rainver/protocol \
     --filter @rainver/agent-cli \
+    --filter @rainver/folder-read \
     --filter @rainver/server
 
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
@@ -42,6 +44,9 @@ RUN pnpm --filter @rainver/protocol build
 COPY packages/agent-cli/tsconfig.json packages/agent-cli/tsconfig.build.json ./packages/agent-cli/
 COPY packages/agent-cli/src ./packages/agent-cli/src
 RUN pnpm --filter @rainver/agent-cli build
+COPY packages/folder-read/tsconfig.json packages/folder-read/tsconfig.build.json ./packages/folder-read/
+COPY packages/folder-read/src ./packages/folder-read/src
+RUN pnpm --filter @rainver/folder-read build
 
 # ---- build: compile TS -> dist ------------------------------------------------
 FROM deps AS build
@@ -75,7 +80,7 @@ WORKDIR /app/server
 # runs TypeScript watch builds, so the compiled dist trees must be writable by
 # the non-root runtime user.
 RUN mkdir -p /home/node/.claude \
-    && chown -R node:node /home/node /app/server/dist /app/packages/protocol/dist
+    && chown -R node:node /home/node /app/server/dist /app/packages/protocol/dist /app/packages/folder-read/dist
 USER node
 ENV HOME=/home/node
 
@@ -101,11 +106,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/agent-cli/package.json ./packages/agent-cli/
+COPY packages/folder-read/package.json ./packages/folder-read/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --prod --frozen-lockfile \
     --filter @rainver/protocol \
     --filter @rainver/agent-cli \
+    --filter @rainver/folder-read \
     --filter @rainver/server
 
 # ---- runtime: prod deps + compiled output -------------------------------------
@@ -121,6 +128,8 @@ COPY packages/protocol/package.json ./packages/protocol/package.json
 COPY --from=deps /app/packages/protocol/dist ./packages/protocol/dist
 COPY packages/agent-cli/package.json ./packages/agent-cli/package.json
 COPY --from=deps /app/packages/agent-cli/dist ./packages/agent-cli/dist
+COPY packages/folder-read/package.json ./packages/folder-read/package.json
+COPY --from=deps /app/packages/folder-read/dist ./packages/folder-read/dist
 # Built-in catalog definitions served read-only by the catalog module
 # (default SERVER_CATALOG_ROOT resolves to /app/catalog).
 COPY catalog ./catalog

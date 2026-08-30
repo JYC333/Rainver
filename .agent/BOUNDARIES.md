@@ -305,9 +305,10 @@ Location `execution_ready` are separate facts. Do not weaken the server host's
 isolation to make the two hosts look uniform, and do not claim remote
 execution carries the same isolation guarantees it does not have.
 
-**B63** — A host accepts Runs only from its own registered owner. There is no
-multi-user host sharing. A dispatch to a host whose `owner_user_id` does not
-match the caller must be rejected before any job is sent.
+**B63** — A host accepts Runs and serves live remote Folder reads only for its
+own registered owner. There is no multi-user host sharing. A dispatch or
+`folder_read` request to a host whose `owner_user_id` does not match the
+caller must be rejected before any job/read is sent.
 
 **B64** — The control plane never resolves, mounts, or reads a filesystem
 path on a remote host. A remote WorkspaceLocation's `root_path` stays null;

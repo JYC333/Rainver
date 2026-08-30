@@ -35,6 +35,19 @@ export interface PathPolicyInput {
   forTrustedCodePatchApply?: boolean;
 }
 
+/**
+ * Checks the transport-level path contract shared by the server and daemon.
+ * Traversal segments remain for the daemon's registered-root PathPolicy to
+ * reject, but absolute paths must never cross the control-plane wire.
+ */
+export function isWireRelativePath(value: string): boolean {
+  return value.length > 0
+    && !value.includes("\0")
+    && !value.includes("\\")
+    && !value.startsWith("/")
+    && !/^[A-Za-z]:/.test(value);
+}
+
 export function validatePath(input: PathPolicyInput): string {
   const mode = input.mode ?? "read";
   const root = resolve(input.allowedRoot);
@@ -61,9 +74,9 @@ export function validatePath(input: PathPolicyInput): string {
     }
   }
   if (
-    lowerParts.length >= 2 &&
-    lowerParts[lowerParts.length - 2] === ".git" &&
-    lowerParts[lowerParts.length - 1] === "config"
+    lowerParts.length >= 2
+    && lowerParts[lowerParts.length - 2] === ".git"
+    && lowerParts[lowerParts.length - 1] === "config"
   ) {
     throw new PathPolicyError("Access to '.git/config' is forbidden");
   }
@@ -80,9 +93,9 @@ export function validatePath(input: PathPolicyInput): string {
     throw new PathPolicyError(`Access to '${suffix}' files is forbidden`);
   }
   if (
-    mode === "write" &&
-    input.forTrustedCodePatchApply !== true &&
-    FORBIDDEN_WRITE_SUFFIXES.has(suffix)
+    mode === "write"
+    && input.forTrustedCodePatchApply !== true
+    && FORBIDDEN_WRITE_SUFFIXES.has(suffix)
   ) {
     throw new PathPolicyError(
       `Agents may not write '${suffix}' files directly - use a code_patch Proposal instead`,
@@ -109,14 +122,50 @@ export function looksSecretLikePath(path: string | null | undefined): boolean {
 
 export function redactSecretLikeDiff(diff: string): { diff: string; redacted: boolean } {
   let redacted = false;
-  const next = diff.replace(
-    /(api[_-]?key|token|secret|password|private[_-]?key)\s*[:=]\s*([^\s'"]+)/gi,
-    (_match, key: string) => {
-      redacted = true;
-      return `${key}=[REDACTED]`;
-    },
-  );
+  const keyPattern = /\b(api[_-]?key|token|secret|password|private[_-]?key)\b["']?\s*([:=])\s*/gi;
+  let next = "";
+  let cursor = 0;
+  for (let match = keyPattern.exec(diff); match; match = keyPattern.exec(diff)) {
+    const valueStart = keyPattern.lastIndex;
+    const valueEnd = scanSecretValue(diff, valueStart);
+    next += diff.slice(cursor, match.index);
+    next += `${match[1]}${match[2]}[REDACTED]`;
+    cursor = valueEnd;
+    keyPattern.lastIndex = valueEnd;
+    redacted = true;
+  }
+  next += diff.slice(cursor);
   return { diff: next, redacted };
+}
+
+function scanSecretValue(text: string, start: number): number {
+  const quote = text[start];
+  if (quote !== "'" && quote !== '"') {
+    let index = start;
+    while (index < text.length && !/[\s,}\]]/.test(text[index]!)) index += 1;
+    return index;
+  }
+
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (character === "\n" || character === "\r") return index;
+    if (character !== quote) continue;
+    let backslashes = 0;
+    for (let previous = index - 1; previous >= start && text[previous] === "\\"; previous -= 1) {
+      backslashes += 1;
+    }
+    if (backslashes % 2 === 1) continue;
+    const next = text[index + 1];
+    // If a malformed or partially escaped value has more token characters
+    // immediately after this quote, keep scanning to avoid leaking its tail.
+    if (next && !/[\s,}\]]/.test(next)) continue;
+    return index + 1;
+  }
+  const lineBreak = text.indexOf("\n", start);
+  const carriageReturn = text.indexOf("\r", start);
+  if (lineBreak < 0) return carriageReturn < 0 ? text.length : carriageReturn;
+  if (carriageReturn < 0) return lineBreak;
+  return Math.min(lineBreak, carriageReturn);
 }
 
 export function diffTouchesSecretLikePath(diff: string): boolean {
@@ -132,4 +181,21 @@ export function diffTouchesSecretLikePath(diff: string): boolean {
 function fileSuffix(filename: string): string {
   const index = filename.lastIndexOf(".");
   return index > 0 ? filename.slice(index) : "";
+}
+
+/**
+ * Replaces local filesystem paths in free text with `<path>` so a failure
+ * message can leave a machine without naming its directories. Shared by the
+ * daemon (before a message goes on the wire) and the server (before a
+ * daemon's message is shown), so the two never disagree about what a path
+ * looks like. The character class is deliberately broad — valid names carry
+ * `+`, parentheses, spaces, quotes and non-ASCII — while commas and angle
+ * brackets act as delimiters, and the look-behind keeps an `https://` tail
+ * from reading as a path.
+ */
+export function redactLocalPaths(text: string): string {
+  return text.replace(
+    /['"]?(?:[A-Za-z]:[\\/]|\\\\|(?<![A-Za-z0-9:/])\/(?!\/))[^\r\n<>;,\u0000]*/g,
+    "<path>",
+  );
 }

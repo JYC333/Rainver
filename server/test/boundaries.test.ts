@@ -12,7 +12,7 @@ const officialPluginsDir = join(import.meta.dirname, "..", "..", "plugins", "off
  * Anything else (frontend, ORM packages, migration tooling, sandbox/deployer
  * internals, local-host) must not appear.
  */
-const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "zod", "@rainver/protocol"]);
+const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "zod", "@rainver/protocol", "@rainver/folder-read"]);
 
 /**
  * Packages allowed only from a specific file or directory. `pg` is the raw DB

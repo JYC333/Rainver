@@ -46,6 +46,15 @@ jobs:
       - name: Test agent CLI
         run: pnpm --filter @rainver/agent-cli test
 
+      - name: Build folder-read
+        run: pnpm --filter @rainver/folder-read build
+
+      - name: Typecheck folder-read
+        run: pnpm --filter @rainver/folder-read typecheck
+
+      - name: Test folder-read
+        run: pnpm --filter @rainver/folder-read test
+
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
 

@@ -20,6 +20,7 @@ export {
   assertServerHostLocation,
   locationAbsoluteRoot,
   resolvePreferredServerHostLocation,
+  resolvePreferredLocationWithHost,
   resolveServerHostLocationForRun,
 } from "./workspaceLocations.js";
-export type { WorkspaceLocationRow, WorkspaceLocationOut } from "./workspaceLocations.js";
+export type { WorkspaceLocationRow, WorkspaceLocationOut, PreferredLocationWithHost } from "./workspaceLocations.js";

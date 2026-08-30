@@ -17,8 +17,11 @@ A **Project Folder** is the logical file/code identity owned by a Project.
 Physical checkouts are modeled separately as `workspace_locations`, each bound
 to one `hosts`/ExecutionHost. Server-host Locations are where agents inspect
 files, create sandboxes, run commands, collect diffs, and validate changes;
-remote trusted-host Locations run in the daemon-owned checkout. Capability
-code belongs to the logical Project Folder, not to one machine.
+remote trusted-host Locations run in the daemon-owned checkout. Files & Code
+reads for a remote Location are authorized by `projectFolders`, then pulled
+through `hosts`' `connectionRegistry` and executed by the daemon's shared
+`@rainver/folder-read` package. Capability code belongs to the logical
+Project Folder, not to one machine.
 
 ## Project vs Project Folder
 
@@ -979,7 +982,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | DELETE | `/projects/{id}/folders/{folderId}` | Archive a Project Folder |
 | POST | `/projects/{id}/folders/{folderId}/unregister` | Remove only the registration row; never touches disk |
 | POST | `/projects/{id}/folders/scan` | Scan for unregistered directories eligible to connect |
-| GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads |
+| GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads; preferred remote Locations round-trip through the owning host daemon |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |

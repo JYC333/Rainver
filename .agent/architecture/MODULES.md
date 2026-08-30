@@ -109,7 +109,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `tasks` | product | `/tasks*`, `/boards*`, `/me/tasks` | empty | Boards, tasks, task-run links, task evaluation, and run-finalized hook. Registers the Delivery Overview/Attention projection over Project Tasks; there is no parallel Delivery aggregate. |
 | `plans` | product | `/plans*` | empty | Durable plan/version execution read and command surface: approval-gated materialization, structured list/detail views, execution, reconciliation, and revision. |
 | `projectFolderExecutionConfigs` | product | `/projects/{projectId}/folders/{folderId}/execution-config*` | empty | Project Folder execution config read/create/update. |
-| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/git diff) read routes. There is no separate console route module. |
+| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/git diff) read routes. Remote reads authorize through `hosts`/`connectionRegistry` and execute shared `@rainver/folder-read` on the owning daemon. There is no separate console route module. |
 | `jobs` | infra | `/jobs*` | yes | Durable job queue, worker, and registry-dispatched handlers. Re-exports scheduler types for compatibility only; new scheduler code imports `scheduler`. |
 | `scheduler` | infra | none | yes | In-process periodic task registry, background service startup composition, and scheduler-owned `scheduler_tasks` cursor/state store. |
 | `autonomy` | infra | none | empty | Owns the `autonomous_tick` native Automation target, exact-coverage domain candidate registry, durable candidate/tick audit, deterministic ranking, per-candidate bounded launch, private report provenance, successful-review cursors/signal links, and stale-review recovery. `periodic_digest` and `evolution_review` share the observe/launch queue and safety invariants. Automations never imports this module. |
@@ -139,7 +139,7 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 | `access` | support-package / kernel | empty | Shared resource visibility predicates, common SQL read predicates, and space role helpers. It does not replace PolicyGateway or domain-owned ACLs. |
 | `settings` | support-package / infra | yes | Generic scoped settings store for low-frequency instance, space, user, and space-user settings. Product modules own validation and DTOs; new code must not add feature-specific settings tables. |
 | `scheduler` | support-package / infra | yes | In-process periodic task registry, scheduler task state store, and background service startup composition. |
-| `projectFolders/pathPolicy`, `projectFolders/sandbox`, `projectFolders/codePatch` | module-internal infra | yes via `projectFolders` | Project Folder path validation, worktree/sandbox preparation, and code-patch collection/apply ports. |
+| `projectFolders/sandbox`, `projectFolders/codePatch` | module-internal infra | yes via `projectFolders` | Worktree/sandbox preparation and code-patch collection/apply ports. Path validation (`validatePath`, forbidden paths, secret-like diff redaction) lives in `@rainver/folder-read`, shared with the host daemon. |
 
 `memory/consolidation/` is part of the registered `memory` module.
 
@@ -180,7 +180,9 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
   apply chain remains.
 - Interactive agent-session execution over a Project Folder was never
   implemented and has been removed; current Files & Code routes are
-  read-only tree/file/git status/git diff surfaces under `projectFolders`.
+  read-only tree/file/git status/git diff surfaces under `projectFolders`;
+  remote Locations round-trip through `hosts` `connectionRegistry` to the
+  owning daemon's `@rainver/folder-read` package.
 - Frontend Home and personal views consume `frontendSupport`/`/me` aggregate read
   models instead of independently re-implementing proposal/activity/runtime logic.
 

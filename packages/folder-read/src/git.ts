@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { GitChangedFile } from "./types.js";
 
 export interface CommandResult {
   code: number;
@@ -48,6 +49,22 @@ export async function isGitRepo(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export function parsePorcelain(output: string): GitChangedFile[] {
+  const result: GitChangedFile[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (line.length < 3) continue;
+    const xy = line.slice(0, 2);
+    const path = line.slice(3).trim();
+    let status = "modified";
+    if (xy.includes("?")) status = "untracked";
+    else if (xy.includes("R")) status = "renamed";
+    else if (xy.includes("D")) status = "deleted";
+    else if (xy.includes("A")) status = "added";
+    result.push({ path, status });
+  }
+  return result;
 }
 
 async function runCommand(

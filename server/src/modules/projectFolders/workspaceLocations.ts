@@ -5,7 +5,7 @@ import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { isStale } from "../hosts/repository.js";
 import type { AmbientSessionCount } from "@rainver/protocol";
-import { isGitRepo, runGit } from "./git.js";
+import { isGitRepo, runGit } from "@rainver/folder-read";
 
 /**
  * execution-topology-and-project-control-plane-plan.md P1 / D2: one
@@ -48,6 +48,17 @@ export interface WorkspaceLocationOut {
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+  host_name: string | null;
+  host_online: boolean;
+  host_owner_is_me: boolean;
+}
+
+export interface PreferredLocationWithHost extends WorkspaceLocationRow {
+  host_name: string;
+  host_owner_user_id: string | null;
+  host_status: string;
+  last_heartbeat_at: string | null;
+  host_online: boolean;
 }
 
 /**
@@ -107,20 +118,20 @@ export class PgWorkspaceLocationRepository {
   }
 
   async listForFolder(identity: SpaceUserIdentity, folderId: string): Promise<WorkspaceLocationOut[]> {
-    const result = await this.db.query<WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null }>(
-      `SELECT wl.*, h.status AS host_status, h.last_heartbeat_at
+    const result = await this.db.query<WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null; host_name: string; host_owner_user_id: string | null }>(
+      `SELECT wl.*, h.status AS host_status, h.last_heartbeat_at, h.name AS host_name, h.owner_user_id AS host_owner_user_id
          FROM workspace_locations wl
          JOIN hosts h ON h.id = wl.execution_host_id
         WHERE wl.project_folder_id = $1 AND wl.space_id = $2 AND wl.status = 'active'
         ORDER BY wl.preferred DESC, wl.created_at ASC`,
       [folderId, identity.spaceId],
     );
-    return result.rows.map(locationToOut);
+    return result.rows.map((row) => locationToOut(row, identity.userId));
   }
 
   async get(identity: SpaceUserIdentity, folderId: string, locationId: string): Promise<WorkspaceLocationOut | null> {
-    const result = await this.db.query<WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null }>(
-      `SELECT wl.*, h.status AS host_status, h.last_heartbeat_at
+    const result = await this.db.query<WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null; host_name: string; host_owner_user_id: string | null }>(
+      `SELECT wl.*, h.status AS host_status, h.last_heartbeat_at, h.name AS host_name, h.owner_user_id AS host_owner_user_id
          FROM workspace_locations wl
          JOIN hosts h ON h.id = wl.execution_host_id
         WHERE wl.id = $1 AND wl.project_folder_id = $2 AND wl.space_id = $3
@@ -128,7 +139,7 @@ export class PgWorkspaceLocationRepository {
       [locationId, folderId, identity.spaceId],
     );
     const row = result.rows[0];
-    return row ? locationToOut(row) : null;
+    return row ? locationToOut(row, identity.userId) : null;
   }
 
   /** Row-level lookup for internal callers that already hold a checked folder/space id (dispatch, orchestration). */
@@ -333,7 +344,13 @@ export class PgWorkspaceLocationRepository {
   }
 }
 
-function locationToOut(row: WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null }): WorkspaceLocationOut {
+function locationToOut(
+  row: WorkspaceLocationRow & { host_status: string; last_heartbeat_at: string | null; host_name?: string | null; host_owner_user_id?: string | null },
+  userId: string,
+): WorkspaceLocationOut {
+  const hostOwner = row.host_owner_user_id ?? null;
+  const hostName = row.host_name ?? null;
+  const hostOnline = row.execution_host_kind === "server" || (row.host_status === "online" && !isStale(row.last_heartbeat_at));
   return {
     id: row.id,
     project_folder_id: row.project_folder_id,
@@ -350,6 +367,9 @@ function locationToOut(row: WorkspaceLocationRow & { host_status: string; last_h
     last_seen_at: row.last_seen_at,
     created_at: dateIso(row.created_at),
     updated_at: dateIso(row.updated_at),
+    host_name: hostName,
+    host_online: hostOnline,
+    host_owner_is_me: hostOwner === userId,
   };
 }
 
@@ -393,6 +413,37 @@ export async function resolvePreferredServerHostLocation(
   }
   assertServerHostLocation(location);
   return location;
+}
+
+/** Resolves the Folder's preferred Location together with the host facts used
+ * by live remote reads. Unlike the server-host helper this deliberately keeps
+ * remote Locations, because the daemon is the path authority for them. */
+export async function resolvePreferredLocationWithHost(
+  db: Queryable,
+  spaceId: string,
+  projectFolderId: string,
+): Promise<PreferredLocationWithHost> {
+  const result = await db.query<WorkspaceLocationRow & {
+    host_name: string;
+    host_owner_user_id: string | null;
+    host_status: string;
+    last_heartbeat_at: string | null;
+  }>(
+    `SELECT wl.*, h.name AS host_name, h.owner_user_id AS host_owner_user_id,
+            h.status AS host_status, h.last_heartbeat_at
+       FROM workspace_locations wl
+       JOIN hosts h ON h.id = wl.execution_host_id
+      WHERE wl.project_folder_id = $1 AND wl.space_id = $2
+        AND wl.status = 'active' AND wl.preferred = true
+      LIMIT 1`,
+    [projectFolderId, spaceId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new HttpError(404, "Project Folder not found");
+  return {
+    ...row,
+    host_online: row.execution_host_kind === "server" || (row.host_status === "online" && !isStale(row.last_heartbeat_at)),
+  };
 }
 
 /** Resolve the physical server checkout selected by a Run. A Run may target

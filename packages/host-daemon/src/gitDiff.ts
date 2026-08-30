@@ -23,8 +23,8 @@ function runGit(args: string[], cwd: string): Promise<{ code: number; stdout: st
 /**
  * Phase-1 diff capture (control-center-plan.md §5): unified `git diff HEAD`
  * with untracked files staged via intent-to-add so their new content shows
- * up (D6's "no remote file browser" makes this the only way a reviewer sees
- * a new file's contents). Oversized-file exclusion is not done here — git
+ * up. This is the Run's bounded review artifact; live browse reads use the
+ * read-only `folder_read` channel in `folderRead.ts`. Oversized-file exclusion is not done here — git
  * already elides binary content ("Binary files ... differ"), and the
  * upload endpoint truncates the whole payload by size (`MAX_DIFF_BYTES`);
  * that is the one place the cap lives.

@@ -1,3 +1,4 @@
+import { redactLocalPaths } from "@rainver/folder-read";
 /**
  * What is removed and what is cut before anything leaves this machine.
  *
@@ -71,7 +72,5 @@ export function clean(value: string | null, maxBytes: number, state: { truncated
  */
 export function sanitizeFailure(failure: unknown): string {
   const raw = failure instanceof Error ? failure.message : String(failure);
-  return redactAmbientText(raw)
-    .replace(/(?:[A-Za-z]:)?[\\/](?:[\w.@ -]+[\\/])+[\w.@ -]*/g, "<path>")
-    .slice(0, 512);
+  return redactLocalPaths(redactAmbientText(raw)).slice(0, 512);
 }

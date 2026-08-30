@@ -203,7 +203,7 @@ what is installed.
 | Model invocation and provider credentials | `providers` (+ `runtimeHost` for server-owned execution) | `server/src/modules/providers/` |
 | Managed agent/tool loop | `managedAgentLoopPort` + binding over `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai` | `server/src/modules/runs/managedAgentLoopPort.ts` |
 | Runtime adapter metadata (commands, flags, parsers, limits) | `RuntimeAdapterSpec` | `server/src/modules/runtimeAdapters/specs.ts` |
-| Project Folder path safety | `PathPolicy` | `server/src/modules/projectFolders/pathPolicy.ts` |
+| Project Folder path safety | `PathPolicy` | `packages/folder-read/src/pathPolicy.ts` |
 | Full-system backup | `BackupService` | `server/src/modules/backups/service.ts` |
 | XML parsing | `fast-xml-parser` | `server/src/modules/sources/` |
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |

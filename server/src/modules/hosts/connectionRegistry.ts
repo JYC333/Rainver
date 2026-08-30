@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
 /**
  * ADR 0016 P3: tracks which hosts currently hold a live WebSocket connection
  * and lets server code (the dispatch path, `RemoteWsCliCommandExecutor`)
@@ -87,6 +88,20 @@ export interface ToolInstallResult {
   installation: string | null;
 }
 
+export type FolderReadKind = "tree" | "file" | "git_status" | "git_diff";
+export type FolderReadFailureCode = "host_offline" | "host_timeout" | "location_unknown" | "path_forbidden" | "not_found" | "is_directory" | "too_large" | "read_failed";
+/** What each `folder_read` kind returns, so callers keep the type the daemon produced. */
+export interface FolderReadPayload {
+  tree: FileNode;
+  file: FileContent;
+  git_status: GitStatus;
+  git_diff: GitDiff;
+}
+export type FolderReadSuccess<K extends FolderReadKind = FolderReadKind> =
+  { [Kind in K]: { ok: true; kind: Kind; result: FolderReadPayload[Kind] } }[K];
+export type FolderReadFailure = { ok: false; error: FolderReadFailureCode; message?: string };
+export type FolderReadResult<K extends FolderReadKind = FolderReadKind> = FolderReadSuccess<K> | FolderReadFailure;
+
 /** What a daemon's login terminal sends back, frame by frame. */
 export type LoginSessionEvent =
   | { type: "output"; data: string }
@@ -106,6 +121,7 @@ const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
  * bound normal work.
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
+export const FOLDER_READ_TIMEOUT_MS = 15_000;
 
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
@@ -115,6 +131,12 @@ export class HostConnectionRegistry {
     hostId: string;
     onSession: (session: unknown) => void;
     resolve: (result: AmbientImportResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly pendingFolderReads = new Map<string, {
+    hostId: string;
+    kind: FolderReadKind;
+    resolve: (result: FolderReadResult) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
 
@@ -138,6 +160,12 @@ export class HostConnectionRegistry {
       this.pendingImports.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "host_disconnected", session_count: 0, listed_session_ids: null });
+    }
+    for (const [requestId, pending] of this.pendingFolderReads) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingFolderReads.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, error: "host_offline" });
     }
   }
   private readonly logins = new Map<string, PendingLogin>();
@@ -311,6 +339,39 @@ export class HostConnectionRegistry {
     if (!pending || pending.hostId !== hostId) return;
     this.pendingImports.delete(requestId);
     clearTimeout(pending.timer);
+    pending.resolve(result);
+  }
+
+  /** Asks a daemon for one bounded live tree/file/Git read. */
+  requestFolderRead<K extends FolderReadKind>(hostId: string, frame: { kind: K } & Record<string, unknown>): Promise<FolderReadResult<K>> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline" });
+    const kind = frame.kind;
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingFolderReads.delete(requestId);
+        resolve({ ok: false, error: "host_timeout" });
+      }, FOLDER_READ_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingFolderReads.set(requestId, { hostId, kind, resolve: resolve as (result: FolderReadResult) => void, timer });
+      try {
+        connection.sink!.send({ ...frame, type: "folder_read", request_id: requestId });
+      } catch {
+        clearTimeout(timer);
+        this.pendingFolderReads.delete(requestId);
+        resolve({ ok: false, error: "host_offline" });
+      }
+    });
+  }
+
+  /** Routes a daemon's single-frame folder read response to its caller. */
+  receiveFolderReadResult(hostId: string, requestId: string, result: FolderReadResult): void {
+    const pending = this.pendingFolderReads.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    if (result.ok && result.kind !== pending.kind) return;
+    clearTimeout(pending.timer);
+    this.pendingFolderReads.delete(requestId);
     pending.resolve(result);
   }
 

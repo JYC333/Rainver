@@ -23,7 +23,7 @@ import {
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
-import { validatePath } from "../projectFolders/pathPolicy.js";
+import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
 import type {
   ProposalAcceptOut,

@@ -4,12 +4,16 @@ import { join, resolve } from "node:path";
 
 const appRoot = resolve(import.meta.dirname, "../..");
 const protocolRoot = join(appRoot, "packages/protocol");
+const folderReadRoot = join(appRoot, "packages/folder-read");
 const serverRoot = join(appRoot, "server");
 const pluginsRoot = join(appRoot, "plugins");
 const watchedPaths = [
   join(protocolRoot, "src"),
   join(protocolRoot, "tsconfig.json"),
   join(protocolRoot, "tsconfig.build.json"),
+  join(folderReadRoot, "src"),
+  join(folderReadRoot, "tsconfig.json"),
+  join(folderReadRoot, "tsconfig.build.json"),
   join(serverRoot, "src"),
   join(serverRoot, "tsconfig.json"),
   pluginsRoot,
@@ -56,12 +60,19 @@ async function build() {
   buildRunning = true;
   do {
     buildPending = false;
-    console.log("[typescript-watch] compiling protocol, server, and official plugins");
-    const protocolCode = await run(
+    console.log("[typescript-watch] compiling folder-read, protocol, server, and official plugins");
+    const folderReadCode = await run(
+      join(folderReadRoot, "node_modules/.bin/tsc"),
+      ["-p", "tsconfig.build.json"],
+      folderReadRoot,
+    );
+    const protocolCode = folderReadCode === 0
+      ? await run(
       join(protocolRoot, "node_modules/.bin/tsc"),
       ["-p", "tsconfig.build.json"],
       protocolRoot,
-    );
+    )
+      : folderReadCode;
     const serverCode = protocolCode === 0
       ? await run(join(serverRoot, "node_modules/.bin/tsc"), ["-p", "tsconfig.json"], serverRoot)
       : protocolCode;

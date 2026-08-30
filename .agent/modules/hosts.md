@@ -60,9 +60,8 @@ the physical topology:
 ## Server-host guard (ADR 0016 B62)
 
 `assertServerHostLocation()` (`server/src/modules/projectFolders/workspaceLocations.ts`)
-throws before any local-filesystem operation runs against a Location whose
-`execution_host_kind` is not `server`. It gates `getTree`, `getFile`, `getGitStatus`,
-`getGitDiff`, `PgRunSandboxManager.prepareRunWorkspace`
+throws before any server-host local-filesystem operation runs against a Location whose
+`execution_host_kind` is not `server`. It gates server-host `PgRunSandboxManager.prepareRunWorkspace`
 (`server/src/modules/projectFolders/sandbox.ts`), code-patch proposal apply
 (`server/src/modules/projectFolders/codePatch.ts`), and code-patch rollback
 (`server/src/modules/proposals/applyService.ts`) — every code path capable of
@@ -669,6 +668,15 @@ retired 2026-08-23; ledger in git history).
 C5: the daemon also sends a live `stderr` frame per chunk (not only the
 `complete` frame's existing failure-tail), routed the same way as `output`
 through a new `HostConnectionRegistry.receiveStderr`/`onStderr` pair.
+
+Files & Code uses a separate bounded pull on the same socket: `folder_read`
+(server → daemon, Location id + relative path + Folder protection flag) and
+`folder_read_result` (daemon → server, one `tree`, `file`, `git_status`, or
+`git_diff` result). The daemon resolves the registered root, applies
+`@rainver/folder-read` PathPolicy and size limits, and never sends an absolute
+path. The server authorizes the preferred Location for its registered owner,
+records `force_record` audit metadata including `host_id`, and maps offline,
+timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect

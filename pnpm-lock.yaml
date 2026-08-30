@@ -150,6 +150,18 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@22.19.20)(jsdom@25.0.1)(vite@6.4.2(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.2)(tsx@4.23.12)(yaml@2.9.0))
 
+  packages/folder-read:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.20
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@22.19.20)(jsdom@25.0.1)(vite@6.4.2(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.2)(tsx@4.23.12)(yaml@2.9.0))
+
   packages/host-daemon:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
@@ -161,6 +173,9 @@ importers:
       '@rainver/agent-cli':
         specifier: workspace:*
         version: link:../agent-cli
+      '@rainver/folder-read':
+        specifier: workspace:*
+        version: link:../folder-read
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -208,6 +223,9 @@ importers:
       '@rainver/agent-cli':
         specifier: workspace:*
         version: link:../packages/agent-cli
+      '@rainver/folder-read':
+        specifier: workspace:*
+        version: link:../packages/folder-read
       '@rainver/protocol':
         specifier: workspace:*
         version: link:../packages/protocol

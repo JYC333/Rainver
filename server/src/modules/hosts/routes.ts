@@ -14,6 +14,7 @@ import { HttpError, withDbTransaction,
 } from "../routeUtils/common.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
+import { parseFolderReadResultFrame } from "./folderReadFrames.js";
 import { PgHostTaskThreadRepository } from "./taskThreadRepository.js";
 import { PgHostThreadMessageRepository } from "./threadMessageRepository.js";
 import {
@@ -1071,6 +1072,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                   : null,
               });
             }
+            return;
+          }
+          if (frame.type === "folder_read_result") {
+            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+            // A frame that fails validation still settles its caller: leaving
+            // it pending would surface as a timeout, hiding the real cause.
+            const result = parseFolderReadResultFrame(frame)
+              ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
+            if (requestId) sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, requestId, result);
             return;
           }
           if (frame.type === "tool_result") {

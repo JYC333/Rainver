@@ -3441,6 +3441,9 @@ export interface WorkspaceLocation {
   last_seen_at: string | null
   created_at: string
   updated_at: string
+  host_name: string | null
+  host_online: boolean
+  host_owner_is_me: boolean
 }
 
 /**

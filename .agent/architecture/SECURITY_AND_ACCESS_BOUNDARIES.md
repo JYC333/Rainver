@@ -676,10 +676,13 @@ the recipient remains an active member.
 everything in this section describes the **server host** only. A Project
 Folder row bound to a remote (personal) execution host never reaches this
 code path at all: the control plane holds no path for it, PathPolicy is
-never invoked, and there is no bubblewrap namespace — the remote daemon
-spawns natively on the machine's own filesystem under trusted-host mode
-(B62). This is a narrower trust model for execution hosts the user owns and
-has paired, not a relaxation of these invariants for the server host.
+not invoked on the server and there is no bubblewrap namespace — the remote
+daemon spawns Runs natively on the machine's own filesystem under trusted-host
+mode (B62). For Files & Code browse reads, the daemon runs the same shared
+`@rainver/folder-read` PathPolicy and byte/file-count limits before returning
+data over the `folder_read` channel. This is a narrower trust model for
+execution hosts the user owns and has paired, not a relaxation of these
+invariants for the server host.
 
 **Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
 - A registered Project Folder is one shared workspace with no personal area.
@@ -687,7 +690,7 @@ has paired, not a relaxation of these invariants for the server host.
   read-only into CLI sandboxes; personal material belongs in database-backed
   personal content. File-level ACLs are intentionally not a second source of
   truth for an externally mutable filesystem.
-- `PathPolicy` (`server/src/modules/projectFolders/pathPolicy.ts`) is enforced before any disk access.
+- `PathPolicy` (`@rainver/folder-read`) is enforced before any disk access.
 - `project_folder.read` policy is enforced before tree/file/status/diff reads.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
   path reads force a durable `PolicyDecisionRecord`.

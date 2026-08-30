@@ -1,6 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import {
+  buildTree,
+  folderGitDiff,
+  folderGitStatus,
+  FolderReadError,
+  isWireRelativePath,
+  looksSecretLikePath,
+  readFolderFile,
+  resolveRelativePath,
+  runGit,
+  type FileContent,
+  type FileNode,
+  type GitStatus,
+} from "@rainver/folder-read";
+import { sharedHostConnectionRegistry, type FolderReadFailure, type FolderReadKind, type FolderReadPayload } from "../hosts/connectionRegistry.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -9,48 +24,15 @@ import { enforce } from "../policy/service.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { projectFolderReadAccessSql } from "./access.js";
-import {
-  diffTouchesSecretLikePath,
-  looksSecretLikePath,
-  redactSecretLikeDiff,
-  validatePath,
-} from "./pathPolicy.js";
-import { isGitRepo, runGit } from "./git.js";
 import { PgHostRepository } from "../hosts/repository.js";
 import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
-  resolvePreferredServerHostLocation,
+  resolvePreferredLocationWithHost,
+  type PreferredLocationWithHost,
 } from "./workspaceLocations.js";
 
-const MAX_DEPTH = 5;
-const MAX_FILES = 500;
-const MAX_FILE_BYTES = 1_048_576;
-const MAX_DIFF_BYTES = 512 * 1024;
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
-
-const IGNORE_DIRS = new Set([
-  ".git",
-  "__pycache__",
-  "node_modules",
-  ".venv",
-  "venv",
-  ".tox",
-  "dist",
-  "build",
-  ".next",
-  ".nuxt",
-  "coverage",
-]);
-const SHOW_HIDDEN = new Set([
-  ".gitignore",
-  ".env.example",
-  ".env.dev.example",
-  ".env.test.example",
-  ".env.prod.example",
-  ".claude",
-  ".editorconfig",
-]);
 
 export interface ProjectFolderRow {
   id: string;
@@ -124,27 +106,6 @@ export interface ProjectFolderPage {
 export interface ScanCandidate {
   name: string;
   path: string;
-}
-
-export interface FileNode {
-  name: string;
-  path: string;
-  type: "file" | "dir";
-  size?: number;
-  children?: FileNode[];
-}
-
-export interface FileContent {
-  path: string;
-  content: string;
-  size: number;
-  line_count: number;
-}
-
-export interface GitStatus {
-  is_repo: boolean;
-  branch: string | null;
-  files: Array<{ path: string; status: string }>;
 }
 
 export class PgProjectFolderRepository {
@@ -525,51 +486,46 @@ export class PgProjectFolderRepository {
   }
 
   async getTree(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<FileNode> {
-    const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
-    const location = await resolvePreferredServerHostLocation(this.db, identity.spaceId, folderId);
-    await this.enforceFolderRead(folder, identity.userId, "tree");
+    const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
+    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    if (location.execution_host_kind === "remote") {
+      return this.readRemote(folder, identity.userId, location, "tree");
+    }
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-    const info = await stat(root).catch(() => null);
-    if (!info?.isDirectory()) throw new HttpError(404, "Project Folder directory not found on disk");
-    return buildTree(root, root, 0, { count: 0 });
+    await this.enforceFolderRead(folder, identity.userId, "tree");
+    try {
+      return await buildTree(root);
+    } catch (error) {
+      throw mapFolderReadError(error);
+    }
   }
 
   async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string): Promise<FileContent> {
-    const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
-    const location = await resolvePreferredServerHostLocation(this.db, identity.spaceId, folderId);
-    const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-    const safe = validatePath({
-      path: resolve(root, requestedPath),
-      allowedRoot: root,
-      mode: "read",
-      protectedFolder: folder.protected,
-    });
-    const info = await stat(safe).catch(() => null);
-    if (!info) throw new HttpError(404, "File not found");
-    if (!info.isFile()) throw new HttpError(400, "Path is a directory");
-    const relPath = relative(root, safe).split("\\").join("/");
-    await this.enforceFolderRead(folder, identity.userId, "file", relPath);
-    if (info.size > MAX_FILE_BYTES) {
-      throw new HttpError(413, "File too large to display (max 1 MiB)");
+    const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
+    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    if (location.execution_host_kind === "remote") {
+      return this.readRemote(folder, identity.userId, location, "file", requestedPath);
     }
-    const content = await readFile(safe, "utf8");
-    return {
-      path: requestedPath,
-      content,
-      size: info.size,
-      line_count: content.split(/\n/).length,
-    };
+    const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+    const relPath = resolveRelativePath(root, requestedPath, { protectedFolder: folder.protected }).relative;
+    await this.enforceFolderRead(folder, identity.userId, "file", relPath);
+    try {
+      const content = await readFolderFile(root, requestedPath, { protectedFolder: folder.protected });
+      return { ...content, path: requestedPath };
+    } catch (error) {
+      throw mapFolderReadError(error);
+    }
   }
 
   async getGitStatus(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<GitStatus> {
-    const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
-    const location = await resolvePreferredServerHostLocation(this.db, identity.spaceId, folderId);
+    const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
+    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    if (location.execution_host_kind === "remote") {
+      return this.readRemote(folder, identity.userId, location, "git_status");
+    }
     await this.enforceFolderRead(folder, identity.userId, "git_status");
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-    if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [] };
-    const branch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-    const raw = await runGit(["status", "--porcelain"], root, 10_000);
-    return { is_repo: true, branch, files: parsePorcelain(raw.stdout) };
+    return folderGitStatus(root);
   }
 
   async getGitDiff(
@@ -578,34 +534,22 @@ export class PgProjectFolderRepository {
     folderId: string,
     requestedPath: string | null,
   ): Promise<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }> {
-    const folder = await this.requireActiveFolder(identity.spaceId, projectId, folderId);
-    const location = await resolvePreferredServerHostLocation(this.db, identity.spaceId, folderId);
+    const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
+    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    if (location.execution_host_kind === "remote") {
+      return this.readRemote(folder, identity.userId, location, "git_diff", requestedPath ?? undefined);
+    }
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-    let relPath: string | null = null;
-    if (requestedPath) {
-      const safe = validatePath({
-        path: resolve(root, requestedPath),
-        allowedRoot: root,
-        mode: "read",
-        protectedFolder: folder.protected,
-      });
-      relPath = relative(root, safe).split("\\").join("/");
-    }
+    const relPath = requestedPath
+      ? resolveRelativePath(root, requestedPath, { protectedFolder: folder.protected }).relative
+      : null;
     await this.enforceFolderRead(folder, identity.userId, "git_diff", relPath);
-    const args = requestedPath ? ["diff", "HEAD", "--", relPath ?? requestedPath] : ["diff", "HEAD", "--"];
-    let diff = (await runGit(args, root, 15_000)).stdout;
-    if (!diff) {
-      diff = (await runGit(requestedPath ? ["diff", "--", relPath ?? requestedPath] : ["diff", "--"], root, 15_000)).stdout;
+    try {
+      const result = await folderGitDiff(root, requestedPath, { protectedFolder: folder.protected });
+      return { ...result, path: requestedPath };
+    } catch (error) {
+      throw mapFolderReadError(error);
     }
-    if (diffTouchesSecretLikePath(diff)) {
-      throw new HttpError(403, "Diff includes blocked path");
-    }
-    const redacted = redactSecretLikeDiff(diff);
-    diff = redacted.diff;
-    const encoded = Buffer.from(diff, "utf8");
-    const truncated = encoded.length > MAX_DIFF_BYTES;
-    if (truncated) diff = encoded.subarray(0, MAX_DIFF_BYTES).toString("utf8");
-    return { diff, path: requestedPath, truncated, redacted: redacted.redacted };
   }
 
   /** Run-scope lookup: not project-fenced, callers already hold `run.project_id`. */
@@ -629,8 +573,23 @@ export class PgProjectFolderRepository {
     return result.rows[0] ?? null;
   }
 
-  private async requireActiveFolder(spaceId: string, projectId: string, folderId: string): Promise<ProjectFolderRow> {
-    const folder = await this.getRow(spaceId, projectId, folderId, true);
+  private async requireReadableActiveFolder(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+  ): Promise<ProjectFolderRow> {
+    const result = await this.db.query<ProjectFolderRow>(
+      `${folderSelect()}
+        WHERE id = $1 AND space_id = $2 AND project_id = $3 AND status = 'active'
+          AND ${projectFolderReadAccessSql({
+            spaceExpr: "project_folders.space_id",
+            projectFolderExpr: "project_folders.id",
+            userExpr: "$4",
+          })}
+        LIMIT 1`,
+      [folderId, identity.spaceId, projectId, identity.userId],
+    );
+    const folder = result.rows[0];
     if (!folder) throw new HttpError(404, "Project Folder not found");
     return folder;
   }
@@ -693,6 +652,7 @@ export class PgProjectFolderRepository {
     userId: string,
     readKind: string,
     relativePath: string | null = null,
+    options: { forceRecord?: boolean; hostId?: string } = {},
   ): Promise<void> {
     const auditReasons = folderReadAuditReasons(folder, readKind, relativePath);
     const registry = await loadActionRegistry();
@@ -710,20 +670,60 @@ export class PgProjectFolderRepository {
         folder_protected: Boolean(folder.protected),
         folder_system_managed: Boolean(folder.system_managed),
         folder_external_root: Boolean(folder.allow_external_root),
+        ...(options.hostId ? { host_id: options.hostId } : {}),
         audit_reasons: auditReasons,
       },
       metadata_json: {
         read_kind: readKind,
         relative_path: relativePath,
+        ...(options.hostId ? { host_id: options.hostId } : {}),
         audit_reasons: auditReasons,
       },
-      force_record: auditReasons.length > 0,
+      force_record: options.forceRecord ?? auditReasons.length > 0,
     });
     if (result.status === "allow") return;
     if (result.status === "error") {
       throw new HttpError(500, result.message ?? "Project Folder read policy audit failed");
     }
     throw new HttpError(403, result.message ?? "Project Folder read denied by policy");
+  }
+
+  private async readRemote<K extends FolderReadKind>(
+    folder: ProjectFolderRow,
+    userId: string,
+    location: PreferredLocationWithHost,
+    kind: K,
+    requestedPath?: string,
+  ): Promise<FolderReadPayload[K]> {
+    if (requestedPath !== undefined && !isWireRelativePath(requestedPath)) {
+      const detail = "folder_read paths must be relative";
+      throw new HttpError(403, detail, { detail, code: "path_forbidden" });
+    }
+    await this.enforceFolderRead(folder, userId, kind, requestedPath ?? null, { forceRecord: true, hostId: location.execution_host_id });
+    if (location.host_owner_user_id !== userId) {
+      throw new HttpError(403, `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`, {
+        detail: `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`,
+        code: "host_not_owned",
+        host_name: location.host_name,
+      });
+    }
+    if (!location.host_online) {
+      const detail = `This Folder is on ${location.host_name}, which is offline.`;
+      throw new HttpError(409, detail, {
+        detail,
+        code: "host_offline",
+        host_name: location.host_name,
+        last_heartbeat_at: location.last_heartbeat_at,
+      });
+    }
+    const result = await sharedHostConnectionRegistry.requestFolderRead(location.execution_host_id, {
+      workspace_location_id: location.id,
+      kind,
+      ...(requestedPath === undefined ? {} : { path: requestedPath }),
+      protected: Boolean(folder.protected),
+    });
+    if (result.ok) return result.result;
+    throw mapRemoteFolderReadError(result, location.host_name);
   }
 }
 
@@ -781,48 +781,44 @@ function isPool(db: Queryable): db is Pool {
   return typeof (db as Partial<Pool>).connect === "function";
 }
 
-async function buildTree(root: string, nodePath: string, depth: number, counter: { count: number }): Promise<FileNode> {
-  const info = await stat(nodePath);
-  const rel = nodePath === root ? "." : relative(root, nodePath).split("\\").join("/");
-  const node: FileNode = {
-    name: nodePath === root ? root.split(/[\\/]/).pop() || root : nodePath.split(/[\\/]/).pop() || nodePath,
-    path: rel,
-    type: info.isDirectory() ? "dir" : "file",
-  };
-  if (info.isFile()) {
-    node.size = info.size;
-    return node;
+function mapFolderReadError(error: unknown): never {
+  if (!(error instanceof FolderReadError)) throw error;
+  switch (error.code) {
+    case "not_found":
+      throw new HttpError(404, error.message);
+    case "is_directory":
+      throw new HttpError(400, error.message);
+    case "too_large":
+      throw new HttpError(413, error.message);
+    case "path_forbidden":
+      throw new HttpError(403, error.message);
   }
-  if (!info.isDirectory() || depth >= MAX_DEPTH || counter.count >= MAX_FILES) {
-    return node;
-  }
-  const entries = await readdir(nodePath, { withFileTypes: true }).catch(() => []);
-  const children: FileNode[] = [];
-  for (const entry of entries.sort((a, b) => Number(a.isFile()) - Number(b.isFile()) || a.name.localeCompare(b.name))) {
-    if (entry.isDirectory() && IGNORE_DIRS.has(entry.name)) continue;
-    if (entry.name.startsWith(".") && !SHOW_HIDDEN.has(entry.name)) continue;
-    counter.count += 1;
-    if (counter.count > MAX_FILES) break;
-    children.push(await buildTree(root, join(nodePath, entry.name), depth + 1, counter));
-  }
-  node.children = children;
-  return node;
 }
 
-function parsePorcelain(output: string): Array<{ path: string; status: string }> {
-  const result: Array<{ path: string; status: string }> = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (line.length < 3) continue;
-    const xy = line.slice(0, 2);
-    const path = line.slice(3).trim();
-    let status = "modified";
-    if (xy.includes("?")) status = "untracked";
-    else if (xy.includes("R")) status = "renamed";
-    else if (xy.includes("D")) status = "deleted";
-    else if (xy.includes("A")) status = "added";
-    result.push({ path, status });
+function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): HttpError {
+  const message = result.message ?? `Remote Folder read failed on ${hostName}`;
+  switch (result.error) {
+    case "path_forbidden":
+      return new HttpError(403, message, { detail: message, code: "path_forbidden" });
+    case "not_found":
+      return new HttpError(404, message, { detail: message, code: "not_found" });
+    case "is_directory":
+      return new HttpError(400, message, { detail: message, code: "is_directory" });
+    case "too_large":
+      return new HttpError(413, message, { detail: message, code: "too_large" });
+    case "location_unknown":
+      return new HttpError(409, `The daemon on ${hostName} no longer knows this directory. Run 'rainver-host workspace add' there.`, {
+        detail: `The daemon on ${hostName} no longer knows this directory. Run 'rainver-host workspace add' there.`,
+        code: "location_unknown_on_host",
+        host_name: hostName,
+      });
+    case "host_timeout":
+      return new HttpError(409, `The host ${hostName} did not respond in time.`, { detail: `The host ${hostName} did not respond in time.`, code: "host_timeout", host_name: hostName });
+    case "host_offline":
+      return new HttpError(409, `The host ${hostName} is offline.`, { detail: `The host ${hostName} is offline.`, code: "host_offline", host_name: hostName });
+    case "read_failed":
+      return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
   }
-  return result;
 }
 
 function folderReadAuditReasons(

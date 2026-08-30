@@ -3,7 +3,7 @@ import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domai
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config.js";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
@@ -12,6 +12,7 @@ import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -96,7 +97,7 @@ describe("Project Folder database invariants", () => {
     });
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
     );
     const identity = { spaceId: SPACE, userId: USER };
 
@@ -216,7 +217,7 @@ describe("Project Folder database invariants", () => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
     );
     const identity = { spaceId: SPACE, userId: USER };
     const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
@@ -227,7 +228,7 @@ describe("Project Folder database invariants", () => {
     expect(row.rows[0]).toMatchObject({ execution_host_id: HOST, execution_host_kind: "server" });
   });
 
-  it("refuses local-filesystem reads and sandbox prep for a remote-host Folder (ADR 0016 B62-B64)", async (ctx) => {
+  it("reports an offline remote host while keeping server-only sandbox prep blocked (ADR 0016 B62-B64)", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const hosts = new PgHostRepository(db.pool);
     const issued = await hosts.issuePairingCode(USER, "Remote Test Box");
@@ -249,17 +250,17 @@ describe("Project Folder database invariants", () => {
     );
     const repo = new PgProjectFolderRepository(
       db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
     );
     const identity = { spaceId: SPACE, userId: USER };
 
-    await expect(repo.getTree(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409 });
-    await expect(repo.getFile(identity, PROJECT, remoteFolderId, "x")).rejects.toMatchObject({ statusCode: 409 });
-    await expect(repo.getGitStatus(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409 });
-    await expect(repo.getGitDiff(identity, PROJECT, remoteFolderId, null)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo.getTree(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "host_offline" } });
+    await expect(repo.getFile(identity, PROJECT, remoteFolderId, "x")).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "host_offline" } });
+    await expect(repo.getGitStatus(identity, PROJECT, remoteFolderId)).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "host_offline" } });
+    await expect(repo.getGitDiff(identity, PROJECT, remoteFolderId, null)).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "host_offline" } });
 
     const manager = new PgRunSandboxManager(
-      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test" }),
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
       db.pool,
     );
     await expect(
@@ -291,5 +292,79 @@ describe("Project Folder database invariants", () => {
         [randomUUID(), SPACE, folderId, HOST],
       ),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("round-trips all live remote read kinds with owner/audit gates", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
+    const issued = await hosts.issuePairingCode(USER, "Remote Read Box");
+    if ("statusCode" in issued) throw new Error("expected success");
+    await db.pool.query(`UPDATE hosts SET status = 'online', last_heartbeat_at = now() WHERE id = $1`, [issued.host_id]);
+    const folderId = "abababab-abab-4aba-8bab-abababababab";
+    const locationId = "cdcdcdcd-cdcd-4cdc-8dcd-cdcdcdcdcdcd";
+    await db.pool.query(
+      `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, registered_from, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Remote Read Folder','active','code',false,false,false,'daemon_registered',now(),now())`,
+      [folderId, SPACE, PROJECT, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind, root_path, execution_ready, status, preferred, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',true,now(),now())`,
+      [locationId, SPACE, folderId, issued.host_id],
+    );
+    const remoteResults: Record<string, unknown> = {
+      tree: { name: "repo", path: ".", type: "dir", children: [] },
+      file: { path: "README.md", content: "hello\n", size: 6, line_count: 2 },
+      git_status: { is_repo: true, branch: "main", files: [] },
+      git_diff: { diff: "", path: null, truncated: false, redacted: false },
+    };
+    const request = vi.spyOn(sharedHostConnectionRegistry, "requestFolderRead").mockImplementation(async (_hostId, frame) => ({
+      ok: true,
+      kind: frame.kind as "tree" | "file" | "git_status" | "git_diff",
+      result: remoteResults[String(frame.kind)]!,
+    }));
+    try {
+      const repo = new PgProjectFolderRepository(db.pool, loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }));
+      const identity = { spaceId: SPACE, userId: USER };
+      await expect(repo.getTree(identity, PROJECT, folderId)).resolves.toMatchObject({ name: "repo" });
+      await expect(repo.getFile(identity, PROJECT, folderId, "README.md")).resolves.toMatchObject({ content: "hello\n" });
+      await expect(repo.getGitStatus(identity, PROJECT, folderId)).resolves.toMatchObject({ branch: "main" });
+      await expect(repo.getGitDiff(identity, PROJECT, folderId, null)).resolves.toMatchObject({ diff: "" });
+      expect(request).toHaveBeenCalledTimes(4);
+      await expect(repo.getFile(identity, PROJECT, folderId, "/Users/alice/private.txt"))
+        .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "path_forbidden" } });
+      await expect(repo.getGitDiff(identity, PROJECT, folderId, "/Users/alice/private.txt"))
+        .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "path_forbidden" } });
+      expect(request).toHaveBeenCalledTimes(4);
+
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Viewer', 'active', now(), now())`,
+        ["dededede-dede-4ded-8ded-dededededede"],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES (gen_random_uuid()::varchar,$1,$2,'member','active',now(),now())`,
+        [SPACE, "dededede-dede-4ded-8ded-dededededede"],
+      );
+      await db.pool.query(
+        `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'viewer','active',now(),now())`,
+        [SPACE, PROJECT, "dededede-dede-4ded-8ded-dededededede"],
+      );
+      await expect(repo.getTree({ spaceId: SPACE, userId: "dededede-dede-4ded-8ded-dededededede" }, PROJECT, folderId))
+        .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "host_not_owned" } });
+      request.mockResolvedValueOnce({ ok: false, error: "path_forbidden", message: "blocked" });
+      await expect(repo.getFile(identity, PROJECT, folderId, "README.md"))
+        .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "path_forbidden" } });
+      request.mockResolvedValueOnce({ ok: false, error: "host_timeout" });
+      await expect(repo.getTree(identity, PROJECT, folderId))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "host_timeout" } });
+      const audits = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+        `SELECT metadata_json FROM policy_decision_records WHERE resource_id = $1 AND action = 'project_folder.read' ORDER BY created_at DESC LIMIT 5`,
+        [folderId],
+      );
+      expect(audits.rows.length).toBeGreaterThanOrEqual(5);
+      expect(audits.rows.every((row) => row.metadata_json?.host_id === issued.host_id)).toBe(true);
+    } finally {
+      request.mockRestore();
+    }
   });
 });

@@ -4,8 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "../runs/repository.js";
-import { gitOutput, isGitRepo, runGit } from "./git.js";
-import { isInside } from "./pathPolicy.js";
+import { gitOutput, isGitRepo, isInside, runGit } from "@rainver/folder-read";
 import { PgProjectFolderRepository, type ProjectFolderRow } from "./repository.js";
 import { resolveServerHostLocationForRun, locationAbsoluteRoot } from "./workspaceLocations.js";
 

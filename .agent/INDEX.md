@@ -29,6 +29,9 @@ durable position on this boundary.
 7. `.agent/BOUNDARIES.md` — architectural invariants; load for any structural change
 8. `.agent/decisions/` — accepted architectural decisions
 
+Node-only shared workspace helpers live in their owning package (for example
+`packages/folder-read/src/`); they are not browser-safe protocol contracts.
+
 Docs in `.agent/architecture/` describe **current state**, not target-state speculation. Temporary
 reports in `.agent/reports/` are not source of truth and should be deleted after consolidation.
 

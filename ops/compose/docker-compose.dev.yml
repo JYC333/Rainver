@@ -32,6 +32,7 @@ services:
       - ../../server/migrations:/app/server/migrations:ro
       - ../../server/tsconfig.json:/app/server/tsconfig.json:ro
       - ../../packages/protocol/src:/app/packages/protocol/src:ro
+      - ../../packages/folder-read/src:/app/packages/folder-read/src:ro
       - ../../plugins:/app/plugins:ro
       # Prompt/catalog edits must reach the boot-time builtin sync without an
       # image rebuild; a server restart is enough with the mount in place.

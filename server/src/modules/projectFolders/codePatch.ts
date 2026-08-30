@@ -17,8 +17,7 @@ import type {
   ProposalApplyResult,
   ProposalApplierRegistry,
 } from "../proposals/applierRegistry.js";
-import { runGit, gitOutput } from "./git.js";
-import { validatePath } from "./pathPolicy.js";
+import { gitOutput, runGit, validatePath } from "@rainver/folder-read";
 import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
