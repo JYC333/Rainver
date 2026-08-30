@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { agentsApi, proposalsApi, sessionsApi } from '../../api/client'
+import { agentsApi, hostsApi, proposalsApi, sessionsApi } from '../../api/client'
 import type {
   AgentOut,
   ChatActionPreview,
@@ -11,6 +11,9 @@ import type {
 } from '../../types/api'
 import { ChatThread, type ChatThreadMessage } from '../../components/ChatThread'
 import { errMsg } from '../../lib/utils'
+import { useSpace } from '../../contexts/SpaceContext'
+import { Button } from '../../components/ui/button'
+import { ConfirmDialog } from '../../components/ui/dialog'
 
 interface ChatMessage extends ChatThreadMessage {
   actionPreviews?: ChatActionPreview[]
@@ -22,6 +25,8 @@ interface BackendChoice {
   key: string
   label: string
   backend: ConversationBackendBinding
+  usable: boolean
+  reason?: string | null
 }
 
 /**
@@ -43,6 +48,7 @@ export default function ChatPanel({
   onSessionChange?: (sessionId: string) => void
   projectId?: string
 }) {
+  const { userId } = useSpace()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId ?? undefined)
   const [input, setInput] = useState('')
@@ -52,6 +58,9 @@ export default function ChatPanel({
   const [backendOptions, setBackendOptions] = useState<ConversationBackendOption[]>([])
   const [backend, setBackend] = useState<ConversationBackendBinding | null>(null)
   const [loadingBackends, setLoadingBackends] = useState(true)
+  const [hosts, setHosts] = useState<Awaited<ReturnType<typeof hostsApi.list>>['items']>([])
+  const [restoreWorkspace, setRestoreWorkspace] = useState(false)
+  const [hostError, setHostError] = useState<string | null>(null)
   const autoSentRef = useRef(false)
   // Capture the session that was provided at mount time (via URL). Sessions
   // created during chat are already reflected in local state; re-fetching them
@@ -78,6 +87,18 @@ export default function ChatPanel({
       })
     return () => { cancelled = true }
   }, [agent.id, agent.space_id, initialSessionId])
+
+  useEffect(() => {
+    if (!backendOptions.some(option => option.host_bound)) {
+      setHosts([])
+      return
+    }
+    if (typeof hostsApi?.list !== 'function') {
+      setHosts([])
+      return
+    }
+    hostsApi.list().then(response => setHosts(response.items)).catch(() => setHosts([]))
+  }, [backendOptions])
 
   useEffect(() => {
     const id = initialSessionId?.trim()
@@ -115,10 +136,13 @@ export default function ChatPanel({
     return () => { cancelled = true }
   }, [initialSessionId])
 
+  const selectedBackendOption = backendOptions.find(option => option.runtime_profile_id === backend?.runtime_profile_id) ?? null
+
   const send = useCallback(async (text: string) => {
     const message = text.trim()
-    if (!message || sending || loadingHistory || loadingBackends || !backend) return
+    if (!message || sending || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
     setInput('')
+    setHostError(null)
     setMessages(m => [...m, { role: 'user', content: message }])
     setSending(true)
     setLifecycle('Queued')
@@ -135,6 +159,7 @@ export default function ChatPanel({
             runtime_profile_id: backend.runtime_profile_id,
             credential_profile_id: backend.credential_profile_id ?? null,
           },
+          ...(restoreWorkspace ? { restore_workspace: true } : {}),
         },
         {
           spaceId: agent.space_id,
@@ -178,6 +203,7 @@ export default function ChatPanel({
         },
       )
       setSessionId(res.session_id)
+      setRestoreWorkspace(false)
       onSessionChange?.(res.session_id)
       if (res.ok) {
         setMessages(current => {
@@ -210,7 +236,15 @@ export default function ChatPanel({
         })
       }
     } catch (e) {
-      const note = errMsg(e)
+      const errorStatus = hostErrorStatus(e)
+      const note = errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound
+        ? errorStatus === 403
+          ? 'This host-bound Agent can only be triggered by the Host owner.'
+          : errorStatus === 503
+            ? 'The execution Host is offline. Reconnect it before sending this direct message.'
+            : 'The host-bound workspace is unavailable or belongs to a different conversation context.'
+        : errMsg(e)
+      if (errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound) setHostError(note)
       toast.error(note)
       setMessages(current => {
         const failed: ChatMessage = {
@@ -226,7 +260,7 @@ export default function ChatPanel({
       setSending(false)
       setLifecycle(null)
     }
-  }, [agent.id, agent.space_id, backend, loadingBackends, loadingHistory, onSessionChange, projectId, sessionId, sending])
+  }, [agent.id, agent.space_id, backend, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionId, sending])
 
   // Auto-send a draft carried from Home's assistant entry (the user already hit "Open").
   useEffect(() => {
@@ -246,9 +280,33 @@ export default function ChatPanel({
   const providerMissing = messages.some(m => m.error && m.content.includes('model provider'))
   const backendChoices = flattenBackendChoices(backendOptions)
   const selectedBackendKey = backend ? backendKey(backend) : ''
+  const selectedHost = selectedBackendOption?.host_id ? hosts.find(host => host.id === selectedBackendOption.host_id) : null
+  const archivedManagedWorkspace = selectedBackendOption?.workspace_mode === 'managed'
+    && selectedHost?.managed_workspaces_json?.some(workspace =>
+      workspace.agent_id === agent.id && workspace.container_kind === 'direct' && workspace.container_id === userId && workspace.archived_available)
+  const hostBlocked = Boolean(selectedBackendOption?.host_bound && selectedBackendOption.usable === false)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  async function resetContext() {
+    if (!selectedBackendOption?.host_bound || !selectedBackendOption.host_owner_is_me || !selectedBackendOption.host_online) return
+    try {
+      await agentsApi.resetContext(agent.id)
+      setRestoreWorkspace(false)
+      toast.success('Host context reset')
+    } catch (error) {
+      toast.error(errMsg(error))
+    }
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        onOpenChange={setResetConfirmOpen}
+        title="Reset this Agent's host context?"
+        description="The next direct message starts a fresh vendor session. Files in its workspace stay."
+        confirmLabel="Reset context"
+        onConfirm={() => void resetContext()}
+      />
       <div className="mb-2 flex items-center justify-between gap-3">
         <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0">Backend</span>
@@ -268,8 +326,8 @@ export default function ChatPanel({
               <option value="" disabled>Select backend…</option>
             )}
             {backendChoices.map(choice => (
-              <option key={choice.key} value={choice.key}>{choice.label}</option>
-            ))}
+                <option key={choice.key} value={choice.key} disabled={!choice.usable}>{choice.label}{choice.usable ? '' : ' · unavailable'}</option>
+              ))}
           </select>
         </label>
         {sessionId && (
@@ -278,6 +336,24 @@ export default function ChatPanel({
           </Link>
         )}
       </div>
+      {selectedBackendOption?.host_bound && (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" role="status">
+          <span className={hostBlocked ? 'text-destructive' : 'text-muted-foreground'}>
+            {selectedBackendOption.workspace_mode === 'managed' ? 'Managed workspace' : 'Project Location'} on {selectedBackendOption.host_name ?? 'host'}
+            {hostBlocked ? ` · ${selectedBackendOption.reason ?? 'unavailable'}` : ' · owner-only'}
+          </span>
+          {selectedBackendOption.host_owner_is_me && selectedBackendOption.host_online && (
+            <Button type="button" size="sm" variant="outline" disabled={sending} onClick={() => setResetConfirmOpen(true)}>Reset context</Button>
+          )}
+        </div>
+      )}
+      {hostError && <p className="mb-2 text-xs text-destructive" role="alert">{hostError}</p>}
+      {archivedManagedWorkspace && !hostBlocked && (
+        <label className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={restoreWorkspace} onChange={event => setRestoreWorkspace(event.target.checked)} disabled={sending} />
+          Restore previous managed workspace for this Agent
+        </label>
+      )}
       {!loadingBackends && backendChoices.length === 0 && (
         <p className="mb-2 text-xs text-warning" role="alert">
           No eligible conversation backend is configured. Add a model provider or grant one of your CLI login profiles to this space.
@@ -315,7 +391,7 @@ export default function ChatPanel({
         emptyTitle="Ask your assistant"
         emptyDescription="It is aware of your space — memory, projects, captures, runs, and proposals. Long-term changes are always proposals you approve."
         assistantLabel="Assistant"
-        composerDisabled={loadingBackends || !backend}
+        composerDisabled={loadingBackends || !backend || hostBlocked}
       />
     </div>
   )
@@ -333,6 +409,8 @@ function flattenBackendChoices(options: ConversationBackendOption[]): BackendCho
         key: backendKey(backend),
         label: `${option.name} · ${option.model_name ?? option.adapter_type}`,
         backend,
+        usable: option.usable !== false,
+        reason: option.reason,
       }]
     }
     return option.credential_profiles.map(credential => {
@@ -345,13 +423,15 @@ function flattenBackendChoices(options: ConversationBackendOption[]): BackendCho
         key: backendKey(backend),
         label: `${option.name} · ${option.adapter_type} · ${credential.name}${credential.is_default ? ' (default)' : ''}`,
         backend,
+        usable: option.usable !== false,
+        reason: option.reason,
       }
     })
   })
 }
 
 function defaultBackend(options: ConversationBackendOption[]): ConversationBackendBinding | null {
-  return flattenBackendChoices(options)[0]?.backend ?? null
+  return flattenBackendChoices(options).find(choice => choice.usable)?.backend ?? null
 }
 
 function catalogBackend(
@@ -377,6 +457,12 @@ function lifecycleLabel(eventType: string) {
     .filter(Boolean)
     .map(word => word[0]?.toUpperCase() + word.slice(1))
     .join(' ')
+}
+
+function hostErrorStatus(error: unknown): number | null {
+  if (!error || typeof error !== 'object' || !('status' in error)) return null
+  const status = (error as { status?: unknown }).status
+  return typeof status === 'number' ? status : null
 }
 
 async function refreshActionPreviews(previews?: ChatActionPreview[]) {

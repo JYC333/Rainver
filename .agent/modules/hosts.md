@@ -56,6 +56,19 @@ the physical topology:
 - `machine_id` and `environment_kind` are required. Location retains a
   constrained `execution_host_kind` copy of `hosts.kind` for database-level
   remote-root and scope invariants.
+- `agent_runtime_profiles.workspace_mode` is `location` for a registered
+  Project directory and `managed` for a daemon-created private root. Managed
+  profiles carry no Workspace Location; the server stores only Agent and
+  container identity.
+- `hosts.managed_workspaces_json` is the daemon's bounded heartbeat inventory
+  of managed Agent × container directories and archive availability. It never
+  contains a filesystem path.
+
+Managed workspaces are daemon-owned directories, not Workspace Locations. A
+launch names an Agent and either a Room id or the direct owner's user id; the
+daemon derives the directory under its private config root. The server can
+request archive/restore actions and records a pending archive when the daemon
+is offline, but it never receives or stores the derived path.
 
 ## Server-host guard (ADR 0016 B62)
 
@@ -79,6 +92,10 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 
 - `POST /api/v1/hosts/pairing-codes` — `{ name }` → `{ host_id, pairing_code, expires_at }` (10 min TTL).
 - `GET /api/v1/hosts` — the server host plus every remote host the caller owns.
+- `GET /api/v1/hosts/execution-targets?project_id=` — the caller's online
+  remote hosts and ACP installations. Without `project_id`, hosts have no
+  registered Locations; with it, only Locations in that readable Project are
+  returned. Every target advertises the managed-workspace choice.
 - `POST /api/v1/hosts/:hostId/revoke` — terminal; a revoked host's token stops
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
@@ -691,19 +708,23 @@ subsystem). See the deferred register.
 
 ## Host threads (D14, `server/src/modules/hosts/threadRepository.ts`)
 
-A `host_threads` row pins a vendor-CLI conversation to one
-`workspace_location_id` for session resume via ACP's own `session/resume` (the
-general `AcpController` in `server/src/modules/runs/cliConversationProtocol.ts`
-drives this for every adapter now) — not server-side Runtime Context
-continuity (remote runs get none of that; see
-"No server-brokered Runtime Context" below). `getForLocation` is scoped by
-`workspace_location_id` so a thread from one physical checkout can never be
-resumed against another. A row is either a legacy/new Task-shaped thread
+A `host_threads` row pins a vendor-CLI conversation to one registered
+`workspace_location_id`, or to a daemon-derived managed Agent × container
+workspace, for session resume via ACP's own `session/resume` (the general
+`AcpController` in `server/src/modules/runs/cliConversationProtocol.ts` drives
+this for every adapter now) — not server-side Runtime Context continuity
+(remote runs get none of that; see "No server-brokered Runtime Context" below).
+`getForLocation` is scoped by `workspace_location_id` so a thread from one
+physical checkout can never be resumed against another. Managed rows have a
+null Location and `workspace_mode='managed'`; Room rows use
+`container_kind='room'`, while direct owner chats use `container_kind='direct'`
+plus `container_user_id`. A row is either a legacy/new Task-shaped thread
 (`task_id` with null Room/Agent ownership, although legacy rows may have a
-null task id) or a Room-specialist thread (`room_id` and `agent_id`, with no
-Task owner). The partial unique index permits one active/session-reset Room ×
-Agent conversation and releases it when the thread is closed. `last_session_id`
-tracks the Room conversation that last established prompt continuity.
+null task id) or an Agent conversation. The partial unique indexes permit one
+active/session-reset Room × Agent conversation and one active/session-reset
+Agent × direct-owner conversation, releasing each when the thread is closed.
+`last_session_id` tracks the conversation that last established prompt
+continuity.
 `dispatch_lock_id` is the persistent atomic in-flight claim: a Room × Agent
 thread is claimed before its Run exists, bound to that Run before commit, and
 released only by the terminal outcome hook. This prevents two conversations
@@ -731,6 +752,15 @@ is what renders it.
 paused) is a separate concern from `status`/`session_reset` — a thread can be
 `active` (vendor session fine) and queue-paused (something needs the user's
 attention) at the same time.
+
+Removing a managed Room specialist or deleting an owner's direct session
+closes its thread and sets `pending_archive_at`. The server asks the connected
+daemon to rename the live directory to its timestamped `.removed-*` archive;
+if the daemon is offline, the pending row is replayed on the next hello or
+heartbeat. Re-adding a Room or sending the first direct message can request an
+explicit restore when the heartbeat reports `archived_available`; restore
+never restores the vendor session. Archives older than 30 days are swept by
+the daemon on heartbeat.
 
 ## Message queue (P2, C4 — `server/src/modules/hosts/{threadMessageRepository,queueAdvance}.ts`)
 
@@ -971,6 +1001,16 @@ real local path is ever written down.
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it.
+
+Managed Agent workspaces are derived only on the daemon: a launch frame names
+`workspace.kind = managed`, an Agent id, and either a Room or direct-chat
+container id; the daemon creates `agents/<agentId>/rooms/<roomId>` or
+`agents/<agentId>/direct/<userId>` under its config directory. The server never
+receives that path. `managed_workspace_archive` renames a live directory to a
+timestamped `.removed-…` sibling, `managed_workspace_restore` brings back the
+newest archive when no live directory exists, and heartbeat sweeps archives
+older than 30 days. Heartbeats report only Agent/container ids and the boolean
+`archived_available` flag.
 
 Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
 `git` plus every runtime binary the server named in `hello_ack.runtime_probes`

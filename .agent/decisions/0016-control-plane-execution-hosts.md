@@ -52,8 +52,12 @@ ProjectFolder`.
   server `root_path` or remote `display_path`, branch/head/dirty metadata,
   preferred selection, persisted `execution_ready`.
 
-Runs and host task threads bind to a Location; `project_folder_id` is a
-write-once denormalisation with composite constraints preventing drift.
+Runs and host task threads bind to a Location when they execute against a
+registered Project checkout. A host-bound Agent may instead use a **managed
+workspace**: a daemon-created directory under its own config directory, named
+by Agent plus conversation container. The control plane stores no path for a
+managed workspace. `project_folder_id` remains a write-once denormalisation for
+Location-backed Runs, with composite constraints preventing drift.
 
 ### 2. Two-tier trust
 
@@ -79,9 +83,10 @@ Git reads are machine state and remain owner-only.
 
 A Room specialist bound to a remote Workspace Location is still an Agent
 identity, but its Room turns are sent through the same host daemon and one
-opaque vendor session is kept per Room × Agent. The trigger is owner-only;
-there is no queue or replay while the host is offline. A rendered Room prompt
-(Project state plus Room summary/recent messages) is prompt content the owner
+opaque vendor session is kept per Room × Agent. The same owner-only gate
+applies to a managed workspace, including a direct chat between the Host owner
+and the Agent. A rendered Room prompt (Project state plus Room
+summary/recent messages) or direct-chat history is prompt content the owner
 already may read, not Runtime Context, memory, credentials, or provider state;
 none of those cross the host boundary.
 
@@ -92,9 +97,12 @@ remote host. `root_path` is populated only for server-host Locations; a
 remote Location has only a daemon-reported `display_path` for labelling, and
 the daemon is authoritative for the real directory. `folder_read` frames carry
 only a Workspace Location id and relative path; the daemon resolves the root
-from its local registration and applies the shared read policy. `execution_host_kind`
-is a constrained denormalised copy of `hosts.kind` so the database can enforce
-the remote-root invariant.
+from its local registration and applies the shared read policy. Managed launch
+frames carry only `{ agent, container }`; the daemon derives
+`<config>/agents/<agent>/{rooms|direct}/<container>` and validates the opaque
+identifiers before joining them. `execution_host_kind` is a constrained
+denormalised copy of `hosts.kind` so the database can enforce the remote-root
+invariant.
 
 ### 4. What does and does not extend to a remote host
 
@@ -152,9 +160,16 @@ thread pinned to one (host, workspace, installation).
 
 Room continuity uses the same host-thread authority, generalized from Task
 threads: one live `host_threads` row per Room × Agent, resettable by the host
-owner, and closed when the specialist leaves the Room. The daemon still
-receives only the existing launch frame; the Room identity and prompt stay in
-the control plane's Run record.
+owner, and closed when the specialist leaves the Room. Direct continuity is
+one live row per Agent × Host owner, with the direct session's recent history
+rendered into the next prompt. A managed thread has no Location and carries
+the managed Agent/container in its launch frame; a Location thread pins the
+registered Location. Reset retires the opaque vendor session but leaves the
+directory in place. Removal archives the directory by rename, and a later
+opt-in restore can move the newest archive back; the daemon reports only the
+boolean archive inventory in heartbeats. The Room/direct identity and prompt
+stay in the control plane's Run record, while the daemon remains authoritative
+for the directory.
 
 ### 5. The daemon is identity, connectivity, and supervision — nothing more
 
@@ -169,6 +184,10 @@ The daemon's durable role:
   duplex stdio frame stream through the same outbound connection.
 - bounded read-only tree, file, and Git requests for registered workspaces,
   with the same path policy and byte/file-count limits on the daemon.
+- managed-workspace lifecycle: derive a per-Agent × container directory, create
+  it for launch, archive on Room removal/direct-session deletion, restore only
+  after an explicit request, sweep archives older than 30 days, and report the
+  opaque availability inventory on heartbeat.
 
 There is **one** transport — a duplex stdin frame extension of the host
 WebSocket protocol — and **one** server-side protocol client, because every
@@ -268,3 +287,8 @@ probing, and full local-first replication are likewise out of scope.
 - **2026-08-30** — Room specialists are host-bound Agent records with one
   owner-only Room × Agent host thread; Room prompt context remains prompt
   content and never becomes server-brokered Runtime Context.
+- **2026-08-30** — managed workspaces add daemon-derived per-Agent × Room or
+  direct-owner directories, archive/restore/sweep lifecycle, and direct chat;
+  the control plane stores only the host, workspace mode, and opaque container
+  identity. Room removal and direct-session deletion archive rather than
+  delete, and reset retires vendor continuity without touching the directory.

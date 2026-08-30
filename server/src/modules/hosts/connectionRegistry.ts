@@ -102,6 +102,12 @@ export type FolderReadSuccess<K extends FolderReadKind = FolderReadKind> =
 export type FolderReadFailure = { ok: false; error: FolderReadFailureCode; message?: string };
 export type FolderReadResult<K extends FolderReadKind = FolderReadKind> = FolderReadSuccess<K> | FolderReadFailure;
 
+export interface ManagedWorkspaceResult {
+  ok: boolean;
+  changed: boolean;
+  error: string | null;
+}
+
 /** What a daemon's login terminal sends back, frame by frame. */
 export type LoginSessionEvent =
   | { type: "output"; data: string }
@@ -122,6 +128,7 @@ const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 export const FOLDER_READ_TIMEOUT_MS = 15_000;
+export const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
@@ -137,6 +144,11 @@ export class HostConnectionRegistry {
     hostId: string;
     kind: FolderReadKind;
     resolve: (result: FolderReadResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly pendingManagedWorkspaces = new Map<string, {
+    hostId: string;
+    resolve: (result: ManagedWorkspaceResult) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
 
@@ -166,6 +178,12 @@ export class HostConnectionRegistry {
       this.pendingFolderReads.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "host_offline" });
+    }
+    for (const [requestId, pending] of this.pendingManagedWorkspaces) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingManagedWorkspaces.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, changed: false, error: "host_offline" });
     }
   }
   private readonly logins = new Map<string, PendingLogin>();
@@ -372,6 +390,33 @@ export class HostConnectionRegistry {
     if (result.ok && result.kind !== pending.kind) return;
     clearTimeout(pending.timer);
     this.pendingFolderReads.delete(requestId);
+    pending.resolve(result);
+  }
+
+  requestManagedWorkspaceAction(
+    hostId: string,
+    type: "managed_workspace_archive" | "managed_workspace_restore",
+    frame: Record<string, unknown>,
+  ): Promise<ManagedWorkspaceResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, changed: false, error: "host_offline" });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingManagedWorkspaces.delete(requestId);
+        resolve({ ok: false, changed: false, error: "host_timeout" });
+      }, MANAGED_WORKSPACE_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
+      connection.sink!.send({ ...frame, type, request_id: requestId });
+    });
+  }
+
+  receiveManagedWorkspaceResult(hostId: string, requestId: string, result: ManagedWorkspaceResult): void {
+    const pending = this.pendingManagedWorkspaces.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingManagedWorkspaces.delete(requestId);
     pending.resolve(result);
   }
 

@@ -4,7 +4,7 @@ import React from 'react'
 import HostExecutionTargetPicker, { type HostExecutionSelection } from '../HostExecutionTargetPicker'
 
 const mockedApi = vi.hoisted(() => ({
-  hostExecutionTargets: vi.fn(),
+  executionTargets: vi.fn(),
   listRuntimeAdapters: vi.fn(),
   installRuntime: vi.fn(),
   loginStream: vi.fn(),
@@ -12,8 +12,8 @@ const mockedApi = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../api/client', () => ({
-  projectsApi: { hostExecutionTargets: mockedApi.hostExecutionTargets },
   hostsApi: {
+    executionTargets: mockedApi.executionTargets,
     listRuntimeAdapters: mockedApi.listRuntimeAdapters,
     installRuntime: mockedApi.installRuntime,
     loginStream: mockedApi.loginStream,
@@ -29,7 +29,7 @@ function Harness() {
 describe('HostExecutionTargetPicker', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    mockedApi.hostExecutionTargets.mockResolvedValue({
+    mockedApi.executionTargets.mockResolvedValue({
       targets: [{
         host_id: 'host-1',
         host_name: 'Workstation',
@@ -46,6 +46,7 @@ describe('HostExecutionTargetPicker', () => {
           display_name: 'Claude Code',
           installations: [{ id: 'own', version: '1.0.0', logged_in: false }],
         }],
+        managed_workspace_available: true,
       }],
     })
     mockedApi.listRuntimeAdapters.mockResolvedValue({ items: [{
@@ -62,10 +63,10 @@ describe('HostExecutionTargetPicker', () => {
 
   it('says why no host is offered: no Project yet, or no directory registered for it', async () => {
     const { rerender } = render(<HostExecutionTargetPicker projectId="" value={null} onChange={() => undefined} />)
-    expect(screen.getByText(/Choose a Project first/)).toBeInTheDocument()
-    expect(mockedApi.hostExecutionTargets).not.toHaveBeenCalled()
+    expect(screen.getByText(/Space-level managed workspace/)).toBeInTheDocument()
+    expect(mockedApi.executionTargets).toHaveBeenCalledWith(null)
 
-    mockedApi.hostExecutionTargets.mockResolvedValueOnce({ targets: [] })
+    mockedApi.executionTargets.mockResolvedValueOnce({ targets: [] })
     mockedApi.listRuntimeAdapters.mockResolvedValueOnce({ items: [] })
     rerender(<HostExecutionTargetPicker projectId="project-2" value={null} onChange={() => undefined} />)
     expect(await screen.findByText(/has a directory registered for this Project/)).toBeInTheDocument()
@@ -82,5 +83,13 @@ describe('HostExecutionTargetPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Login' }))
     expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
     expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own')
+  })
+
+  it('offers a managed workspace without a Project Location', async () => {
+    render(<HostExecutionTargetPicker projectId={null} value={null} onChange={() => undefined} />)
+    fireEvent.click(await screen.findByLabelText('Execution host'))
+    fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))
+    fireEvent.change(await screen.findByLabelText('Workspace mode'), { target: { value: 'managed' } })
+    expect(await screen.findByLabelText('Runtime installation')).toHaveTextContent('own')
   })
 })

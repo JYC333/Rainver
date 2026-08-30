@@ -34,7 +34,8 @@ function duration(run: Run): string {
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
 
 function threadUrl(projectId: string, thread: HostThread): string {
-  return `/command-center/threads/${thread.id}?project_id=${encodeURIComponent(projectId)}&folder_id=${encodeURIComponent(thread.project_folder_id)}`
+  const folderQuery = thread.project_folder_id ? `&folder_id=${encodeURIComponent(thread.project_folder_id)}` : ''
+  return `/command-center/threads/${thread.id}?project_id=${encodeURIComponent(projectId)}${folderQuery}`
 }
 
 export default function WorkStreamList({
@@ -68,7 +69,7 @@ export default function WorkStreamList({
             thread,
             projectId,
             projectName: null,
-            folderName: foldersById.get(thread.project_folder_id)?.name ?? null,
+            folderName: thread.project_folder_id ? foldersById.get(thread.project_folder_id)?.name ?? null : null,
             host: hostsById.get(thread.host_id) ?? null,
             runs: sortRunsDesc(runsByThread.get(thread.id) ?? []),
           })),

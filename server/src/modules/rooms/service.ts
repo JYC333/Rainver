@@ -243,6 +243,7 @@ export class RoomService {
     agent_id: string;
     share_private_with_member_ids?: string[];
     confirm_room_share?: boolean;
+    restore_workspace?: boolean;
   }) {
     return this.rosterService().addExistingAgent(identity, roomId, input);
   }

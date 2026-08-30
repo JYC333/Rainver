@@ -201,6 +201,7 @@ CREATE TABLE "agent_runtime_profiles" (
 	"agent_id" varchar(36) NOT NULL,
 	"execution_host_id" varchar(36),
 	"workspace_location_id" varchar(36),
+	"workspace_mode" varchar(16),
 	"runtime_installation" varchar(64),
 	"name" varchar(128) NOT NULL,
 	"adapter_type" varchar(64) NOT NULL,
@@ -214,7 +215,13 @@ CREATE TABLE "agent_runtime_profiles" (
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_agent_runtime_profiles_id_space_agent" UNIQUE("id","space_id","agent_id"),
 	CONSTRAINT "uq_agent_runtime_profiles_agent_name" UNIQUE("agent_id","name"),
-	CONSTRAINT "ck_agent_runtime_profiles_host_binding" CHECK ((execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL))
+	CONSTRAINT "ck_agent_runtime_profiles_workspace_mode" CHECK (workspace_mode IS NULL OR workspace_mode IN ('location', 'managed')),
+	CONSTRAINT "ck_agent_runtime_profiles_host_binding" CHECK (
+		(execution_host_id IS NULL) = (runtime_installation IS NULL)
+		AND (execution_host_id IS NULL) = (workspace_mode IS NULL)
+		AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL)
+		AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)
+	)
 );
 --> statement-breakpoint
 CREATE TABLE "agent_versions" (
@@ -5836,6 +5843,7 @@ CREATE TABLE "hosts" (
 	"daemon_server_url" varchar(512),
 	"provider_proxy_base_url" varchar(512),
 	"capabilities_json" jsonb,
+	"managed_workspaces_json" jsonb,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_hosts_token_hash" UNIQUE("token_hash"),
@@ -5850,10 +5858,14 @@ CREATE TABLE "hosts" (
 --> statement-breakpoint
 CREATE TABLE "host_threads" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
-	"workspace_location_id" varchar(36) NOT NULL,
+	"execution_host_id" varchar(36),
+	"workspace_location_id" varchar(36),
+	"workspace_mode" varchar(16) DEFAULT 'location' NOT NULL,
 	"task_id" varchar(36),
 	"room_id" varchar(36),
 	"agent_id" varchar(36),
+	"container_kind" varchar(16),
+	"container_user_id" varchar(36),
 	"adapter_type" varchar(64) NOT NULL,
 	"runtime_installation" varchar(64) DEFAULT 'own' NOT NULL,
 	"vendor_session_id" varchar(256),
@@ -5866,8 +5878,14 @@ CREATE TABLE "host_threads" (
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	"queue_paused_at" timestamp with time zone,
-	CONSTRAINT "uq_host_threads_id_location" UNIQUE("id","workspace_location_id"),
-	CONSTRAINT "ck_host_threads_owner" CHECK (NOT (room_id IS NULL) = NOT (agent_id IS NULL) AND NOT (task_id IS NOT NULL AND room_id IS NOT NULL)),
+	"pending_archive_at" timestamp with time zone,
+	CONSTRAINT "ck_host_threads_workspace_mode" CHECK (workspace_mode IN ('location', 'managed') AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL) AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)),
+	CONSTRAINT "ck_host_threads_owner" CHECK (
+		(workspace_location_id IS NOT NULL AND room_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)
+		OR (task_id IS NULL AND room_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'room' AND container_user_id IS NULL)
+		OR (task_id IS NULL AND room_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)
+	),
+	CONSTRAINT "ck_host_threads_container_kind" CHECK (container_kind IS NULL OR container_kind IN ('room', 'direct')),
 	CONSTRAINT "ck_host_threads_status" CHECK (status IN ('active', 'session_reset', 'closed')),
 	CONSTRAINT "ck_host_threads_retired_sessions_array" CHECK (jsonb_typeof(retired_vendor_session_ids) = 'array')
 );
@@ -7130,6 +7148,7 @@ ALTER TABLE "usage_import_batches" ADD CONSTRAINT "usage_import_batches_owner_us
 ALTER TABLE "machines" ADD CONSTRAINT "machines_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosts" ADD CONSTRAINT "hosts_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosts" ADD CONSTRAINT "hosts_machine_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "public"."machines"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_execution_host_id_fkey" FOREIGN KEY ("execution_host_id") REFERENCES "public"."hosts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_task_id_fkey" FOREIGN KEY ("task_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -8183,7 +8202,9 @@ CREATE INDEX "ix_hosts_machine_id" ON "hosts" USING btree ("machine_id");--> sta
 CREATE UNIQUE INDEX "uq_hosts_single_server" ON "hosts" USING btree ("kind") WHERE kind = 'server';--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_hosts_owner_name" ON "hosts" USING btree ("owner_user_id","name") WHERE owner_user_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "ix_host_threads_workspace_location_id" ON "host_threads" USING btree ("workspace_location_id");--> statement-breakpoint
+CREATE INDEX "ix_host_threads_workspace_mode" ON "host_threads" USING btree ("workspace_mode");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_host_threads_room_agent_active" ON "host_threads" USING btree ("room_id","agent_id") WHERE status IN ('active', 'session_reset');--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_host_threads_direct_agent_user_active" ON "host_threads" USING btree ("agent_id","container_user_id") WHERE status IN ('active', 'session_reset');--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_thread_id" ON "host_thread_events" USING btree ("host_task_thread_id");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_run_id" ON "host_thread_events" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX "ix_host_thread_events_project_id" ON "host_thread_events" USING btree ("project_id");--> statement-breakpoint

@@ -48,6 +48,8 @@ export function RoomRosterPanel({
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [presetExecution, setPresetExecution] = useState<HostExecutionSelection | null>(null)
+  const [restoreChoice, setRestoreChoice] = useState(false)
+  const restoreChoiceRef = useRef(false)
   /** One in-app confirmation at a time, replacing the browser's `window.confirm`. */
   const [confirmation, setConfirmation] = useState<{
     title: string
@@ -55,9 +57,12 @@ export function RoomRosterPanel({
     confirmLabel: string
     variant: 'destructive' | 'default'
     onConfirm: () => void
+    restoreAvailable?: boolean
   } | null>(null)
   function ask(question: Omit<NonNullable<typeof confirmation>, 'onConfirm'>): Promise<boolean> {
     return new Promise(resolve => {
+      setRestoreChoice(false)
+      restoreChoiceRef.current = false
       let answered = false
       setConfirmation({
         ...question,
@@ -131,25 +136,38 @@ export function RoomRosterPanel({
   }
 
   async function addExisting(candidate: RoomAgentCandidate) {
-    if (candidate.private && !await ask({
-      title: `Share ${candidate.name} with this Room?`,
-      description: 'The Agent is private. Current Room members, and only they, get access to it here.',
-      confirmLabel: 'Share and add',
+    const restoreAvailable = candidate.workspace_mode === 'managed' && candidate.workspace_archive_available === true
+    if ((candidate.private || restoreAvailable) && !await ask({
+      title: candidate.private ? `Share ${candidate.name} with this Room?` : `Re-add ${candidate.name} to this Room?`,
+      description: candidate.private
+        ? 'The Agent is private. Current Room members, and only they, get access to it here.'
+        : 'The Agent is being re-added. You can optionally restore its archived managed workspace.',
+      confirmLabel: candidate.private ? 'Share and add' : 'Add to Room',
       variant: 'default',
+      restoreAvailable,
     })) return
     await mutate(() => roomsApi.addAgent(detail.room.id, {
       agent_id: candidate.agent_id,
       share_private_with_member_ids: candidate.private ? privateShareIds() : [],
       confirm_room_share: candidate.private,
+      restore_workspace: restoreAvailable && restoreChoiceRef.current,
     }))
   }
 
   async function addPreset(presetId: string) {
     const idempotencyKey = newIdempotencyKey()
+    const locationExecution = presetExecution?.workspace_mode === 'location' && presetExecution.workspace_location_id
+      ? {
+          host_id: presetExecution.host_id,
+          workspace_location_id: presetExecution.workspace_location_id,
+          adapter_type: presetExecution.adapter_type,
+          installation: presetExecution.installation,
+        }
+      : undefined
     try {
       await mutate(() => roomsApi.addAgentPreset(
         detail.room.id,
-        { preset_id: presetId, confirm_room_share: false, ...(presetExecution ? { execution: presetExecution } : {}) },
+        { preset_id: presetId, confirm_room_share: false, ...(locationExecution ? { execution: locationExecution } : {}) },
         idempotencyKey,
       ), { notify: false, rethrow: true })
     } catch (error) {
@@ -162,7 +180,7 @@ export function RoomRosterPanel({
         })) return
         await mutate(() => roomsApi.addAgentPreset(
           detail.room.id,
-          { preset_id: presetId, confirm_room_share: true, ...(presetExecution ? { execution: presetExecution } : {}) },
+          { preset_id: presetId, confirm_room_share: true, ...(locationExecution ? { execution: locationExecution } : {}) },
           idempotencyKey,
         ))
       } else {
@@ -261,9 +279,14 @@ export function RoomRosterPanel({
   const specialists = detail.agent_members.filter(member => member.role !== 'manager')
   const newAgentHref = (() => {
     const params = new URLSearchParams({ project: detail.room.project_id })
-    if (presetExecution) {
+    if (presetExecution?.workspace_mode === 'location' && presetExecution.workspace_location_id) {
       params.set('host', presetExecution.host_id)
       params.set('location', presetExecution.workspace_location_id)
+      params.set('adapter', presetExecution.adapter_type)
+      params.set('installation', presetExecution.installation)
+    } else if (presetExecution?.workspace_mode === 'managed') {
+      params.set('host', presetExecution.host_id)
+      params.set('mode', 'managed')
       params.set('adapter', presetExecution.adapter_type)
       params.set('installation', presetExecution.installation)
     }
@@ -294,7 +317,7 @@ export function RoomRosterPanel({
               {member.host_name && (
                 <span className="ml-2 inline-flex items-center gap-1 align-middle text-xs text-muted-foreground">
                   <Badge variant={member.host_online === false ? 'destructive' : 'secondary'}>
-                    on {member.host_name} · owner-only
+                    {member.workspace_mode === 'managed' ? 'Managed workspace' : 'Location'} on {member.host_name} · owner-only
                   </Badge>
                   {member.host_online === false && <span>offline</span>}
                 </span>
@@ -341,13 +364,15 @@ export function RoomRosterPanel({
             disabled={busy}
           />
           <p className="text-xs text-muted-foreground">
-            {presetExecution
+            {presetExecution?.workspace_mode === 'location'
               ? 'Pick a preset to create it on that host now, or open the full form with the host already chosen.'
-              : 'Pick a preset to create it on the server, or open the full form.'}
+              : presetExecution?.workspace_mode === 'managed'
+                ? 'Managed workspaces can be assigned from the full Agent form; presets use the server unless a Project Location is selected.'
+                : 'Pick a preset to create it on the server, or open the full form.'}
           </p>
           {presets.map(preset => (
             <Button key={preset.preset_id} variant="ghost" size="sm" className="w-full justify-start" disabled={busy} title={preset.description} onClick={() => void addPreset(preset.preset_id)}>
-              {preset.name} <span className="ml-1 text-xs text-muted-foreground">{presetExecution ? 'preset · on host' : 'preset'}</span>
+              {preset.name} <span className="ml-1 text-xs text-muted-foreground">{presetExecution?.workspace_mode === 'location' ? 'preset · on host' : 'preset'}</span>
             </Button>
           ))}
           <Button asChild variant="outline" size="sm" className="w-full justify-start">
@@ -426,6 +451,9 @@ export function RoomRosterPanel({
         onOpenChange={closeConfirmation}
         title={confirmation?.title ?? ''}
         description={confirmation?.description}
+        restoreAvailable={confirmation?.restoreAvailable}
+        restoreChecked={restoreChoice}
+        onRestoreChange={checked => { setRestoreChoice(checked); restoreChoiceRef.current = checked }}
         confirmLabel={confirmation?.confirmLabel}
         variant={confirmation?.variant}
         onConfirm={() => confirmation?.onConfirm()}

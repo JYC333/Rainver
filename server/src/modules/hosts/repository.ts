@@ -4,7 +4,7 @@ import { getDbPool } from "../../db/pool.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { applyRunArtifactDeclarations } from "../projectWork/artifactDeclarations.js";
 import { PgMachineRepository } from "./machineRepository.js";
-import type { AmbientSessionCount } from "@rainver/protocol";
+import type { AmbientSessionCount, ManagedWorkspaceHeartbeat } from "@rainver/protocol";
 import type { WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 
 /**
@@ -37,6 +37,7 @@ export interface HostRow {
   daemon_server_url?: string | null;
   provider_proxy_base_url?: string | null;
   capabilities_json: Record<string, unknown> | null;
+  managed_workspaces_json: ManagedWorkspaceHeartbeat[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +60,7 @@ export interface HostOut {
   /** Explicit per-host proxy address; null means it is derived. */
   provider_proxy_base_url: string | null;
   capabilities_json: Record<string, unknown> | null;
+  managed_workspaces_json: ManagedWorkspaceHeartbeat[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -87,6 +89,7 @@ export interface DaemonHelloInfo {
   workspace_reports?: WorkspaceLocationHeartbeat[] | null;
   /** Counts and date ranges of this machine's own ambient CLI history, per Location. */
   ambient_sessions?: AmbientSessionCount[] | null;
+  managed_workspaces?: ManagedWorkspaceHeartbeat[] | null;
 }
 
 /** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
@@ -143,6 +146,7 @@ function hostOut(row: HostRow): HostOut {
     daemon_server_url: row.daemon_server_url ?? null,
     provider_proxy_base_url: row.provider_proxy_base_url ?? null,
     capabilities_json: row.capabilities_json,
+    managed_workspaces_json: row.managed_workspaces_json ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -150,7 +154,7 @@ function hostOut(row: HostRow): HostOut {
 
 const HOST_COLUMNS = `id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at,
   last_heartbeat_at, platform, arch, daemon_version, daemon_server_url, provider_proxy_base_url,
-  capabilities_json, created_at, updated_at`;
+  capabilities_json, managed_workspaces_json, created_at, updated_at`;
 
 export class PgHostRepository {
   constructor(private readonly pool: Queryable) {}
@@ -239,8 +243,9 @@ export class PgHostRepository {
       `UPDATE hosts
           SET token_hash = $2, pairing_code_expires_at = NULL, status = 'offline',
               platform = $3, arch = $4, daemon_version = $5, capabilities_json = $6::jsonb,
-              environment_kind = $7,
-              updated_at = $8
+              managed_workspaces_json = $7::jsonb,
+              environment_kind = $8,
+              updated_at = $9
         WHERE token_hash = $1 AND status = 'pending_pairing' AND pairing_code_expires_at > now()
         RETURNING id, name`,
       [
@@ -250,6 +255,7 @@ export class PgHostRepository {
         info.arch ?? null,
         info.daemon_version ?? null,
         JSON.stringify(info.capabilities_json ?? {}),
+        JSON.stringify(info.managed_workspaces ?? []),
         info.environment_kind ?? environmentKindFromPlatform(info.platform ?? null),
         new Date().toISOString(),
       ],
@@ -284,10 +290,11 @@ export class PgHostRepository {
               platform = COALESCE($2, platform), arch = COALESCE($3, arch),
               daemon_version = COALESCE($4, daemon_version),
               capabilities_json = COALESCE($5::jsonb, capabilities_json),
+              managed_workspaces_json = COALESCE($6::jsonb, managed_workspaces_json),
               -- Refreshed on every heartbeat, not only at pairing: a daemon
               -- pointed at a new control-plane address should not keep handing
               -- out lease URLs derived from the old one.
-              daemon_server_url = COALESCE($6, daemon_server_url),
+              daemon_server_url = COALESCE($7, daemon_server_url),
               updated_at = now()
         WHERE id = $1 AND status <> 'revoked'`,
       [
@@ -296,6 +303,7 @@ export class PgHostRepository {
         info.arch ?? null,
         info.daemon_version ?? null,
         info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
+        info.managed_workspaces ? JSON.stringify(info.managed_workspaces) : null,
         info.server_url ?? null,
       ],
     );
@@ -348,23 +356,29 @@ export class PgHostRepository {
   }
 
   /**
-   * A host may only upload artifacts for a Run whose Project Folder is
-   * bound to that same host — this is the only authorization check the
-   * upload endpoints need (ADR 0016 P3): the bearer token already proves
-   * "this daemon", this proves "for one of its own Runs".
+   * A host may only upload artifacts for a Run bound to that same host — this
+   * is the only authorization check the upload endpoints need (ADR 0016 P3):
+   * the bearer token already proves "this daemon", this proves "for one of
+   * its own Runs". Managed profiles have no Workspace Location, so the
+   * profile binding is the second authorization path below.
    */
   /**
    * execution-topology-and-project-control-plane-plan.md P1 / D3: a Run
    * binds to a Location, not a Folder — the JOIN goes through
    * `workspace_locations` (a Location has exactly one host) rather than
-   * `project_folders` (which, after P1, no longer names one at all).
+   * `project_folders` (which, after P1, no longer names one at all). Managed
+   * runs use their selected runtime profile's host binding instead.
    */
   async runOwnedByHost(hostId: string, runId: string): Promise<RunForUpload | null> {
     const result = await this.pool.query<RunForUpload>(
       `SELECT r.id, r.space_id, r.owner_user_id, r.project_id, r.project_folder_id
          FROM runs r
-         JOIN workspace_locations wl ON wl.id = r.workspace_location_id
-        WHERE r.id = $1 AND wl.execution_host_id = $2
+         LEFT JOIN workspace_locations wl ON wl.id = r.workspace_location_id
+         LEFT JOIN agent_runtime_profiles arp
+           ON arp.id = COALESCE(r.runtime_profile_id, r.requested_runtime_profile_id)
+        WHERE r.id = $1
+          AND (wl.execution_host_id = $2 OR arp.execution_host_id = $2
+               OR r.runtime_profile_snapshot_json->>'execution_host_id' = $2)
         LIMIT 1`,
       [runId, hostId],
     );
@@ -485,7 +499,7 @@ export interface RunForUpload {
   space_id: string;
   owner_user_id: string | null;
   project_id: string | null;
-  project_folder_id: string;
+  project_folder_id: string | null;
 }
 
 const MAX_DIFF_BYTES = 1_048_576;

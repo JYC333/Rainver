@@ -1,5 +1,5 @@
 {
-  "id": "2cc22177-84df-4ad7-ab68-e670390c2742",
+  "id": "3b74c1d0-bfa2-441a-a347-350879d1afb5",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2925,6 +2925,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "workspace_mode": {
+          "name": "workspace_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "runtime_installation": {
           "name": "runtime_installation",
           "type": "varchar(64)",
@@ -3150,9 +3156,13 @@
       },
       "policies": {},
       "checkConstraints": {
+        "ck_agent_runtime_profiles_workspace_mode": {
+          "name": "ck_agent_runtime_profiles_workspace_mode",
+          "value": "workspace_mode IS NULL OR workspace_mode IN ('location', 'managed')"
+        },
         "ck_agent_runtime_profiles_host_binding": {
           "name": "ck_agent_runtime_profiles_host_binding",
-          "value": "(execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL)"
+          "value": "\n\t\t(execution_host_id IS NULL) = (runtime_installation IS NULL)\n\t\tAND (execution_host_id IS NULL) = (workspace_mode IS NULL)\n\t\tAND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL)\n\t\tAND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)\n\t"
         }
       },
       "isRLSEnabled": false
@@ -68973,6 +68983,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "managed_workspaces_json": {
+          "name": "managed_workspaces_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -69156,11 +69172,24 @@
           "primaryKey": true,
           "notNull": true
         },
+        "execution_host_id": {
+          "name": "execution_host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "workspace_location_id": {
           "name": "workspace_location_id",
           "type": "varchar(36)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "workspace_mode": {
+          "name": "workspace_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'location'"
         },
         "task_id": {
           "name": "task_id",
@@ -69176,6 +69205,18 @@
         },
         "agent_id": {
           "name": "agent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "container_kind": {
+          "name": "container_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "container_user_id": {
+          "name": "container_user_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
@@ -69254,6 +69295,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "pending_archive_at": {
+          "name": "pending_archive_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -69262,6 +69309,21 @@
           "columns": [
             {
               "expression": "workspace_location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_host_threads_workspace_mode": {
+          "name": "ix_host_threads_workspace_mode",
+          "columns": [
+            {
+              "expression": "workspace_mode",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -69293,9 +69355,44 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uq_host_threads_direct_agent_user_active": {
+          "name": "uq_host_threads_direct_agent_user_active",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "container_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status IN ('active', 'session_reset')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
+        "host_threads_execution_host_id_fkey": {
+          "name": "host_threads_execution_host_id_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "host_threads_workspace_location_id_fkey": {
           "name": "host_threads_workspace_location_id_fkey",
           "tableFrom": "host_threads",
@@ -69350,21 +69447,20 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_host_threads_id_location": {
-          "name": "uq_host_threads_id_location",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "workspace_location_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "ck_host_threads_workspace_mode": {
+          "name": "ck_host_threads_workspace_mode",
+          "value": "workspace_mode IN ('location', 'managed') AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL) AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)"
+        },
         "ck_host_threads_owner": {
           "name": "ck_host_threads_owner",
-          "value": "NOT (room_id IS NULL) = NOT (agent_id IS NULL) AND NOT (task_id IS NOT NULL AND room_id IS NOT NULL)"
+          "value": "\n\t\t(workspace_location_id IS NOT NULL AND room_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)\n\t\tOR (task_id IS NULL AND room_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'room' AND container_user_id IS NULL)\n\t\tOR (task_id IS NULL AND room_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)\n\t"
+        },
+        "ck_host_threads_container_kind": {
+          "name": "ck_host_threads_container_kind",
+          "value": "container_kind IS NULL OR container_kind IN ('room', 'direct')"
         },
         "ck_host_threads_status": {
           "name": "ck_host_threads_status",

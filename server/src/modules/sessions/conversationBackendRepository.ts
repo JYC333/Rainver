@@ -27,6 +27,7 @@ interface BackendRow {
   provider_has_eligible_credential: boolean | null;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
   agent_project_id: string | null;
   host_name: string | null;
@@ -69,6 +70,7 @@ interface BindingRow {
   runtime_policy_json: Record<string, unknown>;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
 }
 
@@ -86,6 +88,7 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   runtime_policy_json: Record<string, unknown>;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
   retired_runtime_state_key: string | null;
 }
@@ -126,6 +129,7 @@ export class PgConversationBackendRepository {
                   AS provider_has_eligible_credential,
                 profile.execution_host_id,
                 profile.workspace_location_id,
+                profile.workspace_mode,
                 profile.runtime_installation,
                 agent.project_id AS agent_project_id,
                 host.name AS host_name,
@@ -190,7 +194,7 @@ export class PgConversationBackendRepository {
       const spec = getRuntimeAdapterSpec(profile.adapter_type);
       if (!spec || spec.implementation_status !== "implemented") return [];
       const hostBound = Boolean(
-        profile.execution_host_id && profile.workspace_location_id && profile.runtime_installation,
+        profile.execution_host_id && profile.workspace_mode && profile.runtime_installation,
       );
       const requiresCliCredential = isLocalCliRuntimeAdapter(profile.adapter_type) && !hostBound;
       const providerAvailable =
@@ -227,7 +231,7 @@ export class PgConversationBackendRepository {
         && profile.host_status === "online"
         && !isStale(profile.host_last_heartbeat_at);
       const hostOwnerIsMe = hostBound && profile.host_owner_user_id === userId;
-      const locationMatchesAgentProject = hostBound
+      const locationMatchesAgentProject = hostBound && profile.workspace_mode === "location"
         && profile.location_project_id === profile.agent_project_id;
       const installationAvailable = hostBound
         && hostInstallationIds(profile.host_capabilities_json, profile.adapter_type).includes(
@@ -241,13 +245,13 @@ export class PgConversationBackendRepository {
       } else if (hostBound && !hostOnline) {
         usable = false;
         reason = "The execution Host is offline.";
-      } else if (hostBound && profile.location_status !== "active") {
+      } else if (hostBound && profile.workspace_mode === "location" && profile.location_status !== "active") {
         usable = false;
         reason = "The bound Workspace Location is unavailable.";
-      } else if (hostBound && !locationMatchesAgentProject) {
+      } else if (hostBound && profile.workspace_mode === "location" && !locationMatchesAgentProject) {
         usable = false;
         reason = "The bound Workspace Location belongs to a different Project.";
-      } else if (hostBound && profile.location_execution_ready !== true) {
+      } else if (hostBound && profile.workspace_mode === "location" && profile.location_execution_ready !== true) {
         usable = false;
         reason = "The bound Workspace Location is not ready.";
       } else if (hostBound && !installationAvailable) {
@@ -263,6 +267,8 @@ export class PgConversationBackendRepository {
         usable,
         reason,
         host_bound: hostBound,
+        host_id: hostBound ? profile.execution_host_id : null,
+        workspace_mode: hostBound ? profile.workspace_mode : null,
         host_name: hostBound ? profile.host_name : null,
         host_online: hostBound ? hostOnline : null,
         host_owner_is_me: hostBound ? hostOwnerIsMe : null,
@@ -419,6 +425,7 @@ export class PgConversationBackendRepository {
               profile.model_provider_id, profile.runtime_config_json,
               profile.runtime_policy_json,
               profile.execution_host_id, profile.workspace_location_id,
+              profile.workspace_mode,
               profile.runtime_installation
          FROM session_conversation_backends binding
          JOIN sessions session_row

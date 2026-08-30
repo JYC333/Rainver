@@ -12,6 +12,8 @@ export interface RoomRosterAgentCandidate {
   member_status: "active" | "removed" | null;
   private: boolean;
   shared_with_user_ids: string[];
+  workspace_mode: "location" | "managed" | null;
+  workspace_archive_available: boolean;
 }
 
 export interface RoomInvitationRecord {
@@ -101,12 +103,31 @@ export class PgRoomRosterRepository {
                    AND grant_row.agent_id = a.id
                    AND grant_row.revoked_at IS NULL
               ), '[]'::jsonb) AS shared_with_user_ids
+              ,binding.workspace_mode,
+              COALESCE(EXISTS (
+                SELECT 1
+                  FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) report
+                 WHERE report->>'agent_id' = a.id::text
+                   AND report->>'container_kind' = 'room'
+                   AND report->>'container_id' = $3
+                   AND report->>'archived_available' = 'true'
+              ), false) AS workspace_archive_available
          FROM agents a
          JOIN rooms room ON room.space_id = a.space_id AND room.id = $3
-         LEFT JOIN room_agent_members member
+        LEFT JOIN room_agent_members member
            ON member.space_id = a.space_id
           AND member.room_id = $3
           AND member.agent_id = a.id
+        LEFT JOIN LATERAL (
+          SELECT profile.execution_host_id, profile.workspace_mode
+            FROM agent_runtime_profiles profile
+           WHERE profile.space_id = a.space_id
+             AND profile.agent_id = a.id
+             AND profile.enabled = true
+           ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
+           LIMIT 1
+        ) binding ON true
+        LEFT JOIN hosts host ON host.id = binding.execution_host_id
         WHERE ${where}
         ORDER BY member.status = 'active' DESC, a.created_at ASC, a.id ASC
         LIMIT $4 OFFSET $5`,

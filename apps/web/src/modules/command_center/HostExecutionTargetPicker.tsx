@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, LogIn, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { hostsApi, projectsApi } from '../../api/client'
+import { hostsApi } from '../../api/client'
 import type { HostExecutionTarget, HostRuntimeAdapterOption } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -11,7 +11,8 @@ import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 
 export interface HostExecutionSelection {
   host_id: string
-  workspace_location_id: string
+  workspace_location_id: string | null
+  workspace_mode: 'location' | 'managed'
   adapter_type: string
   installation: string
 }
@@ -27,7 +28,7 @@ export default function HostExecutionTargetPicker({
   onChange,
   disabled = false,
 }: {
-  projectId: string
+  projectId?: string | null
   value: HostExecutionSelection | null
   onChange: (value: HostExecutionSelection | null) => void
   disabled?: boolean
@@ -41,19 +42,14 @@ export default function HostExecutionTargetPicker({
   const [draftHostId, setDraftHostId] = useState(value?.host_id ?? '')
   const [draftLocationId, setDraftLocationId] = useState(value?.workspace_location_id ?? '')
   const [draftAdapterType, setDraftAdapterType] = useState(value?.adapter_type ?? '')
+  const [draftMode, setDraftMode] = useState<'location' | 'managed'>(value?.workspace_mode ?? 'location')
 
   const reload = useCallback(async () => {
-    if (!projectId) {
-      setTargets([])
-      setAdapterCatalog([])
-      setLoading(false)
-      return
-    }
     setLoading(true)
     setError(null)
     try {
       const [targetResponse, adapterResponse] = await Promise.all([
-        projectsApi.hostExecutionTargets(projectId),
+        hostsApi.executionTargets(projectId || null),
         hostsApi.listRuntimeAdapters(),
       ])
       setTargets(targetResponse.targets)
@@ -71,11 +67,13 @@ export default function HostExecutionTargetPicker({
     setDraftHostId(value?.host_id ?? '')
     setDraftLocationId(value?.workspace_location_id ?? '')
     setDraftAdapterType(value?.adapter_type ?? '')
-  }, [value?.host_id, value?.workspace_location_id, value?.adapter_type])
+    setDraftMode(value?.workspace_mode ?? 'location')
+  }, [value?.host_id, value?.workspace_location_id, value?.workspace_mode, value?.adapter_type])
 
   const target = targets.find(item => item.host_id === (value?.host_id ?? draftHostId)) ?? null
   const hostId = value?.host_id ?? draftHostId
   const locationId = value?.workspace_location_id ?? draftLocationId
+  const workspaceMode = value?.workspace_mode ?? draftMode
   const adapterType = value?.adapter_type ?? draftAdapterType
   const locations = target?.locations ?? []
   const adapters = useMemo(() => {
@@ -95,10 +93,25 @@ export default function HostExecutionTargetPicker({
   const installations = selectedAdapter?.installations ?? []
   const selectedInstallation = installations.find(item => item.id === value?.installation) ?? null
 
+  function emitSelection(mode: 'location' | 'managed', nextLocationId: string | null, nextAdapterType: string, nextInstallationId: string) {
+    if (!hostId || !nextAdapterType || !nextInstallationId || (mode === 'location' && !nextLocationId)) {
+      onChange(null)
+      return
+    }
+    onChange({
+      host_id: hostId,
+      workspace_location_id: mode === 'managed' ? null : nextLocationId,
+      workspace_mode: mode,
+      adapter_type: nextAdapterType,
+      installation: nextInstallationId,
+    })
+  }
+
   function selectServer() {
     setDraftHostId('')
     setDraftLocationId('')
     setDraftAdapterType('')
+    setDraftMode('location')
     setLogin(null)
     onChange(null)
   }
@@ -109,28 +122,35 @@ export default function HostExecutionTargetPicker({
       return
     }
     const nextTarget = targets.find(item => item.host_id === nextHostId)
-    const nextLocation = nextTarget?.locations[0]
+    const nextLocation = nextTarget?.locations.find(location => location.execution_ready) ?? nextTarget?.locations[0]
     const nextAdapter = nextTarget?.adapters[0] ?? adapters[0]
+    const nextMode: 'location' | 'managed' = nextLocation ? 'location' : nextTarget?.managed_workspace_available ? 'managed' : 'location'
     setDraftHostId(nextHostId)
     setDraftLocationId(nextLocation?.id ?? '')
     setDraftAdapterType(nextAdapter?.adapter_type ?? '')
+    setDraftMode(nextMode)
     setLogin(null)
     const nextInstallation = nextAdapter?.installations[0]
-    onChange(nextLocation && nextInstallation
-      ? {
-          host_id: nextHostId,
-          workspace_location_id: nextLocation.id,
-          adapter_type: nextAdapter!.adapter_type,
-          installation: nextInstallation.id,
-        }
-      : null)
+    if (!nextAdapter || !nextInstallation) onChange(null)
+    else onChange({
+      host_id: nextHostId,
+      workspace_location_id: nextMode === 'managed' ? null : nextLocation?.id ?? null,
+      workspace_mode: nextMode,
+      adapter_type: nextAdapter.adapter_type,
+      installation: nextInstallation.id,
+    })
+  }
+
+  function selectMode(nextMode: 'location' | 'managed') {
+    setDraftMode(nextMode)
+    const nextLocationId = nextMode === 'managed' ? null : locations.find(location => location.execution_ready)?.id ?? locations[0]?.id ?? null
+    setDraftLocationId(nextLocationId ?? '')
+    if (selectedAdapter && installations[0]) emitSelection(nextMode, nextLocationId, adapterType, value?.installation ?? installations[0].id)
   }
 
   function selectLocation(nextLocationId: string) {
     setDraftLocationId(nextLocationId)
-    if (value && selectedAdapter && installations[0]) {
-      onChange({ ...value, workspace_location_id: nextLocationId })
-    }
+    if (selectedAdapter && installations[0]) emitSelection('location', nextLocationId, adapterType, value?.installation ?? installations[0].id)
   }
 
   function selectAdapter(nextAdapterType: string) {
@@ -138,26 +158,13 @@ export default function HostExecutionTargetPicker({
     setLogin(null)
     const nextAdapter = adapters.find(item => item.adapter_type === nextAdapterType)
     const nextInstallation = nextAdapter?.installations[0]
-    if (hostId && locationId && nextInstallation) {
-      onChange({
-        host_id: hostId,
-        workspace_location_id: locationId,
-        adapter_type: nextAdapterType,
-        installation: nextInstallation.id,
-      })
-    } else {
-      onChange(null)
-    }
+    if (nextInstallation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, nextAdapterType, nextInstallation.id)
+    else onChange(null)
   }
 
   function selectInstallation(nextInstallationId: string) {
-    if (!hostId || !locationId || !adapterType || !nextInstallationId) return
-    onChange({
-      host_id: hostId,
-      workspace_location_id: locationId,
-      adapter_type: adapterType,
-      installation: nextInstallationId,
-    })
+    if (!hostId || !adapterType || !nextInstallationId) return
+    emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, adapterType, nextInstallationId)
   }
 
   async function install() {
@@ -167,9 +174,7 @@ export default function HostExecutionTargetPicker({
       const result = await hostsApi.installRuntime(hostId, adapterType)
       if (!result.ok) throw new Error(result.error ?? 'Runtime installation failed')
       await reload()
-      if (result.installation && locationId) {
-        onChange({ host_id: hostId, workspace_location_id: locationId, adapter_type: adapterType, installation: result.installation })
-      }
+      if (result.installation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, adapterType, result.installation)
       toast.success(`${selectedAdapter?.display_name ?? adapterType} installed`)
     } catch (caught) {
       toast.error(errMsg(caught))
@@ -180,7 +185,7 @@ export default function HostExecutionTargetPicker({
 
   const hostOptions = [
     { value: 'server', label: 'Server (default)' },
-    ...targets.map(item => ({ value: item.host_id, label: `${item.host_name} · online` })),
+    ...targets.map(item => ({ value: item.host_id, label: `${item.host_name} · ${item.host_online === false ? 'offline' : 'online'}` })),
   ]
   const selectedHostValue = hostId || 'server'
 
@@ -191,7 +196,7 @@ export default function HostExecutionTargetPicker({
           <p className="text-xs font-medium">Where it runs</p>
           <p className="text-[11px] text-muted-foreground">
             {!projectId
-              ? 'Choose a Project first — paired hosts are listed by the directories registered for that Project.'
+              ? 'Choose a host for a Space-level managed workspace, or select a Project Location when a Project is available.'
               : !loading && targets.length === 0
                 ? 'None of your online hosts has a directory registered for this Project. Run `rainver-host workspace add <path>` there, then reload.'
                 : 'Server is the default. A host choice uses its own logged-in runtime.'}
@@ -215,6 +220,16 @@ export default function HostExecutionTargetPicker({
       {target && (
         <>
           <Select
+            ariaLabel="Workspace mode"
+            value={workspaceMode}
+            onChange={mode => selectMode(mode as 'location' | 'managed')}
+            options={[
+              ...(target.managed_workspace_available ? [{ value: 'managed', label: 'Managed workspace on this host (no Project files)' }] : []),
+              ...(target.locations.length > 0 ? [{ value: 'location', label: 'Project Location' }] : []),
+            ]}
+            disabled={disabled}
+          />
+          <Select
             ariaLabel="Execution Location"
             value={locationId}
             onChange={selectLocation}
@@ -223,7 +238,7 @@ export default function HostExecutionTargetPicker({
               label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}${location.execution_ready ? '' : ' · not ready'}`,
               disabled: !location.execution_ready,
             }))}
-            disabled={disabled || locations.length === 0}
+            disabled={disabled || workspaceMode === 'managed' || locations.length === 0}
           />
           <Select
             ariaLabel="Execution adapter"
@@ -264,7 +279,7 @@ export default function HostExecutionTargetPicker({
           )}
         </>
       )}
-      {!projectId && <p className="text-xs text-muted-foreground">Choose a Project to see your paired host Locations.</p>}
+      {!projectId && <p className="text-xs text-muted-foreground">Managed workspaces are host-owned and isolated per Agent; Project Locations remain optional.</p>}
     </div>
   )
 }

@@ -39,6 +39,9 @@ import { PgAgentChatRepository, PgAgentRepository } from "./repository.js";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
+import { prepareHostConversationDispatch } from "../agentGroups/service.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import {
   applyAgentIdentityPatch,
   configPatch,
@@ -65,13 +68,14 @@ const PROJECT_CHAT_ACTIONS=["source.connection.propose_create","project.source.p
 export function projectChatCapabilities(toolPermissions:Record<string,unknown>|undefined){const allowed=Array.isArray(toolPermissions?.allowed_tools)?new Set(toolPermissions.allowed_tools.filter((item):item is string=>typeof item==="string")):new Set<string>();return PROJECT_CHAT_ACTIONS.filter(action=>allowed.has(action));}
 
 interface AgentChatUnitOfWork {
+  db?: Pool | PoolClient;
   sessions: Pick<
     PgSessionRepository,
     | "getSession"
     | "createSession"
     | "addMessage"
     | "attachRunToUserMessage"
-  >;
+  > & Partial<Pick<PgSessionRepository, "listMessages">>;
   backends: Pick<
     PgConversationBackendRepository,
     "resolveBinding"
@@ -81,6 +85,7 @@ interface AgentChatUnitOfWork {
     "claimTurn" | "prepare"
   >;
   runs: Pick<PgRunRepository, "createQueuedRun">;
+  hostThreads?: Pick<PgHostThreadRepository, "recordDirectDispatch">;
   jobs: {
     enqueue: (input: {
       run_id: string;
@@ -101,10 +106,12 @@ interface AgentChatServices extends AgentChatUnitOfWork {
 interface PreparedChatRun {
   run_id: string;
   retired_runtime_state_keys: string[];
+  host_thread_id?: string;
 }
 
 type AgentChatServicesFactory = (context: ModuleContext) => AgentChatServices;
 type AgentChatIdentity = { spaceId: string; userId: string };
+type PreparedHostConversationDispatch = NonNullable<Awaited<ReturnType<typeof prepareHostConversationDispatch>>>;
 type AgentChatIdentityOverride =
   | AgentChatIdentity
   | ((request: FastifyRequest) => Promise<AgentChatIdentity | null> | AgentChatIdentity | null);
@@ -270,6 +277,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
         executionHostId: nullableBodyString(body, "execution_host_id"),
         workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
+        workspaceMode: nullableBodyString(body, "workspace_mode") as "location" | "managed" | null,
         runtimeInstallation: nullableBodyString(body, "runtime_installation"),
         contextPolicyJson: optionalRecordBody(body, "context_policy_json"),
         memoryPolicyJson: optionalRecordBody(body, "memory_policy_json"),
@@ -385,6 +393,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           modelName: nullableBodyString(body, "model_name"),
           executionHostId: nullableBodyString(body, "execution_host_id"),
           workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
+          workspaceMode: nullableBodyString(body, "workspace_mode") as "location" | "managed" | null,
           runtimeInstallation: nullableBodyString(body, "runtime_installation"),
           runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
           runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
@@ -425,6 +434,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             : undefined,
           workspaceLocationId: Object.hasOwn(body, "workspace_location_id")
             ? nullableBodyString(body, "workspace_location_id")
+            : undefined,
+          workspaceMode: Object.hasOwn(body, "workspace_mode")
+            ? nullableBodyString(body, "workspace_mode") as "location" | "managed" | null
             : undefined,
           runtimeInstallation: Object.hasOwn(body, "runtime_installation")
             ? nullableBodyString(body, "runtime_installation")
@@ -594,6 +606,62 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/agents/:agentId/runs", createRun);
   app.post("/api/v1/agents/:agentId/run", createRun);
 
+  app.post("/api/v1/agents/:agentId/chat/reset-context", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const agentId = params(request).agentId ?? "";
+    try {
+      const services = agentChatServices(context);
+      const agent = await services.agents.getAgentForChat(
+        identity.spaceId,
+        identity.userId,
+        agentId,
+      );
+      if (!agent) return reply.code(404).send({ detail: "Agent not found in this space" });
+
+      const reset = await withTransaction(dbPool(context.config), async (client) => {
+        const threadResult = await client.query<{
+          id: string;
+          execution_host_id: string | null;
+          workspace_mode: "location" | "managed";
+          dispatch_lock_id: string | null;
+          host_owner_user_id: string | null;
+        }>(
+          `SELECT thread.id, thread.execution_host_id, thread.workspace_mode,
+                  thread.dispatch_lock_id, host.owner_user_id AS host_owner_user_id
+             FROM host_threads thread
+             LEFT JOIN hosts host ON host.id = thread.execution_host_id
+            WHERE thread.room_id IS NULL
+              AND thread.agent_id = $1
+              AND thread.container_kind = 'direct'
+              AND thread.container_user_id = $2
+              AND thread.status IN ('active', 'session_reset')
+            LIMIT 1
+            FOR UPDATE OF thread`,
+          [agent.id, identity.userId],
+        );
+        const thread = threadResult.rows[0];
+        if (!thread) return null;
+        if (thread.host_owner_user_id && thread.host_owner_user_id !== identity.userId) {
+          throw new ChatContextError("Only the Host owner can reset this Agent context", 403);
+        }
+        if (thread.dispatch_lock_id) {
+          throw new ChatContextError("The Agent is handling a message; try resetting again when it finishes", 409);
+        }
+        const updated = await new PgHostThreadRepository(client).resetDirectAgent(
+          agent.id,
+          identity.userId,
+        );
+        return updated ? { thread_id: updated.id, workspace_mode: updated.workspace_mode } : null;
+      });
+      if (!reset) return reply.code(404).send({ detail: "Direct Agent context not found" });
+      return reply.send({ agent_id: agent.id, session_reset: true, ...reset });
+    } catch (error) {
+      if (error instanceof ChatContextError) return reply.code(error.statusCode).send({ detail: error.body });
+      return sendDomainError(reply, error);
+    }
+  });
+
   app.post("/api/v1/agents/:agentId/chat", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -665,11 +733,40 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           agent_id: agent.id,
           requested: req.backend ?? null,
         });
-        if (backend.execution_host_id) {
-          throw new ChatContextError(
-            "Host-bound Agents can only be addressed from an owner-authorized Room",
-            409,
+        const hostDispatch = backend.execution_host_id
+          ? await (transaction.db
+            ? prepareHostConversationDispatch({
+              db: transaction.db,
+              backend,
+              container: { kind: "direct", user_id: identity.userId },
+              sessionId: session.id,
+              projectId: req.project_id ?? null,
+              agentId: agent.id,
+              userId: identity.userId,
+            })
+            : Promise.reject(new ChatContextError("Host-bound chat is temporarily unavailable", 503)))
+          : null;
+        if (req.restore_workspace && hostDispatch?.workspace.kind === "managed") {
+          const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+            backend.execution_host_id!,
+            "managed_workspace_restore",
+            {
+              agent_id: agent.id,
+              container_kind: "direct",
+              container_id: identity.userId,
+            },
           );
+          if (!restored.ok) {
+            throw new ChatContextError(
+              restored.error === "host_offline"
+                ? "The execution Host is offline"
+                : "The managed workspace could not be restored",
+              restored.error === "host_offline" ? 503 : 409,
+            );
+          }
+          if (!restored.changed) {
+            throw new ChatContextError("No archived managed workspace is available to restore", 409);
+          }
         }
         await transaction.runtimeSessions.claimTurn({
           space_id: creation.spaceId,
@@ -687,6 +784,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           throw new ChatContextError("session not found in this space", 404);
         }
 
+        const history = hostDispatch && transaction.sessions.listMessages
+          ? (await transaction.sessions.listMessages(
+              creation.spaceId,
+              identity.userId,
+              session.id,
+              40,
+              0,
+            )) ?? []
+          : [];
+
         const prepared = await prepareChatRun(transaction, {
           agentId: agent.id,
           agentVersionId: agent.current_version_id!,
@@ -701,6 +808,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             agent.tool_permissions_json,
           ),
           backend,
+          hostDispatch,
+          hostPromptContext: hostDispatch ? renderDirectHostPrompt(history, userMessage.id) : null,
         });
         const linked = await transaction.sessions.attachRunToUserMessage({
           space_id: creation.spaceId,
@@ -714,6 +823,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             "The chat turn could not retain its Run recovery reference",
             500,
           );
+        }
+
+        if (hostDispatch && transaction.hostThreads) {
+          await transaction.hostThreads.recordDirectDispatch(hostDispatch.host_thread.id, {
+            lastRunId: prepared.run_id,
+            sessionId: session.id,
+            dispatchLockId: hostDispatch.dispatch_lock_id,
+          });
         }
 
         try {
@@ -809,6 +926,8 @@ async function prepareChatRun(
     visibility: "private" | "space_shared" | "selected_users";
     projectActionCapabilities?: string[];
     backend: ResolvedConversationBackend;
+    hostDispatch?: PreparedHostConversationDispatch | null;
+    hostPromptContext?: string | null;
   },
 ): Promise<PreparedChatRun> {
   const lightweightCliConversation =
@@ -825,12 +944,17 @@ async function prepareChatRun(
     runtime_profile_id: input.backend.runtime_profile_id,
     runtime_profile_selection_source: "explicit",
     session_id: input.sessionId,
+    project_folder_id: input.hostDispatch?.project_folder_id ?? null,
+    workspace_location_id: input.hostDispatch?.host_thread.workspace_location_id ?? null,
+    host_task_thread_id: input.hostDispatch?.host_thread.id ?? null,
     project_id: input.projectId ?? null,
     visibility: input.visibility,
     capabilities_json: input.projectId
       ? input.projectActionCapabilities
       : undefined,
-    prompt: input.message,
+    prompt: input.hostPromptContext
+      ? `${input.hostPromptContext}\n\n[Assigned direct-chat message]\n${input.message}`
+      : input.message,
     model_override_json: {
       conversation_backend: {
         schema_version: "conversation_backend.v1",
@@ -848,6 +972,19 @@ async function prepareChatRun(
         agent_version_id: input.agentVersionId,
         project_id: input.projectId ?? null,
       },
+      ...(input.hostDispatch
+        ? {
+            workspace: input.hostDispatch.workspace,
+            host_thread: {
+              schema_version: "host_thread.v1",
+              thread_id: input.hostDispatch.host_thread.id,
+              runtime_session_id: input.hostDispatch.host_resume_attempted
+                ? input.hostDispatch.host_thread.vendor_session_id
+                : null,
+              fresh: input.hostDispatch.host_prompt_fresh,
+            },
+          }
+        : {}),
     },
   });
 
@@ -858,6 +995,7 @@ async function prepareChatRun(
         input.backend.retired_runtime_state_key,
       ].filter((stateKey): stateKey is string => Boolean(stateKey))),
     ),
+    ...(input.hostDispatch ? { host_thread_id: input.hostDispatch.host_thread.id } : {}),
   };
 }
 
@@ -879,10 +1017,12 @@ function agentChatUnitOfWork(
 ): AgentChatUnitOfWork {
   const jobs = new PgJobQueueRepository(db);
   return {
+    db,
     sessions: new PgSessionRepository(db),
     backends: new PgConversationBackendRepository(db, cliCredentials),
     runtimeSessions: new PgConversationRuntimeSessionRepository(db),
     runs: new PgRunRepository(db),
+    hostThreads: new PgHostThreadRepository(db),
     jobs: {
       enqueue: async (input) => {
         await jobs.enqueue({
@@ -912,6 +1052,19 @@ function publicConversationBackend(
     adapter_type: backend.adapter_type,
     credential_profile_id: backend.credential_profile_id ?? null,
   };
+}
+
+function renderDirectHostPrompt(messages: MessageOut[], currentMessageId: string): string | null {
+  const lines = messages
+    .filter((message) => message.id !== currentMessageId)
+    .slice(-40)
+    .map((message) => {
+      const speaker = message.role === "assistant"
+        ? "Agent"
+        : message.role === "system" ? "Rainver" : "User";
+      return `${speaker}: ${message.content}`;
+    });
+  return lines.length > 0 ? ["[Recent direct-chat history]", ...lines].join("\n") : null;
 }
 
 async function resolveIdentity(

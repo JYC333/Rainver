@@ -49,7 +49,10 @@ export interface RouteCandidate {
   adapter_type: string;
   /** A Room specialist whose runtime is pinned to a paired execution Host. */
   host_bound?: boolean;
+  execution_host_id?: string | null;
   workspace_location_id?: string | null;
+  workspace_mode?: "location" | "managed" | null;
+  runtime_installation?: string | null;
   model_provider_id: string | null;
   model_name: string | null;
   credential_profile_id: string | null;

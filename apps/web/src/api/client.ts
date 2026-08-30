@@ -1027,6 +1027,7 @@ export const sessionsApi = {
   addMessage: (id: string, data: { content: string }) =>
     post<Message>(`/sessions/${id}/messages`, data),
   reflect:    (id: string)                          => post<ReflectResult>(`/sessions/${id}/reflect`),
+  remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
 }
 
 // ── Prompt Registry ──────────────────────────────────────────────────────
@@ -1820,6 +1821,7 @@ export const agentsApi = {
       message: string
       session_id?: string
       project_id?: string
+      restore_workspace?: boolean
       backend?: Pick<
         ConversationBackendBinding,
         'runtime_profile_id' | 'credential_profile_id'
@@ -1832,6 +1834,8 @@ export const agentsApi = {
       onTextDelta?: (delta: string) => void
     } = {},
   ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
+  resetContext: (agentId: string) =>
+    post<{ agent_id: string; session_reset: boolean; thread_id: string | null; workspace_mode: 'location' | 'managed' | null }>(`/agents/${agentId}/chat/reset-context`, {}),
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
   getRun:         (runId: string)     => get<Run>(`/runs/${runId}`),
   listRunsForAgent:  (agentId: string)   => get<Run[]>(`/agents/${agentId}/runs`),
@@ -1944,6 +1948,8 @@ export const ambientSessionsApi = {
 // work-stream read side (task threads). See .agent/modules/hosts.md.
 export const hostsApi = {
   list: () => get<{ items: Host[] }>('/hosts'),
+  executionTargets: (projectId?: string | null) =>
+    get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
   revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
   listThreads: (projectId: string) =>

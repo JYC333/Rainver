@@ -6,6 +6,7 @@ import { ambientSessionCounts, type AmbientSessionCount } from "./ambientCounts.
 import { probeAcpOptions } from "./acpProbe.js";
 import { resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus, type WorkspaceStatusReport } from "./workspaceStatus.js";
+import { listManagedWorkspaces } from "./managedWorkspaces.js";
 
 const DAEMON_VERSION = "0.1.0";
 
@@ -124,6 +125,7 @@ async function helloInfo(
   environment_kind: string;
   capabilities_json: DaemonCapabilities;
   workspace_reports: WorkspaceStatusReport[];
+  managed_workspaces: Awaited<ReturnType<typeof listManagedWorkspaces>>;
   /**
    * How much ambient CLI history each registered workspace holds, from the
    * slow-refresh cache. Counts only, never content: the server uses them to
@@ -151,6 +153,7 @@ async function helloInfo(
     environment_kind,
     capabilities_json: capabilities,
     workspace_reports: await collectWorkspaceStatus(workspaces),
+    managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),
     ...(serverUrl ? { server_url: serverUrl } : {}),
   };

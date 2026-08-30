@@ -45,6 +45,7 @@ export const hosts = pgTable("hosts", {
 	 */
 	providerProxyBaseUrl: varchar("provider_proxy_base_url", { length: 512 }),
 	capabilitiesJson: jsonb("capabilities_json"),
+	managedWorkspacesJson: jsonb("managed_workspaces_json"),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

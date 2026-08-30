@@ -3,6 +3,17 @@ export { workspaceAdd, workspaceList, workspaceRemove, type LocalWorkspace } fro
 export { runService } from "./commands/run.js";
 export { parseFolderReadFrame, performFolderRead, type FolderReadRequest, type FolderReadResult } from "./folderRead.js";
 export { loadConfig, saveConfig, requireConfig, configPath, configDir, type DaemonConfig } from "./config.js";
+export {
+  archiveManagedWorkspace,
+  restoreManagedWorkspace,
+  sweepManagedWorkspaceArchives,
+  listManagedWorkspaces,
+  managedWorkspacePath,
+  ensureManagedWorkspace,
+  assertManagedWorkspaceId,
+  type ManagedWorkspaceContainer,
+  type ManagedWorkspaceHeartbeat,
+} from "./managedWorkspaces.js";
 export { detectCapabilities, type DaemonCapabilities, type ProbedBinary, type RuntimeInstallation } from "./capabilities.js";
 export {
   registerHost,

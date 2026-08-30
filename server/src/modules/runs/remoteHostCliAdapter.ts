@@ -1,4 +1,4 @@
-import type { RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
+import type { LaunchWorkspace, RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
 import { WORK_SURFACE_SKILL_PATH_ENV, buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
@@ -82,6 +82,7 @@ export interface RemoteHostCliAdapterInput {
    */
   thread_event_sink?: (drafts: ThreadEventDraft[]) => Promise<void> | void;
   process_registry?: CliProcessRegistry;
+  workspace?: LaunchWorkspace;
 }
 
 /** A setting a dispatch asked for, as `advanceThreadQueue` stamped it. */
@@ -170,7 +171,7 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
 export async function executeRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
-  workspaceLocationId: string,
+  workspaceLocationId: string | null,
   deps: RemoteHostCliAdapterDeps = {},
 ): Promise<RunAdapterResultEnvelope> {
   const leases: Array<() => void> = [];
@@ -197,7 +198,7 @@ async function runRemoteHostCliAdapter(
   // a WorkspaceLocation id. The daemon wire frame uses the same
   // `workspace_location_id` field, and the daemon's local config maps that id
   // to the real directory on the owning machine.
-  workspaceLocationId: string,
+  workspaceLocationId: string | null,
   deps: RemoteHostCliAdapterDeps,
   leases: Array<() => void>,
 ): Promise<RunAdapterResultEnvelope> {
@@ -439,6 +440,7 @@ async function runRemoteHostCliAdapter(
     runOverrideField(input.run.model_override_json, "installation") ?? "own",
     spec.adapter_type,
     workSurface?.frame ?? null,
+    input.workspace,
   );
   let stdoutText = "";
   // A caller sends the pair the way both CLIs write it, in the one field a
@@ -682,7 +684,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly hostId: string,
     // A remote Run is pinned to this physical checkout, not merely to its
     // logical Folder.
-    private readonly workspaceLocationId: string,
+    private readonly workspaceLocationId: string | null,
     private readonly projectFolderId: string | null,
     private readonly registry: HostConnectionRegistry,
     /** Null when this run uses the machine's own login state. */
@@ -693,6 +695,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly adapterType: string | null = null,
     /** Null when this Run was granted no tool and needs no way to call back. */
     private readonly workSurface: RunWorkSurfaceFrame | null = null,
+    private readonly workspace?: LaunchWorkspace,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -757,7 +760,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       this.hostId,
       input.run_id,
       {
-        workspace_location_id: this.workspaceLocationId,
+        ...(this.workspaceLocationId ? { workspace_location_id: this.workspaceLocationId } : {}),
         // Dual-write the pre-P1 field during rolling upgrades. New daemons
         // prefer the physical Location id; older paired daemons only know the
         // logical Folder key and must still resolve their local checkout.
@@ -770,6 +773,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         installation: this.installation,
         adapter_type: this.adapterType ?? undefined,
         work_surface: this.workSurface ?? undefined,
+        workspace: this.workspace,
       },
       onOutput,
       input.on_stderr_chunk,

@@ -209,14 +209,16 @@ lets one Agent keep the same identity, prompt, capability policy, and safety
 ceiling while offering named runtime choices such as "Model API default",
 "Codex CLI", or "Claude Code".
 
-A profile may also be host-bound with `execution_host_id`,
-`workspace_location_id`, and a pinned `runtime_installation`. Such an Agent
-must belong to the Project represented by that Location, and the selected
-remote host and installation are validated against the caller's ownership and
-the daemon's reported capabilities. Host-bound profiles do not require a
-server ModelProvider or server runtime-tool installation: the paired host
-owns the CLI login and runtime process. Room dispatch applies the profile's
-owner-only trigger and records the real Agent id on the remote Run.
+A profile may also be host-bound with `execution_host_id`, a `workspace_mode`,
+and a pinned `runtime_installation`. `location` mode additionally pins
+`workspace_location_id` and requires the Agent's Project context; `managed`
+mode has no Location and lets the daemon derive a private workspace per Agent
+× Room or direct owner. The selected remote host and installation are
+validated against the caller's ownership and the daemon's reported
+capabilities. Host-bound profiles do not require a server ModelProvider or
+server runtime-tool installation: the paired host owns the CLI login and
+runtime process. Room and direct chat dispatch apply the profile's owner-only
+trigger and record the real Agent id on the remote Run.
 
 Rules:
 
@@ -467,7 +469,10 @@ seeded once in `bootstrap`). Five are **public** reusable specialized factories;
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
 per-Project `system_assistant`-kind Agent — hidden from the public library and not
 user-instantiable.
-**`general_chat` is intentionally not seeded** and there is no product-level DirectChat:
+**`general_chat` is intentionally not seeded** and there is no generic product-level DirectChat.
+The host-bound Agent chat surface is a constrained exception: it is still an
+explicit Agent, owner-only, and uses the Agent's host profile/container rather
+than a space-wide default:
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-Project `system_assistant`-kind Agent; dynamic per-invocation selection via Runtime
   Context; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
@@ -485,10 +490,13 @@ user-instantiable.
 - `coding_reviewer` (`workspace`) — read-only review/report outputs; no file write, no shell, no
   patch apply (a code-writing `coding_task_agent` is future scope)
 
-Why no `general_chat`/DirectChat: a generic session-only chat object would be a naked DirectChat
-with no space awareness. Every Room conversation instead targets an explicit, space-scoped
-`Agent` — carrying that Agent's context policy and proposal-only output policy — resolved per
-speaker through the conversation backend binding (`modules/rooms.md`). Templates not seeded
+Why no `general_chat` or generic DirectChat: a generic session-only chat object would be a naked
+conversation with no Agent identity or space-aware policy. Every Room conversation, and every
+host-bound direct chat, instead targets an explicit, space-scoped `Agent` — carrying that Agent's
+context policy and proposal-only output policy — resolved through the conversation backend
+binding (`modules/rooms.md`). Host-bound direct chat is owner-only, uses one direct container per
+Agent × owner, and exposes reset/archive/opt-in restore semantics; it does not make arbitrary
+Agents into a global default. Templates not seeded
 initially (future scope): `coding_task_agent`, `research_scout`, `source_processor`,
 `weekly_planner`, `finance_reviewer`, `health_reviewer`, `task_manager`.
 

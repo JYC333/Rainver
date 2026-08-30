@@ -10,6 +10,7 @@ const {
   listRunsMock,
   listProposalsMock,
   listRuntimeProfilesMock,
+  listHostsMock,
 } = vi.hoisted(() => ({
   getMock: vi.fn(),
   updateMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   listRunsMock: vi.fn(),
   listProposalsMock: vi.fn(),
   listRuntimeProfilesMock: vi.fn(),
+  listHostsMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -29,6 +31,9 @@ vi.mock('../api/client', () => ({
     listRunsForAgent: listRunsMock,
     listRuntimeProfiles: listRuntimeProfilesMock,
     listProposals: listProposalsMock,
+  },
+  hostsApi: {
+    list: listHostsMock,
   },
 }))
 
@@ -72,6 +77,7 @@ describe('AgentDetailPage — disable/enable toggle', () => {
     getMock.mockReset(); updateMock.mockReset(); updateConfigMock.mockReset()
     listVersionsMock.mockResolvedValue([]); listRunsMock.mockResolvedValue([]); listProposalsMock.mockResolvedValue([])
     listRuntimeProfilesMock.mockResolvedValue([])
+    listHostsMock.mockResolvedValue({ items: [] })
     updateMock.mockResolvedValue(agent())
     updateConfigMock.mockResolvedValue(agent())
   })

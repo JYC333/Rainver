@@ -23,6 +23,7 @@ import {
 } from "./rosterRepository.js";
 import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -68,8 +69,10 @@ export class RoomRosterService {
     agent_id: string;
     share_private_with_member_ids?: string[];
     confirm_room_share?: boolean;
+    restore_workspace?: boolean;
   }) {
-    return this.withRoomWriter(identity, roomId, async (client, room) => {
+    const transactionResult = await this.withRoomWriter(identity, roomId, async (client, room) => {
+      let restoreTarget: { hostId: string; agentId: string; roomId: string } | null = null;
       const repository = new PgRoomRosterRepository(client);
       const agent = await repository.getAgentForAdd({
         space_id: identity.spaceId,
@@ -94,7 +97,10 @@ export class RoomRosterService {
       // Re-adding an already active specialist is a state-idempotent no-op.
       // In particular, it must not invalidate pending invitation snapshots.
       if (member?.status === "active") {
-        return this.roomDetail(client, identity, room.id);
+        const restoreTarget = input.restore_workspace === true
+          ? await findManagedWorkspaceRestoreTarget(client, identity.spaceId, agent.id, room.id, identity.userId)
+          : null;
+        return { detail: await this.roomDetail(client, identity, room.id), restoreTarget };
       }
       const activeUsers = await repository.activeMemberIds(identity.spaceId, room.id);
       const requestedGrantees = uniqueIds(input.share_private_with_member_ids ?? []);
@@ -118,6 +124,15 @@ export class RoomRosterService {
         room_id: room.id,
         agent_id: agent.id,
       });
+      if (input.restore_workspace === true) {
+        restoreTarget = await findManagedWorkspaceRestoreTarget(
+          client,
+          identity.spaceId,
+          agent.id,
+          room.id,
+          identity.userId,
+        );
+      }
       if (agent.visibility !== "space_shared") {
         for (const userId of requestedGrantees) {
           await repository.grantPrivateAgent({
@@ -130,8 +145,23 @@ export class RoomRosterService {
         }
       }
       await repository.incrementRosterRevision(identity.spaceId, room.id);
-      return this.roomDetail(client, identity, room.id);
+      return {
+        detail: await this.roomDetail(client, identity, room.id),
+        restoreTarget,
+      };
     });
+    const { detail: result, restoreTarget } = transactionResult;
+    if (!restoreTarget) return result;
+    const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+      restoreTarget.hostId,
+      "managed_workspace_restore",
+      {
+        agent_id: restoreTarget.agentId,
+        container_kind: "room",
+        container_id: restoreTarget.roomId,
+      },
+    );
+    return { ...result, managed_workspace_restore: restored };
   }
 
   async addPresetAgent(identity: RoomIdentity, roomId: string, input: {
@@ -261,7 +291,7 @@ export class RoomRosterService {
   }
 
   async removeAgent(identity: RoomIdentity, roomId: string, agentId: string) {
-    return this.withRoomWriter(identity, roomId, async (client, room) => {
+    const transactionResult = await this.withRoomWriter(identity, roomId, async (client, room) => {
       const repository = new PgRoomRosterRepository(client);
       const member = await repository.getAgentMember({
         space_id: identity.spaceId,
@@ -271,6 +301,11 @@ export class RoomRosterService {
       });
       if (!member) throw new HttpError(404, "Room Agent member not found");
       if (member.role === "manager") throw managedRoomAgentImmutable();
+      const threadRepository = new PgHostThreadRepository(client);
+      const thread = await threadRepository.getForRoomAgent(room.id, agentId);
+      const archiveTarget = thread?.workspace_mode === "managed" && thread.execution_host_id
+        ? { threadId: thread.id, hostId: thread.execution_host_id, agentId, roomId: room.id }
+        : null;
       if (member.status === "active") {
         await client.query(
           `UPDATE room_agent_members
@@ -280,7 +315,7 @@ export class RoomRosterService {
         );
         await repository.incrementRosterRevision(identity.spaceId, room.id);
       }
-      await new PgHostThreadRepository(client).closeRoomAgent(room.id, agentId);
+      await threadRepository.closeRoomAgent(room.id, agentId, Boolean(archiveTarget));
       const revokedGrantCount = await repository.revokeAgentGrants({
         space_id: identity.spaceId,
         room_id: room.id,
@@ -288,10 +323,30 @@ export class RoomRosterService {
         revoked_by_user_id: identity.userId,
       });
       return {
-        ...(await this.roomDetail(client, identity, room.id)),
-        revoked_grant_count: revokedGrantCount,
+        detail: {
+          ...(await this.roomDetail(client, identity, room.id)),
+          revoked_grant_count: revokedGrantCount,
+        },
+        archiveTarget,
       };
     });
+    const { detail: result, archiveTarget } = transactionResult;
+    if (!archiveTarget) return result;
+    const archived = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+      archiveTarget.hostId,
+      "managed_workspace_archive",
+      {
+        agent_id: archiveTarget.agentId,
+        container_kind: "room",
+        container_id: archiveTarget.roomId,
+      },
+    );
+    if (archived.ok) {
+      await new PgHostThreadRepository(this.pool)
+        .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
+        .catch(() => undefined);
+    }
+    return { ...result, managed_workspace_archive: archived };
   }
 
   async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
@@ -958,6 +1013,40 @@ export class RoomRosterService {
       ...(await repository.audienceForViewer(identity.spaceId, room.id, identity.userId)),
     };
   }
+}
+
+async function findManagedWorkspaceRestoreTarget(
+  client: PoolClient,
+  spaceId: string,
+  agentId: string,
+  roomId: string,
+  userId: string,
+): Promise<{ hostId: string; agentId: string; roomId: string } | null> {
+  const profile = await client.query<{
+    host_id: string;
+    managed_workspaces_json: unknown;
+  }>(
+    `SELECT profile.execution_host_id AS host_id, host.managed_workspaces_json
+       FROM agent_runtime_profiles profile
+       JOIN hosts host ON host.id = profile.execution_host_id
+      WHERE profile.space_id = $1 AND profile.agent_id = $2
+        AND profile.enabled = true AND profile.workspace_mode = 'managed'
+        AND host.owner_user_id = $3 AND host.status <> 'revoked'
+      ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
+      LIMIT 1`,
+    [spaceId, agentId, userId],
+  );
+  const selected = profile.rows[0];
+  const archived = Array.isArray(selected?.managed_workspaces_json)
+    && selected.managed_workspaces_json.some((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+      const record = entry as Record<string, unknown>;
+      return record.agent_id === agentId
+        && record.container_kind === "room"
+        && record.container_id === roomId
+        && record.archived_available === true;
+    });
+  return selected && archived ? { hostId: selected.host_id, agentId, roomId } : null;
 }
 
 function uniqueIds(values: readonly string[]): string[] {

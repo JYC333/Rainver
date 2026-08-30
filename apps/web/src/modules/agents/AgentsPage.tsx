@@ -2,18 +2,19 @@ import { useEffect, useState } from 'react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Bot, Loader2, Plus, LayoutTemplate } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi } from '../../api/client'
-import type { AgentOut } from '../../types/api'
+import { agentsApi, hostsApi } from '../../api/client'
+import type { AgentOut, Host } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
-import { StatusBadge } from '../../components/ui/badge'
+import { Badge, StatusBadge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
 
 export default function AgentsPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [loading, setLoading] = useState(true)
+  const [hostBindings, setHostBindings] = useState<Record<string, { name: string; mode: 'location' | 'managed' }>>({})
 
   useEffect(() => {
     if (!activeSpaceId) {
@@ -24,7 +25,27 @@ export default function AgentsPage() {
     setLoading(true)
     agentsApi.list({ status: 'active,disabled,inactive' })
       // The retired hardcoded Assistant is not a selectable Room participant.
-      .then(list => setAgents(list.filter(a => a.agent_kind !== 'system_assistant')))
+      .then(async list => {
+        const visible = list.filter(a => a.agent_kind !== 'system_assistant')
+        setAgents(visible)
+        const [hostResponse, profiles] = await Promise.all([
+          typeof hostsApi?.list === 'function'
+            ? hostsApi.list().catch(() => ({ items: [] as Host[] }))
+            : Promise.resolve({ items: [] as Host[] }),
+          Promise.all(visible.map(agent => agentsApi.listRuntimeProfiles(agent.id).catch(() => []))),
+        ])
+        const byId: Record<string, { name: string; mode: 'location' | 'managed' }> = {}
+        visible.forEach((agent, index) => {
+          const profile = profiles[index]?.find(item => item.is_default && item.execution_host_id)
+            ?? profiles[index]?.find(item => item.execution_host_id)
+          if (!profile?.execution_host_id) return
+          byId[agent.id] = {
+            name: hostResponse.items.find(host => host.id === profile.execution_host_id)?.name ?? profile.execution_host_id,
+            mode: profile.workspace_mode === 'managed' ? 'managed' : 'location',
+          }
+        })
+        setHostBindings(byId)
+      })
       .catch(err => toast.error(errMsg(err)))
       .finally(() => setLoading(false))
   }, [activeSpaceId])
@@ -63,6 +84,7 @@ export default function AgentsPage() {
                 <CardTitle className="flex items-center gap-2">
                   {a.name}
                   {a.status !== 'active' && <StatusBadge status={a.status} />}
+                  {hostBindings[a.id] && <Badge variant="secondary">on {hostBindings[a.id].name} · {hostBindings[a.id].mode}</Badge>}
                 </CardTitle>
                 <p className="text-sm text-muted-foreground mt-1">{a.description ?? 'No description'}</p>
                 {a.model?.provider_name ? (

@@ -20,6 +20,7 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
   adapter_type: string;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
   model_provider_id: string | null;
   provider_type: string | null;
@@ -91,7 +92,7 @@ export class PgRouteDecisionRepository {
       required_sandbox_level: routeSandboxLevel(run.required_sandbox_level),
       execution_mode: run.mode === "dry_run" ? "dry_run" : "live",
       risk_level: riskLevel(contractRecord(run.contract_snapshot_json).risk_level),
-      workspace_available: Boolean(run.project_folder_id),
+      workspace_available: Boolean(run.project_folder_id || allCandidates.some((candidate) => candidate.host_bound)),
       hints,
     }, candidates);
     const now = new Date().toISOString();
@@ -211,6 +212,10 @@ export class PgRouteDecisionRepository {
           adapter_type: selected.adapter_type,
           model_provider_id: selected.model_provider_id,
           model_name: selected.model_name,
+          execution_host_id: selected.execution_host_id,
+          workspace_location_id: selected.workspace_location_id,
+          workspace_mode: selected.workspace_mode,
+          runtime_installation: selected.runtime_installation,
           credential_profile_id: selected.credential_profile_id,
           runtime_config_json: {
             ...selected.runtime_config_json,
@@ -219,6 +224,7 @@ export class PgRouteDecisionRepository {
               : {}),
           },
           runtime_policy_json: selected.runtime_policy_json,
+          ...(override.workspace ? { workspace: override.workspace } : {}),
           is_default: selected.is_default,
         }),
         now,
@@ -286,7 +292,7 @@ export class PgRouteDecisionRepository {
       SELECT a.agent_kind,
              arp.id AS runtime_profile_id, arp.name AS profile_name,
               arp.adapter_type, arp.model_provider_id, arp.model_name,
-              arp.execution_host_id, arp.workspace_location_id, arp.runtime_installation,
+              arp.execution_host_id, arp.workspace_location_id, arp.workspace_mode, arp.runtime_installation,
               cp.id AS credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
               mp.provider_type,
               mp.enabled AS provider_enabled,
@@ -512,6 +518,9 @@ function candidateFromRow(
     adapter_type: row.adapter_type,
     host_bound: hostBound,
     workspace_location_id: row.workspace_location_id,
+    execution_host_id: row.execution_host_id,
+    workspace_mode: row.workspace_mode,
+    runtime_installation: row.runtime_installation,
     model_provider_id: row.model_provider_id,
     model_name: row.model_name,
     credential_profile_id: row.credential_profile_id,
@@ -540,8 +549,8 @@ function candidateFromRow(
   };
 }
 
-function isHostBoundRuntime(row: Pick<RuntimeCandidateRow, "execution_host_id" | "workspace_location_id" | "runtime_installation">): boolean {
-  return Boolean(row.execution_host_id && row.workspace_location_id && row.runtime_installation);
+function isHostBoundRuntime(row: Pick<RuntimeCandidateRow, "execution_host_id" | "workspace_mode" | "runtime_installation">): boolean {
+  return Boolean(row.execution_host_id && row.workspace_mode && row.runtime_installation);
 }
 
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }

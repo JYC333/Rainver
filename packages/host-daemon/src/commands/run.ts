@@ -17,6 +17,7 @@ import { loginSession, openLoginSession, parseLoginOpenFrame } from "../login.js
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { DEFAULT_LIMITS, importAmbientSessions, sanitizeFailure, type AmbientImportRequest, type AmbientTrimLimits } from "../ambientSessions.js";
 import { FolderReadFrameError, parseFolderReadFrame, performFolderRead } from "../folderRead.js";
+import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -200,6 +201,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         void sweepStaleRunProfiles().then((removed) => {
           if (removed > 0) log(`removed ${removed} finished run director${removed === 1 ? "y" : "ies"}`);
         }).catch(() => {});
+        void sweepManagedWorkspaceArchives().catch((error) => log(`managed workspace sweep failed: ${error instanceof Error ? error.message : String(error)}`));
         socket.send(JSON.stringify({ type: "hello", token, ...info }));
       });
     });
@@ -246,22 +248,31 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           });
           return;
         }
-        const launchFrame: LaunchFrame = {
-          run_id: frame.run_id,
-          workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
-          project_folder_id: typeof frame.project_folder_id === "string" ? frame.project_folder_id : undefined,
-          argv: frame.argv.map(String),
-          installation: typeof frame.installation === "string" ? frame.installation : undefined,
-          adapter_type: typeof frame.adapter_type === "string" ? frame.adapter_type : undefined,
-          stdin: typeof frame.stdin === "string" ? frame.stdin : null,
-          timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,
-          keep_stdin_open: frame.keep_stdin_open === true,
-          // Dropping this silently is how a bound run ends up on the machine's
-          // own login while the control plane believes otherwise, so it is
-          // parsed strictly above: a malformed binding fails the run rather
-          // than degrading into an unbound one.
-          provider_binding: providerBinding,
-        };
+        let launchFrame: LaunchFrame;
+        try {
+          launchFrame = {
+            run_id: frame.run_id,
+            workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
+            workspace: parseLaunchWorkspace(frame.workspace),
+            project_folder_id: typeof frame.project_folder_id === "string" ? frame.project_folder_id : undefined,
+            argv: frame.argv.map(String),
+            installation: typeof frame.installation === "string" ? frame.installation : undefined,
+            adapter_type: typeof frame.adapter_type === "string" ? frame.adapter_type : undefined,
+            stdin: typeof frame.stdin === "string" ? frame.stdin : null,
+            timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,
+            keep_stdin_open: frame.keep_stdin_open === true,
+            // Dropping this silently is how a bound run ends up on the machine's
+            // own login while the control plane believes otherwise, so it is
+            // parsed strictly above: a malformed binding fails the run rather
+            // than degrading into an unbound one.
+            provider_binding: providerBinding,
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`launch run ${String(frame.run_id)}: rejected: ${message}`);
+          sink.send({ type: "complete", run_id: frame.run_id, exit_code: 1, timed_out: false, error: message });
+          return;
+        }
         log(`launch run ${launchFrame.run_id}`);
         // Always routed through `sink`, never `sendOnThisConnection`
         // directly — this run's `complete` frame may need to go out on a
@@ -276,6 +287,23 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             error: error instanceof Error ? error.message : String(error),
           });
         });
+        return;
+      }
+      if (frame.type === "managed_workspace_archive" || frame.type === "managed_workspace_restore") {
+        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+        if (!requestId || typeof frame.agent_id !== "string" || (frame.container_kind !== "room" && frame.container_kind !== "direct") || typeof frame.container_id !== "string") return;
+        void (async () => {
+          try {
+            const container: ManagedWorkspaceContainer = { kind: frame.container_kind as "room" | "direct", id: frame.container_id as string };
+            const changed = frame.type === "managed_workspace_archive"
+              ? await archiveManagedWorkspace(frame.agent_id as string, container)
+              : await restoreManagedWorkspace(frame.agent_id as string, container);
+            sink.send({ type: "managed_workspace_result", request_id: requestId, action: frame.type === "managed_workspace_archive" ? "archive" : "restore", ok: true, changed, error: null });
+            sendHeartbeat();
+          } catch (error) {
+            sink.send({ type: "managed_workspace_result", request_id: requestId, action: frame.type === "managed_workspace_archive" ? "archive" : "restore", ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
+          }
+        })();
         return;
       }
       if (frame.type === "install_tool" || frame.type === "uninstall_tool") {
@@ -418,4 +446,25 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       // connection-failure path; let that handler settle the promise.
     });
   });
+}
+
+function parseLaunchWorkspace(value: unknown): LaunchFrame["workspace"] {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("launch frame carried a malformed workspace");
+  const record = value as Record<string, unknown>;
+  if (record.kind === "location" && typeof record.workspace_location_id === "string") {
+    return { kind: "location", workspace_location_id: record.workspace_location_id };
+  }
+  const container = record.container as Record<string, unknown> | null;
+  if (record.kind === "managed" && typeof record.agent_id === "string" && container
+    && ((container.kind === "room" && typeof container.room_id === "string") || (container.kind === "direct" && typeof container.user_id === "string"))) {
+    return {
+      kind: "managed",
+      agent_id: record.agent_id,
+      container: container.kind === "room"
+        ? { kind: "room", id: container.room_id as string }
+        : { kind: "direct", id: container.user_id as string },
+    };
+  }
+  throw new Error("launch frame carried a malformed workspace");
 }

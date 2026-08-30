@@ -188,6 +188,7 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
 	executionHostId: varchar("execution_host_id", { length: 36 }),
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
+	workspaceMode: varchar("workspace_mode", { length: 16 }),
 	runtimeInstallation: varchar("runtime_installation", { length: 64 }),
 	name: varchar({ length: 128 }).notNull(),
 	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
@@ -231,7 +232,13 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	}).onDelete("cascade"),
 	unique("uq_agent_runtime_profiles_id_space_agent").on(table.id, table.spaceId, table.agentId),
 	unique("uq_agent_runtime_profiles_agent_name").on(table.agentId, table.name),
-	check("ck_agent_runtime_profiles_host_binding", sql`(execution_host_id IS NULL) = (workspace_location_id IS NULL) AND (execution_host_id IS NULL) = (runtime_installation IS NULL)`),
+	check("ck_agent_runtime_profiles_workspace_mode", sql`workspace_mode IS NULL OR workspace_mode IN ('location', 'managed')`),
+	check("ck_agent_runtime_profiles_host_binding", sql`
+		(execution_host_id IS NULL) = (runtime_installation IS NULL)
+		AND (execution_host_id IS NULL) = (workspace_mode IS NULL)
+		AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL)
+		AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)
+	`),
 ]);
 
 export const cliCredentialProfiles = pgTable("cli_credential_profiles", {

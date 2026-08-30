@@ -41,6 +41,7 @@ export interface RoomAgentMemberRecord {
   status: "active" | "removed";
   trigger_policy: "owner_only";
   host_name: string | null;
+  workspace_mode: "location" | "managed" | null;
   host_online: boolean;
   host_owner_is_me: boolean;
   private_shared_user_ids: string[];
@@ -398,14 +399,15 @@ export class PgRoomRepository {
                    AND grant_row.revoked_at IS NULL
               ), '[]'::jsonb) AS private_shared_user_ids,
               member.role, member.status, member.trigger_policy,
-              host.name AS host_name, host.status AS host_status,
+              host.name AS host_name, binding.workspace_mode,
+              host.status AS host_status,
               host.last_heartbeat_at, host.owner_user_id AS host_owner_user_id,
               member.created_at, member.updated_at
          FROM room_agent_members member
          JOIN agents agent
            ON agent.space_id = member.space_id AND agent.id = member.agent_id
          LEFT JOIN LATERAL (
-           SELECT profile.execution_host_id
+           SELECT profile.execution_host_id, profile.workspace_mode
              FROM agent_runtime_profiles profile
             WHERE profile.space_id = member.space_id
               AND profile.agent_id = member.agent_id
@@ -422,6 +424,7 @@ export class PgRoomRepository {
     return result.rows.map((row) => ({
       ...row,
       host_name: row.host_name ?? null,
+      workspace_mode: row.workspace_mode ?? null,
       host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
       host_owner_is_me: row.host_owner_user_id !== null && row.host_owner_user_id === viewerUserId,
     }));

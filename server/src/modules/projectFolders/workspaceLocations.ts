@@ -134,7 +134,7 @@ export class PgWorkspaceLocationRepository {
   /** Selector read model: only the caller's live remote hosts and this Project's registered Locations. */
   async listHostExecutionTargets(
     spaceId: string,
-    projectId: string,
+    projectId: string | null,
     userId: string,
   ): Promise<HostExecutionTarget[]> {
     const result = await this.db.query<{
@@ -143,11 +143,11 @@ export class PgWorkspaceLocationRepository {
       host_status: string;
       last_heartbeat_at: string | null;
       capabilities_json: unknown;
-      location_id: string;
-      project_folder_id: string;
-      folder_name: string;
+      location_id: string | null;
+      project_folder_id: string | null;
+      folder_name: string | null;
       display_path: string | null;
-      execution_ready: boolean;
+      execution_ready: boolean | null;
     }>(
       `SELECT host.id AS host_id, host.name AS host_name, host.status AS host_status,
               host.last_heartbeat_at, host.capabilities_json,
@@ -155,39 +155,47 @@ export class PgWorkspaceLocationRepository {
               folder.name AS folder_name, location.display_path,
               location.execution_ready
          FROM hosts host
-         JOIN workspace_locations location ON location.execution_host_id = host.id
-         JOIN project_folders folder ON folder.id = location.project_folder_id
-        WHERE host.owner_user_id = $1
-          AND host.kind = 'remote'
-          AND host.status <> 'revoked'
+         LEFT JOIN workspace_locations location
+           ON location.execution_host_id = host.id
           AND location.status = 'active'
+          AND $3::varchar IS NOT NULL
+         LEFT JOIN project_folders folder
+           ON folder.id = location.project_folder_id
           AND folder.status = 'active'
           AND folder.space_id = $2
           AND folder.project_id = $3
-        ORDER BY host.name ASC, folder.name ASC, location.created_at ASC`,
+        WHERE host.owner_user_id = $1
+          AND host.kind = 'remote'
+          AND host.status <> 'revoked'
+          AND ($3::varchar IS NULL OR folder.id IS NOT NULL)
+        ORDER BY host.name ASC, folder.name ASC NULLS LAST, location.created_at ASC NULLS LAST`,
       [userId, spaceId, projectId],
     );
     const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown }>();
     for (const row of result.rows) {
       let target = grouped.get(row.host_id);
       if (!target) {
-        target = {
+        const created = {
           host_id: row.host_id,
           host_name: row.host_name,
           host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
           locations: [],
           adapters: [],
+          managed_workspace_available: true,
           capabilities_json: row.capabilities_json,
         };
-        grouped.set(row.host_id, target);
+        grouped.set(row.host_id, created);
+        target = created;
       }
-      target.locations.push({
-        id: row.location_id,
-        project_folder_id: row.project_folder_id,
-        folder_name: row.folder_name,
-        display_path: row.display_path,
-        execution_ready: row.execution_ready,
-      });
+      if (row.location_id && row.project_folder_id && row.folder_name && row.execution_ready !== null) {
+        target.locations.push({
+          id: row.location_id,
+          project_folder_id: row.project_folder_id,
+          folder_name: row.folder_name,
+          display_path: row.display_path,
+          execution_ready: row.execution_ready,
+        });
+      }
     }
     const adapters = listRuntimeAdapterSpecs()
       .map((spec) => getLocalCliRuntimeAdapterSpec(spec.adapter_type))

@@ -71,6 +71,7 @@ export const RoomAgentMemberSchema = z.object({
   status: z.enum(["active", "removed"]),
   trigger_policy: z.literal("owner_only"),
   host_name: z.string().trim().min(1).nullable().optional(),
+  workspace_mode: z.enum(["location", "managed"]).nullish().optional(),
   host_online: z.boolean().optional(),
   host_owner_is_me: z.boolean().optional(),
   private_shared_user_ids: z.array(IdSchema).optional(),
@@ -90,6 +91,8 @@ export const RoomAgentCandidateSchema = z.object({
   member_status: z.enum(["active", "removed"]).nullish(),
   private: z.boolean(),
   shared_with_user_ids: z.array(IdSchema).default([]),
+  workspace_mode: z.enum(["location", "managed"]).nullish().optional(),
+  workspace_archive_available: z.boolean().optional(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomAgentCandidate = z.infer<typeof RoomAgentCandidateSchema>;
@@ -116,6 +119,7 @@ export const RoomAgentAddRequestSchema = z.object({
   agent_id: IdSchema,
   share_private_with_member_ids: z.array(IdSchema).default([]),
   confirm_room_share: z.boolean().default(false),
+  restore_workspace: z.boolean().default(false),
 }).strict();
 export type RoomAgentAddRequest = z.infer<typeof RoomAgentAddRequestSchema>;
 

@@ -135,7 +135,7 @@ export default function ThreadDetailPage() {
           <DispatchComposer
             initialProjectId={projectId}
             fixedThreadId={thread.id}
-            fixedFolderId={thread.project_folder_id}
+            fixedFolderId={thread.project_folder_id ?? undefined}
             fixedAdapterType={thread.adapter_type}
             onDispatched={() => { void load() }}
           />

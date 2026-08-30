@@ -5,6 +5,9 @@ import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { introspectIdentity } from "../auth/identity.js";
 import { PgSessionRepository } from "./repository.js";
+import { withTransaction } from "../../db/tx.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { dbPool, sendRouteError } from "../routeUtils/common.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 
@@ -92,6 +95,86 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     );
     if (messages === null) return reply.code(404).send({ detail: "Session not found" });
     return reply.send(messages);
+  });
+
+  app.delete("/api/v1/sessions/:sessionId", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const sessionId = params(request).sessionId ?? "";
+    try {
+      const deleted = await withTransaction(dbPool(context.config), async (client) => {
+        const session = await client.query<{ id: string }>(
+          `SELECT s.id
+             FROM sessions s
+            WHERE s.id = $1
+              AND s.space_id = $2
+              AND s.user_id = $3
+              AND s.room_id IS NULL
+              AND s.status = 'active'
+            FOR UPDATE`,
+          [sessionId, identity.spaceId, identity.userId],
+        );
+        if (!session.rows[0]) return null;
+
+        const directThreads = await client.query<{
+          id: string;
+          agent_id: string;
+          execution_host_id: string | null;
+          workspace_mode: "location" | "managed";
+        }>(
+          `SELECT thread.id, thread.agent_id, thread.execution_host_id, thread.workspace_mode
+             FROM session_conversation_backends binding
+             JOIN host_threads thread
+               ON thread.agent_id = binding.agent_id
+              AND thread.container_kind = 'direct'
+              AND thread.container_user_id = binding.user_id
+              AND thread.room_id IS NULL
+              AND thread.status IN ('active', 'session_reset')
+            WHERE binding.space_id = $1
+              AND binding.session_id = $2
+              AND binding.user_id = $3
+            FOR UPDATE OF thread`,
+          [identity.spaceId, sessionId, identity.userId],
+        );
+
+        await client.query(
+          `UPDATE sessions SET status = 'archived', updated_at = now()
+            WHERE id = $1 AND space_id = $2 AND user_id = $3`,
+          [sessionId, identity.spaceId, identity.userId],
+        );
+
+        const threadRepository = new PgHostThreadRepository(client);
+        for (const thread of directThreads.rows) {
+          await threadRepository.closeDirectAgent(thread.agent_id, identity.userId, thread.workspace_mode === "managed");
+        }
+        return directThreads.rows
+          .filter((thread) => thread.workspace_mode === "managed" && thread.execution_host_id)
+          .map((thread) => ({
+            threadId: thread.id,
+            hostId: thread.execution_host_id!,
+            agentId: thread.agent_id,
+          }));
+      });
+      if (!deleted) return reply.code(404).send({ detail: "Session not found" });
+
+      const archived = [];
+      for (const target of deleted) {
+        const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+          target.hostId,
+          "managed_workspace_archive",
+          { agent_id: target.agentId, container_kind: "direct", container_id: identity.userId },
+        );
+        archived.push({ agent_id: target.agentId, ...result });
+        if (result.ok) {
+          await new PgHostThreadRepository(dbPool(context.config))
+            .acknowledgeManagedWorkspaceArchive(target.threadId)
+            .catch(() => undefined);
+        }
+      }
+      return reply.send({ deleted: true, session_id: sessionId, managed_workspace_archive: archived });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
   });
 
   app.post("/api/v1/sessions", async (request, reply) => {

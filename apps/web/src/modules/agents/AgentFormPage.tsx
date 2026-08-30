@@ -113,8 +113,9 @@ function hostSelectionFromQuery(params: URLSearchParams): HostExecutionSelection
   const workspace_location_id = params.get('location') ?? ''
   const adapter_type = params.get('adapter') ?? ''
   const installation = params.get('installation') ?? ''
-  return host_id && workspace_location_id && adapter_type && installation
-    ? { host_id, workspace_location_id, adapter_type, installation }
+  const workspace_mode = params.get('mode') === 'managed' ? 'managed' : 'location'
+  return host_id && adapter_type && installation && (workspace_mode === 'managed' || workspace_location_id)
+    ? { host_id, workspace_location_id: workspace_mode === 'managed' ? null : workspace_location_id, workspace_mode, adapter_type, installation }
     : null
 }
 
@@ -316,6 +317,7 @@ export default function AgentFormPage() {
             default_model: hostExecution ? null : showProviderSelector ? (modelSelection?.model || null) : null,
             execution_host_id: hostExecution?.host_id ?? null,
             workspace_location_id: hostExecution?.workspace_location_id ?? null,
+            workspace_mode: hostExecution?.workspace_mode ?? null,
             runtime_installation: hostExecution?.installation ?? null,
           })
       toast.success('Agent created')
@@ -393,7 +395,7 @@ export default function AgentFormPage() {
           </div>
           {!templateId && (
             <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project (optional · required to run on a paired host)</label>
+              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project (optional)</label>
               <select
                 value={selectedProjectId}
                 onChange={e => { setSelectedProjectId(e.target.value); setHostExecution(null) }}
@@ -402,7 +404,7 @@ export default function AgentFormPage() {
                 <option value="">No Project — personal Agent</option>
                 {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
               </select>
-              <p className="text-xs text-muted-foreground">A Project is required before choosing one of your paired host Locations.</p>
+              <p className="text-xs text-muted-foreground">A Project is required for a Project Location. Managed workspaces are Space-level and do not need a Project.</p>
             </div>
           )}
         </Card>

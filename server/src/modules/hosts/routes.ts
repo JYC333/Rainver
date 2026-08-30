@@ -3,7 +3,7 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { AmbientSessionCountSchema } from "@rainver/protocol";
+import { AmbientSessionCountSchema, ManagedWorkspaceHeartbeatSchema } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
@@ -200,6 +200,12 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
         return parsed.success ? [parsed.data] : [];
       })
     : null;
+  const managedWorkspaces = Array.isArray(payload.managed_workspaces)
+    ? payload.managed_workspaces.flatMap((value) => {
+        const parsed = ManagedWorkspaceHeartbeatSchema.safeParse(value);
+        return parsed.success ? [parsed.data] : [];
+      })
+    : null;
   return {
     ambient_sessions: ambientSessions,
     platform: typeof payload.platform === "string" ? payload.platform : null,
@@ -214,7 +220,24 @@ function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
         : null,
     environment_kind: typeof payload.environment_kind === "string" ? payload.environment_kind : null,
     workspace_reports: workspaceReports,
+    managed_workspaces: managedWorkspaces,
   };
+}
+
+async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: string): Promise<void> {
+  const pending = await new PgHostThreadRepository(pool).listPendingManagedWorkspaceArchives(hostId);
+  for (const item of pending) {
+    const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+      hostId,
+      "managed_workspace_archive",
+      {
+        agent_id: item.agent_id,
+        container_kind: item.container_kind,
+        container_id: item.container_id,
+      },
+    );
+    if (result.ok) await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
+  }
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -276,6 +299,35 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           : null,
       })),
     });
+  });
+
+  app.get("/api/v1/hosts/execution-targets", async (request, reply) => {
+    const requestId = resolveRequestId(request);
+    reply.header(REQUEST_ID_HEADER, requestId);
+    if (!context.config.databaseUrl) {
+      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
+    }
+    const identity = await introspectIdentity(context.config, request);
+    if (!identity.ok) {
+      if (identity.reason === "denied") {
+        reply.code(identity.statusCode);
+        reply.header("content-type", "application/json");
+        return reply.send(identity.body);
+      }
+      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_unavailable", "Identity introspection failed", requestId));
+    }
+    const projectId = (request.query as Record<string, string | undefined>).project_id ?? null;
+    if (projectId) {
+      try {
+        await assertProjectReadable(getDbPool(context.config.databaseUrl), identity.spaceId, projectId, identity.userId);
+      } catch (error) {
+        if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
+        throw error;
+      }
+    }
+    const targets = await new PgWorkspaceLocationRepository(getDbPool(context.config.databaseUrl))
+      .listHostExecutionTargets(identity.spaceId, projectId, identity.userId);
+    return reply.send({ targets });
   });
 
   // Read side for the control center's work stream (grouped by thread, not
@@ -997,6 +1049,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
               socket.send(JSON.stringify({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() }));
+              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
+                .catch(() => undefined);
             } finally {
               helloInProgress = false;
             }
@@ -1010,6 +1064,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           if (frame.type === "heartbeat") {
             await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
             socket.send(JSON.stringify({ type: "heartbeat_ack" }));
+            void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), authenticatedHostId)
+              .catch(() => undefined);
             // Standing consent on a Location is what makes a new terminal
             // conversation arrive without anyone pressing a button, and a
             // heartbeat is when this host is known reachable. Deliberately not
@@ -1083,6 +1139,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             const result = parseFolderReadResultFrame(frame)
               ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
             if (requestId) sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, requestId, result);
+            return;
+          }
+          if (frame.type === "managed_workspace_result") {
+            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
+            if (requestId) {
+              sharedHostConnectionRegistry.receiveManagedWorkspaceResult(authenticatedHostId, requestId, {
+                ok: frame.ok === true,
+                changed: frame.changed === true,
+                error: typeof frame.error === "string" ? frame.error : null,
+              });
+            }
             return;
           }
           if (frame.type === "tool_result") {

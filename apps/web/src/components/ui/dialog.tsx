@@ -110,6 +110,9 @@ interface ConfirmDialogProps {
   onConfirm: () => void
   confirmLabel?: string
   variant?: ButtonProps['variant']
+  restoreAvailable?: boolean
+  restoreChecked?: boolean
+  onRestoreChange?: (checked: boolean) => void
 }
 
 export function ConfirmDialog({
@@ -120,6 +123,9 @@ export function ConfirmDialog({
   onConfirm,
   confirmLabel = 'Confirm',
   variant = 'destructive',
+  restoreAvailable = false,
+  restoreChecked = false,
+  onRestoreChange,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -128,6 +134,12 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {restoreAvailable && (
+          <label className="mb-4 flex items-start gap-2 text-sm">
+            <input type="checkbox" checked={restoreChecked} onChange={event => onRestoreChange?.(event.target.checked)} />
+            <span><span className="font-medium">Restore previous workspace</span><span className="block text-xs text-muted-foreground">Reuse the archived managed workspace when the host is online.</span></span>
+          </label>
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button

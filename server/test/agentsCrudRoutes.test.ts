@@ -502,6 +502,7 @@ describe("agents CRUD routes", () => {
         adapter_type: "claude_code",
         execution_host_id: "host-1",
         workspace_location_id: "location-1",
+        workspace_mode: "location",
         runtime_installation: "own",
       },
     });
@@ -514,7 +515,8 @@ describe("agents CRUD routes", () => {
     });
     expect(inserted[7]).toBe("host-1");
     expect(inserted[8]).toBe("location-1");
-    expect(inserted[9]).toBe("own");
+    expect(inserted[9]).toBe("location");
+    expect(inserted[10]).toBe("own");
   });
 
   it("rejects user credentials on shared Agent runtime profiles", async () => {

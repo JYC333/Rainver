@@ -3,9 +3,11 @@ import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, runtimeToolsApi } from '../../api/client'
-import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
+import { agentsApi, hostsApi, runtimeToolsApi } from '../../api/client'
+import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
+import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
+import { ConfirmDialog } from '../../components/ui/dialog'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Input } from '../../components/ui/input'
@@ -28,27 +30,34 @@ import { ContentAccessControl } from '../../components/ContentAccessControl'
 
 export default function AgentDetailPage() {
   const { agentId } = useParams()
+  const { userId } = useSpace()
   const [agent, setAgent] = useState<AgentOut | null>(null)
   const [version, setVersion] = useState<AgentVersionOut | null>(null)
   const [versions, setVersions] = useState<AgentVersionOut[]>([])
   const [runtimeProfiles, setRuntimeProfiles] = useState<AgentRuntimeProfileOut[]>([])
+  const [hosts, setHosts] = useState<Host[]>([])
   const [runs, setRuns] = useState<Run[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [loading, setLoading] = useState(true)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [statusBusy, setStatusBusy] = useState(false)
   const [activeTab, setActiveTab] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     if (!agentId) return
-    const [a, vs, rs, rps] = await Promise.all([
+    const [a, vs, rs, rps, hs] = await Promise.all([
       agentsApi.get(agentId),
       agentsApi.listVersions(agentId).catch(() => [] as AgentVersionOut[]),
       agentsApi.listRunsForAgent(agentId).catch(() => [] as Run[]),
       agentsApi.listRuntimeProfiles(agentId).catch(() => [] as AgentRuntimeProfileOut[]),
+      typeof hostsApi?.list === 'function'
+        ? hostsApi.list().then(response => response.items).catch(() => [] as Host[])
+        : Promise.resolve([] as Host[]),
     ])
     setAgent(a)
     setVersions(vs)
     setRuntimeProfiles(rps)
+    setHosts(hs)
     setRuns(rs)
     setVersion(vs.find(v => v.id === a.current_version_id) ?? vs[0] ?? null)
     agentsApi.listProposals(agentId, 'pending').then(setProposals).catch(() => setProposals([]))
@@ -68,6 +77,10 @@ export default function AgentDetailPage() {
 
   const isAssistant = agent.agent_kind === 'system_assistant'
   const isActive = agent.status === 'active'
+  const hostProfile = runtimeProfiles.find(profile => profile.is_default && profile.execution_host_id)
+    ?? runtimeProfiles.find(profile => profile.execution_host_id)
+  const boundHost = hostProfile?.execution_host_id ? hosts.find(host => host.id === hostProfile.execution_host_id) : null
+  const canResetHostContext = Boolean(hostProfile?.execution_host_id && boundHost?.owner_user_id === userId && boundHost.status === 'online')
 
   const toggleStatus = async () => {
     const next = isActive ? 'disabled' : 'active'
@@ -90,6 +103,10 @@ export default function AgentDetailPage() {
           <h1 className="text-xl font-semibold flex items-center gap-2">
             {agent.name} <StatusBadge status={agent.status} />
             {isAssistant && <Badge variant="secondary">System-managed</Badge>}
+            {hostProfile && <Badge variant={boundHost?.status === 'online' ? 'secondary' : 'destructive'}>
+              {hostProfile.workspace_mode === 'managed' ? 'Managed workspace' : 'Location'} on {boundHost?.name ?? hostProfile.execution_host_id}
+              {boundHost?.status !== 'online' ? ' · offline' : ''}
+            </Badge>}
           </h1>
           <p className="text-sm text-muted-foreground">{agent.description ?? 'No description'}</p>
         </div>
@@ -99,6 +116,24 @@ export default function AgentDetailPage() {
               version through the same execution path (a disabled agent's turn
               is correctly blocked by policy). */}
           <Button asChild size="sm"><Link to={`/agents/${agent.id}/chat`}><MessageSquare className="size-3.5 mr-1" />Open chat</Link></Button>
+          {canResetHostContext && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => setResetConfirmOpen(true)}>Reset context</Button>
+              <ConfirmDialog
+                open={resetConfirmOpen}
+                onOpenChange={setResetConfirmOpen}
+                title="Reset this Agent's host context?"
+                description="The next direct message starts a fresh vendor session. Files in its workspace stay."
+                confirmLabel="Reset context"
+                onConfirm={() => {
+                  void (async () => {
+                    try { await agentsApi.resetContext(agent.id); toast.success('Host context reset') }
+                    catch (error) { toast.error(errMsg(error)) }
+                  })()
+                }}
+              />
+            </>
+          )}
           {!isAssistant && (
             <Button
               size="sm"
@@ -151,7 +186,7 @@ export default function AgentDetailPage() {
           {version ? <ScheduleTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
         </TabsContent>
         <TabsContent value="model">
-          {version ? <ModelTab agentId={agent.id} version={version} profiles={runtimeProfiles} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          {version ? <ModelTab agentId={agent.id} version={version} profiles={runtimeProfiles} hosts={hosts} onSaved={reload} /> : <Card><NoVersion /></Card>}
         </TabsContent>
         <TabsContent value="tools">
           {version ? <ToolsTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
@@ -428,11 +463,13 @@ function ModelTab({
   agentId,
   version,
   profiles,
+  hosts,
   onSaved,
 }: {
   agentId: string
   version: AgentVersionOut
   profiles: AgentRuntimeProfileOut[]
+  hosts: Host[]
   onSaved: () => Promise<void>
 }) {
   const defaultProfile = profiles.find(profile => profile.is_default) ?? profiles[0] ?? null
@@ -563,7 +600,7 @@ function ModelTab({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>Runtime profiles</CardTitle>
         {selectedProfile?.execution_host_id ? (
-          <Badge variant="secondary">Host-bound · owner-only</Badge>
+          <Badge variant="secondary">{selectedProfile.workspace_mode === 'managed' ? 'Managed workspace' : 'Location'} · owner-only</Badge>
         ) : (
           <Badge variant="muted">Server / provider runtime</Badge>
         )}
@@ -571,8 +608,8 @@ function ModelTab({
       </div>
       {selectedProfile?.execution_host_id && (
         <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
-          Runs on host <span className="font-mono">{selectedProfile.execution_host_id}</span> at Location{' '}
-          <span className="font-mono">{selectedProfile.workspace_location_id}</span> using installation{' '}
+          Runs in {selectedProfile.workspace_mode === 'managed' ? 'a managed workspace' : <>Location <span className="font-mono">{selectedProfile.workspace_location_id}</span></>} on host{' '}
+          <span className="font-mono">{hosts.find(host => host.id === selectedProfile.execution_host_id)?.name ?? selectedProfile.execution_host_id}</span> using installation{' '}
           <span className="font-mono">{selectedProfile.runtime_installation}</span>. Only the host owner can trigger this specialist from a Room.
         </p>
       )}

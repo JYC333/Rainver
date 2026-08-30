@@ -8,6 +8,7 @@ import type {
   RuntimeSemanticEvent,
   ExecutionControlSnapshot,
   TurnContextRequest,
+  LaunchWorkspace,
 } from "@rainver/protocol";
 import { RETRIEVAL_INTENT_MAX_CHARS } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -266,7 +267,7 @@ export interface RunExecutionAdapterDeps {
    * fallback for a Run that predates it, resolved via that Folder's
    * `preferred` Location.
    */
-  hostKindResolver?: (input: { workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string }>;
+  hostKindResolver?: (input: { executionHostId: string | null; workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string | null }>;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
   conversationRuntimeSessions?: {
     record(input: {
@@ -330,7 +331,8 @@ export interface HostExecutionPort {
   /** Set only for a remote port — which daemon connection to dispatch to. */
   readonly hostId?: string;
   /** Set only for a remote port — which WorkspaceLocation this Run executes in (D3). */
-  readonly workspaceLocationId?: string;
+  readonly workspaceLocationId?: string | null;
+  readonly workspace?: LaunchWorkspace;
   readonly workspaceManager?: RunSandboxManagerPort;
   readonly codePatchCollector?: RunCodePatchCollectorPort;
   readonly runExchange: RunExchangePort;
@@ -367,7 +369,8 @@ export class RemoteHostExecutionAdapter implements HostExecutionPort {
   };
   constructor(
     readonly hostId: string,
-    readonly workspaceLocationId: string,
+    readonly workspaceLocationId: string | null,
+    readonly workspace?: LaunchWorkspace,
   ) {}
 }
 
@@ -519,7 +522,7 @@ export class RunOrchestrationService {
     NonNullable<RunExecutionAdapterDeps["ensureWorkContextSetup"]> | null;
   private readonly cliContinuity: RuntimeContextCliContinuityService | null;
   private readonly serverExecutionPort: ServerHostExecutionAdapter;
-  private readonly hostKindResolver: ((input: { workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string }>) | null;
+  private readonly hostKindResolver: ((input: { executionHostId: string | null; workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string | null }>) | null;
 
   constructor(
     private readonly config: ServerConfig,
@@ -547,14 +550,19 @@ export class RunOrchestrationService {
     );
     this.hostKindResolver = adapters.hostKindResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? async ({ workspaceLocationId, projectFolderId, spaceId }) => {
+        ? async ({ executionHostId, workspaceLocationId, projectFolderId, spaceId }) => {
             const pool = getDbPool(config.databaseUrl!);
             const result = workspaceLocationId
               ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
                   `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE id = $1 AND space_id = $2 LIMIT 1`,
                   [workspaceLocationId, spaceId],
                 )
-              : projectFolderId
+                : executionHostId
+                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
+                    `SELECT id, kind AS execution_host_kind, id AS execution_host_id FROM hosts WHERE id = $1 LIMIT 1`,
+                    [executionHostId],
+                  )
+                : projectFolderId
                 ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
                     `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND preferred = true AND status = 'active' LIMIT 1`,
                     [projectFolderId, spaceId],
@@ -564,7 +572,7 @@ export class RunOrchestrationService {
             return {
               hostKind: (row?.execution_host_kind as HostKind | undefined) ?? "server",
               hostId: row?.execution_host_id ?? "",
-              workspaceLocationId: row?.id ?? "",
+              workspaceLocationId: row?.execution_host_kind === "remote" && !workspaceLocationId ? null : row?.id ?? null,
             };
           }
         : null);
@@ -2031,14 +2039,18 @@ export class RunOrchestrationService {
    * fail-closed and never touch a remote path.
    */
   private async resolveExecutionPort(run: RunRecord): Promise<HostExecutionPort> {
-    if ((!run.project_folder_id && !run.workspace_location_id) || !this.hostKindResolver) return this.serverExecutionPort;
+    const profile = recordValue(run.runtime_profile_snapshot_json);
+    const executionHostId = stringConfigValue(profile.execution_host_id);
+    const workspace = launchWorkspaceFromSnapshot(profile.workspace);
+    if ((!run.project_folder_id && !run.workspace_location_id && !executionHostId) || !this.hostKindResolver) return this.serverExecutionPort;
     const resolved = await this.hostKindResolver({
+      executionHostId,
       workspaceLocationId: run.workspace_location_id ?? null,
       projectFolderId: run.project_folder_id ?? null,
       spaceId: run.space_id,
     });
     if (resolved.hostKind === "server") return this.serverExecutionPort;
-    return new RemoteHostExecutionAdapter(resolved.hostId, resolved.workspaceLocationId);
+    return new RemoteHostExecutionAdapter(resolved.hostId, resolved.workspaceLocationId, workspace);
   }
 
   private async prepareRuntimeContext(
@@ -2448,9 +2460,10 @@ export class RunOrchestrationService {
             ? createSerializedThreadEventSink(threadEvents, threadId!, run.id)
             : undefined,
           process_registry: this.adapters.processRegistry,
+          workspace: input.execution_port.workspace,
         },
         input.execution_port.hostId!,
-        input.execution_port.workspaceLocationId!,
+        input.execution_port.workspaceLocationId ?? null,
         // The remote adapter resolves this run's model backend itself: the
         // Runtime Context gateway is skipped for a remote run, so nothing
         // upstream has done it.
@@ -3086,6 +3099,24 @@ function semanticEventStatus(
 
 function stringConfigValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function launchWorkspaceFromSnapshot(value: unknown): LaunchWorkspace | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "location" && typeof record.workspace_location_id === "string") {
+    return { kind: "location", workspace_location_id: record.workspace_location_id };
+  }
+  const container = record.container;
+  if (record.kind !== "managed" || typeof record.agent_id !== "string" || !container || typeof container !== "object" || Array.isArray(container)) return undefined;
+  const c = container as Record<string, unknown>;
+  if (c.kind === "room" && typeof c.room_id === "string") {
+    return { kind: "managed", agent_id: record.agent_id, container: { kind: "room", room_id: c.room_id } };
+  }
+  if (c.kind === "direct" && typeof c.user_id === "string") {
+    return { kind: "managed", agent_id: record.agent_id, container: { kind: "direct", user_id: c.user_id } };
+  }
+  return undefined;
 }
 
 function positiveNumber(value: unknown): number | null {

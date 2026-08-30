@@ -8,10 +8,19 @@ import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
+import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
+
+export interface LaunchWorkspace {
+  kind: "location" | "managed";
+  workspace_location_id?: string;
+  agent_id?: string;
+  container?: ManagedWorkspaceContainer;
+}
 
 export interface LaunchFrame {
   run_id: string;
   workspace_location_id?: string;
+  workspace?: LaunchWorkspace;
   /** @deprecated pre-P1 wire/test alias; new frames use workspace_location_id. */
   project_folder_id?: string;
   argv: string[];
@@ -407,8 +416,30 @@ async function launchRun(
   log: (line: string) => void,
 ): Promise<void> {
   const config = await requireConfig();
-  const workspaceId = frame.workspace_location_id ?? frame.project_folder_id ?? "";
-  const cwd = config.workspaces[workspaceId];
+  let cwd: string | undefined;
+  try {
+    if (frame.workspace?.kind === "managed") {
+      if (!frame.workspace.agent_id || !frame.workspace.container) {
+        throw new Error("managed launch workspace is incomplete");
+      }
+      cwd = await ensureManagedWorkspace(frame.workspace.agent_id, frame.workspace.container);
+    } else {
+      const workspaceId = frame.workspace?.workspace_location_id
+        ?? frame.workspace_location_id
+        ?? frame.project_folder_id
+        ?? "";
+      cwd = config.workspaces[workspaceId];
+    }
+  } catch (error) {
+    send({
+      type: "complete",
+      run_id: frame.run_id,
+      exit_code: 1,
+      timed_out: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   if (!cwd) {
     send({
       type: "complete",

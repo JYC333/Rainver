@@ -3336,6 +3336,7 @@ export interface AgentCreateBody {
   output_schema_json?: Record<string, unknown> | null
   execution_host_id?: string | null
   workspace_location_id?: string | null
+  workspace_mode?: 'location' | 'managed' | null
   runtime_installation?: string | null
 }
 
@@ -3466,8 +3467,8 @@ export interface ProjectFolderScanCandidate {
 
 /** One choice as the runtime describes it: its own name, and what it means. */
 // The host/dispatch contract is the protocol's; one shape for server and web.
-import type { HostCapabilities } from '@rainver/protocol'
-export type { DispatchBackend, DispatchOptions, HostCapabilities, HostExecutionTarget, HostExecutionTargetAdapter, HostExecutionTargetLocation, HostExecutionTargetsResponse, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions } from '@rainver/protocol'
+import type { HostCapabilities, ManagedWorkspaceHeartbeat } from '@rainver/protocol'
+export type { DispatchBackend, DispatchOptions, HostCapabilities, HostExecutionTarget, HostExecutionTargetAdapter, HostExecutionTargetLocation, HostExecutionTargetsResponse, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, ManagedWorkspaceHeartbeat } from '@rainver/protocol'
 export type { AgentRuntimeProfileOut, AgentRuntimeProfileCreateBody, AgentRuntimeProfileUpdateBody } from '@rainver/protocol'
 
 export interface Host {
@@ -3490,6 +3491,7 @@ export interface Host {
   /** What a dispatched run will actually use, resolved server-side. */
   provider_proxy_effective_url?: string | null
   capabilities_json: HostCapabilities | null
+  managed_workspaces_json?: ManagedWorkspaceHeartbeat[] | null
   created_at: string
   updated_at: string
 }
@@ -3502,11 +3504,14 @@ export interface HostPairingCode {
 
 export interface HostThread {
   id: string
-  workspace_location_id?: string
+  workspace_location_id?: string | null
+  workspace_mode?: 'location' | 'managed'
+  container_kind?: 'room' | 'direct' | null
+  container_user_id?: string | null
   task_id: string | null
   room_id: string | null
   agent_id: string | null
-  project_folder_id: string
+  project_folder_id: string | null
   host_id: string
   adapter_type: string
   runtime_installation?: string

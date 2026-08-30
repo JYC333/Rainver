@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // vi.mock factories are hoisted above the module body, so anything they reference
 // must be created via vi.hoisted (which runs first) to avoid a TDZ error.
-const { agent, getMock, messagesMock, backendsMock } = vi.hoisted(() => ({
+const { agent, getMock, messagesMock, backendsMock, hostsMock } = vi.hoisted(() => ({
   agent: {
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
@@ -15,15 +15,17 @@ const { agent, getMock, messagesMock, backendsMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   messagesMock: vi.fn(),
   backendsMock: vi.fn(),
+  hostsMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
   agentsApi: { get: getMock, chat: vi.fn(), conversationBackends: backendsMock },
   sessionsApi: { messages: messagesMock },
+  hostsApi: { list: hostsMock },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'personal-1', preferredSpaceId: 'personal-1' }),
+  useSpace: () => ({ activeSpaceId: 'personal-1', preferredSpaceId: 'personal-1', userId: 'u1' }),
 }))
 
 import AssistantChatPage from '../modules/agents/AssistantChatPage'
@@ -76,6 +78,7 @@ describe('AssistantChatPage conversation backends', () => {
       requires_cli_credential: false,
       credential_profiles: [],
     }], binding: null })
+    hostsMock.mockResolvedValue({ items: [] })
     // jsdom doesn't implement Element.scrollTo, which ChatPanel calls on mount.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })
@@ -246,5 +249,36 @@ describe('AssistantChatPage conversation backends', () => {
     expect(await screen.findByText('What did we decide?')).toBeInTheDocument()
     expect(screen.getByText('We moved chat turns to TS.')).toBeInTheDocument()
     expect(messagesMock).toHaveBeenCalledWith('s1')
+  })
+
+  it('shows managed workspace state and sends an explicit restore choice', async () => {
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-host',
+      name: 'Host runtime',
+      adapter_type: 'claude_code',
+      model_name: null,
+      requires_cli_credential: false,
+      usable: true,
+      host_bound: true,
+      host_id: 'host-1',
+      workspace_mode: 'managed',
+      host_name: 'Workstation',
+      host_online: true,
+      host_owner_is_me: true,
+      credential_profiles: [],
+    }], binding: null })
+    hostsMock.mockResolvedValue({ items: [{ id: 'host-1', owner_user_id: 'u1', name: 'Workstation', status: 'online', managed_workspaces_json: [{
+      agent_id: 'a1', container_kind: 'direct', container_id: 'u1', archived_available: true,
+    }] }] })
+    vi.mocked(agentsApi.chat).mockResolvedValue({ ok: true, session_id: 's2', run_id: 'r2', reply: 'restored', assistant_message: null, action_previews: [] } as never)
+
+    renderPage()
+    const restore = await screen.findByLabelText(/restore previous managed workspace/i)
+    fireEvent.click(restore)
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'continue' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledWith('a1', expect.objectContaining({ restore_workspace: true }), expect.any(Object)))
+    expect(screen.getByText(/Managed workspace on Workstation/)).toBeInTheDocument()
   })
 })

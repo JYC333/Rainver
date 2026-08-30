@@ -207,26 +207,37 @@ re-check that ACL, so Project revocation immediately removes Room access. A
 Room's optional Project Folder binding is fixed at creation and governed by
 the normal read-only sandbox boundary (`architecture/EXECUTION_MODEL.md`).
 
-### Host-bound specialists
+### Host-bound specialists and direct chat
 
 A specialist Agent may bind its runtime profile to one of the caller's own
-remote Hosts and a Workspace Location in this Project. The Room roster keeps
-the normal Agent identity and uses `trigger_policy = owner_only`: only the
-Host owner can dispatch it, while another member sees a visible system notice
-and no Run is created. A stale or offline Host is handled the same way, with
-no queueing or replay when it returns.
+remote Hosts and either a Workspace Location in this Project (`location`) or a
+daemon-created private workspace (`managed`). The Room roster keeps the normal
+Agent identity and uses `trigger_policy = owner_only`: only the Host owner can
+dispatch it, while another member sees a visible system notice and no Run is
+created. A stale or offline Host is handled the same way, with no queueing or
+replay when it returns.
 
-Each Room × Agent owns one live `host_threads` row. It pins the Location,
-adapter, installation, and opaque vendor session. A first turn, a changed
-conversation, or a reset sends Project state plus that conversation's summary
-and uncovered messages, preceded by the conversation title. Later turns in
-the same conversation send only messages since that Agent's previous turn.
-Reset context clears the vendor session and marks the thread `session_reset`;
-resuming a broken vendor session also publishes a visible reset notice.
-Removing the specialist closes the thread, and re-adding it creates a fresh
-one. Room prompt context is prompt content, not server-brokered Runtime
+Each Room × Agent owns one live `host_threads` row. It pins the Location or
+managed mode, Agent/container identity, adapter, installation, and opaque
+vendor session. A first turn, a changed conversation, or a reset sends Project
+state plus that conversation's summary and uncovered messages, preceded by the
+conversation title. Later turns in the same conversation send only messages
+since that Agent's previous turn. Reset context clears the vendor session and
+marks the thread `session_reset`; the directory stays.
+
+The same owner-only gate permits a direct chat with a host-bound Agent. Direct
+chat has one `host_threads` container per Agent × owner, renders recent messages
+from that session (not a Room summary), and exposes
+`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the direct session
+closes and archives a managed workspace; the first later message may opt into
+restoring the newest archive, but never restores the vendor session. Removing a
+Room specialist follows the same archive-not-delete rule, with offline archives
+replayed on the daemon's next heartbeat.
+
+Room and direct prompt context is prompt content, not server-brokered Runtime
 Context; credentials, memory reads, and provider state do not cross to the
-Host.
+Host. Managed directories remain per container, so a direct chat cannot see a
+Room's files and one Room cannot see another's files without an explicit pull.
 
 ### Mutable roster and Room-only privacy
 
@@ -623,7 +634,7 @@ recent ones fails as soon as the thread grows past that page.
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
   separately typed preset factories
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
-  explicit private Room-share confirmation
+  explicit private Room-share confirmation and optional `restore_workspace`
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
   revoke future Room grants

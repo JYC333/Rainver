@@ -277,7 +277,7 @@ describe("agents asynchronous chat-turn route", () => {
     }]);
   });
 
-  it("rejects a Host-bound Agent outside an owner-authorized Room", async () => {
+  it("fails closed when a Host-bound chat cannot enter its transactional dispatch path", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setAgentChatServicesFactoryForTests(() => services({
       backends: {
@@ -310,9 +310,9 @@ describe("agents asynchronous chat-turn route", () => {
       payload: { message: "Run remotely" },
     });
 
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
-      detail: "Host-bound Agents can only be addressed from an owner-authorized Room",
+      detail: "Host-bound chat is temporarily unavailable",
     });
   });
 

@@ -87,6 +87,7 @@ export interface AgentRuntimeProfileRecord {
   adapter_type: string;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
   model_provider_id: string | null;
   provider_name?: string | null;
@@ -178,6 +179,7 @@ export interface AgentRuntimeProfileOut {
   adapter_type: string;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
   model: {
     provider_id: string | null;
@@ -223,6 +225,7 @@ export interface AgentCreateInput {
   ownerUserId?: string | null;
   executionHostId?: string | null;
   workspaceLocationId?: string | null;
+  workspaceMode?: "location" | "managed" | null;
   runtimeInstallation?: string | null;
 }
 
@@ -241,6 +244,7 @@ const AGENT_COLUMNS = `
 const RUNTIME_PROFILE_COLUMNS = `
   arp.id, arp.space_id, arp.agent_id, arp.name, arp.adapter_type,
   arp.execution_host_id, arp.workspace_location_id, arp.runtime_installation,
+  arp.workspace_mode,
   arp.model_provider_id, arp.model_name,
   arp.runtime_config_json, arp.runtime_policy_json, arp.enabled, arp.is_default,
   arp.created_at, arp.updated_at,
@@ -652,6 +656,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName?: string | null;
       executionHostId?: string | null;
       workspaceLocationId?: string | null;
+      workspaceMode?: "location" | "managed" | null;
       runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
@@ -686,6 +691,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName?: string | null;
       executionHostId?: string | null;
       workspaceLocationId?: string | null;
+      workspaceMode?: "location" | "managed" | null;
       runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
@@ -712,6 +718,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       workspaceLocationId: Object.hasOwn(patch, "workspaceLocationId")
         ? patch.workspaceLocationId ?? null
         : existing.workspace_location_id,
+      workspaceMode: Object.hasOwn(patch, "workspaceMode")
+        ? patch.workspaceMode ?? null
+        : existing.workspace_mode,
       runtimeInstallation: Object.hasOwn(patch, "runtimeInstallation")
         ? patch.runtimeInstallation ?? null
         : existing.runtime_installation,
@@ -738,12 +747,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
                 model_name = $7,
                 execution_host_id = $8,
                 workspace_location_id = $9,
-                runtime_installation = $10,
-                runtime_config_json = $11::jsonb,
-                runtime_policy_json = $12::jsonb,
-                enabled = $13,
-                is_default = $14,
-                updated_at = $15
+                workspace_mode = $10,
+                runtime_installation = $11,
+                runtime_config_json = $12::jsonb,
+                runtime_policy_json = $13::jsonb,
+                enabled = $14,
+                is_default = $15,
+                updated_at = $16
           WHERE space_id = $1 AND agent_id = $2 AND id = $3
           RETURNING id`,
         [
@@ -756,6 +766,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           normalized.modelName,
           normalized.executionHostId,
           normalized.workspaceLocationId,
+          normalized.workspaceMode,
           normalized.runtimeInstallation,
           JSON.stringify(normalized.runtimeConfigJson),
           JSON.stringify(normalized.runtimePolicyJson),
@@ -785,8 +796,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const modelName = input.defaultModel ?? null;
     const hostBound = input.executionHostId != null
       || input.workspaceLocationId != null
+      || input.workspaceMode != null
       || input.runtimeInstallation != null;
     if (hostBound) {
+      // A caller that names a Location has named the mode: 'location' was the
+      // only shape before managed workspaces existed, so it stays the default
+      // for that input. 'managed' must always be explicit.
+      if (input.workspaceMode == null && input.workspaceLocationId != null) input.workspaceMode = "location";
+      if (input.workspaceMode !== "location" && input.workspaceMode !== "managed") {
+        throw new HttpError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
+      }
       if (providerId !== null || modelName !== null) {
         throw new HttpError(422, "Host-bound runtime profiles cannot use a server ModelProvider or model selection");
       }
@@ -796,6 +815,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         actorUserId: input.userId,
         executionHostId: input.executionHostId ?? null,
         workspaceLocationId: input.workspaceLocationId ?? null,
+        workspaceMode: input.workspaceMode ?? null,
         runtimeInstallation: input.runtimeInstallation ?? null,
         adapterType,
       });
@@ -836,6 +856,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputSchemaJson: input.outputSchemaJson ?? {},
       executionHostId: input.executionHostId ?? null,
       workspaceLocationId: input.workspaceLocationId ?? null,
+      workspaceMode: input.workspaceMode ?? null,
       runtimeInstallation: input.runtimeInstallation ?? null,
     });
   }
@@ -852,6 +873,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName?: string | null;
       executionHostId?: string | null;
       workspaceLocationId?: string | null;
+      workspaceMode?: "location" | "managed" | null;
       runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
@@ -871,7 +893,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           AND arp.model_provider_id IS NOT DISTINCT FROM $4
           AND arp.execution_host_id IS NOT DISTINCT FROM $5
           AND arp.workspace_location_id IS NOT DISTINCT FROM $6
-          AND arp.runtime_installation IS NOT DISTINCT FROM $7
+          AND arp.workspace_mode IS NOT DISTINCT FROM $7
+          AND arp.runtime_installation IS NOT DISTINCT FROM $8
         ORDER BY arp.enabled DESC, arp.is_default DESC, arp.created_at ASC, arp.id ASC
         LIMIT 1`,
       [
@@ -881,6 +904,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.modelProviderId ?? null,
         input.executionHostId ?? null,
         input.workspaceLocationId ?? null,
+        input.workspaceMode ?? null,
         input.runtimeInstallation ?? null,
       ],
     );
@@ -891,6 +915,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: input.modelName,
       executionHostId: input.executionHostId,
       workspaceLocationId: input.workspaceLocationId,
+      workspaceMode: input.workspaceMode,
       runtimeInstallation: input.runtimeInstallation,
       runtimeConfigJson: input.runtimeConfigJson,
       runtimePolicyJson: input.runtimePolicyJson,
@@ -908,11 +933,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
                 model_name = $5,
                 execution_host_id = $6,
                 workspace_location_id = $7,
-                runtime_installation = $8,
-                runtime_config_json = $9::jsonb,
-                runtime_policy_json = $10::jsonb,
+                workspace_mode = $8,
+                runtime_installation = $9,
+                runtime_config_json = $10::jsonb,
+                runtime_policy_json = $11::jsonb,
                 enabled = true,
-                is_default = $11,
+                is_default = $12,
                 updated_at = now()
           WHERE space_id = $1 AND agent_id = $2 AND id = $3
           RETURNING id`,
@@ -924,6 +950,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
           normalized.modelName,
           normalized.executionHostId,
           normalized.workspaceLocationId,
+          normalized.workspaceMode,
           normalized.runtimeInstallation,
           JSON.stringify(normalized.runtimeConfigJson),
           JSON.stringify(normalized.runtimePolicyJson),
@@ -1515,16 +1542,45 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       actorUserId: string | null;
       executionHostId: string | null;
       workspaceLocationId: string | null;
+      workspaceMode: "location" | "managed" | null;
       runtimeInstallation: string | null;
       adapterType: string;
     },
   ): Promise<void> {
-    if (!input.executionHostId || !input.workspaceLocationId || !input.runtimeInstallation) {
-      throw new HttpError(422, "Host-bound runtime profiles require execution_host_id, workspace_location_id, and runtime_installation");
+    if (!input.executionHostId || !input.runtimeInstallation || !input.workspaceMode) {
+      throw new HttpError(422, "Host-bound runtime profiles require execution_host_id, workspace_mode, and runtime_installation");
     }
-    if (!input.projectId) throw new HttpError(422, "A host-bound Agent must belong to a Project");
+    if (input.workspaceMode === "location" && !input.workspaceLocationId) {
+      throw new HttpError(422, "Location-mode runtime profiles require workspace_location_id");
+    }
+    if (input.workspaceMode === "managed" && input.workspaceLocationId) {
+      throw new HttpError(422, "Managed-mode runtime profiles cannot select a Workspace Location");
+    }
+    if (input.workspaceMode === "location" && !input.projectId) {
+      throw new HttpError(422, "A Location-mode host-bound Agent must belong to a Project");
+    }
     if (!input.actorUserId) throw new HttpError(403, "Host-bound execution requires an owning user");
-    const target = await db.query<{
+    const target = input.workspaceMode === "managed"
+      ? await db.query<{
+          host_owner_user_id: string | null;
+          host_kind: string;
+          host_status: string;
+          capabilities_json: unknown;
+          location_host_id: string | null;
+          location_space_id: string | null;
+          location_status: string | null;
+          folder_space_id: string | null;
+          folder_project_id: string | null;
+        }>(
+          `SELECT owner_user_id AS host_owner_user_id, kind AS host_kind,
+                  status AS host_status, capabilities_json,
+                  NULL::varchar AS location_host_id, NULL::varchar AS location_space_id,
+                  NULL::varchar AS location_status, NULL::varchar AS folder_space_id,
+                  NULL::varchar AS folder_project_id
+             FROM hosts WHERE id = $1 LIMIT 1`,
+          [input.executionHostId],
+        )
+      : await db.query<{
       host_owner_user_id: string | null;
       host_kind: string;
       host_status: string;
@@ -1549,21 +1605,22 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     const row = target.rows[0];
     if (!row) throw new HttpError(404, "Host or Workspace Location not found");
-    if (row.location_space_id !== input.spaceId
-      || row.folder_space_id !== input.spaceId) {
-      throw new HttpError(404, "Host or Workspace Location not found");
-    }
     if (row.host_owner_user_id !== input.actorUserId) {
       throw new HttpError(403, "The execution host must belong to the caller");
     }
     if (row.host_kind !== "remote" || row.host_status === "revoked") {
       throw new HttpError(422, "Host-bound Agents require a paired remote execution host");
     }
-    if (row.location_host_id !== input.executionHostId || row.location_status !== "active") {
-      throw new HttpError(422, "Workspace Location is not active on the selected host");
-    }
-    if (row.folder_project_id !== input.projectId) {
-      throw new HttpError(422, "Workspace Location must belong to the Agent's Project");
+    if (input.workspaceMode === "location") {
+      if (row.location_space_id !== input.spaceId || row.folder_space_id !== input.spaceId) {
+        throw new HttpError(404, "Host or Workspace Location not found");
+      }
+      if (row.location_host_id !== input.executionHostId || row.location_status !== "active") {
+        throw new HttpError(422, "Workspace Location is not active on the selected host");
+      }
+      if (row.folder_project_id !== input.projectId) {
+        throw new HttpError(422, "Workspace Location must belong to the Agent's Project");
+      }
     }
     const spec = getLocalCliRuntimeAdapterSpec(input.adapterType);
     if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
@@ -1677,6 +1734,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputSchemaJson: Record<string, unknown>;
       executionHostId: string | null;
       workspaceLocationId: string | null;
+      workspaceMode: "location" | "managed" | null;
       runtimeInstallation: string | null;
     },
   ): Promise<AgentOut> {
@@ -1736,6 +1794,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimePolicyJson: input.runtimePolicyJson,
       executionHostId: input.executionHostId,
       workspaceLocationId: input.workspaceLocationId,
+      workspaceMode: input.workspaceMode,
       runtimeInstallation: input.runtimeInstallation,
       enabled: true,
       isDefault: true,
@@ -1796,6 +1855,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName: string | null;
       executionHostId: string | null;
       workspaceLocationId: string | null;
+      workspaceMode: "location" | "managed" | null;
       runtimeInstallation: string | null;
       runtimeConfigJson: Record<string, unknown>;
       runtimePolicyJson: Record<string, unknown>;
@@ -1815,12 +1875,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     await db.query(
       `INSERT INTO agent_runtime_profiles (
          id, space_id, agent_id, name, adapter_type, model_provider_id,
-         model_name, execution_host_id, workspace_location_id, runtime_installation,
+         model_name, execution_host_id, workspace_location_id, workspace_mode, runtime_installation,
          runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
-         $7, $8, $9, $10,
-         $11::jsonb, $12::jsonb, $13, $14, $15, $15
+         $7, $8, $9, $10, $11,
+         $12::jsonb, $13::jsonb, $14, $15, $16, $16
        )`,
       [
         id,
@@ -1832,6 +1892,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.modelName,
         input.executionHostId,
         input.workspaceLocationId,
+        input.workspaceMode,
         input.runtimeInstallation,
         JSON.stringify(runtimeConfigJson),
         JSON.stringify(input.runtimePolicyJson),
@@ -1855,6 +1916,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName?: string | null;
       executionHostId?: string | null;
       workspaceLocationId?: string | null;
+      workspaceMode?: "location" | "managed" | null;
       runtimeInstallation?: string | null;
       runtimeConfigJson?: Record<string, unknown> | null;
       runtimePolicyJson?: Record<string, unknown> | null;
@@ -1871,6 +1933,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     modelName: string | null;
     executionHostId: string | null;
     workspaceLocationId: string | null;
+    workspaceMode: "location" | "managed" | null;
     runtimeInstallation: string | null;
     runtimeConfigJson: Record<string, unknown>;
     runtimePolicyJson: Record<string, unknown>;
@@ -1884,8 +1947,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const modelName = input.modelName ?? null;
     const hostBound = input.executionHostId != null
       || input.workspaceLocationId != null
+      || input.workspaceMode != null
       || input.runtimeInstallation != null;
     if (hostBound) {
+      // A caller that names a Location has named the mode: 'location' was the
+      // only shape before managed workspaces existed, so it stays the default
+      // for that input. 'managed' must always be explicit.
+      if (input.workspaceMode == null && input.workspaceLocationId != null) input.workspaceMode = "location";
+      if (input.workspaceMode !== "location" && input.workspaceMode !== "managed") {
+        throw new HttpError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
+      }
       if (modelProviderId !== null || modelName !== null) {
         throw new HttpError(422, "Host-bound runtime profiles cannot use a server ModelProvider or model selection");
       }
@@ -1901,6 +1972,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         actorUserId: input.actorUserId ?? agentRow.owner_user_id,
         executionHostId: input.executionHostId ?? null,
         workspaceLocationId: input.workspaceLocationId ?? null,
+        workspaceMode: input.workspaceMode ?? null,
         runtimeInstallation: input.runtimeInstallation ?? null,
         adapterType,
       });
@@ -1921,6 +1993,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName,
       executionHostId: input.executionHostId ?? null,
       workspaceLocationId: input.workspaceLocationId ?? null,
+      workspaceMode: input.workspaceMode ?? null,
       runtimeInstallation: input.runtimeInstallation ?? null,
       runtimeConfigJson,
       runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
@@ -2104,6 +2177,7 @@ function runtimeProfileOut(row: AgentRuntimeProfileRecord): AgentRuntimeProfileO
     adapter_type: row.adapter_type,
     execution_host_id: row.execution_host_id,
     workspace_location_id: row.workspace_location_id,
+    workspace_mode: row.workspace_mode,
     runtime_installation: row.runtime_installation,
     model: hasModel
       ? {

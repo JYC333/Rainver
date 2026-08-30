@@ -81,6 +81,7 @@ export const ChatTurnRequestSchema = z
     message: z.string().trim().min(1).max(8000),
     session_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
+    restore_workspace: z.boolean().default(false),
     backend: z.object({
       runtime_profile_id: IdSchema,
       credential_profile_id: IdSchema.nullish(),
@@ -106,6 +107,8 @@ export const ConversationBackendOptionSchema = z.object({
   usable: z.boolean().optional(),
   reason: z.string().nullish().optional(),
   host_bound: z.boolean().optional(),
+  host_id: IdSchema.nullish().optional(),
+  workspace_mode: z.enum(["location", "managed"]).nullish().optional(),
   host_name: z.string().nullish().optional(),
   host_online: z.boolean().nullish().optional(),
   host_owner_is_me: z.boolean().nullish().optional(),

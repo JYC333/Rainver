@@ -16,7 +16,7 @@ vi.mock('../../../api/client', () => ({
   agentTemplatesApi: {},
   agentsApi: { create: mockedApi.createAgent },
   projectsApi: { list: mockedApi.listProjects, hostExecutionTargets: mockedApi.hostExecutionTargets },
-  hostsApi: { listRuntimeAdapters: mockedApi.listRuntimeAdapters },
+  hostsApi: { executionTargets: mockedApi.hostExecutionTargets, listRuntimeAdapters: mockedApi.listRuntimeAdapters },
   providersApi: { list: mockedApi.providerList },
   runtimeToolsApi: { spacePolicies: mockedApi.spacePolicies },
 }))

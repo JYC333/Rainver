@@ -79,7 +79,9 @@ export async function advanceThreadQueue(
   if (!thread) return { advanced: false, reason: "thread_not_found" };
 
   const locations = new PgWorkspaceLocationRepository(pool);
-  const initialTarget = await locations.resolveDispatchTarget(thread.workspace_location_id);
+  const initialLocationId = thread.workspace_location_id;
+  if (!initialLocationId) return { advanced: false, reason: "host_offline" };
+  const initialTarget = await locations.resolveDispatchTarget(initialLocationId);
   if (!initialTarget || !initialTarget.host_online || !initialTarget.execution_ready) return { advanced: false, reason: "host_offline" };
   const agent = await ensureRemoteDispatchAgent(pool, initialTarget.space_id);
 
@@ -116,7 +118,9 @@ export async function advanceThreadQueue(
     // here so a location becoming unready, a host going offline, or a
     // topology change between enqueue and queue advancement cannot result in
     // a Run being admitted against stale execution state.
-    const target = await new PgWorkspaceLocationRepository(client).resolveDispatchTarget(freshThread.workspace_location_id);
+    const freshLocationId = freshThread.workspace_location_id;
+    if (!freshLocationId) return { advanced: false, reason: "host_offline" };
+    const target = await new PgWorkspaceLocationRepository(client).resolveDispatchTarget(freshLocationId);
     if (!target || !target.host_online || !target.execution_ready) return { advanced: false, reason: "host_offline" };
 
     // Capability state is a heartbeat fact just like readiness. Recheck it at
