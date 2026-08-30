@@ -339,6 +339,34 @@ describe('Rooms page', () => {
     expect(screen.getByRole('button', { name: /Claim ownership if suspended/ })).toBeInTheDocument()
   })
 
+  it('removes a specialist through the shared confirm dialog, not the browser prompt', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({
+      ...detail,
+      agent_members: [
+        ...detail.agent_members,
+        { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
+      ],
+    })
+    const browserConfirm = vi.spyOn(window, 'confirm')
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('Room roster')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Configure Critical Reviewer' })).toHaveAttribute('href', expect.stringContaining('/agents/agent-2'))
+    expect(screen.getByRole('link', { name: /Create a new Agent/ })).toHaveAttribute('href', expect.stringContaining('/agents/new'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer' }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Remove Critical Reviewer from this Room?')
+    expect(roomsApi.removeAgent).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(roomsApi.removeAgent).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
+    expect(browserConfirm).not.toHaveBeenCalled()
+  })
+
   it('shows a project-bound Room with persistent conversations and human/agent rosters', async () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 

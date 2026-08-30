@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { personLabel } from './audience'
-import { Loader2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
+import { Loader2, Plus, Settings2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, roomsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
@@ -15,6 +15,8 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Select } from '../../components/ui/select'
+import { ConfirmDialog } from '../../components/ui/dialog'
+import { SpaceLink as Link } from '../../core/spaceNav'
 
 export function RoomRosterPanel({
   detail,
@@ -44,6 +46,32 @@ export function RoomRosterPanel({
   const [invitee, setInvitee] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
+  /** One in-app confirmation at a time, replacing the browser's `window.confirm`. */
+  const [confirmation, setConfirmation] = useState<{
+    title: string
+    description?: string
+    confirmLabel: string
+    variant: 'destructive' | 'default'
+    onConfirm: () => void
+  } | null>(null)
+  function ask(question: Omit<NonNullable<typeof confirmation>, 'onConfirm'>): Promise<boolean> {
+    return new Promise(resolve => {
+      let answered = false
+      setConfirmation({
+        ...question,
+        onConfirm: () => { answered = true; resolve(true) },
+      })
+      // Cancel or dismiss closes the dialog without calling onConfirm.
+      pendingCancel.current = () => { if (!answered) resolve(false) }
+    })
+  }
+  const pendingCancel = useRef<(() => void) | null>(null)
+  function closeConfirmation(open: boolean) {
+    if (open) return
+    setConfirmation(null)
+    pendingCancel.current?.()
+    pendingCancel.current = null
+  }
   const owner = detail.user_members.find(member => member.role === 'owner' && member.status === 'active')
   const isOwner = owner?.user_id === userId
   const activeUserIds = useMemo(
@@ -101,9 +129,12 @@ export function RoomRosterPanel({
   }
 
   async function addExisting(candidate: RoomAgentCandidate) {
-    if (candidate.private && !window.confirm(
-      `${candidate.name} is private. Share it with current Room members only?`,
-    )) return
+    if (candidate.private && !await ask({
+      title: `Share ${candidate.name} with this Room?`,
+      description: 'The Agent is private. Current Room members, and only they, get access to it here.',
+      confirmLabel: 'Share and add',
+      variant: 'default',
+    })) return
     await mutate(() => roomsApi.addAgent(detail.room.id, {
       agent_id: candidate.agent_id,
       share_private_with_member_ids: candidate.private ? privateShareIds() : [],
@@ -121,7 +152,12 @@ export function RoomRosterPanel({
       ), { notify: false, rethrow: true })
     } catch (error) {
       if (error instanceof ApiRequestError && error.code === 'private_agent_share_confirmation_required') {
-        if (!window.confirm('This preset creates a private Agent shared with current Room members only. Continue?')) return
+        if (!await ask({
+          title: 'Create a private specialist?',
+          description: 'This preset creates a private Agent shared with current Room members only.',
+          confirmLabel: 'Create and add',
+          variant: 'default',
+        })) return
         await mutate(() => roomsApi.addAgentPreset(
           detail.room.id,
           { preset_id: presetId, confirm_room_share: true },
@@ -134,7 +170,12 @@ export function RoomRosterPanel({
   }
 
   async function removeAgent(agentId: string, name: string) {
-    if (!window.confirm(`Remove ${name} from this Room? Historical output stays available.`)) return
+    if (!await ask({
+      title: `Remove ${name} from this Room?`,
+      description: 'The Agent itself is kept, and its historical output stays available.',
+      confirmLabel: 'Remove',
+      variant: 'destructive',
+    })) return
     await mutate(() => roomsApi.removeAgent(detail.room.id, agentId))
   }
 
@@ -150,7 +191,12 @@ export function RoomRosterPanel({
       await Promise.all([refresh(), onChanged()])
     } catch (error) {
       if (error instanceof ApiRequestError && error.code === 'private_agent_share_confirmation_required') {
-        const accepted = window.confirm('This invitation will share your private specialists inside this Room only. Continue?')
+        const accepted = await ask({
+          title: 'Share your private specialists?',
+          description: 'This invitation shares your private specialists inside this Room only.',
+          confirmLabel: 'Share and invite',
+          variant: 'default',
+        })
         if (accepted) {
           await mutate(() => roomsApi.inviteUser(detail.room.id, {
             user_id: invitee,
@@ -171,17 +217,32 @@ export function RoomRosterPanel({
   }
 
   async function removeMember(memberId: string) {
-    if (!window.confirm('Remove this person from the Room?')) return
+    if (!await ask({
+      title: 'Remove this person from the Room?',
+      confirmLabel: 'Remove',
+      variant: 'destructive',
+    })) return
     await mutate(() => roomsApi.removeUser(detail.room.id, memberId))
   }
 
   async function transferOwner(targetUserId: string) {
-    if (!targetUserId || !window.confirm('Transfer Room ownership?')) return
+    if (!targetUserId) return
+    if (!await ask({
+      title: 'Transfer Room ownership?',
+      description: 'You keep your membership; the new owner takes over roster and ownership controls.',
+      confirmLabel: 'Transfer',
+      variant: 'destructive',
+    })) return
     await mutate(() => roomsApi.transferOwner(detail.room.id, { user_id: targetUserId }))
   }
 
   async function claimOwner() {
-    if (!window.confirm('Claim Room ownership because the current owner is suspended?')) return
+    if (!await ask({
+      title: 'Claim Room ownership?',
+      description: 'Only possible because the current owner is suspended.',
+      confirmLabel: 'Claim',
+      variant: 'destructive',
+    })) return
     await mutate(() => roomsApi.claimOwner(detail.room.id))
   }
 
@@ -207,18 +268,29 @@ export function RoomRosterPanel({
         {specialists.map(member => (
           <div key={member.agent_id} className="flex items-center justify-between gap-2 rounded border p-2 text-sm">
             <span className="truncate">{member.agent_name}</span>
-            {canAdminister && (
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void removeAgent(member.agent_id, member.agent_name)}>
-                <UserRoundX className="size-3.5" />
+            <span className="flex items-center gap-0.5 shrink-0">
+              {/* Instructions, model and tools are the Agent's own settings; the roster only decides who is in the Room. */}
+              <Button asChild variant="ghost" size="sm" aria-label={`Configure ${member.agent_name}`}>
+                <Link to={`/agents/${member.agent_id}`}><Settings2 className="size-3.5" /></Link>
               </Button>
-            )}
+              {canAdminister && (
+                <Button variant="ghost" size="sm" disabled={busy} aria-label={`Remove ${member.agent_name}`} onClick={() => void removeAgent(member.agent_id, member.agent_name)}>
+                  <UserRoundX className="size-3.5" />
+                </Button>
+              )}
+            </span>
           </div>
         ))}
       </div>
 
-      {canAdminister && (availableAgents.length > 0 || presets.length > 0) && (
+      {canAdminister && (
         <div className="space-y-2 border-t border-border pt-3">
           <div className="flex items-center gap-2 text-xs font-medium"><UserPlus className="size-3.5" />Add a specialist</div>
+          {availableAgents.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Every existing Agent in this Space is already here. Presets below create a new one with fixed instructions; to shape your own, create an Agent first.
+            </p>
+          )}
           {availableAgents.map(candidate => (
             <Button key={candidate.agent_id} variant="outline" size="sm" className="w-full justify-between" disabled={busy} onClick={() => void addExisting(candidate)}>
               <span>{candidate.name}</span>
@@ -226,10 +298,13 @@ export function RoomRosterPanel({
             </Button>
           ))}
           {presets.map(preset => (
-            <Button key={preset.preset_id} variant="ghost" size="sm" className="w-full justify-start" disabled={busy} onClick={() => void addPreset(preset.preset_id)}>
+            <Button key={preset.preset_id} variant="ghost" size="sm" className="w-full justify-start" disabled={busy} title={preset.description} onClick={() => void addPreset(preset.preset_id)}>
               {preset.name} <span className="ml-1 text-xs text-muted-foreground">preset</span>
             </Button>
           ))}
+          <Button asChild variant="outline" size="sm" className="w-full justify-start">
+            <Link to="/agents/new"><Plus className="size-3.5 mr-1" />Create a new Agent…</Link>
+          </Button>
         </div>
       )}
 
@@ -298,6 +373,15 @@ export function RoomRosterPanel({
           <UserRoundMinus className="size-3.5 mr-1" />Remove {personLabel(spaceMembers.find(user => user.user_id === member.user_id) ?? { user_id: member.user_id })}
         </Button>
       ))}
+      <ConfirmDialog
+        open={Boolean(confirmation)}
+        onOpenChange={closeConfirmation}
+        title={confirmation?.title ?? ''}
+        description={confirmation?.description}
+        confirmLabel={confirmation?.confirmLabel}
+        variant={confirmation?.variant}
+        onConfirm={() => confirmation?.onConfirm()}
+      />
     </Card>
   )
 }
