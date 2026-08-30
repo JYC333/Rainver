@@ -5,6 +5,7 @@ import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReord
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Fixed workspace roots remain immovable at the server boundary. Project-backed
 // folders are different: they retain protected destructive actions but can be
@@ -233,6 +234,7 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
               ($2,$3,'Shared','active',$4,$5,$5)`,
       [privateProject, sharedProject, SPACE, USER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,'viewer','active',$5,$5)`,
@@ -279,6 +281,7 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
        VALUES ($1,$2,'Project','active',$3,$4,$4)`,
       [projectId, SPACE, USER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const projectRoot = (await repository.ensureProjectNotesCollection(
       { spaceId: SPACE, userId: USER }, projectId,
     ) as { id: string }).id;

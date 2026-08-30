@@ -11,6 +11,7 @@ import { PgHostRuntimeProviderBindingRepository } from "../src/modules/hosts/run
 import { PgHostTaskThreadRepository } from "../src/modules/hosts/taskThreadRepository.js";
 import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository.js";
 import type { DispatchOptions } from "../src/modules/hosts/dispatchOptions.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for what a dispatch can choose from on a host: the
 // backend list and its usability are decided here, not reconstructed in the
@@ -107,6 +108,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'repo','code','active',false,false,$4,$4)`,
     [FOLDER, SPACE, PROJECT, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   locationId = randomUUID();
   await db.pool.query(
     `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,

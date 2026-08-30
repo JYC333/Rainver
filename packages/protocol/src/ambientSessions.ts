@@ -278,3 +278,37 @@ export const ExtractionOutcomeSchema = z.object({
   records_remaining: z.number().int().nonnegative(),
 }).strict();
 export type ExtractionOutcome = z.infer<typeof ExtractionOutcomeSchema>;
+
+/**
+ * Files touched and commands run, computed from a session's records.
+ *
+ * Deterministic on purpose: it needs no model, it is right the moment an
+ * import lands, and it can invent nothing. Two callers need exactly this — the
+ * session page's header and the summarizer's input, which is why it lives with
+ * the contract rather than being written out twice.
+ *
+ * Structurally typed on the fields it reads, so both the server's row shape
+ * and the wire record satisfy it without either importing the other's.
+ */
+export function deriveAmbientActivity(records: readonly {
+  kind: string;
+  tool_name?: string | null;
+  tool_status?: string | null;
+  tool_input?: string | null;
+}[]): {
+  files: string[];
+  commands: Array<{ tool: string; status: string | null }>;
+} {
+  const files = new Set<string>();
+  const commands: Array<{ tool: string; status: string | null }> = [];
+  for (const record of records) {
+    if (record.kind !== "tool_call") continue;
+    commands.push({ tool: record.tool_name ?? "tool", status: record.tool_status ?? null });
+    if (!record.tool_input) continue;
+    for (const match of record.tool_input.matchAll(/["']((?:\/|\.\/|[\w.-]+\/)[\w./-]+\.[\w]{1,8})["']/g)) {
+      const path = match[1];
+      if (path) files.add(path);
+    }
+  }
+  return { files: [...files], commands };
+}

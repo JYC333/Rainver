@@ -5,6 +5,7 @@ import { resetTables } from "./support/resetTables.js";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
 import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for generic prompt/workflow template evolution:
 // asset/version/pin CRUD, immutability
@@ -43,6 +44,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$2,$3,'Second','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, PROJECT_B],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Screening Agent','active',$4,$4,'space_shared')`,

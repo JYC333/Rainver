@@ -5,6 +5,7 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { resolveNotebookNote } from "../src/modules/projectResearch/notebookNotes.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // NA: the project research baseline used to be bound by title string, so
 // renaming a starter note silently removed it from the baseline and the
@@ -46,6 +47,7 @@ beforeEach(async () => {
       `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,$3,'active',$4,$5,$5)`,
       [id, SPACE, name, USER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
   }
 });
 

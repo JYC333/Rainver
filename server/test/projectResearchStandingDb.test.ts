@@ -14,6 +14,7 @@ import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRe
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // R5's standing service deliberately has no Workflow or Inquiry Thread
 // prerequisite. These tests keep PostgreSQL, Project ACLs, durable Jobs, Run
@@ -55,6 +56,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Standing research','active',$4,$4)`,
     [PROJECT, SPACE, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'viewer','active',$5,$5)`,

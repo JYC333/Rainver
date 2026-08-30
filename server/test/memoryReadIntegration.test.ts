@@ -3,6 +3,7 @@ import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/modules/memory/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-PostgreSQL integration tests for the server memory read model. The
 // route/unit suites use fakes, so they cannot catch the defects that only
@@ -188,6 +189,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ('proj-1', $1, $2, 'proj-1', 'active', now(), now())",
       [SPACE, USER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await insertMemoryEntry(db.pool, SPACE, { id: "m-1", owner_user_id: USER, scope_type: "project", project_id: "proj-1" });
     // Valid project filter returns rows.
     const ok = await repo.list(SPACE, USER, { limit: 50, offset: 0, projectId: "proj-1" });
@@ -207,6 +209,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ('proj-x', $1, 'other', 'proj-x', 'active', now(), now())",
       [SPACE],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await insertMemoryEntry(db.pool, SPACE, { id: "m-proj", owner_user_id: USER, scope_type: "project", project_id: "proj-x", content: "project note" });
     await insertMemoryEntry(db.pool, SPACE, { id: "m-free", owner_user_id: USER, content: "free note" });
 
@@ -237,6 +240,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ('proj-other', 'space-other', $1, 'proj-other', 'active', now(), now())",
       [USER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     // The schema itself refuses a memory that points at a project in another
     // Space (composite project/space FK), so the read gate never sees one.
     await expect(insertMemoryEntry(db.pool, SPACE, {
@@ -258,6 +262,7 @@ describe("PgMemoryReadRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, owner_user_id, name, status, deleted_at, created_at, updated_at) VALUES ('proj-deleted', $1, 'other', 'proj-deleted', 'active', now(), now(), now())",
       [SPACE],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
        VALUES ('pm-deleted', $1, 'proj-deleted', $2, 'member', 'active', now(), now())`,

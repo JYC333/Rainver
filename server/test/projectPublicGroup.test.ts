@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
@@ -14,6 +16,7 @@ import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("projectPublicSummariesDb", () => {
   function oneHot(slot: number): number[] {
@@ -67,6 +70,7 @@ describe("projectPublicSummariesDb", () => {
        VALUES ($1, $2, $3, 'Aster', 'Public description only', 'active', 'Cross-project discovery', now(), now())`,
       [PROJECT, SPACE, OWNER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     for (const [userId, role] of [[WRITER, "member"], [VIEWER, "viewer"]] as const) {
       await db.pool.query(
         `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
@@ -411,5 +415,55 @@ describe("projectPublicSummaryRoutes", () => {
 
       expect(res.statusCode).toBe(401);
     });
+  });
+});
+
+describe("projectReadersRoute", () => {
+  // Real Postgres: the route reads the reader predicate itself, and what it
+  // protects is that the answer *is* the gate — nobody outside the readers
+  // learns the roster, or that there was one.
+  const db = useTestDatabase(`${import.meta.filename}#projectReadersRoute`);
+  const SPACE = "61111111-1111-4111-8111-111111111111";
+  const OWNER = "6aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const MEMBER = "6bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const PROJECT = "65555555-5555-4555-8555-555555555555";
+  let app: FastifyInstance | undefined;
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["project_members", "rooms", "projects", "space_memberships", "users", "spaces"], { cascade: true });
+    // A team-type Space: in a personal one every member reads every Project
+    // by rule, and the gate this pins would have nothing to refuse.
+    await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT, spaceType: "household" });
+    await seedSpaceMember(db.pool, { space: SPACE, user: MEMBER });
+    app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [projectsModule]);
+  });
+  afterEach(async () => {
+    __setAuthIdentityForTests(null);
+    await app?.close();
+    app = undefined;
+  });
+
+  it("lists the owner as a reader, and a member once added", async () => {
+    if (!db.available || !app) return;
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    let response = await app.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/readers` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().readers.map((reader: { user_id: string }) => reader.user_id)).toEqual([OWNER]);
+
+    await new PgProjectRepository(db.pool).addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "member" });
+    response = await app.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/readers` });
+    expect(response.json().readers.map((reader: { user_id: string }) => reader.user_id).sort()).toEqual([OWNER, MEMBER].sort());
+  });
+
+  it("answers a space member who cannot read the Project exactly as it answers a Project that does not exist", async () => {
+    if (!db.available || !app) return;
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
+    const notReader = await app.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/readers` });
+    const missing = await app.inject({ method: "GET", url: `/api/v1/projects/${randomUUID()}/readers` });
+    expect(notReader.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    // No roster and no existence signal: the two bodies are identical.
+    expect(notReader.json()).toEqual(missing.json());
   });
 });

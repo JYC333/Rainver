@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
@@ -17,7 +17,10 @@ vi.mock('../../agent_groups/RoomMessageComposer', () => ({
     <textarea aria-label="Room message" onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })} />
   ),
 }))
-vi.mock('../../../api/client', () => ({
+vi.mock('../../../api/client', async () => {
+  const { ApiRequestError } = await import('../../../test/apiClientMock')
+  return {
+  ApiRequestError,
   projectsApi: { mainlineRoom: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   runsApi: { get: vi.fn(), streamEvents: vi.fn() },
@@ -30,9 +33,9 @@ vi.mock('../../../api/client', () => ({
     conversations: vi.fn(),
     messages: vi.fn(),
     sendMessage: vi.fn(),
-    createConversation: vi.fn(),
   },
-}))
+  }
+})
 
 const PROJECT = 'project-1'
 const TASK = '11111111-1111-4111-8111-111111111111'
@@ -84,8 +87,11 @@ beforeEach(() => {
   vi.mocked(roomsApi.get).mockResolvedValue({
     room: { id: 'room-1', project_id: PROJECT, title: 'Project Room' }, user_members: [], agent_members: [],
   } as never)
+  // The real endpoint always returns `conversation`; omitting it here hid a
+  // render loop, because the panel's handler for it re-triggered the read.
   vi.mocked(roomsApi.messages).mockResolvedValue({
     items: [], task_group_ids: [], limit: 50, offset: 0,
+    conversation: { id: 'conv-2', room_id: 'room-1', title: 'Depth repair' },
   } as never)
 })
 
@@ -118,17 +124,56 @@ describe('Project chat sidecar', () => {
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }))
   })
 
-  it('offers to start the conversation to someone who may, and only to them', async () => {
-    vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({ room: null, joined: false, viewer_can_write: false } as never)
-    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
-    expect(await screen.findByText(/no conversation yet/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Start the Project/ })).not.toBeInTheDocument()
-
-    vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({ room: null, joined: false, viewer_can_write: true } as never)
-    vi.mocked(roomsApi.create).mockResolvedValue({} as never)
+  it('opens the composer on a Project nobody has spoken in, creating nothing', async () => {
+    // The Room is never what is missing — a Project is created with its
+    // mainline (ADR 0018 decision 4) — and a conversation is not created
+    // ahead of the message that fills it (decision 5). So a writer arriving
+    // at a silent Project gets a composer, and no request is made at all.
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/tasks/${TASK}`)
-    fireEvent.click(await screen.findByRole('button', { name: /Start the Project/ }))
-    await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith({ project_id: PROJECT, title: 'Project conversation' }))
+    expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+    expect(roomsApi.create).not.toHaveBeenCalled()
+    // Nothing to load, so nothing was asked for.
+    expect(roomsApi.messages).not.toHaveBeenCalled()
+  })
+
+  it('gives a Project reader the composer, because asking the Agent is what the panel is for', async () => {
+    // Speaking is Room membership, and opening the Project enrols any reader
+    // in the mainline. Gating the composer on Project *write* authority made
+    // the panel useless to exactly the person `modules/rooms.md` says it
+    // exists for.
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
+      room: { id: 'room-1', title: 'Project Room', is_mainline: true }, joined: true, viewer_can_write: false,
+    } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+  })
+
+  it('shows a failed mainline read as an error, not as an empty Project', async () => {
+    // The mainline read can now fail outright — a Project without one is a
+    // broken invariant the server reports as 500 — and the empty state's
+    // button is disabled for a viewer, so rendering the failure that way
+    // would show a dead end instead of what went wrong.
+    vi.mocked(projectsApi.mainlineRoom).mockRejectedValue(new Error('Project has no mainline Room'))
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    expect(await screen.findByText('Project has no mainline Room')).toBeInTheDocument()
+  })
+
+  it('reads the transcript a bounded number of times', async () => {
+    // The panel binds to whatever conversation the reader reports, and the
+    // reader reports on every load. Holding that callback in a dependency
+    // list made each report re-run the read: the panel spun from first paint,
+    // clearing and refetching the message list on every iteration.
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+    // Each read resolves a promise, so draining the microtask queue a few
+    // times is enough for a self-feeding one to run away — no real waiting,
+    // and no dependence on the 5s poll.
+    for (let turn = 0; turn < 20; turn += 1) {
+      await act(async () => { await Promise.resolve() })
+    }
+    expect(vi.mocked(roomsApi.messages).mock.calls.length).toBeLessThan(4)
   })
 
   it('sends the focus alongside the message', async () => {
@@ -219,16 +264,24 @@ describe('Project chat sidecar', () => {
       .toHaveBeenCalledWith('room-1', 'conv-2', { proposal_id: 'proposal-1', backends: [] }))
   })
 
-  it('starts a separate thread and switches to it', async () => {
-    vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'conv-3', title: null } as never)
+  it('starts a separate thread by clearing the composer, not by creating one', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-1', session_id: 'conv-3', role: 'user', content: 'A new topic', metadata_json: {} },
+      conversation: { id: 'conv-3', title: null },
+      task_group_ids: [], run_ids: [],
+    } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
 
     fireEvent.click(screen.getByRole('button', { name: 'Start a separate thread' }))
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-3', { limit: 50, offset: 0 }))
-    // Remembered, so returning to the Project lands where the person left off.
-    // Remembered per Room: the id names a conversation *in* a Room.
-    expect(localStorage.getItem('project.sidecar.room.room-1.conversation')).toBe('conv-3')
+
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'A new topic' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    // Addressed to the Room, with no conversation id.
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.anything(), expect.any(String)))
+    // The conversation the send created is what the panel binds to, and what
+    // it remembers per Room.
+    await waitFor(() => expect(localStorage.getItem('project.sidecar.room.room-1.conversation')).toBe('conv-3'))
   })
 
   it('stays a button on a narrow viewport, where open would mean covering the page', async () => {
@@ -257,5 +310,24 @@ describe('Project chat sidecar', () => {
     expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open Project chat' })).not.toBeInTheDocument()
     expect(roomsApi.list).not.toHaveBeenCalled()
+  })
+
+  it('offers to attach a picked message to another thread, but not to start one', async () => {
+    // The panel can reach the Room's other threads, so a pick has somewhere
+    // to go; starting a thread is not one of this surface's affordances, so
+    // that action is not offered rather than offered and dead.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-1', space_id: 'space-1', session_id: 'conv-1', role: 'user',
+        user_id: 'user-1', content: 'Pick me', metadata_json: {},
+        created_at: '2026-08-29T09:00:00.000Z',
+      }],
+      total: 1, limit: 50, offset: 0,
+    } as never)
+    renderAt('/spaces/space-1/projects/project-1/board')
+
+    fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
+    expect(await screen.findByLabelText('Attach to a thread')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Use in a new thread/ })).not.toBeInTheDocument()
   })
 })

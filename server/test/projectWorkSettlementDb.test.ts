@@ -4,6 +4,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { projectTaskStatusFromRun } from "../src/modules/tasks/taskRunStatusProjection.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Real-Postgres coverage for Run settlement.
@@ -118,6 +119,7 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, 'Settlement Project', 'active', now(), now())`,
     [PROJECT, SPACE, USER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool!);
   await db.pool!.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Worker', 'active', 'standard', 'private', now(), now())`,

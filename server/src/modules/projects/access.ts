@@ -3,6 +3,8 @@ import {
   type Queryable,
 } from "../routeUtils/common.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import type { ProjectReader } from "@rainver/protocol";
 
 export async function assertProjectInSpace(
   db: Queryable,
@@ -355,4 +357,63 @@ export async function assertProjectOwnerLevel(
   if (!(await isProjectOwnerLevel(db, spaceId, projectId, userId))) {
     throw new HttpError(403, "Requires project owner or space owner/admin role to publish project context");
   }
+}
+
+/**
+ * Everyone in the Space who can read this Project.
+ *
+ * Whatever `projectReadAccessSql` admits — the Project's members and its
+ * owner, and in a personal-type Space everyone in it. Resolved through that
+ * predicate so this is the read gate itself rather than a second description
+ * of it that can drift from it. Two callers
+ * must not drift apart: the disclosure calculus, which compares a reference's
+ * source audience against the mainline's, and the roster picker, which must
+ * only offer people the server will accept into a Room.
+ *
+ * `u.status` as well as the membership's. A disabled account with a live
+ * membership would otherwise sit in the mainline's audience but not in a
+ * source's, and the difference reads as somebody gaining access — a disclosure
+ * refusal on a continuation that discloses nothing.
+ */
+export async function projectReaders(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+): Promise<ProjectReader[]> {
+  return readerRows<ProjectReader>(db, spaceId, projectId, {
+    columns: "u.id AS user_id, u.display_name, u.email, u.avatar_url",
+    orderBy: "u.display_name ASC, u.id ASC",
+  });
+}
+
+/** The same set, as ids — what the disclosure calculus compares on every attach. */
+export async function projectReaderIds(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+): Promise<string[]> {
+  const rows = await readerRows<{ user_id: string }>(db, spaceId, projectId, { columns: "u.id AS user_id" });
+  return rows.map((row) => row.user_id);
+}
+
+/**
+ * One predicate, projected two ways. The predicate is the part that must not
+ * drift; the columns and the sort are each caller's own business.
+ */
+async function readerRows<T extends object>(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  select: { columns: string; orderBy?: string },
+): Promise<T[]> {
+  const result = await db.query<T>(
+    `SELECT ${select.columns}
+       FROM users u
+       JOIN space_memberships sm
+         ON sm.user_id = u.id AND sm.space_id = $1 AND sm.status = 'active'
+      WHERE u.status = 'active' AND ${projectReadAccessSql("$1", "$2", "u.id")}
+      ${select.orderBy ? `ORDER BY ${select.orderBy}` : ""}`,
+    [spaceId, projectId],
+  );
+  return result.rows;
 }

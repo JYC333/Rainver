@@ -15,6 +15,7 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { researchModule } from "../src/modules/research/index.js";
 import { projectResearchModule } from "../src/modules/projectResearch/index.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the research cancel: stopping a running
 // research Operation. The reform removes the blocking checkpoints that were
@@ -73,6 +74,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 async function seedOperation(status = "active"): Promise<void> {

@@ -1,5 +1,5 @@
 {
-  "id": "542d757c-b5cf-45af-a668-98fcf715e831",
+  "id": "4a32dc25-2fc2-40e9-8475-fdd3f6854962",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -20742,6 +20742,158 @@
           "value": "(load_state)::text = ANY (ARRAY[('complete'::character varying)::text, ('partial'::character varying)::text])"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.imported_history_summaries": {
+      "name": "imported_history_summaries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "imported_session_id": {
+          "name": "imported_session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary_text": {
+          "name": "summary_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "covered_through_record_at": {
+          "name": "covered_through_record_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "covered_record_count": {
+          "name": "covered_record_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_truncated": {
+          "name": "source_truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "source_token_estimate": {
+          "name": "source_token_estimate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary_token_estimate": {
+          "name": "summary_token_estimate",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage_json": {
+          "name": "usage_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "imported_history_summaries_space_fkey": {
+          "name": "imported_history_summaries_space_fkey",
+          "tableFrom": "imported_history_summaries",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "imported_history_summaries_session_fkey": {
+          "name": "imported_history_summaries_session_fkey",
+          "tableFrom": "imported_history_summaries",
+          "tableTo": "imported_sessions",
+          "columnsFrom": [
+            "imported_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "imported_history_summaries_owner_fkey": {
+          "name": "imported_history_summaries_owner_fkey",
+          "tableFrom": "imported_history_summaries",
+          "tableTo": "users",
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_imported_history_summaries_session": {
+          "name": "uq_imported_history_summaries_session",
+          "nullsNotDistinct": false,
+          "columns": [
+            "imported_session_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.inquiry_hypothesis_states": {
@@ -49495,6 +49647,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "personal_for_user_id": {
+          "name": "personal_for_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -49543,6 +49701,34 @@
           ],
           "isUnique": true,
           "where": "is_mainline AND status = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_rooms_personal_per_project": {
+          "name": "uq_rooms_personal_per_project",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "personal_for_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "personal_for_user_id IS NOT NULL AND status = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -49625,6 +49811,19 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "rooms_personal_for_user_id_fkey": {
+          "name": "rooms_personal_for_user_id_fkey",
+          "tableFrom": "rooms",
+          "tableTo": "users",
+          "columnsFrom": [
+            "personal_for_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -49652,6 +49851,10 @@
         "ck_rooms_status": {
           "name": "ck_rooms_status",
           "value": "status IN ('active', 'archived')"
+        },
+        "ck_rooms_personal_not_mainline": {
+          "name": "ck_rooms_personal_not_mainline",
+          "value": "personal_for_user_id IS NULL OR NOT is_mainline"
         }
       },
       "isRLSEnabled": false
@@ -50214,12 +50417,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "conversation_id": {
-          "name": "conversation_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -50297,13 +50494,138 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_room_creation_idempotency_scope": {
+          "name": "uq_room_creation_idempotency_scope",
+          "nullsNotDistinct": false,
+          "columns": [
+            "space_id",
+            "user_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.room_first_message_idempotencies": {
+      "name": "room_first_message_idempotencies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
         },
-        "room_creation_idempotencies_conversation_fkey": {
-          "name": "room_creation_idempotencies_conversation_fkey",
-          "tableFrom": "room_creation_idempotencies",
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_first_message_idempotencies_space_fkey": {
+          "name": "room_first_message_idempotencies_space_fkey",
+          "tableFrom": "room_first_message_idempotencies",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_first_message_idempotencies_user_fkey": {
+          "name": "room_first_message_idempotencies_user_fkey",
+          "tableFrom": "room_first_message_idempotencies",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_first_message_idempotencies_room_fkey": {
+          "name": "room_first_message_idempotencies_room_fkey",
+          "tableFrom": "room_first_message_idempotencies",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_first_message_idempotencies_session_fkey": {
+          "name": "room_first_message_idempotencies_session_fkey",
+          "tableFrom": "room_first_message_idempotencies",
           "tableTo": "sessions",
           "columnsFrom": [
-            "conversation_id",
+            "session_id",
             "space_id"
           ],
           "columnsTo": [
@@ -50316,8 +50638,8 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uq_room_creation_idempotency_scope": {
-          "name": "uq_room_creation_idempotency_scope",
+        "uq_room_first_message_idempotency_scope": {
+          "name": "uq_room_first_message_idempotency_scope",
           "nullsNotDistinct": false,
           "columns": [
             "space_id",
@@ -56445,6 +56767,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_messages_external_reference": {
+          "name": "ix_messages_external_reference",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "metadata_json->'reference'->>'trust' = 'external_untrusted'",
           "concurrently": false,
           "method": "btree",
           "with": {}

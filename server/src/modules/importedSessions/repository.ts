@@ -125,18 +125,34 @@ export class PgImportedSessionRepository {
    * records — so the caller is told when it bit rather than being handed a
    * silently short transcript that looks complete.
    */
-  async records(spaceId: string, sessionId: string, limit = 2_000): Promise<{
+  /**
+   * `end: "tail"` keeps the *last* records rather than the first, still in
+   * ascending order. Which end to drop depends on what the caller is for: the
+   * transcript page reads from the top, but a continuation picks up where the
+   * work stopped, so handing it the beginning of a long session drops exactly
+   * the part being continued.
+   */
+  async records(
+    spaceId: string,
+    sessionId: string,
+    limit = 2_000,
+    end: "head" | "tail" = "head",
+  ): Promise<{
     records: ImportedSessionRecordRow[];
     truncated: boolean;
   }> {
     const result = await this.db.query<ImportedSessionRecordRow>(
       `SELECT ${RECORD_COLUMNS} FROM imported_session_records
        WHERE space_id = $1 AND imported_session_id = $2
-       ORDER BY sequence ASC
+       ORDER BY sequence ${end === "tail" ? "DESC" : "ASC"}
        LIMIT $3`,
       [spaceId, sessionId, limit + 1],
     );
-    return { records: result.rows.slice(0, limit), truncated: result.rows.length > limit };
+    const kept = result.rows.slice(0, limit);
+    return {
+      records: end === "tail" ? kept.reverse() : kept,
+      truncated: result.rows.length > limit,
+    };
   }
 
   /**
@@ -150,6 +166,26 @@ export class PgImportedSessionRepository {
    * import stays authoritative and the disagreement is recorded, because the
    * imported copy may by then be the only one that still exists.
    */
+  /**
+   * Named records of one session, in the session's own order — the caller has
+   * already decided the viewer may read the session; this fetches only what
+   * they named, never a page to filter down.
+   */
+  async recordsByIds(
+    spaceId: string,
+    sessionId: string,
+    ids: readonly string[],
+  ): Promise<Array<Pick<ImportedSessionRecordRow, "id" | "kind" | "text" | "tool_output" | "tool_name">>> {
+    const result = await this.db.query<Pick<ImportedSessionRecordRow, "id" | "kind" | "text" | "tool_output" | "tool_name">>(
+      `SELECT id, kind, text, tool_output, tool_name
+         FROM imported_session_records
+        WHERE space_id = $1 AND imported_session_id = $2 AND id = ANY($3::varchar[])
+        ORDER BY sequence ASC, id ASC`,
+      [spaceId, sessionId, [...ids]],
+    );
+    return result.rows;
+  }
+
   async reconcile(input: {
     spaceId: string;
     projectId: string;

@@ -4,6 +4,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { LearningService } from "../src/modules/learning/service.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the Learning slice:
 // Objective/Item foundations anchored to a stable, versioned Knowledge item,
@@ -43,6 +44,7 @@ beforeEach(async () => {
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 async function seedKnowledgeItem(version = 1): Promise<string> {
@@ -132,10 +134,12 @@ describe("Learning Domain (real Postgres)", () => {
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Readable','active',$4,$4)`,
       [readableProject, teamSpace, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Restricted','active',$4,$4)`,
       [restrictedProject, teamSpace, outsider, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     const teamIdentity: SpaceUserIdentity = { spaceId: teamSpace, userId: OWNER };
     const outsiderIdentity: SpaceUserIdentity = { spaceId: teamSpace, userId: outsider };
@@ -196,6 +200,7 @@ describe("Learning Domain (real Postgres)", () => {
        VALUES ($1,$2,$3,'Other','active',$4,$4)`,
       [otherProject, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const learning = new LearningService(db.pool);
     const objective = await learning.createObjective(identity, { project_id: otherProject, title: "Other objective" });
     const sharedKnowledge = await seedKnowledgeItem();

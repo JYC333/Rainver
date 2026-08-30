@@ -21,6 +21,7 @@ import {
 } from "../src/modules/projectWork/taskActions.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * The Agent's Project write surface.
@@ -123,6 +124,7 @@ beforeEach(async () => {
        VALUES ($1, $2, $3, $4, 'active', 'delivery', now(), now())`,
       [id, SPACE, OWNER, name],
     );
+    await seedMainlineRoomsForAllProjects(db.pool!);
   }
   await db.pool!.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)

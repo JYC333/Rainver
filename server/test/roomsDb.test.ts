@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { RoomService } from "../src/modules/rooms/service.js";
+import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
 import { registerProposalDecisionExecutor } from "../src/modules/proposals/proposalDecisionExecutor.js";
 import { registerProposalsProjectIntegration } from "../src/modules/proposals/projectIntegration.js";
 import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
@@ -14,6 +15,9 @@ import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
+import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
@@ -234,6 +238,23 @@ beforeEach(async () => {
      ) VALUES ('project-1', 'space-1', 'user-1', 'Room Project', 'active', $1, $1)`,
     [now],
   );
+  // Every Project is created with its mainline Room (ADR 0018 decision 4),
+  // empty and with no manager Agent until someone speaks in it.
+  await db.pool.query(
+    `INSERT INTO rooms (
+       id, space_id, project_id, created_by_user_id, title, status,
+       created_at, updated_at, is_mainline
+     ) VALUES ('room-mainline', 'space-1', 'project-1', 'user-1', 'Room Project',
+       'active', $1, $1, true)`,
+    [now],
+  );
+  await db.pool.query(
+    `INSERT INTO room_user_members (
+       id, space_id, room_id, user_id, role, status, created_at, updated_at
+     ) VALUES ('room-mainline-owner', 'space-1', 'room-mainline', 'user-1',
+       'owner', 'active', $1, $1)`,
+    [now],
+  );
   await db.pool.query(
     `INSERT INTO project_members (
        id, space_id, project_id, user_id, role, status, created_at, updated_at
@@ -348,6 +369,77 @@ beforeEach(async () => {
   );
 });
 
+/**
+ * A conversation in a Room, as a fixture.
+ *
+ * Production has no such step — a conversation is created by the message that
+ * fills it (ADR 0018 decision 5), and the endpoint that used to make an empty
+ * one is retired. A test that starts from a later point in a conversation
+ * seeds one directly rather than sending a message it does not want to assert
+ * on.
+ */
+async function seedConversation(
+  // Deliberately no identity: this writes the row directly and checks nothing,
+  // so taking one would imply an authorization this fixture does not perform.
+  scope: { spaceId: string },
+  roomId: string,
+  title?: string,
+) {
+  const room = await new PgRoomRepository(db.pool!).getRoomById(scope.spaceId, roomId);
+  if (!room) throw new Error(`No such Room: ${roomId}`);
+  return new PgSessionRepository(db.pool!).createRoomConversation({
+    space_id: scope.spaceId,
+    room_id: room.id,
+    project_id: room.project_id,
+    project_folder_id: room.project_folder_id,
+    title: title ?? "New conversation",
+    metadata: { conversation_kind: "room" },
+  });
+}
+
+/**
+ * A Room that has already been spoken in.
+ *
+ * Since ADR 0018 decisions 4 and 5, opening a Room creates neither a manager
+ * Agent nor a conversation — both arrive with the first message. A test that
+ * starts from a later point in a conversation seeds that state directly
+ * rather than sending a message whose dispatch it does not want to assert on.
+ * The tests that own the lifecycle itself use the real path.
+ */
+async function openSpokenRoom(
+  owner: { spaceId: string; userId: string },
+  input: { project_id: string; title: string; project_folder_id?: string | null },
+): Promise<{
+  // The service's own room shape, which is the protocol's `Room` — not the
+  // repository row. Restating it as `RoomRecord` is what made this file fail
+  // `pnpm run typecheck` when `createRoom` gained its `RoomDetail` annotation.
+  room: Awaited<ReturnType<RoomService["createRoom"]>>["room"];
+  conversation: Awaited<ReturnType<typeof seedConversation>>;
+  agent_members: RoomAgentMemberRecord[];
+}> {
+  const created = await service!.createRoom(owner, input);
+  await seedRoomManager(db.pool, { space: owner.spaceId, room: created.room.id, agent: "agent-1" });
+  const conversation = await seedConversation(owner, created.room.id);
+  const agentMembers = await new PgRoomRepository(db.pool)
+    .listAgentMembers(owner.spaceId, created.room.id);
+  return { room: created.room, conversation, agent_members: agentMembers };
+}
+
+/**
+ * Open a Room and speak in it, which is what provisions the Project's
+ * Assistant now that Room creation does not (ADR 0018 decision 4). Used by the
+ * Assistant-lifecycle tests, whose subject is the provisioning itself.
+ */
+async function speakInNewRoom(
+  owner: { spaceId: string; userId: string },
+  projectId: string,
+  title: string,
+): Promise<{ room: Awaited<ReturnType<RoomService["createRoom"]>>["room"] }> {
+  const created = await service!.createRoom(owner, { project_id: projectId, title });
+  await service!.sendMessage(owner, created.room.id, null, { content: `Start ${title}.` });
+  return created;
+}
+
 describe("Room workflow (real Postgres)", () => {
   it("keeps system continuations out of the visible transcript while retaining execution context", async () => {
     if (!db.available || !service) return;
@@ -356,7 +448,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Continuation Room",
     });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const sessions = new PgSessionRepository(db.pool);
     const visible = await sessions.addRoomUserMessage(
       owner.spaceId,
@@ -401,8 +493,8 @@ describe("Room workflow (real Postgres)", () => {
     // attempt's message: the second failure was never reported, so an Agent's
     // "queued" was the last word in the conversation while nothing ran.
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Pipeline outcomes" });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Pipeline outcomes" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const thread = randomUUID();
     const failure = (jobId: string) => ({
       kind: "research_pipeline_outcome",
@@ -444,7 +536,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Proposal continuation",
     });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
          id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
@@ -614,7 +706,7 @@ describe("Room workflow (real Postgres)", () => {
       [retried.run_ids],
     );
 
-    const otherConversation = await service.createConversation(owner, created.room.id, { title: "Other" });
+    const otherConversation = await seedConversation(owner, created.room.id, "Other");
     await expect(service.continueAfterProposal(owner, created.room.id, otherConversation.id, {
       proposal_id: proposalId,
     })).rejects.toMatchObject({
@@ -623,26 +715,40 @@ describe("Room workflow (real Postgres)", () => {
     });
   });
 
-  it("lazily provisions exactly one managed Assistant and the initial conversation", async () => {
+  it("provisions the Assistant and the first conversation on the first message, not on Room creation", async () => {
     if (!db.available || !service) return;
     await removeManagedAssistant();
-    const created = await service.createRoom(
-      { spaceId: "space-1", userId: "user-1" },
-      { project_id: "project-1", title: "First-use Room" },
-    );
-    expect(created.conversation.room_id).toBe(created.room.id);
-    expect(created.agent_members).toHaveLength(1);
-    expect(created.agent_members[0]).toMatchObject({
-      role: "manager",
-      agent_kind: "system_assistant",
-    });
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "First-use Room" });
+    // A channel nobody has spoken in has no manager and no conversation
+    // (ADR 0018 decisions 4 and 5), so nothing empty is left behind if nobody
+    // ever does.
+    expect(created.agent_members).toHaveLength(0);
+    await expect(db.pool.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM sessions WHERE space_id = 'space-1' AND room_id = $1",
+      [created.room.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'",
-    )).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+
+    const sent = await service.sendMessage(owner, created.room.id, null, {
+      content: "Start here.",
+    });
+    // The conversation the message created comes back on the response; there
+    // is no separate step that could have left an empty one behind.
+    expect(sent.conversation.room_id).toBe(created.room.id);
+    expect(sent.message.content).toBe("Start here.");
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM sessions WHERE space_id = 'space-1' AND room_id = $1",
       [created.room.id],
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    await expect(db.pool.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'",
+    )).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    const members = await new PgRoomRepository(db.pool).listAgentMembers("space-1", created.room.id);
+    expect(members).toHaveLength(1);
+    expect(members[0]).toMatchObject({ role: "manager", agent_kind: "system_assistant" });
   });
 
   it("renames a placeholder conversation on its first message and queues cheap refinement", async () => {
@@ -652,7 +758,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Memory Room",
     });
-    const conversation = await service.createConversation(owner, created.room.id, {});
+    const conversation = await seedConversation(owner, created.room.id);
     expect(conversation.title).toBe("New conversation");
 
     const message = await new PgSessionRepository(db.pool).addRoomUserMessage(
@@ -716,14 +822,12 @@ describe("Room workflow (real Postgres)", () => {
   it("lists Room conversations by creation time descending, independent of activity", async () => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, {
+    const created = await openSpokenRoom(owner, {
       project_id: "project-1",
       title: "Ordered conversations",
     });
     const older = created.conversation;
-    const newer = await service.createConversation(owner, created.room.id, {
-      title: "Newer",
-    });
+    const newer = await seedConversation(owner, created.room.id, "Newer");
     await db.pool.query(
       `UPDATE sessions
           SET created_at = CASE id
@@ -746,35 +850,67 @@ describe("Room workflow (real Postgres)", () => {
     });
   });
 
-  it("rolls back the managed Assistant and Room when no backend is eligible", async () => {
+  it("starts a further conversation by speaking, rather than continuing the newest", async () => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Two threads" });
+    // A send with no conversation id means "start one" — including in a Room
+    // that already has conversations, which is what the surfaces behind
+    // "start a separate thread" rely on. An earlier version of this endpoint
+    // reused the newest and made that button silently append to it.
+    const second = await service.sendMessage(owner, created.room.id, null, { content: "A separate topic." });
+    expect(second.conversation.id).not.toBe(created.conversation.id);
+    const listed = await service.listConversations(owner, created.room.id, { limit: 20, offset: 0 });
+    expect(listed.items).toHaveLength(2);
+  });
+
+  it("opens a Room with no eligible backend, and reports it on the first message", async () => {
     if (!db.available || !service) return;
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
     await db.pool.query("UPDATE cli_credential_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    await expect(service.createRoom(
-      { spaceId: "space-1", userId: "user-1" },
-      { project_id: "project-1", title: "Should roll back" },
-    )).rejects.toMatchObject({
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    // Provisioning can fail, so it belongs on the action that needs it. Making
+    // it fail Room creation — and, once the mainline is created with the
+    // Project, Project creation — would put a Space's backend configuration in
+    // the way of making a Project at all.
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "No backend yet" });
+    await expect(db.pool.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM rooms WHERE space_id = 'space-1' AND id = $1",
+      [created.room.id],
+    )).resolves.toMatchObject({ rows: [{ count: "1" }] });
+
+    await expect(service.sendMessage(owner, created.room.id, null, {
+      content: "Anyone there?",
+    })).rejects.toMatchObject({
       statusCode: 409,
       responseBody: { code: "conversation_backend_required" },
     });
-    await expect(db.pool.query<{ count: string }>(
-      "SELECT COUNT(*)::text AS count FROM rooms WHERE space_id = 'space-1'",
-    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    // The failed message left nothing behind: no Assistant, and no
+    // conversation whose only content would have been a message never sent.
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'",
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    await expect(db.pool.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM sessions WHERE space_id = 'space-1' AND room_id = $1",
+      [created.room.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 
-  it("serializes concurrent first-use provisioning and supports idempotent retries", async () => {
+  it("serializes concurrent first messages into one Assistant, and keeps Room creation idempotent", async () => {
     if (!db.available || !service) return;
     await removeManagedAssistant();
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const [first, second] = await Promise.all([
-      service.createRoom(owner, { project_id: "project-1", title: "Concurrent A" }),
-      service.createRoom(owner, { project_id: "project-1", title: "Concurrent B" }),
+    // Provisioning is now a first-message race rather than a Room-creation
+    // one: two people speaking at once must not each mint an Assistant, and
+    // `room_agent_members` has a unique manager per Room, so a lost race would
+    // surface as a constraint violation rather than a second Agent.
+    const roomA = await service.createRoom(owner, { project_id: "project-1", title: "Concurrent A" });
+    const roomB = await service.createRoom(owner, { project_id: "project-1", title: "Concurrent B" });
+    await Promise.all([
+      service.sendMessage(owner, roomA.room.id, null, { content: "A speaks." }),
+      service.sendMessage(owner, roomB.room.id, null, { content: "B speaks." }),
     ]);
-    expect(new Set([first.agent_members[0]?.agent_id, second.agent_members[0]?.agent_id]).size).toBe(1);
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active'",
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
@@ -793,7 +929,6 @@ describe("Room workflow (real Postgres)", () => {
       idempotency_key: "room-retry-1",
     });
     expect(replay.room.id).toBe(retried.room.id);
-    expect(replay.conversation.id).toBe(retried.conversation.id);
     await expect(service.createRoom(owner, {
       project_id: "project-1",
       title: "Different payload",
@@ -811,11 +946,7 @@ describe("Room workflow (real Postgres)", () => {
       title: "ACL Room",
     });
     await addRoomMember(created.room.id, "user-2");
-    const conversation = await service.createConversation(
-      member,
-      created.room.id,
-      { title: "Before revocation" },
-    );
+    const conversation = await seedConversation(member, created.room.id, "Before revocation");
     expect(conversation.project_folder_id).toBe("folder-1");
     const sessions = new PgSessionRepository(db.pool);
     await expect(
@@ -1051,11 +1182,7 @@ describe("Room workflow (real Postgres)", () => {
       title: "Task authority Room",
     });
     await addRoomMember(created.room.id, "user-2");
-    const conversation = await service.createConversation(
-      owner,
-      created.room.id,
-      { title: "Task ownership" },
-    );
+    const conversation = await seedConversation(owner, created.room.id, "Task ownership");
     const dispatched = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Owner task.",
       backends: [{
@@ -1097,16 +1224,8 @@ describe("Room workflow (real Postgres)", () => {
       title: "Delivery Room",
     });
     await addRoomMember(created.room.id, "user-2");
-    const conversation = await service.createConversation(
-      owner,
-      created.room.id,
-      { title: "Main thread" },
-    );
-    const secondConversation = await service.createConversation(
-      member,
-      created.room.id,
-      { title: "Follow-up" },
-    );
+    const conversation = await seedConversation(owner, created.room.id, "Main thread");
+    const secondConversation = await seedConversation(member, created.room.id, "Follow-up");
 
     const first = await service.sendMessage(
       owner,
@@ -1270,7 +1389,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Context Room",
     });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main thread" });
+    const conversation = await seedConversation(owner, created.room.id, "Main thread");
     // Something needs a person, so the prompt has attention to state. The
     // adapter that surfaces it registers at route-module init, which this
     // service-level test does not run.
@@ -1345,10 +1464,10 @@ describe("Room workflow (real Postgres)", () => {
     // One conversation per turn: a Room conversation holds a single turn at a
     // time, which is the behaviour under test elsewhere, not here.
     const [first, second, third, fourth] = await Promise.all([
-      service.createConversation(owner, created.room.id, { title: "Focused" }),
-      service.createConversation(owner, created.room.id, { title: "Hidden focus" }),
-      service.createConversation(owner, created.room.id, { title: "No focus" }),
-      service.createConversation(owner, created.room.id, { title: "Own private focus" }),
+      seedConversation(owner, created.room.id, "Focused"),
+      seedConversation(owner, created.room.id, "Hidden focus"),
+      seedConversation(owner, created.room.id, "No focus"),
+      seedConversation(owner, created.room.id, "Own private focus"),
     ]);
 
     const backends = [{
@@ -1443,7 +1562,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Research execution",
     });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "开始研究",
       backends: [{
@@ -1480,7 +1599,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Allowance Room",
     });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main thread" });
+    const conversation = await seedConversation(owner, created.room.id, "Main thread");
 
     // The Agent's own version declares no tools at all, which is the default
     // for every Agent created through the product: the permission comes from
@@ -1582,11 +1701,7 @@ describe("Room workflow (real Postgres)", () => {
       title: "Resume Room",
     });
     await addRoomMember(created.room.id, "user-2");
-    const conversation = await service.createConversation(
-      owner,
-      created.room.id,
-      { title: "Resume thread" },
-    );
+    const conversation = await seedConversation(owner, created.room.id, "Resume thread");
     const first = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Start the shared analysis.",
       backends: [{
@@ -1734,11 +1849,7 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Single recipient Room",
     });
-    const conversation = await service.createConversation(
-      owner,
-      created.room.id,
-      { title: "Concurrent safety" },
-    );
+    const conversation = await seedConversation(owner, created.room.id, "Concurrent safety");
 
     await expect(service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Run two overlapping segments.",
@@ -1778,16 +1889,8 @@ describe("Room workflow (real Postgres)", () => {
       project_id: "project-1",
       title: "Second aggregate",
     });
-    const firstConversation = await service.createConversation(
-      owner,
-      firstRoom.room.id,
-      { title: "First conversation" },
-    );
-    const secondConversation = await service.createConversation(
-      owner,
-      secondRoom.room.id,
-      { title: "Second conversation" },
-    );
+    const firstConversation = await seedConversation(owner, firstRoom.room.id, "First conversation");
+    const secondConversation = await seedConversation(owner, secondRoom.room.id, "Second conversation");
     const firstTask = await service.sendMessage(
       owner,
       firstRoom.room.id,
@@ -1819,7 +1922,7 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service || !groupService) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Private roster" });
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Private roster" });
     await addRoomMember(created.room.id, "user-2");
     await expect(service.addAgentPreset(owner, created.room.id, {
       preset_id: "research-analyst",
@@ -2064,7 +2167,7 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
     );
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask a specialist to look into this.",
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-api", credential_profile_id: null }],
@@ -2176,7 +2279,7 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
     );
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask a specialist and wait for the result.",
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-api", credential_profile_id: null }],
@@ -2288,7 +2391,7 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
       [randomUUID(), created.room.id, now],
     );
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Main" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask two specialists in parallel, no need to wait.",
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-api", credential_profile_id: null }],
@@ -2415,7 +2518,7 @@ describe("Room workflow (real Postgres)", () => {
     const testPool = db.pool;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Summary Room" });
-    const conversation = await service.createConversation(owner, created.room.id, { title: "Summary thread" });
+    const conversation = await seedConversation(owner, created.room.id, "Summary thread");
     const firstMessageAt = "2026-01-01T00:00:00.000Z";
     await db.pool.query(
       `INSERT INTO messages (
@@ -2587,8 +2690,14 @@ describe("Room workflow (real Postgres)", () => {
        ) VALUES ('project-2', 'space-1', 'user-1', 'Second Project', 'active', now(), now())`,
     );
 
+    await seedProjectMainlineRoom(db.pool, {
+      space: "space-1", project: "project-2", owner: "user-1", title: "Second Project",
+    });
+    // Provisioning follows the first message now, so speak in each.
     const first = await service.createRoom(owner, { project_id: "project-1", title: "First" });
     const second = await service.createRoom(owner, { project_id: "project-2", title: "Second" });
+    await service.sendMessage(owner, first.room.id, null, { content: "Start the first." });
+    await service.sendMessage(owner, second.room.id, null, { content: "Start the second." });
 
     const assistants = await db.pool.query<{ id: string; project_id: string; name: string }>(
       `SELECT id, project_id, name
@@ -2649,8 +2758,8 @@ describe("Room workflow (real Postgres)", () => {
              AND d.status = 'active'
         )`,
     );
-    await service.createRoom(owner, { project_id: "project-1", title: "First reseeded" });
-    await service.createRoom(owner, { project_id: "project-2", title: "Second reseeded" });
+    await speakInNewRoom(owner, "project-1", "First reseeded");
+    await speakInNewRoom(owner, "project-2", "Second reseeded");
     expect(await promptOf(firstManager)).toContain("Also mention the weather.");
     expect(await promptOf(secondManager)).toContain("Also mention the weather.");
 
@@ -2675,8 +2784,8 @@ describe("Room workflow (real Postgres)", () => {
     // Re-materialize again. The following instance keeps tracking the seed;
     // the changed one is not overwritten — that work would be lost with
     // nothing recording it.
-    await service.createRoom(owner, { project_id: "project-1", title: "First again" });
-    await service.createRoom(owner, { project_id: "project-2", title: "Second again" });
+    await speakInNewRoom(owner, "project-1", "First again");
+    await speakInNewRoom(owner, "project-2", "Second again");
 
     expect(await promptOf(firstManager)).toContain("Also mention the weather.");
     expect(await promptOf(secondManager)).toBe("A prompt somebody wrote by hand");
@@ -2701,7 +2810,7 @@ describe("Room workflow (real Postgres)", () => {
       return row.rows[0]?.settings_json?.assistant_agent_id ?? null;
     };
     const before = await pointer();
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Pointer Room" });
+    const created = await speakInNewRoom(owner, "project-1", "Pointer Room");
     const manager = await db.pool.query<{ agent_id: string }>(
       `SELECT agent_id FROM room_agent_members
         WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
@@ -2720,7 +2829,10 @@ describe("Room workflow (real Postgres)", () => {
          id, space_id, owner_user_id, name, status, created_at, updated_at
        ) VALUES ('project-4', 'space-1', 'user-1', 'Pointer Project', 'active', now(), now())`,
     );
-    const fresh = await service.createRoom(owner, { project_id: "project-4", title: "Fresh Room" });
+    await seedProjectMainlineRoom(db.pool, {
+      space: "space-1", project: "project-4", owner: "user-1", title: "Pointer Project",
+    });
+    const fresh = await speakInNewRoom(owner, "project-4", "Fresh Room");
     const freshManager = await db.pool.query<{ agent_id: string }>(
       `SELECT agent_id FROM room_agent_members
         WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
@@ -2739,7 +2851,10 @@ describe("Room workflow (real Postgres)", () => {
          id, space_id, owner_user_id, name, status, created_at, updated_at
        ) VALUES ('project-3', 'space-1', 'user-1', 'Adoption Project', 'active', now(), now())`,
     );
-    const first = await service.createRoom(owner, { project_id: "project-3", title: "Adopt" });
+    await seedProjectMainlineRoom(db.pool, {
+      space: "space-1", project: "project-3", owner: "user-1", title: "Adoption Project",
+    });
+    const first = await speakInNewRoom(owner, "project-3", "Adopt");
     const manager = await db.pool.query<{ agent_id: string }>(
       `SELECT agent_id FROM room_agent_members
         WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
@@ -2766,7 +2881,7 @@ describe("Room workflow (real Postgres)", () => {
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
       [agentId],
     );
-    await service.createRoom(owner, { project_id: "project-3", title: "Adopt again" });
+    await speakInNewRoom(owner, "project-3", "Adopt again");
     expect(await markOf()).toBe("agent_template.personal_assistant.system");
 
     // An unmarked version whose content differs cannot be told apart from a
@@ -2777,7 +2892,7 @@ describe("Room workflow (real Postgres)", () => {
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
       [agentId],
     );
-    await service.createRoom(owner, { project_id: "project-3", title: "Adopt once more" });
+    await speakInNewRoom(owner, "project-3", "Adopt once more");
     expect(await markOf()).toBeNull();
     const kept = await db.pool.query<{ system_prompt: string | null }>(
       `SELECT v.system_prompt FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
@@ -2797,16 +2912,552 @@ describe("Room workflow (real Postgres)", () => {
     expect(Number(profiles.rows[0]!.count)).toBeGreaterThan(0);
   });
 
-  it("makes the first Room a Project's mainline, and every Project member part of it", async (ctx) => {
+  it("tells a Room's detail who may mutate its roster, and who else is in it", async (ctx) => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
+    const reader = { spaceId: "space-1", userId: "user-2" };
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Detail" });
+    // user-2 is a Space member and not on the Project: enrolled by the invite,
+    // still without write authority. Every roster control is gated on this
+    // flag, and an `undefined` here would be read as `false` — which is why
+    // every `RoomDetail` producer is annotated to carry it.
+    await service.inviteUser(owner, created.room.id, { user_id: "user-2" });
+    const asOwner = await service.getRoom(owner, created.room.id);
+    expect(asOwner).toMatchObject({ viewer_can_write: true, other_member_names: ["Room Member"], agent_count: 1 });
+    // The same Room, described for the other person: they may not write, and
+    // "who else is here" excludes the viewer.
+    const asReader = await service.getRoom(reader, created.room.id);
+    expect(asReader).toMatchObject({ viewer_can_write: false, other_member_names: ["Room Owner"], agent_count: 1 });
+  });
+
+  it("refuses a reference from another Project on either grain", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ('project-2', 'space-1', 'user-1', 'Second Project', 'active', now(), now())`,
+    );
+    await seedProjectMainlineRoom(db.pool, { space: "space-1", project: "project-2", owner: "user-1" });
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Here" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id, { content: "Stays here." },
+    );
+    const elsewhere = await openSpokenRoom(owner, { project_id: "project-2", title: "There" });
+
+    // A non-goal made a rule: a reference never crosses a Project, however
+    // readable both sides are to the same person.
+    await expect(service.attachConversationReferences(owner, elsewhere.room.id, elsewhere.conversation.id, {
+      references: [{ kind: "messages", id: source.conversation.id, item_ids: [said!.id] }],
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(service.attachConversationReferences(owner, elsewhere.room.id, elsewhere.conversation.id, {
+      references: [{ kind: "thread", id: source.conversation.id }],
+    })).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("refuses a message pick that names what the person cannot read, and says so by code", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Edges" });
+    const sessions = new PgSessionRepository(db.pool);
+    const said = await sessions.addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id, { content: "Visible." },
+    );
+    const internal = await sessions.addRoomInternalInstruction(
+      "space-1", "user-1", source.room.id, source.conversation.id, { content: "Hidden instruction." },
+    );
+    const target = await seedConversation(owner, source.room.id, "Target");
+    const attach = (item_ids: string[]) => service!.attachConversationReferences(owner, source.room.id, target.id, {
+      references: [{ kind: "messages", id: source.conversation.id, item_ids }],
+    });
+
+    // A partial match is a refusal, never a quietly shorter copy — coded, so
+    // the composer can drop the pick rather than retry it forever.
+    await expect(attach([said!.id, randomUUID()]))
+      .rejects.toMatchObject({ statusCode: 404, responseBody: { code: "reference_source_unavailable" } });
+    // The pick surface is the transcript the person can read: an internal
+    // instruction is not in it, so naming its id is naming nothing.
+    await expect(attach([internal!.id]))
+      .rejects.toMatchObject({ statusCode: 404, responseBody: { code: "reference_source_unavailable" } });
+    await expect(attach([])).rejects.toMatchObject({ statusCode: 422 });
+    // A thread with nothing summarized yet has no bounded whole to carry.
+    await expect(service.attachConversationReferences(owner, source.room.id, target.id, {
+      references: [{ kind: "thread", id: source.conversation.id }],
+    })).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "reference_summary_unavailable" } });
+  });
+
+  it("lets the database refuse a personal mainline and a second personal Room", async (ctx) => {
+    if (!db.available) return;
+    const insert = (id: string, mainline: boolean, personalFor: string | null) => db.pool.query(
+      `INSERT INTO rooms (id, space_id, project_id, created_by_user_id, title, status,
+                          created_at, updated_at, is_mainline, personal_for_user_id)
+       VALUES ($1, 'space-1', 'project-1', 'user-1', 'x', 'active', now(), now(), $2, $3)`,
+      [id, mainline, personalFor],
+    );
+    // The constraints behind ADR 0018's shape, pinned at the row: the mainline
+    // is everyone's, so it cannot be somebody's personal Room; and a person
+    // has one personal Room per Project, so a second active one collides.
+    await expect(insert(randomUUID(), true, "user-1")).rejects.toMatchObject({ code: "23514" });
+    await insert(randomUUID(), false, "user-1");
+    await expect(insert(randomUUID(), false, "user-1")).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("carries a whole thread as its summary, and inherits the thread's provenance", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Long-running" });
+    const sessions = new PgSessionRepository(db.pool);
+    const said = await sessions.addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id,
+      { content: "A long discussion nobody wants copied whole." },
+    );
+
+    // A whole thread has no other bounded form, so it carries the summary.
+    const versionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO room_conversation_summary_versions (
+         id, space_id, room_id, session_id, version, status, summary_text,
+         covered_through_message_id, covered_through_created_at, covered_message_count,
+         source_token_estimate, summary_token_estimate, project_id, owner_user_id,
+         system_prompt_version, schema_version, created_at
+       ) VALUES ($1,'space-1',$2,$3,1,'active','They settled on arrow-free parsing.',
+         $4, now(), 1, 100, 20, 'project-1', 'user-1', 'v1', 'v1', now())`,
+      [versionId, source.room.id, source.conversation.id, said!.id],
+    );
+    await db.pool.query(
+      `INSERT INTO room_conversation_summary_states (
+         id, space_id, room_id, session_id, status, active_summary_id, updated_at
+       ) VALUES ($1,'space-1',$2,$3,'idle',$4, now())`,
+      [randomUUID(), source.room.id, source.conversation.id, versionId],
+    );
+
+    const target = await seedConversation(owner, source.room.id, "The new idea");
+    await service.attachConversationReferences(owner, source.room.id, target.id, {
+      references: [{ kind: "thread", id: source.conversation.id }],
+    });
+
+    const messages = await sessions.listRoomMessages("space-1", "user-1", source.room.id, target.id, 50, 0);
+    const copied = (messages ?? []).find((message) => message.role === "system");
+    expect(copied?.content).toContain("They settled on arrow-free parsing.");
+    // The summary, not the transcript: the thing it is too long to carry.
+    expect(copied?.content).not.toContain("A long discussion nobody wants copied whole.");
+    expect(copied?.metadata_json).toMatchObject({
+      reference: { kind: "thread", source_id: source.conversation.id, trust: "domain_approved" },
+    });
+  });
+
+  it("carries outside-Rainver provenance forward, however many hops back it is", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Where it came in" });
+    const sessions = new PgSessionRepository(db.pool);
+
+    // Thread A holds a reference to vendor content, and then an Agent's reply
+    // about it. Neither the reply nor a summary of the thread carries the
+    // fence the original was wrapped in, so the label is all a later reader
+    // has — and a rule that only looked at the picked rows would lose it.
+    await db.pool.query(
+      `INSERT INTO messages (id, space_id, session_id, role, content, metadata_json, created_at)
+       VALUES ($1, 'space-1', $2, 'system', 'Quoted transcript.', $3::jsonb, now())`,
+      [randomUUID(), source.conversation.id, JSON.stringify({
+        room_display: "reference",
+        reference: { kind: "imported_session", trust: "external_untrusted" },
+      })],
+    );
+    const reply = await sessions.addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id,
+      { content: "So the transcript says the parser was rewritten." },
+    );
+
+    const target = await seedConversation(owner, source.room.id, "Following up");
+    await service.attachConversationReferences(owner, source.room.id, target.id, {
+      references: [{ kind: "messages", id: source.conversation.id, item_ids: [reply!.id] }],
+    });
+
+    const messages = await sessions.listRoomMessages("space-1", "user-1", source.room.id, target.id, 50, 0);
+    const copied = (messages ?? []).find((message) => message.role === "system");
+    expect(copied?.metadata_json).toMatchObject({
+      reference: { kind: "messages", trust: "external_untrusted" },
+    });
+    // And it is fenced, because the label alone does not protect a prompt.
+    expect(copied?.content).toContain("never");
+    expect(copied?.content).toContain("begin quoted external transcript");
+  });
+
+  it("copies picked messages into another thread as a reference, and only content the picker can read", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Where it was discussed" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id,
+      { content: "We ruled out polars because of the arrow dependency." },
+    );
+    // A second thread in the *same* Room: same audience, so no confirmation
+    // is due. (Copying into the mainline would disclose — that is the next
+    // test.)
+    const targetConversation = await seedConversation(owner, source.room.id, "Elsewhere in the same Room");
+
+    await service.attachConversationReferences(owner, source.room.id, targetConversation.id, {
+      references: [{ kind: "messages", id: source.conversation.id, item_ids: [said!.id] }],
+    });
+
+    const messages = await new PgSessionRepository(db.pool)
+      .listRoomMessages("space-1", "user-1", source.room.id, targetConversation.id, 50, 0);
+    const reference = (messages ?? []).find((message) => message.role === "system");
+    expect(reference?.content).toContain("ruled out polars");
+    // Nothing the attach wrote reads as speech. The checkpoint extractor
+    // derives `confirmed` from `role = 'user'` alone, so a reference written
+    // as the attacher's turn would make every copied claim their word.
+    expect((messages ?? []).some((message) => message.role === "user")).toBe(false);
+    // It still records who brought it — that is provenance, and the extractor
+    // reads it as `actorUserId` on an *observed* item, not as the person
+    // having said it.
+    expect(reference?.user_id).toBe("user-1");
+    // Content, not a pointer: what it carries is in the message itself.
+    expect(reference?.metadata_json).toMatchObject({
+      room_display: "reference",
+      reference: { kind: "messages", source_id: source.conversation.id, trust: "domain_approved" },
+    });
+
+    // A non-member of the source gets the same answer as for a conversation
+    // that does not exist — no existence oracle (ADR 0018 decision 3). The
+    // target is the mainline, which user-2 *can* reach, so the refusal comes
+    // from the source-side gate and not from the target.
+    const mainline = await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+    const theirs = await seedConversation(owner, mainline.room.id, "Theirs");
+    await expect(service.attachConversationReferences(
+      { spaceId: "space-1", userId: "user-2" }, mainline.room.id, theirs.id,
+      { references: [{ kind: "messages", id: source.conversation.id, item_ids: [said!.id] }] },
+    )).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("refuses to copy across an audience boundary until the person confirms it", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    // A limited Room holding only user-1, and the mainline, which user-2 is
+    // in once they have opened the Project.
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Just me for now" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", limited.room.id, limited.conversation.id,
+      { content: "Something I have not told the others." },
+    );
+    await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    const targetConversation = await seedConversation(owner, mainline.room.id);
+    const pick = [{ kind: "messages" as const, id: limited.conversation.id, item_ids: [said!.id] }];
+
+    // Refused, and it names who would gain access — a confirmation that
+    // cannot say who is being let in is not informed consent.
+    await expect(service.attachConversationReferences(owner, mainline.room.id, targetConversation.id, {
+      references: pick,
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      responseBody: { code: "reference_disclosure_confirmation_required", gains_access_user_ids: ["user-2"] },
+    });
+    // Nothing was copied by the refusal.
+    const before = await new PgSessionRepository(db.pool)
+      .listRoomMessages("space-1", "user-1", mainline.room.id, targetConversation.id, 50, 0);
+    expect((before ?? []).some((message) => message.role === "system")).toBe(false);
+
+    await service.attachConversationReferences(owner, mainline.room.id, targetConversation.id, {
+      references: pick,
+      confirm_disclosure: true,
+    });
+    const after = await new PgSessionRepository(db.pool)
+      .listRoomMessages("space-1", "user-1", mainline.room.id, targetConversation.id, 50, 0);
+    expect((after ?? []).some((message) => message.content.includes("not told the others"))).toBe(true);
+  });
+
+  it("measures the mainline by who may read the Project, not by who has opened it", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Only mine" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", limited.room.id, limited.conversation.id,
+      { content: "Not for everyone." },
+    );
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    const target = await seedConversation(owner, mainline.room.id);
+
+    // user-2 is a Project member who has never opened the Project, so there
+    // is no `room_user_members` row for them — mainline membership is written
+    // on first open, not synced. Reading the roster would say the mainline's
+    // audience is user-1 alone and let this copy land unconfirmed; user-2
+    // would then read it the moment they first opened the Project.
+    const roster = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM room_user_members
+        WHERE space_id = 'space-1' AND room_id = $1 AND status = 'active'`,
+      [mainline.room.id],
+    );
+    expect(roster.rows[0]!.count).toBe("1");
+
+    await expect(service.attachConversationReferences(owner, mainline.room.id, target.id, {
+      references: [{ kind: "messages", id: limited.conversation.id, item_ids: [said!.id] }],
+    })).rejects.toMatchObject({
+      statusCode: 409,
+      responseBody: { gains_access_user_ids: ["user-2"] },
+    });
+  });
+
+  it("refuses references on a send that names its conversation, rather than dropping them", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const room = await openSpokenRoom(owner, { project_id: "project-1", title: "Addressed" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", room.room.id, room.conversation.id, { content: "Something." },
+    );
+    // An addressed send names a thread that exists, and that thread has its
+    // own endpoint for this. Answering 201 with nothing attached would be the
+    // silent success the attach path exists to avoid.
+    await expect(service.sendMessage(owner, room.room.id, room.conversation.id, {
+      content: "And this.",
+      references: [{ kind: "messages", id: room.conversation.id, item_ids: [said!.id] }],
+    })).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("takes the audience the refusal named, not a bare yes", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Only mine" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", limited.room.id, limited.conversation.id,
+      { content: "Not for everyone." },
+    );
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    const target = await seedConversation(owner, mainline.room.id);
+    const pick = [{ kind: "messages" as const, id: limited.conversation.id, item_ids: [said!.id] }];
+
+    // Echoing back a set that no longer covers everyone who would gain access
+    // is refused: a roster can grow between the refusal and the confirmation,
+    // and consenting to a stale list is consenting to nobody in particular.
+    await expect(service.attachConversationReferences(owner, mainline.room.id, target.id, {
+      references: pick, confirm_disclosure: [],
+    })).rejects.toMatchObject({ statusCode: 409 });
+
+    await service.attachConversationReferences(owner, mainline.room.id, target.id, {
+      references: pick, confirm_disclosure: ["user-2"],
+    });
+    const messages = await new PgSessionRepository(db.pool)
+      .listRoomMessages("space-1", "user-1", mainline.room.id, target.id, 50, 0);
+    expect((messages ?? []).some((message) => message.content.includes("Not for everyone"))).toBe(true);
+  });
+
+  it("carries references in with the message that creates the thread, or not at all", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Source" });
+    const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
+      "space-1", "user-1", source.room.id, source.conversation.id,
+      { content: "The bit worth carrying over." },
+    );
+    const target = await openSpokenRoom(owner, { project_id: "project-1", title: "Target" });
+
+    // A thread does not exist until its first message (ADR 0018 decision 5),
+    // so a pick made for a new thread rides that message.
+    const sent = await service.sendMessage(owner, target.room.id, null, {
+      content: "Picking this up.",
+      references: [{ kind: "messages", id: source.conversation.id, item_ids: [said!.id] }],
+    });
+    const messages = await new PgSessionRepository(db.pool)
+      .listRoomMessages("space-1", "user-1", target.room.id, sent.conversation.id, 50, 0);
+    // The reference opens the thread; the message that carried it follows.
+    expect((messages ?? []).map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messages![0]!.content).toContain("bit worth carrying over");
+  });
+
+  it("returns the first send's result on a retry rather than starting a second thread", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const room = await openSpokenRoom(owner, { project_id: "project-1", title: "Retry" });
+    const send = () => service!.sendMessage(owner, room.room.id, null, {
+      content: "Only once, please.",
+      idempotency_key: "send-retry-1",
+    });
+    const first = await send();
+    const replay = await send();
+    expect(replay.conversation.id).toBe(first.conversation.id);
+    expect(replay.message.id).toBe(first.message.id);
+    // The same key with different content is a different request, not a retry.
+    await expect(service.sendMessage(owner, room.room.id, null, {
+      content: "Something else entirely.",
+      idempotency_key: "send-retry-1",
+    })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("reuses one personal Room per person per Project, and stops calling it personal once it is not", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    // Private continuation needs somewhere that is not the Project's shared
+    // channel, and needs to land in the same place next time rather than
+    // accumulating a Room per continuation.
+    const first = await service.createRoom(owner, {
+      project_id: "project-1", title: "Just me", personal: true,
+    });
+    const again = await service.createRoom(owner, {
+      project_id: "project-1", title: "Just me, later", personal: true,
+    });
+    expect(again.room.id).toBe(first.room.id);
+    expect(first.room.personal_for_user_id).toBe("user-1");
+    expect(first.room.is_mainline).toBe(false);
+
+    // Somebody else's personal Room in the same Project is a different Room.
+    // A viewer cannot open one — creating a Room asserts writer authority —
+    // which is why continuing a *private* session needs it while continuing a
+    // shared one, which only speaks in the mainline that already exists, does
+    // not.
+    await db.pool.query(
+      "UPDATE project_members SET role = 'member' WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'",
+    );
+    const other = await service.createRoom({ spaceId: "space-1", userId: "user-2" }, {
+      project_id: "project-1", title: "Just me too", personal: true,
+    });
+    expect(other.room.id).not.toBe(first.room.id);
+
+    // A Room with two people in it is not personal to either. Clearing the
+    // marker rather than refusing the addition costs only that the next
+    // private continuation opens a fresh Room.
+    await service.inviteUser(owner, first.room.id, { user_id: "user-2" });
+    const reopened = await service.createRoom(owner, {
+      project_id: "project-1", title: "Just me again", personal: true,
+    });
+    expect(reopened.room.id).not.toBe(first.room.id);
+    expect(reopened.room.personal_for_user_id).toBe("user-1");
+  });
+
+  it("keeps a limited Room's Runs out of the Run list, including from an oversight admin in the Project", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Just the two of us" });
+    const dispatched = await service.sendMessage(owner, limited.room.id, limited.conversation.id, {
+      content: "Work on this quietly.",
+    });
+    expect(dispatched.run_ids.length).toBeGreaterThan(0);
+
+    // Something in the mainline, which the same people *may* see, so the
+    // assertions below distinguish "the boundary held" from "this viewer sees
+    // no Runs at all" — a predicate that excluded everything would otherwise
+    // pass every negative check here.
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    await db.pool.query(
+      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+       VALUES ($1, 'space-1', $2, 'agent-1', 'manager', 'active', now(), now())`,
+      [randomUUID(), mainline.room.id],
+    );
+    const shared = await service.sendMessage(owner, mainline.room.id, null, { content: "Everyone can see this." });
+    // Mainline membership follows Project membership but is written on first
+    // open rather than synced, so open the Project as user-2 — which is what
+    // the Project page does. Exempting the mainline from needing that row was
+    // tried and reverted: `roomRunReadAccessSql` also gates Proposal accept
+    // and reject, so the exemption widened a write authority nobody asked to
+    // change. Not seeing a mainline Run until you have opened the Project once
+    // is stricter, self-healing, and keeps this rule identical everywhere.
+    await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+
+    const runs = new PgRunRepository(db.pool);
+    const seenBy = async (userId: string): Promise<Set<string>> => new Set(
+      (await runs.listRuns({
+        space_id: "space-1", user_id: userId, project_id: "project-1", limit: 50, offset: 0,
+      })).map((run) => run.id),
+    );
+    const limitedRun = dispatched.run_ids[0]!;
+    const sharedRun = shared.run_ids[0]!;
+    expect([...(await seenBy("user-1"))]).toEqual(expect.arrayContaining([limitedRun, sharedRun]));
+
+    // user-2 is a Project member who was never invited to the limited Room.
+    // Without oversight the content predicate already excludes them, because a
+    // Room's Runs are `selected_users` granted to its roster.
+    expect((await seenBy("user-2")).has(limitedRun)).toBe(false);
+
+    // With oversight they are admitted by the predicate's oversight branch,
+    // and the Room boundary is the only thing left holding (ADR 0018 decision
+    // 3). The detail path has always carried this rule; the list did not, so
+    // it showed Runs the detail page then 404'd on.
+    await db.pool.query("UPDATE spaces SET oversight_mode = 'full' WHERE id = 'space-1'");
+    await db.pool.query(
+      "UPDATE space_memberships SET role = 'admin' WHERE space_id = 'space-1' AND user_id = 'user-2'",
+    );
+    const asAdmin = await seenBy("user-2");
+    expect(asAdmin.has(limitedRun)).toBe(false);
+    // The positive control: oversight is live in this fixture, and the
+    // predicate is not simply excluding everything.
+    expect(asAdmin.has(sharedRun)).toBe(true);
+
+    // Same answer from both paths, which is the point.
+    await expect(runs.getVisibleRun("space-1", "user-2", limitedRun)).resolves.toBeNull();
+    await expect(runs.getVisibleRun("space-1", "user-1", limitedRun)).resolves.toMatchObject({ id: limitedRun });
+
+    // Not only the Run list: the Project Pulse count reads Runs too, and a
+    // count that disagreed with the list would say "3 in progress" over a list
+    // of two.
+    const projects = new PgProjectRepository(db.pool);
+    const pulse = async (userId: string) =>
+      projects.summary({ spaceId: "space-1", userId }, "project-1");
+    const ownerPulse = await pulse("user-1");
+    const adminPulse = await pulse("user-2");
+    expect(Number(adminPulse.active_run_count)).toBeLessThan(Number(ownerPulse.active_run_count));
+    // Positive control: the count is filtered, not emptied — user-2 still
+    // counts the mainline Run they may see.
+    expect(Number(adminPulse.active_run_count)).toBeGreaterThan(0);
+
+    // A Proposal and an Artifact from the limited Room's Run. Both inherit its
+    // Room, and both are counted here — a count is an existence signal just as
+    // much as a list is (ADR 0018 decision 3).
+    await db.pool.query(
+      `INSERT INTO proposals (id, space_id, project_id, proposal_type, status, risk_level, urgency,
+                              title, payload_json, created_by_run_id, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', 'memory_create', 'pending', 'low', 'normal',
+               'From the limited Room', '{}'::jsonb, $2, now(), now())`,
+      [randomUUID(), limitedRun],
+    );
+    await db.pool.query(
+      `INSERT INTO artifacts (id, space_id, project_id, run_id, artifact_type, title,
+                              surface_role, export_formats_json, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', $2, 'document', 'From the limited Room',
+               'user_output', '[]'::jsonb, now(), now())`,
+      [randomUUID(), limitedRun],
+    );
+    const afterOwner = await pulse("user-1");
+    const afterAdmin = await pulse("user-2");
+    expect(Number(afterOwner.pending_proposal_count))
+      .toBeGreaterThan(Number(afterAdmin.pending_proposal_count));
+    expect(Number(afterOwner.artifact_count)).toBeGreaterThan(Number(afterAdmin.artifact_count));
+
+    // And the Room itself, and its conversations, stay invisible to that same
+    // admin — the other two clauses of the boundary.
+    await expect(service.getRoom({ spaceId: "space-1", userId: "user-2" }, limited.room.id))
+      .rejects.toMatchObject({ statusCode: 404 });
+    const listed = await service.listProjectConversations(
+      { spaceId: "space-1", userId: "user-2" }, "project-1", { limit: 50, offset: 0 },
+    );
+    expect(listed.items.map((item) => item.room_id)).not.toContain(limited.room.id);
+    // And the Home page, which reads Runs through its own read model
+    // (`frontendSupportReadModel.ts`): the boundary is one predicate, so a
+    // third consumer of it must agree with the first two.
+    const home = async (userId: string) =>
+      (await new PgFrontendSupportService(db.pool).homeSummary({ spaceId: "space-1", userId }, {}))
+        .recent_runs.map((run) => run.id);
+    expect(await home("user-1")).toEqual(expect.arrayContaining([limitedRun, sharedRun]));
+    const adminHome = await home("user-2");
+    expect(adminHome).not.toContain(limitedRun);
+    expect(adminHome).toContain(sharedRun);
+  });
+
+  it("keeps the mainline the Room the Project was created with, and never promotes a later one", async (ctx) => {
+    if (!db.available || !service) return;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    // The mainline is a Project attribute (ADR 0018 decision 4), so a Room
+    // opened afterwards is a second audience and never claims it — including
+    // the first one somebody opens.
     const first = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
     const second = await service.createRoom(owner, { project_id: "project-1", title: "Tax season" });
-    expect(first.room.is_mainline).toBe(true);
+    expect(first.room.is_mainline).toBe(false);
     expect(second.room.is_mainline).toBe(false);
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    expect(mainline.room.is_mainline).toBe(true);
+    expect(mainline.room.id).not.toBe(first.room.id);
 
-    // user-2 is a Project member and was never invited: in the mainline from
-    // the start, not in the topic Room.
+    // A limited Room's roster is only who opened it. The mainline's is Project
+    // membership: user-2 is a Project member nobody invited, and enrols on
+    // first open rather than being synced in.
     const membership = async (roomId: string): Promise<string[]> => {
       const rows = await db.pool!.query<{ user_id: string }>(
         `SELECT user_id FROM room_user_members WHERE room_id = $1 AND status = 'active' ORDER BY user_id`,
@@ -2814,15 +3465,16 @@ describe("Room workflow (real Postgres)", () => {
       );
       return rows.rows.map((row) => row.user_id);
     };
-    expect(await membership(first.room.id)).toEqual(["user-1", "user-2"]);
-    expect(await membership(second.room.id)).toEqual(["user-1"]);
+    expect(await membership(first.room.id)).toEqual(["user-1"]);
+    await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+    expect(await membership(mainline.room.id)).toEqual(["user-1", "user-2"]);
   });
 
   it("binds the chat panel to the mainline and enrols a member who joined the Project later", async (ctx) => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
-    // A third person joins the Project after the Room exists.
+    const created = await service.getProjectMainline(owner, "project-1");
+    // A third person joins the Project after it exists.
     await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at)
        VALUES ('user-later', 'Later', 'active', now(), now())`);
@@ -2838,7 +3490,7 @@ describe("Room workflow (real Postgres)", () => {
     // of, so a member nobody had invited saw an empty panel — and as a
     // viewer could not start a Room either.
     const opened = await service.getProjectMainline(later, "project-1");
-    expect(opened.room?.id).toBe(created.room.id);
+    expect(opened.room.id).toBe(created.room.id);
     expect(opened.joined).toBe(true);
     expect(opened.viewer_can_write).toBe(false);
     // Idempotent: opening again is not a second join.
@@ -2851,20 +3503,28 @@ describe("Room workflow (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("answers honestly when a Project has no conversation yet", async (ctx) => {
+  it("always has a mainline to answer with, and still says who may write in it", async (ctx) => {
     if (!db.available || !service) return;
-    // user-2 is a Project viewer: may read, may not start one. Telling the
-    // panel so is what keeps it from offering a button that would 403.
-    const none = await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
-    expect(none).toEqual({ room: null, joined: false, viewer_can_write: false });
+    // "A Project with no Room" is no longer a state (ADR 0018 decision 4), so
+    // the panel has nothing to branch on. `viewer_can_write` is still needed,
+    // but not for speaking: user-2 is a Project viewer who may read *and*
+    // speak — mainline membership follows Project membership and the send
+    // path gates on that. What it answers is whether offering to open a
+    // *limited* Room would be honest.
+    const asViewer = await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
+    expect(asViewer.room.is_mainline).toBe(true);
+    expect(asViewer.viewer_can_write).toBe(false);
     const asOwner = await service.getProjectMainline({ spaceId: "space-1", userId: "user-1" }, "project-1");
-    expect(asOwner).toEqual({ room: null, joined: false, viewer_can_write: true });
+    expect(asOwner.room.id).toBe(asViewer.room.id);
+    expect(asOwner.viewer_can_write).toBe(true);
   });
 
   it("refuses to remove a member from the mainline: that membership is the Project's", async (ctx) => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const created = await service.getProjectMainline(owner, "project-1");
+    // user-2 is a Project member, so opening the Project enrols them.
+    await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
     await expect(service.removeUser(owner, created.room.id, "user-2"))
       .rejects.toMatchObject({ statusCode: 409 });
   });
@@ -2872,7 +3532,7 @@ describe("Room workflow (real Postgres)", () => {
   it("brings an existing Assistant up to a changed seed at boot, not only on the next Room", async (ctx) => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Daily" });
     const manager = await db.pool.query<{ agent_id: string }>(
       `SELECT agent_id FROM room_agent_members WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
       [created.room.id],
@@ -2914,11 +3574,13 @@ describe("Room workflow (real Postgres)", () => {
   it("lists every conversation in the Project as one list, mainline first, and enrols the reader", async (ctx) => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
-    const mainline = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
-    const topic = await service.createRoom(owner, { project_id: "project-1", title: "Tax season" });
-    // Both Rooms carry their first conversation; add one more to the topic
-    // Room and say something in it, so ordering has something to bite on.
-    const topicSecond = await service.createConversation(owner, topic.room.id, { title: "Receipts" });
+    const mainline = await service.getProjectMainline(owner, "project-1");
+    // Conversations are created by speaking, so give each Room one and say
+    // something in the topic Room's second, so ordering has something to bite
+    // on.
+    await seedConversation(owner, mainline.room.id);
+    const topic = await openSpokenRoom(owner, { project_id: "project-1", title: "Tax season" });
+    const topicSecond = await seedConversation(owner, topic.room.id, "Receipts");
     await db.pool.query(
       `INSERT INTO messages (id, space_id, session_id, user_id, role, content, created_at)
        VALUES ($1, 'space-1', $2, 'user-1', 'user', 'Where are the March receipts?', now())`,
@@ -2929,17 +3591,45 @@ describe("Room workflow (real Postgres)", () => {
     // in the mainline — and only the mainline.
     const seen = await service.listProjectConversations({ spaceId: "space-1", userId: "user-2" }, "project-1", { limit: 50, offset: 0 });
     expect(seen.items.map((item) => item.room_id)).toEqual([mainline.room.id]);
-    expect(seen.items[0]).toMatchObject({ room_is_mainline: true, room_title: "Daily", message_count: 0 });
+    expect(seen.items[0]).toMatchObject({ room_is_mainline: true, room_title: "Room Project", message_count: 0 });
 
     // The owner sees all three: mainline first, then the topic Room's by last
     // activity, with what was last said.
     const all = await service.listProjectConversations(owner, "project-1", { limit: 50, offset: 0 });
     expect(all.total).toBe(3);
     expect(all.items.map((item) => [item.room_title, item.title])).toEqual([
-      ["Daily", "New conversation"],
+      ["Room Project", "New conversation"],
       ["Tax season", "Receipts"],
       ["Tax season", "New conversation"],
     ]);
+    // A Room is named by its audience, not by its title, so the list carries
+    // the roster with the viewer excluded. user-2 read the list above, which
+    // enrolled them in the mainline; the limited Room nobody was invited to
+    // names nobody.
+    expect(all.items[0]).toMatchObject({
+      room_is_mainline: true,
+      room_other_member_names: ["Room Member"],
+    });
+    const topicRow = all.items.find((item) => !item.room_is_mainline)!;
+    expect(topicRow.room_other_member_names).toEqual([]);
+    expect(topicRow.room_agent_count).toBe(1);
+    // And from user-2's side the mainline names the owner, not themselves.
+    expect(seen.items[0]!.room_other_member_names).toEqual(["Room Owner"]);
+
+    // A Room nobody has spoken in holds no conversation, so a query over
+    // conversations hides it — and a Room is reached through a conversation.
+    // It comes back separately, under the same membership rule.
+    const silent = await service.createRoom(owner, { project_id: "project-1", title: "Opened, not spoken in" });
+    const withEmpty = await service.listProjectConversations(owner, "project-1", { limit: 50, offset: 0 });
+    expect(withEmpty.items.map((item) => item.room_id)).not.toContain(silent.room.id);
+    expect(withEmpty.empty_rooms.map((room) => room.room_id)).toContain(silent.room.id);
+    // Not to a non-member: an empty Room is still a Room they must not learn
+    // exists (ADR 0018 decision 3).
+    const outsider = await service.listProjectConversations(
+      { spaceId: "space-1", userId: "user-2" }, "project-1", { limit: 50, offset: 0 },
+    );
+    expect(outsider.empty_rooms.map((room) => room.room_id)).not.toContain(silent.room.id);
+
     expect(all.items[1]).toMatchObject({
       room_is_mainline: false,
       last_message_role: "user",
@@ -2957,8 +3647,8 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service) return;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Daily" });
-    const here = await service.createConversation(owner, created.room.id, { title: "Here" });
-    const elsewhere = await service.createConversation(owner, created.room.id, { title: "Elsewhere" });
+    const here = await seedConversation(owner, created.room.id, "Here");
+    const elsewhere = await seedConversation(owner, created.room.id, "Elsewhere");
 
     const runIn = async (sessionId: string): Promise<string> => {
       const id = randomUUID();

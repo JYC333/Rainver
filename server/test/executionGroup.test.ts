@@ -8,6 +8,7 @@ import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/wor
 import { projectTaskStatusFromRun } from "../src/modules/tasks/taskRunStatusProjection.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("executionGraphRecoveryService", () => {
   const CONFIG = loadConfig({});
@@ -115,6 +116,7 @@ describe("executionTopologyDb", () => {
        VALUES ($1, $2, $3, 'Topology Project', 'active', now(), now())`,
       [PROJECT, SPACE, USER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_folders (
          id, space_id, project_id, created_by_user_id, name, status, kind,

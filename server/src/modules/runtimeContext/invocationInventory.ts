@@ -48,6 +48,10 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   // reads records the person already imported and produces proposals, and it
   // is not an Agent task-context entrypoint (ADR 0014 decision 1).
   providerCall("importedSessions/extraction.ts", "completeProviderText", 1, "bounded_provider_task", "importedSessions", "provider_task"),
+  // The same shape for the same module: one bounded pass over a session's own
+  // records to produce the summary a whole-session reference carries. Not an
+  // Agent task-context entrypoint either.
+  providerCall("importedSessions/summary.ts", "completeProviderText", 1, "bounded_provider_task", "importedSessions", "provider_task"),
   providerCall("inquiry/adviceService.ts", "completeProviderMessages", 1, "bounded_provider_task", "inquiry", "provider_task"),
   providerCall("projectResearch/questionRefineService.ts", "completeProviderMessages", 1, "bounded_provider_task", "projectResearch", "provider_task"),
   providerCall("projects/publicSummaryGenerator.ts", "completeProviderText", 1, "bounded_provider_task", "projects", "provider_task"),

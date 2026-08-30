@@ -464,6 +464,34 @@ export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, sco
   )`;
 }
 
+/**
+ * Every explicit reference type, in one place.
+ *
+ * Three sites used to enumerate these independently — this resolver, the
+ * context-authority read's filter, and the delivery re-authorization — and
+ * adding a member to one of them left the other two silently disagreeing: a
+ * pinned reference the resolver accepted was dropped by the filter and
+ * rejected at delivery.
+ */
+const EXPLICIT_REFERENCE_TYPES = [
+  "project_brief_version",
+  "project_instruction_version",
+] as const;
+export type ExplicitReferenceType = (typeof EXPLICIT_REFERENCE_TYPES)[number];
+
+export function isExplicitReferenceType(value: unknown): value is ExplicitReferenceType {
+  return typeof value === "string"
+    && (EXPLICIT_REFERENCE_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Reached only for a type outside the list — which the type system says is
+ * impossible, so this fires when a caller hands over unvalidated input.
+ */
+function assertNoUnhandledReferenceType(type: never): never {
+  throw new HttpError(422, `Unsupported explicit reference type: ${String(type)}`);
+}
+
 export async function resolveExplicitReferences(
   db: Queryable,
   identity: SpaceUserIdentity,
@@ -473,13 +501,20 @@ export async function resolveExplicitReferences(
     if (refs.length > 1000) throw new HttpError(422, "Too many explicit references");
     const items: Record<string, unknown>[] = [];
     for (const ref of refs) {
-      if (ref.type === "project_brief_version") {
+      // Narrowed against the shared list before dispatch, so the branches
+      // below are exhaustive over it and the compiler refuses a new member
+      // that nobody resolved.
+      if (!isExplicitReferenceType(ref.type)) {
+        throw new HttpError(422, `Unsupported explicit reference type: ${ref.type}`);
+      }
+      const type: ExplicitReferenceType = ref.type;
+      if (type === "project_brief_version") {
         const result = await db.query(`SELECT bv.* FROM project_brief_versions bv JOIN projects p ON p.id=bv.project_id AND p.space_id=bv.space_id WHERE bv.id=$1 AND bv.space_id=$2 AND bv.status IN ('published','archived') AND bv.published_at IS NOT NULL AND p.deleted_at IS NULL`, [ref.id, identity.spaceId]);
         const row = result.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw new HttpError(404, "Published Project Brief reference not found");
         await assertProjectReadable(db, identity.spaceId, String(row.project_id), identity.userId);
         items.push(projectBriefReference(row));
-      } else if (ref.type === "project_instruction_version") {
+      } else if (type === "project_instruction_version") {
         const result = await db.query(`SELECT iv.* FROM project_instruction_versions iv JOIN projects p ON p.id=iv.project_id AND p.space_id=iv.space_id WHERE iv.id=$1 AND iv.space_id=$2 AND iv.status='published' AND iv.published_at IS NOT NULL AND p.deleted_at IS NULL`, [ref.id, identity.spaceId]);
         const row = result.rows[0] as Record<string, unknown> | undefined;
         if (!row) throw new HttpError(404, "Published Project Instruction reference not found");
@@ -487,7 +522,12 @@ export async function resolveExplicitReferences(
           throw new HttpError(422, "Project Instruction reference must belong to the Work Context Project");
         }
         await assertProjectReadable(db, identity.spaceId, String(row.project_id), identity.userId); items.push(row);
-      } else throw new HttpError(422, `Unsupported explicit reference type: ${ref.type}`);
+      } else {
+        // Exhaustive over `EXPLICIT_REFERENCE_TYPES`: adding a member to that
+        // list without a branch here is a compile error, which is what stops
+        // the three sites from drifting apart again.
+        assertNoUnhandledReferenceType(type);
+      }
     }
     return items;
 }

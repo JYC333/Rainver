@@ -5,6 +5,7 @@ import { AutonomyService } from "../src/modules/autonomy/service.js";
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -78,6 +79,7 @@ describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
        ) VALUES ($1, $2, $3, 'Digest Project', 'active', 'delivery', $4, $4)`,
       [PROJECT, SPACE, USER, "2026-07-24T12:00:00.000Z"],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const tick = () => new AutonomyService(db.pool).observeTick({
       spaceId: SPACE,
       automationId: AUTOMATION,

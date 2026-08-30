@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { projectReaders } from "../src/modules/projects/access.js";
 
 // Real-PostgreSQL tests for the project membership management API — the ACL that
 // gates project-scoped memory. Validates the new project_members table, the
@@ -53,6 +55,7 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, 'P', 'active', now(), now())`,
     [PROJECT, SPACE, OWNER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 function repo(): PgProjectRepository {
@@ -106,5 +109,30 @@ describe("Project membership management (real Postgres)", () => {
     await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER });
     await repo().removeMember({ spaceId: SPACE, userId: OWNER }, PROJECT, MEMBER);
     expect(await repo().listMembers({ spaceId: SPACE, userId: OWNER }, PROJECT)).toHaveLength(0);
+  });
+
+  // Readers are `project_members ∪ owner`, which is deliberately not the
+  // members list: the owner is never a `project_members` row, and a roster
+  // picker built from that list would omit the one person who certainly
+  // belongs in the Room.
+  it("counts the owner among a Project's readers, and a plain space member only once added", async () => {
+    if (!db.available) return;
+    await expect(projectReaders(db.pool, SPACE, PROJECT))
+      .resolves.toEqual([expect.objectContaining({ user_id: OWNER })]);
+
+    await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "member" });
+    const readers = await projectReaders(db.pool, SPACE, PROJECT);
+    expect(readers.map(reader => reader.user_id).sort()).toEqual([OWNER, MEMBER].sort());
+    // What the picker renders, so the query has to carry it.
+    expect(readers[0]).toMatchObject({ display_name: expect.any(String) });
+    expect(readers[0]).toHaveProperty("email");
+  });
+
+  it("leaves a disabled account out of the readers, as the audience queries do", async () => {
+    if (!db.available) return;
+    await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "member" });
+    await db.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [MEMBER]);
+    await expect(projectReaders(db.pool, SPACE, PROJECT))
+      .resolves.toEqual([expect.objectContaining({ user_id: OWNER })]);
   });
 });

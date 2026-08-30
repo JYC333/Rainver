@@ -18,6 +18,7 @@ import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
 import { SearchExecutionAdapter } from "../src/modules/sources/search/searchExecutionAdapter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("researchCheckpointPolicy", () => {
   // The checkpoint reform's decision table. These assertions are
@@ -252,6 +253,7 @@ describe("researchMonitorMaterializerDb", () => {
        VALUES ($1,$2,$3,'Project','active',$4,$4)`,
       [PROJECT, SPACE, USER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO source_connectors (
          id,connector_key,display_name,connector_type,ingestion_mode,status,capabilities_json,created_at,updated_at
@@ -548,6 +550,7 @@ describe("researchQueryRepositoryDb", () => {
          VALUES ($1,$2,$3,$4,'active',$5,$5)`,
         [id, SPACE, USER, name, now],
       );
+      await seedMainlineRoomsForAllProjects(db.pool);
     }
   });
 

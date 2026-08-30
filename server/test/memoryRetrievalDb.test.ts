@@ -5,6 +5,7 @@ import { resetTables } from "./support/resetTables.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
 import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-PostgreSQL round-trip for the Memory create-safety retrieval slice. The
 // focused memoryRetrieval.test.ts uses an in-memory fake, which cannot catch SQL
@@ -62,6 +63,7 @@ async function insertProject(ownerUserId: string | null): Promise<void> {
      VALUES ($1, $2, $3, 'Proj', 'active', now(), now())`,
     [PROJECT, SPACE, ownerUserId],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 }
 
 async function addProjectMember(userId: string): Promise<void> {

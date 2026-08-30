@@ -14,6 +14,7 @@ import { ProjectCorpusRepository } from "../src/modules/projects/corpusRepositor
 import { ProjectResearchArtifactService } from "../src/modules/projectResearch/artifactService.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-PostgreSQL tests for evidence→project auto-linking on materialization:
 // bound sources produce active `context_candidate` project links, re-runs are
@@ -59,6 +60,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$2,$3,'Second','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, PROJECT_B],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO source_connectors (
        id, connector_key, display_name, connector_type, ingestion_mode, status,

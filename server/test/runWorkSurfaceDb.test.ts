@@ -19,6 +19,7 @@ import {
   IDENTIFIER_POLICY,
 } from "../src/modules/systemActions/conversationPolicy.js";
 import { requireProjectTask } from "../src/modules/projectWork/taskActions.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Real-Postgres coverage for the surface a dispatched agent works through.
@@ -143,6 +144,7 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, 'Work Surface Project', 'active', now(), now())`,
     [PROJECT, SPACE, USER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool!);
   await db.pool!.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Worker', 'active', 'standard', 'private', now(), now())`,

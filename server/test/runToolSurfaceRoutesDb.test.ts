@@ -9,6 +9,7 @@ import { runsModule } from "../src/modules/runs/index.js";
 import { PgRunToolIdentityRepository } from "../src/modules/runs/runToolIdentityRepository.js";
 import { dispatchToolAllowance } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { buildRunToolGrants } from "../src/modules/systemActions/runToolGrants.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * The REST surface a dispatched agent reaches Rainver through.
@@ -87,6 +88,7 @@ beforeEach(async () => {
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'Tool Surface Project', 'active', now(), now())`, [PROJECT, SPACE, USER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool!);
   await db.pool!.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
      VALUES ($1, $2, $3, 'Worker', 'active', 'standard', 'private', now(), now())`, [AGENT, SPACE, USER],

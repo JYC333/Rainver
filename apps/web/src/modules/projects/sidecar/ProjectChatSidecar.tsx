@@ -79,7 +79,6 @@ export default function ProjectChatSidecar() {
 
   const openKey = `${STORAGE_PREFIX}.${projectId}.open`
   const conversationKey = (roomId: string) => `${STORAGE_PREFIX}.room.${roomId}.conversation`
-  const [reloadToken, setReloadToken] = useState(0)
   // Open unless this person closed it for this Project: conversation is the
   // way in, so the panel is there on first arrival rather than a button —
   // where it sits *beside* the page. Below `lg` it overlays the page, and an
@@ -122,8 +121,7 @@ export default function ProjectChatSidecar() {
     document.addEventListener('pointerup', stop)
   }, [width])
   const [room, setRoom] = useState<Room | null>(null)
-  const [canWrite, setCanWrite] = useState(false)
-  const [starting, setStarting] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const [sessionId, setSessionId] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -139,16 +137,15 @@ export default function ProjectChatSidecar() {
     setLoading(true)
     void (async () => {
       try {
+        setFailure(null)
         const mainline = await projectsApi.mainlineRoom(projectId)
         if (!active) return
         // Opening the Project enrols the viewer in its mainline if they were
         // not yet; the server does that, so a member who joined the Project
         // after the Room was started is not looking at an empty panel.
         setRoom(mainline.room)
-        setCanWrite(mainline.viewer_can_write)
         setConversations([])
         setSessionId('')
-        if (!mainline.room) return
         const page = await roomsApi.conversations(mainline.room.id, { limit: 50 })
         if (!active) return
         setConversations(page.items)
@@ -158,42 +155,31 @@ export default function ProjectChatSidecar() {
         const chosen = page.items.find(item => item.id === remembered) ?? page.items[0]
         setSessionId(chosen?.id ?? '')
       } catch (error) {
-        if (active) toast.error(errMsg(error))
+        if (!active) return
+        // Distinguished from "no conversation yet": the mainline read can now
+        // fail outright (a Project without one is a broken invariant the
+        // server reports as 500), and rendering that as an empty state with a
+        // disabled button would show a dead end instead of what went wrong.
+        setFailure(errMsg(error))
+        toast.error(errMsg(error))
       } finally {
         if (active) setLoading(false)
       }
     })()
     return () => { active = false }
-  }, [projectId, open, onRoomsArea, reloadToken])
+  }, [projectId, open, onRoomsArea])
 
   const focusRefs = useMemo(() => focusRefsFor(pathname), [pathname])
 
-  const startConversation = useCallback(async () => {
-    if (!projectId || !canWrite) return
-    setStarting(true)
-    try {
-      // The first Room in a Project becomes its mainline; everyone already in
-      // the Project is in it from the start.
-      await roomsApi.create({ project_id: projectId, title: 'Project conversation' })
-      setReloadToken(token => token + 1)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setStarting(false)
-    }
-  }, [projectId, canWrite])
-
-  const startThread = useCallback(async () => {
+  /**
+   * Leave the composer bound to no conversation. Sending is what creates one
+   * (ADR 0018 decision 5), and the send reports it back through
+   * `onConversationUpdated` — so a thread nobody writes in never exists.
+   */
+  const startThread = useCallback(() => {
     if (!room) return
-    try {
-      const created = await roomsApi.createConversation(room.id, { title: null })
-      setConversations(current => [created, ...current])
-      setSessionId(created.id)
-      writeStored(conversationKey(room.id), created.id)
-    } catch (error) {
-      toast.error(errMsg(error))
-    }
-  }, [room, projectId])
+    setSessionId('')
+  }, [room])
 
   if (onRoomsArea) return null
 
@@ -249,7 +235,7 @@ export default function ProjectChatSidecar() {
       <div className="flex items-center justify-between gap-2 border-b border-border p-3">
         <span className="text-sm font-medium">Project Agent</span>
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" disabled={!room} onClick={() => void startThread()} aria-label="Start a separate thread">
+          <Button size="sm" variant="ghost" disabled={!room} onClick={startThread} aria-label="Start a separate thread">
             <Plus className="size-4" />
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setOpen(false)} aria-label="Close Project chat">
@@ -277,37 +263,43 @@ export default function ProjectChatSidecar() {
 
       {loading ? (
         <div className="p-3"><Skeleton className="h-24 w-full" /></div>
-      ) : !room ? (
-        <div className="p-3">
-          {canWrite ? (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">This Project has no conversation yet.</p>
-              <Button size="sm" variant="outline" disabled={starting} onClick={() => void startConversation()}>
-                {starting ? 'Starting…' : "Start the Project's conversation"}
-              </Button>
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              This Project has no conversation yet. Someone who can write to it can start one.
-            </p>
-          )}
-        </div>
-      ) : sessionId ? (
+      ) : failure ? (
+        <p className="p-3 text-xs text-destructive">{failure}</p>
+      ) : !room ? null : (
         // The same conversation module the full Room page renders: one
         // implementation of what a conversation is, two places it is read.
         <RoomConversation
+          // Picking works here too: the panel has the Room's other
+          // threads, so a pick has somewhere to go. Starting a new thread is
+          // not one of this surface's affordances, so that action is not
+          // offered and the toolbar hides it.
+          siblingConversations={conversations}
           key={`${room.id}:${sessionId}`}
           roomId={room.id}
-          conversationId={sessionId}
+          conversationId={sessionId || null}
           variant="panel"
           focusRefs={focusRefs}
+          onConversationUpdated={conversation => {
+            // The first message created it. Bind to it so the next send goes
+            // to the same thread, and remember it like any other.
+            setSessionId(current => (current === conversation.id ? current : conversation.id))
+            setConversations(current => (current.some(item => item.id === conversation.id)
+              ? current.map(item => (item.id === conversation.id ? conversation : item))
+              : [conversation, ...current]))
+            writeStored(conversationKey(room.id), conversation.id)
+          }}
           emptyHint="Ask the Agent about what you are looking at — it already knows which Task that is."
         />
-      ) : null}
+      )}
       <div className="flex items-center justify-end border-t border-border px-3 py-1.5">
         <Link
-          to={room && sessionId
-            ? `/projects/${projectId}/rooms?room=${room.id}&conversation=${sessionId}`
+          // Always naming the Room: without it the Room page auto-selects the
+          // newest one, so leaving the mainline panel while composing a new
+          // thread could land the reader in a limited Room instead.
+          to={room
+            ? (sessionId
+              ? `/projects/${projectId}/rooms?room=${room.id}&conversation=${sessionId}`
+              : `/projects/${projectId}/rooms?room=${room.id}&new=1`)
             : `/projects/${projectId}/rooms`}
           className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:underline"
         >

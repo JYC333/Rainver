@@ -14,14 +14,11 @@ import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
 } from "../sessions/conversationRuntimeSessionRepository.js";
-import {
-  PgRoomRepository,
-  type RoomAgentMemberRecord,
-  type RoomRecord,
-  type RoomUserMemberRecord,
-} from "./repository.js";
+import { PgRoomRepository, ROOM_AUDIENCE_SQL, type RoomRecord } from "./repository.js";
+import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
-import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
+import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
+import type { RoomDetail, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService } from "./rosterService.js";
 import { RoomConversationSummaryService } from "./conversationSummaryService.js";
@@ -39,11 +36,16 @@ export interface RoomIdentity {
 // across requests — mirrors how the system action registry is loaded once.
 const continuationRegistry = createDefaultConversationContinuationRegistry();
 
+
 export class RoomService {
+  private readonly references: RoomReferenceService;
+
   constructor(
     private readonly config: ServerConfig,
     private readonly pool: Pool,
-  ) {}
+  ) {
+    this.references = new RoomReferenceService(config, pool);
+  }
 
   static fromConfig(config: ServerConfig): RoomService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -54,31 +56,39 @@ export class RoomService {
     return new RoomRosterService(this.config, this.pool);
   }
 
+  /**
+   * Open a Room: a second audience inside a Project (ADR 0018 decision 1).
+   *
+   * It creates a Room and nothing else. No Assistant is provisioned — a
+   * channel nobody has spoken in needs no manager, and seeding one resolves a
+   * prompt asset and locks the Space row, which is failure this action should
+   * not carry. No conversation is created either; the first message creates
+   * the first conversation (decision 5), which is what makes an empty
+   * conversation impossible rather than merely discouraged.
+   */
   async createRoom(identity: RoomIdentity, input: {
     project_id: string;
     project_folder_id?: string | null;
     title: string;
+    personal?: boolean;
     idempotency_key?: string | null;
-  }): Promise<{
-    room: RoomRecord;
-    user_members: RoomUserMemberRecord[];
-    agent_members: RoomAgentMemberRecord[];
-    conversation: Awaited<ReturnType<PgSessionRepository["createRoomConversation"]>>;
-  }> {
+    // `RoomDetail`, not a structural echo of it. The schema is `.strict()`
+    // with every field required and nothing validates a response at runtime,
+    // so the annotation is the only thing that makes a missed branch a
+    // compile error rather than an `undefined` a consumer reads as `false`.
+  }): Promise<RoomDetail> {
     await assertProjectWriter(
       this.pool,
       identity.spaceId,
       input.project_id,
       identity.userId,
     );
-    const assistantPreparation = await SpaceAssistantService.prepareForRoomCreator(
-      this.pool,
-      this.config,
-      identity,
-    );
     return withDbTransaction(this.pool, async (client) => {
+      // The Project lock decides the mainline and personal-Room uniqueness
+      // below. The Space row is no longer locked here: that lock existed only
+      // to serialize Assistant provisioning, which has moved to the first
+      // message.
       await lockActiveProjectForMutation(client, identity.spaceId, input.project_id);
-      await client.query("SELECT id FROM spaces WHERE id = $1 FOR UPDATE", [identity.spaceId]);
       await assertProjectWriter(
         client,
         identity.spaceId,
@@ -99,9 +109,8 @@ export class RoomService {
         const prior = await client.query<{
           request_fingerprint: string;
           room_id: string;
-          conversation_id: string;
         }>(
-          `SELECT request_fingerprint, room_id, conversation_id
+          `SELECT request_fingerprint, room_id
              FROM room_creation_idempotencies
             WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3
             FOR UPDATE`,
@@ -112,28 +121,22 @@ export class RoomService {
           if (existing.request_fingerprint !== fingerprint) {
             throw new HttpError(409, "Idempotency-Key was already used with different Room parameters");
           }
-          const existingRoom = await new PgRoomRepository(client).getVisibleRoom(
+          const existingRepository = new PgRoomRepository(client);
+          const existingRoom = await existingRepository.getVisibleRoom(
             identity.spaceId,
             identity.userId,
             existing.room_id,
             true,
           );
-          const existingConversation = existingRoom
-            ? await new PgRoomRepository(client).getConversation(
-                identity.spaceId,
-                existing.room_id,
-                existing.conversation_id,
-              )
-            : null;
-          if (!existingRoom || !existingConversation) {
+          if (!existingRoom) {
             throw new HttpError(409, "The idempotent Room result is no longer available");
           }
-          const existingRepository = new PgRoomRepository(client);
           return {
             room: existingRoom,
             user_members: await existingRepository.listUserMembers(identity.spaceId, existingRoom.id),
             agent_members: await existingRepository.listAgentMembers(identity.spaceId, existingRoom.id),
-            conversation: existingConversation,
+            viewer_can_write: true,
+            ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, existingRoom.id, identity.userId)),
           };
         }
       }
@@ -150,21 +153,35 @@ export class RoomService {
           );
         }
       }
-      // The Room's Project, so each Project talks to its own instance.
-      const assistant = await new SpaceAssistantService(client, this.pool)
-        .ensureForRoomCreator(identity, assistantPreparation, input.project_id);
       const repository = new PgRoomRepository(client);
-      // The first Room in a Project is its mainline: the one the chat panel
-      // binds to and every Project member belongs to. Decided under the
-      // Project lock taken above, so two first Rooms cannot both claim it.
-      const isMainline = (await repository.getMainlineRoom(identity.spaceId, input.project_id)) === null;
+      // A Room opened here is never the mainline: that one is created with the
+      // Project. A personal Room is reused rather than duplicated, under the
+      // Project lock taken above so two concurrent continuations cannot both
+      // open one.
+      if (input.personal) {
+        const existingPersonal = await repository.getPersonalRoom(
+          identity.spaceId,
+          input.project_id,
+          identity.userId,
+        );
+        if (existingPersonal) {
+          return {
+            room: existingPersonal,
+            user_members: await repository.listUserMembers(identity.spaceId, existingPersonal.id),
+            agent_members: await repository.listAgentMembers(identity.spaceId, existingPersonal.id),
+            viewer_can_write: true,
+            ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, existingPersonal.id, identity.userId)),
+          };
+        }
+      }
       const room = await repository.createRoom({
         space_id: identity.spaceId,
         project_id: input.project_id,
         project_folder_id: input.project_folder_id ?? null,
         created_by_user_id: identity.userId,
         title: requiredText(input.title, "title"),
-        is_mainline: isMainline,
+        is_mainline: false,
+        personal_for_user_id: input.personal ? identity.userId : null,
       });
       await repository.addUserMember({
         space_id: identity.spaceId,
@@ -172,46 +189,12 @@ export class RoomService {
         user_id: identity.userId,
         role: "owner",
       });
-      if (isMainline) {
-        // Everyone already in the Project is in its mainline from the start.
-        // Members who join the Project later are enrolled the first time they
-        // open it (`getProjectMainline`), so there is no membership to sync.
-        const members = await client.query<{ user_id: string }>(
-          `SELECT pm.user_id
-             FROM project_members pm
-            WHERE pm.space_id = $1 AND pm.project_id = $2 AND pm.status = 'active'
-              AND pm.user_id <> $3
-           UNION
-           SELECT p.owner_user_id
-             FROM projects p
-            WHERE p.space_id = $1 AND p.id = $2
-              AND p.owner_user_id IS NOT NULL AND p.owner_user_id <> $3`,
-          [identity.spaceId, input.project_id, identity.userId],
-        );
-        for (const { user_id: userId } of members.rows) {
-          await repository.ensureUserMember({ space_id: identity.spaceId, room_id: room.id, user_id: userId });
-        }
-      }
-      await repository.addAgentMember({
-        space_id: identity.spaceId,
-        room_id: room.id,
-        agent_id: assistant.id,
-        role: "manager",
-      });
-      const conversation = await new PgSessionRepository(client).createRoomConversation({
-        space_id: identity.spaceId,
-        room_id: room.id,
-        project_id: room.project_id,
-        project_folder_id: room.project_folder_id,
-        title: "New conversation",
-        metadata: { conversation_kind: "room" },
-      });
       if (idempotencyKey && fingerprint) {
         await client.query(
           `INSERT INTO room_creation_idempotencies (
              id, space_id, user_id, idempotency_key, request_fingerprint,
-             room_id, conversation_id, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+             room_id, created_at, updated_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
           [
             cryptoRandomId(),
             identity.spaceId,
@@ -219,7 +202,6 @@ export class RoomService {
             idempotencyKey,
             fingerprint,
             room.id,
-            conversation.id,
           ],
         );
       }
@@ -227,7 +209,11 @@ export class RoomService {
         room,
         user_members: await repository.listUserMembers(identity.spaceId, room.id),
         agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
-        conversation,
+        // Whoever just opened it can write the Project — `createRoom` asserts
+        // that above — but it is stated rather than assumed, because the
+        // response is a `RoomDetail` and every one of those carries it.
+        viewer_can_write: true,
+        ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, room.id, identity.userId)),
       };
     });
   }
@@ -299,20 +285,24 @@ export class RoomService {
    *
    * Membership is Project membership: a reader who is not on the roster yet is
    * enrolled here, on first open, rather than by syncing rosters whenever
-   * Project membership changes — one place, no drift. A reader is anyone the
-   * Project admits; whether they may *start* a Room is a separate answer the
-   * panel needs when there is none yet.
+   * Project membership changes — one place, no drift.
+   *
+   * Always returns a Room. Since ADR 0018 decision 4 every Project is created
+   * with its mainline and no path archives it, so absence is a broken
+   * invariant, not a Project nobody has started — and reporting it as 500
+   * rather than handing back a null keeps every caller free of a branch that
+   * used to exist only to be got wrong.
    */
   async getProjectMainline(
     identity: RoomIdentity,
     projectId: string,
-  ): Promise<{ room: RoomRecord | null; joined: boolean; viewer_can_write: boolean }> {
+  ): Promise<{ room: RoomRecord; joined: boolean; viewer_can_write: boolean }> {
     await assertProjectReadable(this.pool, identity.spaceId, projectId, identity.userId);
     return withDbTransaction(this.pool, async (client) => {
       const repository = new PgRoomRepository(client);
       const room = await repository.getMainlineRoom(identity.spaceId, projectId);
       const viewerCanWrite = await canWriteProject(client, identity.spaceId, projectId, identity.userId);
-      if (!room) return { room: null, joined: false, viewer_can_write: viewerCanWrite };
+      if (!room) throw new HttpError(500, "Project has no mainline Room");
       const { joined } = await repository.ensureUserMember({
         space_id: identity.spaceId,
         room_id: room.id,
@@ -340,8 +330,13 @@ export class RoomService {
   ): Promise<{
     items: Array<{
       id: string; room_id: string; room_title: string; room_is_mainline: boolean;
+      room_other_member_names: string[]; room_agent_count: number;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: number;
+    }>;
+    empty_rooms: Array<{
+      room_id: string; room_is_mainline: boolean;
+      room_other_member_names: string[]; room_agent_count: number;
     }>;
     total: number; limit: number; offset: number; viewer_can_write: boolean;
   }> {
@@ -362,10 +357,13 @@ export class RoomService {
     );
     const rows = await this.pool.query<{
       id: string; room_id: string; room_title: string; room_is_mainline: boolean;
+      room_other_member_names: string[] | null; room_agent_count: string;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: string;
     }>(
       `SELECT s.id, s.room_id, room.title AS room_title, room.is_mainline AS room_is_mainline,
+              roster.other_member_names AS room_other_member_names,
+              roster.agent_count AS room_agent_count,
               s.title, s.created_at,
               last.created_at AS last_message_at, last.role AS last_message_role,
               left(last.content, 160) AS last_message_preview,
@@ -382,18 +380,54 @@ export class RoomService {
            SELECT count(*) AS total FROM messages m
             WHERE m.space_id = s.space_id AND m.session_id = s.id
          ) counted ON true
+         LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
          ${visible}
         ORDER BY room.is_mainline DESC,
                  COALESCE(last.created_at, s.updated_at) DESC, s.id DESC
         LIMIT $4 OFFSET $5`,
       [...params, input.limit, input.offset],
     );
+    // A Room with no conversation is invisible to a query over conversations,
+    // and a Room is only reachable through one — so opening a limited Room and
+    // leaving before saying anything left it with no way back. Same membership
+    // join, so this reveals no Room the list would not have.
+    const emptyRooms = await this.pool.query<{
+      room_id: string; room_is_mainline: boolean;
+      other_member_names: string[] | null; agent_count: string;
+    }>(
+      `SELECT room.id AS room_id, room.is_mainline AS room_is_mainline,
+              roster.other_member_names, roster.agent_count
+         FROM rooms room
+         JOIN room_user_members member
+           ON member.room_id = room.id AND member.space_id = room.space_id
+          AND member.user_id = $2 AND member.status = 'active'
+         LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
+        WHERE room.space_id = $1 AND room.project_id = $3 AND room.status = 'active'
+          -- Any conversation at all, not only an active one: a Room whose
+          -- threads were archived has been spoken in, and calling it "nothing
+          -- said yet" would be false.
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions s
+             WHERE s.space_id = room.space_id AND s.room_id = room.id
+          )
+        ORDER BY room.is_mainline DESC, room.updated_at DESC, room.id DESC`,
+      params,
+    );
+
     return {
       items: rows.rows.map((row) => ({
         ...row,
+        room_other_member_names: row.room_other_member_names ?? [],
+        room_agent_count: Number(row.room_agent_count),
         created_at: dateIso(row.created_at)!,
         last_message_at: dateIso(row.last_message_at),
         message_count: Number(row.message_count),
+      })),
+      empty_rooms: emptyRooms.rows.map((row) => ({
+        room_id: row.room_id,
+        room_is_mainline: row.room_is_mainline,
+        room_other_member_names: row.other_member_names ?? [],
+        room_agent_count: Number(row.agent_count),
       })),
       total: Number(total.rows[0]?.total ?? 0),
       limit: input.limit,
@@ -414,32 +448,18 @@ export class RoomService {
     return this.rosterService().claimOwner(identity, roomId);
   }
 
-  async getRoom(identity: RoomIdentity, roomId: string) {
+  async getRoom(identity: RoomIdentity, roomId: string): Promise<RoomDetail> {
     const repository = new PgRoomRepository(this.pool);
     const room = await requireRoom(repository, identity, roomId);
     return {
       room,
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
       agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
+      // What every roster mutation is gated on, so the page can show only the
+      // controls the server will accept.
+      viewer_can_write: await canWriteProject(this.pool, identity.spaceId, room.project_id, identity.userId),
+      ...(await repository.audienceForViewer(identity.spaceId, room.id, identity.userId)),
     };
-  }
-
-  async createConversation(
-    identity: RoomIdentity,
-    roomId: string,
-    input: { title?: string | null },
-  ) {
-    return withDbTransaction(this.pool, async (client) => {
-      const room = await requireRoom(new PgRoomRepository(client), identity, roomId, true);
-      return new PgSessionRepository(client).createRoomConversation({
-        space_id: identity.spaceId,
-        room_id: room.id,
-        project_id: room.project_id,
-        project_folder_id: room.project_folder_id,
-        title: optionalText(input.title) ?? "New conversation",
-        metadata: { conversation_kind: "room" },
-      });
-    });
   }
 
   async listConversations(identity: RoomIdentity, roomId: string, input: {
@@ -497,7 +517,20 @@ export class RoomService {
     });
   }
 
-  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
+  /**
+   * Speak in a Room.
+   *
+   * `sessionId` may be null, and that is how a conversation comes into
+   * existence: the first message creates it in the transaction that writes the
+   * message (ADR 0018 decision 5). Nothing creates an empty conversation, so
+   * there is no rule to enforce about not leaving one behind.
+   *
+   * The Room's manager Agent is provisioned here too, for the same reason —
+   * a channel nobody has spoken in needs no manager, and provisioning can fail
+   * on a Space with no eligible backend, which should fail a message rather
+   * than the creation of the Room or its Project.
+   */
+  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string | null, input: {
     content: string;
     focus_refs?: Array<{ type: "task"; id: string }> | null;
     routing_mode?: "direct" | "agent_coordination";
@@ -507,19 +540,264 @@ export class RoomService {
       runtime_profile_id: string;
       credential_profile_id?: string | null;
     }>;
+    references?: ThreadReferencePick[];
+    confirm_disclosure?: boolean | readonly string[];
+    idempotency_key?: string | null;
   }) {
+    // Preparing an Assistant loads the seed and discovers CLI adapters, which
+    // is filesystem work that does not belong inside a transaction. Only a
+    // Room nobody has spoken in needs it, so the common send pays one query.
+    const assistantPreparation = await this.prepareManagerIfMissing(identity, roomId);
+    // Only the session-less send carries references; an addressed one is
+    // refused below. Done before the transaction so the model call this may
+    // make happens outside the Room row lock.
+    if (!sessionId) await this.references.prepareSummaries(identity, roomId, input.references);
     return withDbTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
+      // The Room row lock is unconditional, as it has always been. Every
+      // roster mutation holds it for its whole transaction, so it is what
+      // stops a member removed mid-send from being granted the Run this send
+      // is about to create.
       const room = await requireRoom(rooms, identity, roomId, true);
-      await requireConversation(rooms, identity, roomId, sessionId);
-      return this.dispatchRoomMessage(client, rooms, room, identity, sessionId, {
+      if (assistantPreparation) {
+        await this.ensureRoomManager(client, rooms, room, identity, assistantPreparation);
+      }
+      // A retried send that already created its conversation returns that
+      // conversation's transcript rather than starting a second one. Only the
+      // session-less send needs this: an addressed send is already guarded by
+      // `claimTurn` on the conversation it names.
+      const idempotencyKey = sessionId ? null : normalizeIdempotencyKey(input.idempotency_key);
+      const fingerprint = idempotencyKey
+        ? firstMessageFingerprint(roomId, input.content, input.references ?? [], {
+            routing_mode: input.routing_mode ?? null,
+            recipient_segments: input.recipient_segments ?? null,
+            focus_refs: input.focus_refs ?? null,
+            backends: input.backends ?? [],
+          })
+        : null;
+      if (idempotencyKey && fingerprint) {
+        const replay = await this.replayFirstMessage(client, identity, roomId, idempotencyKey, fingerprint);
+        if (replay) return replay;
+      }
+      const conversationId = sessionId
+        ? (await requireConversation(rooms, identity, roomId, sessionId)).id
+        : (await this.createConversationForSend(client, room, identity)).id;
+      if (idempotencyKey && fingerprint) {
+        await client.query(
+          `INSERT INTO room_first_message_idempotencies (
+             id, space_id, user_id, idempotency_key, request_fingerprint,
+             room_id, session_id, created_at, updated_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+          [cryptoRandomId(), identity.spaceId, identity.userId, idempotencyKey, fingerprint, roomId, conversationId],
+        );
+      }
+      // Before the message, in the same transaction: a reference is what the
+      // thread opens with, and a send that fails must not leave one behind.
+      // An addressed send names a thread that already exists, and that
+      // thread's own endpoint is where references go. Refused rather than
+      // ignored: answering 201 with nothing attached is the silent success
+      // this path exists to avoid.
+      if (sessionId && input.references?.length) {
+        throw new HttpError(422, "Attach references to an existing conversation through its own endpoint");
+      }
+      let messageCreatedAt: string | undefined;
+      if (!sessionId && input.references?.length) {
+        const after = await this.references.attach(client, room, identity, conversationId, {
+          references: input.references,
+          confirm_disclosure: input.confirm_disclosure,
+        });
+        // Strictly after the references it arrived with, so the thread reads
+        // in the order it was assembled.
+        messageCreatedAt = new Date(after).toISOString();
+      }
+      const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversationId, {
         content: requiredText(input.content, "content"),
+        created_at: messageCreatedAt,
         focus_refs: input.focus_refs ?? null,
         routing_mode: input.routing_mode ?? "direct",
         recipient_segments: input.recipient_segments ?? null,
         backends: input.backends ?? [],
         kind: "user",
       });
+      if (idempotencyKey) {
+        // Recorded now that the message exists, so a replay can answer with
+        // this exact turn.
+        await client.query(
+          `UPDATE room_first_message_idempotencies
+              SET message_id = $4, updated_at = now()
+            WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3`,
+          [identity.spaceId, identity.userId, idempotencyKey, dispatched.message.id],
+        );
+      }
+      return dispatched;
+    });
+  }
+
+  /**
+   * Null when nothing needs preparing: the Room already has a manager, or the
+   * caller is not on its roster and the transaction is going to refuse them
+   * anyway.
+   *
+   * `requireRoom` inside the transaction remains what decides access — this
+   * query only avoids paying for a seed load and CLI adapter discovery on
+   * behalf of someone who will get a 404.
+   */
+  private async prepareManagerIfMissing(
+    identity: RoomIdentity,
+    roomId: string,
+  ): Promise<ManagedAssistantPreparation | null> {
+    const needed = await this.pool.query<{ one: number }>(
+      `SELECT 1 AS one
+         FROM rooms room
+         JOIN room_user_members member
+           ON member.space_id = room.space_id AND member.room_id = room.id
+          AND member.user_id = $3 AND member.status = 'active'
+        WHERE room.space_id = $1 AND room.id = $2 AND room.status = 'active'
+          AND NOT EXISTS (
+            SELECT 1 FROM room_agent_members manager
+             WHERE manager.space_id = room.space_id AND manager.room_id = room.id
+               AND manager.role = 'manager' AND manager.status = 'active'
+          )
+        LIMIT 1`,
+      [identity.spaceId, roomId, identity.userId],
+    );
+    if (!needed.rows[0]) return null;
+    return SpaceAssistantService.prepareForRoomCreator(this.pool, this.config, identity);
+  }
+
+  /**
+   * The result of a send this key already performed, or null for a first use.
+   *
+   * `FOR UPDATE` locks the key row when one exists. It is *not* what
+   * serialises two first deliveries — there is no row yet to lock. That comes
+   * from the unconditional `FOR UPDATE OF room` the send already takes, which
+   * is why narrowing that lock would let both deliveries create a
+   * conversation and leave the loser failing on the unique index.
+   */
+  private async replayFirstMessage(
+    client: PoolClient,
+    identity: RoomIdentity,
+    roomId: string,
+    idempotencyKey: string,
+    fingerprint: string,
+  ) {
+    const prior = await client.query<{ request_fingerprint: string; session_id: string; message_id: string | null }>(
+      `SELECT request_fingerprint, session_id, message_id
+         FROM room_first_message_idempotencies
+        WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3
+        FOR UPDATE`,
+      [identity.spaceId, identity.userId, idempotencyKey],
+    );
+    const existing = prior.rows[0];
+    if (!existing) return null;
+    if (existing.request_fingerprint !== fingerprint) {
+      throw new HttpError(409, "Idempotency-Key was already used with a different message");
+    }
+    const rooms = new PgRoomRepository(client);
+    const conversation = await rooms.getConversation(identity.spaceId, roomId, existing.session_id);
+    if (!conversation) throw new HttpError(409, "The idempotent send result is no longer available");
+    // The message this key wrote, fetched by id. Taking the newest user
+    // message instead would return somebody else's turn once the thread had
+    // moved on — and looking for it in a page of recent ones fails by
+    // construction, because the message a key names is the thread's *first*
+    // and drops out of any window as soon as the thread grows past it.
+    const last = existing.message_id
+      ? await new PgSessionRepository(client).roomMessageById(
+        identity.spaceId, identity.userId, roomId, existing.session_id, existing.message_id,
+      )
+      : null;
+    if (!last) throw new HttpError(409, "The idempotent send result is no longer available");
+    const metadata = record(last.metadata_json);
+    const groupId = typeof metadata.task_group_id === "string" ? metadata.task_group_id : null;
+    return {
+      message: last,
+      conversation,
+      task_group_ids: groupId ? [groupId] : [],
+      run_ids: stringArray(metadata.run_ids),
+    };
+  }
+
+
+
+  /**
+   * Attach references to a conversation that already exists. The other entry
+   * point is the session-less send, where they ride the first message.
+   */
+  async attachConversationReferences(
+    identity: RoomIdentity,
+    roomId: string,
+    sessionId: string,
+    input: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | readonly string[] },
+  ) {
+    await this.references.prepareSummaries(identity, roomId, input.references);
+    return withDbTransaction(this.pool, async (client) => {
+      const rooms = new PgRoomRepository(client);
+      const room = await requireRoom(rooms, identity, roomId, true);
+      await requireConversation(rooms, identity, roomId, sessionId);
+      await this.references.attach(client, room, identity, sessionId, input);
+      // Read back on the transaction's own client. `listMessages` builds its
+      // repositories from the pool, so it would neither see these uncommitted
+      // rows nor be safe to call while holding a connection.
+      const messages = await new PgSessionRepository(client).listRoomMessages(
+        identity.spaceId, identity.userId, roomId, sessionId, 50, 0,
+      );
+      const conversation = await rooms.getConversation(identity.spaceId, roomId, sessionId);
+      return {
+        items: messages ?? [],
+        task_group_ids: await rooms.listConversationTaskGroupIds(identity.spaceId, roomId, sessionId),
+        conversation,
+        limit: 50,
+        offset: 0,
+      };
+    });
+  }
+
+  /**
+   * The conversation a send with no session id speaks in: a new one, always.
+   *
+   * Always a new one: decision 5 says the message creates the conversation,
+   * and the surface that speaks without a conversation id is also the one
+   * behind "start a separate thread". What protects against a double submit
+   * is what protects every other send — the composer is disabled while one is
+   * in flight — and the session-less send carries an `Idempotency-Key` for a
+   * retry after a lost response. Two genuinely concurrent first messages make
+   * two conversations, which is a truthful description of two people each
+   * starting one.
+   */
+  private async createConversationForSend(
+    client: PoolClient,
+    room: RoomRecord,
+    identity: RoomIdentity,
+  ) {
+    return new PgSessionRepository(client).createRoomConversation({
+      space_id: identity.spaceId,
+      room_id: room.id,
+      project_id: room.project_id,
+      project_folder_id: room.project_folder_id,
+      title: "New conversation",
+      metadata: { conversation_kind: "room" },
+    });
+  }
+
+  private async ensureRoomManager(
+    client: PoolClient,
+    rooms: PgRoomRepository,
+    room: RoomRecord,
+    identity: RoomIdentity,
+    preparation: ManagedAssistantPreparation,
+  ): Promise<void> {
+    // Re-read under the Room lock: another first message may have provisioned
+    // one between the pre-transaction check and here.
+    const members = await rooms.listAgentMembers(identity.spaceId, room.id);
+    if (members.some((member) => member.role === "manager")) return;
+    // The Room's Project, so each Project talks to its own instance.
+    const assistant = await new SpaceAssistantService(client, this.pool)
+      .ensureForRoomCreator(identity, preparation, room.project_id);
+    await rooms.addAgentMember({
+      space_id: identity.spaceId,
+      room_id: room.id,
+      agent_id: assistant.id,
+      role: "manager",
     });
   }
 
@@ -702,6 +980,8 @@ export class RoomService {
         runtime_profile_id: string;
         credential_profile_id?: string | null;
       }>;
+      /** See `AddMessageInput.created_at`; set when references precede it. */
+      created_at?: string;
     } & (
       | { kind: "user"; proposal?: never }
       | {
@@ -788,7 +1068,7 @@ export class RoomService {
               identity.userId,
               roomId,
               sessionId,
-              { content, metadata: { room_id: roomId } },
+              { content, metadata: { room_id: roomId }, created_at: input.created_at },
             );
       if (!roomMessage) throw new HttpError(404, "Room conversation not found");
       const renamedConversation = input.kind === "user"
@@ -886,16 +1166,47 @@ function normalizeIdempotencyKey(value: string | null | undefined): string | nul
   return normalized;
 }
 
+/**
+ * What makes two deliveries the same request.
+ *
+ * The references are in it because they are what the key was added to
+ * protect: the same key with the same text but a different pick is a
+ * different request, and swallowing it as a retry would discard the pick in
+ * silence.
+ */
+function firstMessageFingerprint(
+  roomId: string,
+  content: string,
+  references: readonly { kind: string; id: string; item_ids?: string[] }[],
+  dispatch: Record<string, unknown>,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify([
+      roomId,
+      content.trim(),
+      references.map((reference) => [reference.kind, reference.id, [...(reference.item_ids ?? [])].sort()]),
+      // Everything else that decides what the turn does. A retry that changed
+      // recipients or backends is a different request, not the same one.
+      dispatch,
+    ]))
+    .digest("hex");
+}
+
 function createRoomFingerprint(input: {
   project_id: string;
   project_folder_id?: string | null;
   title: string;
+  personal?: boolean;
 }): string {
   return createHash("sha256")
     .update(JSON.stringify({
       project_id: input.project_id,
       project_folder_id: input.project_folder_id ?? null,
       title: input.title.trim(),
+      // A shared Room and a personal one are different requests; without this
+      // a replayed key with the flag flipped returns the other kind instead of
+      // the 409 the mismatch branch exists to produce.
+      personal: input.personal === true,
     }))
     .digest("hex");
 }
@@ -1005,11 +1316,6 @@ function requiredText(value: string, field: string): string {
   const text = value.trim();
   if (!text) throw new HttpError(422, `${field} is required`);
   return text;
-}
-
-function optionalText(value: string | null | undefined): string | null {
-  const text = value?.trim();
-  return text || null;
 }
 
 function firstLine(value: string): string {

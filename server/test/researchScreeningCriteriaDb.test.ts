@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * R4/D12. Two screening columns were academic in a pipeline that is not:
@@ -42,6 +43,7 @@ beforeEach(async () => {
      VALUES ($1,$2,'Study','active',$3,$4,$4)`,
     [projectId, SPACE, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 const identity = { spaceId: SPACE, userId: USER };

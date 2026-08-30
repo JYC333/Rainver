@@ -52,19 +52,12 @@ describe('module registry official plugin overlay', () => {
     })
   })
 
-  it('registers Rooms as a built-in space-scoped module', () => {
-    const rooms = MODULE_REGISTRY.find(module => module.id === 'rooms')
-
-    expect(rooms).toMatchObject({
-      label: 'Rooms',
-      path: '/rooms',
-      source: 'built_in',
-      group: 'agents',
-      perspectiveType: 'space-scoped',
-      enabled: true,
-      visible: true,
-      planned: false,
-    })
+  it('does not register a space-scoped Rooms index', () => {
+    // Rooms are reached through the Project they belong to; the cross-Project
+    // index was a picker in front of the layer ADR 0018 decision 2 makes
+    // invisible. `/projects/:projectId/rooms` remains, as one Room's roster
+    // surface, routed by the Projects module.
+    expect(MODULE_REGISTRY.find(module => module.id === 'rooms')).toBeUndefined()
   })
 
   it('does not register the retired research atlas top-level route', () => {

@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { FocusAreaService } from "../src/modules/focusAreas/service.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // A focus area classifies and never gates (ADR 0015). The properties worth
 // real-Postgres coverage are therefore the ones a service-level test cannot
@@ -120,6 +121,7 @@ describe("focus areas (real Postgres)", () => {
        VALUES ($1,$2,$3,'Tax return','active','delivery',$4,$4)`,
       [projectId, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     await service.setProjectFocusArea(identity, projectId, area.id);
     expect((await service.contents(identity, area.id)).projects).toEqual([

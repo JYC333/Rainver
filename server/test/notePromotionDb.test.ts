@@ -6,6 +6,7 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService.js
 import { loadConfig } from "../src/config.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // ND: promoting a passage produces a knowledge item whose provenance records
 // the originating Note, and the Note is unchanged. "This knowledge came from
@@ -45,6 +46,7 @@ beforeEach(async () => {
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 const identity = { spaceId: SPACE, userId: USER };

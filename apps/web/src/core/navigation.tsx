@@ -166,10 +166,9 @@ export const SCENES: Scene[] = [
     id: 'agents',
     title: 'Agents',
     icon: Bot,
-    segments: ['agents', 'rooms', 'sessions', 'runs', 'automations', 'capabilities'],
+    segments: ['agents', 'sessions', 'runs', 'automations', 'capabilities'],
     items: [
       { label: 'My agents',  to: '/agents' },
-      { label: 'Rooms',      to: '/rooms' },
       { label: 'Chat history', to: '/sessions' },
       { label: 'Templates',  to: '/agents/templates' },
       { label: 'Runs',       to: '/runs' },

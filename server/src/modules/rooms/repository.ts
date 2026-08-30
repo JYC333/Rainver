@@ -15,6 +15,7 @@ export interface RoomRecord {
   archived_at: string | null;
   roster_revision: number;
   is_mainline: boolean;
+  personal_for_user_id: string | null;
 }
 
 export interface RoomUserMemberRecord {
@@ -45,13 +46,14 @@ export interface RoomAgentMemberRecord {
 const ROOM_COLUMNS = `
   id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
   created_at, updated_at, archived_at
-  , roster_revision::int AS roster_revision, is_mainline
+  , roster_revision::int AS roster_revision, is_mainline, personal_for_user_id
 `;
 const ROOM_SELECT = `
   room.id, room.space_id, room.project_id, room.project_folder_id,
   room.created_by_user_id, room.title,
   room.status, room.created_at, room.updated_at, room.archived_at,
-  room.roster_revision::int AS roster_revision, room.is_mainline
+  room.roster_revision::int AS roster_revision, room.is_mainline,
+  room.personal_for_user_id
 `;
 const ROOM_PROJECT_READABLE = `
   EXISTS (
@@ -75,8 +77,52 @@ const ROOM_PROJECT_READABLE = `
   )
 `;
 
+/**
+ * A Room's audience, for a query that already has `room` in scope and the
+ * viewer in `$2`.
+ *
+ * The viewer is excluded: "with you, Alice and Bob" is noise on a label the
+ * viewer is reading. Shared by the conversation list and the empty-Room list
+ * so the same Room cannot be named two ways.
+ */
+export const ROOM_AUDIENCE_SQL = `
+  SELECT
+    COALESCE((
+      SELECT array_agg(u.display_name ORDER BY u.display_name)
+        FROM room_user_members rm
+        JOIN users u ON u.id = rm.user_id
+       WHERE rm.space_id = room.space_id AND rm.room_id = room.id
+         AND rm.status = 'active' AND rm.user_id <> $2
+    ), ARRAY[]::varchar[]) AS other_member_names,
+    (
+      SELECT count(*) FROM room_agent_members ram
+       WHERE ram.space_id = room.space_id AND ram.room_id = room.id
+         AND ram.status = 'active'
+    ) AS agent_count`;
+
 export class PgRoomRepository {
   constructor(private readonly db: Queryable) {}
+
+  /**
+   * A Room's audience as `RoomDetail` carries it, for the viewer named — the
+   * same `ROOM_AUDIENCE_SQL` the conversation list splices in, so the detail
+   * page and the list cannot name one Room two ways.
+   */
+  async audienceForViewer(
+    spaceId: string,
+    roomId: string,
+    viewerUserId: string,
+  ): Promise<{ other_member_names: string[]; agent_count: number }> {
+    const result = await this.db.query<{ other_member_names: string[] | null; agent_count: string }>(
+      `SELECT roster.other_member_names, roster.agent_count
+         FROM rooms room
+         LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
+        WHERE room.space_id = $1 AND room.id = $3`,
+      [spaceId, viewerUserId, roomId],
+    );
+    const row = result.rows[0];
+    return { other_member_names: row?.other_member_names ?? [], agent_count: Number(row?.agent_count ?? 0) };
+  }
 
   async createRoom(input: {
     space_id: string;
@@ -85,14 +131,15 @@ export class PgRoomRepository {
     created_by_user_id: string;
     title: string;
     is_mainline?: boolean;
+    personal_for_user_id?: string | null;
     now?: string;
   }): Promise<RoomRecord> {
     const now = input.now ?? new Date().toISOString();
     const result = await this.db.query<RoomRecord>(
       `INSERT INTO rooms (
          id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
-         created_at, updated_at, is_mainline
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7, $8)
+         created_at, updated_at, is_mainline, personal_for_user_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7, $8, $9)
        RETURNING ${ROOM_COLUMNS}`,
       [
         randomUUID(),
@@ -103,12 +150,18 @@ export class PgRoomRepository {
         input.title,
         now,
         input.is_mainline ?? false,
+        input.personal_for_user_id ?? null,
       ],
     );
     return required(result.rows[0], "Room insert returned no row");
   }
 
-  /** The Project's mainline Room, if one has been started. */
+  /**
+   * The Project's mainline Room. Created with the Project (ADR 0018 decision
+   * 4) and archived by no code path, so a null here is a broken invariant
+   * rather than a Project nobody has spoken to — callers that need one say so
+   * instead of branching on absence.
+   */
   async getMainlineRoom(spaceId: string, projectId: string): Promise<RoomRecord | null> {
     const result = await this.db.query<RoomRecord>(
       `SELECT ${ROOM_SELECT}
@@ -119,6 +172,47 @@ export class PgRoomRepository {
       [spaceId, projectId],
     );
     return result.rows[0] ?? null;
+  }
+
+  /**
+   * The Room whose audience is this one person, if they have one here.
+   *
+   * Private continuation needs somewhere to land that is not the Project's
+   * shared channel, and needs to land in the *same* place next time rather
+   * than accumulating a Room per continuation. The marker is cleared when
+   * anyone else joins, so this only ever returns a Room that is still private
+   * to them.
+   *
+   * It matches on the marker and `status`, not on live membership. That is
+   * safe only because nothing removes a Room's owner — `removeUser` refuses
+   * the mainline and roster removal never touches the owner row. If that ever
+   * changes, reuse could return a Room the caller is no longer in, which
+   * `getVisibleRoom` would then 404 with no replacement ever created.
+   */
+  async getPersonalRoom(spaceId: string, projectId: string, userId: string): Promise<RoomRecord | null> {
+    const result = await this.db.query<RoomRecord>(
+      `SELECT ${ROOM_SELECT}
+         FROM rooms room
+        WHERE room.space_id = $1 AND room.project_id = $2
+          AND room.personal_for_user_id = $3 AND room.status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId, userId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
+   * A personal Room stops being personal the moment its audience is more than
+   * one person. Clearing the marker rather than refusing the addition keeps
+   * roster management free of a special case, and costs only that the next
+   * private continuation opens a fresh Room instead of reusing this one.
+   */
+  async clearPersonalMarker(spaceId: string, roomId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE rooms SET personal_for_user_id = NULL, updated_at = now()
+        WHERE space_id = $1 AND id = $2 AND personal_for_user_id IS NOT NULL`,
+      [spaceId, roomId],
+    );
   }
 
   /**

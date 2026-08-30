@@ -191,6 +191,30 @@ Runtime Context reads the active summary cursor
 and selects only the uncaptured recent tail, enforcing the 2,000-summary +
 6,000-recent token contract without overlap.
 
+## Imported history summary boundary
+
+`imported_history_summaries` is the deliberately simpler counterpart: one row
+per imported session, unique on `imported_session_id`, holding the short
+account a whole-session reference carries. It has no version chain, cursor or
+lease, because an imported session's records are fixed until its folder is
+re-synced — there is no growing thread to compact incrementally, which is the
+one thing the Room's machinery exists to do.
+
+Its integrity rests on two properties instead. The upsert is **monotonic**: it
+declines to write when the incoming `covered_through_record_at` is older than
+the stored one, so two overlapping runs cannot walk coverage backwards. And
+staleness is compared as an *instant*, never by identity — `pg` decodes
+`timestamptz` to a JS `Date`, so `===` between two reads is always false and
+would re-summarize, and re-bill, on every sync.
+
+Writes happen on demand, never eagerly at import: the attach path resolves any
+missing summary *before* opening its transaction, precisely because doing so
+makes a model call and the attach holds the Room row lock. That ordering is the
+contract — a summary is never generated inside a transaction, and a reference
+never waits on one that a background worker may or may not have reached.
+
+## Transaction hold rules
+
 Do not hold an open transaction while calling:
 - Runtime adapters
 - LLM/model providers

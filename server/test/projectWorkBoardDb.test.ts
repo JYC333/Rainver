@@ -13,6 +13,7 @@ import { appendProjectWorkEvent } from "../src/modules/projectWork/eventWriter.j
 import { resolveUserActorId } from "../src/db/actorResolver.js";
 import { HttpError, withDbTransaction } from "../src/modules/routeUtils/common.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../src/modules/projects/access.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Real-Postgres coverage for the Board read model and the manual close gate.
@@ -135,6 +136,7 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, 'Board Project', 'active', 'research', now(), now())`,
     [PROJECT, SPACE, OWNER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool!);
   // Space membership does not grant Project access; the teammate is added to
   // the Project explicitly, which is what makes the visibility case below a
   // test of content visibility rather than of the Project gate.

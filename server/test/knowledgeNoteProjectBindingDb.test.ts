@@ -6,6 +6,7 @@ import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFo
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Placement is what binds a note to a Project (U7), and the binding is
@@ -44,6 +45,7 @@ async function makeProject(name: string): Promise<string> {
      VALUES ($1,$2,$3,'active',$4,$5,$5)`,
     [id, SPACE, name, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   return id;
 }
 

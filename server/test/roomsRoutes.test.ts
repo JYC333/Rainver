@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { HttpError } from "../src/modules/routeUtils/common.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { __setRoomServiceFactoryForTests } from "../src/modules/rooms/routes.js";
@@ -20,7 +21,6 @@ function service(overrides: Record<string, unknown>) {
     createRoom: async () => { throw new Error("not used"); },
     listRooms: async () => { throw new Error("not used"); },
     getRoom: async () => { throw new Error("not used"); },
-    createConversation: async () => { throw new Error("not used"); },
     listConversations: async () => { throw new Error("not used"); },
     listMessages: async () => { throw new Error("not used"); },
     getConversationSummary: async () => { throw new Error("not used"); },
@@ -57,17 +57,6 @@ describe("Room routes", () => {
           },
           user_members: [],
           agent_members: [],
-          conversation: {
-            id: "session-1",
-            space_id: "space-1",
-            room_id: "room-1",
-            project_id: "project-1",
-            project_folder_id: null,
-            title: "Conversation",
-            status: "active",
-            created_at: "2026-07-26T00:00:00.000Z",
-            updated_at: "2026-07-26T00:00:00.000Z",
-          },
         };
       },
     }));
@@ -95,6 +84,62 @@ describe("Room routes", () => {
         idempotency_key: "room-route-test-1",
       },
     });
+  });
+
+  it("speaks in a Room that has no conversation yet, and returns the one that made", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let seen: unknown;
+    __setRoomServiceFactoryForTests(() => service({
+      sendMessage: async (
+        identity: unknown,
+        roomId: string,
+        sessionId: string | null,
+        input: unknown,
+      ) => {
+        seen = { identity, roomId, sessionId, input };
+        return {
+          message: {
+            id: "message-1",
+            space_id: "space-1",
+            session_id: "session-new",
+            user_id: "user-1",
+            sender_agent_id: null,
+            role: "user",
+            content: "Start here",
+            metadata_json: { task_group_id: "group-1", run_ids: ["run-1"] },
+            created_at: "2026-07-26T00:00:00.000Z",
+          },
+          conversation: {
+            id: "session-new",
+            space_id: "space-1",
+            room_id: "room-1",
+            project_id: "project-1",
+            project_folder_id: null,
+            title: "Start here",
+            status: "active",
+            created_at: "2026-07-26T00:00:00.000Z",
+            updated_at: "2026-07-26T00:00:00.000Z",
+          },
+          task_group_ids: ["group-1"],
+          run_ids: ["run-1"],
+        };
+      },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/messages",
+      payload: { content: "Start here" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    // The conversation this message created comes back on the response, so
+    // the caller never has to create one first (ADR 0018 decision 5).
+    expect(response.json()).toMatchObject({ conversation: { id: "session-new" } });
+    // The absent session id reaches the service as null, not as the string
+    // "messages" from a mis-parsed path.
+    expect(seen).toMatchObject({ roomId: "room-1", sessionId: null });
   });
 
   it("dispatches a Room message with the signed-in user's backend selection", async () => {
@@ -348,6 +393,87 @@ describe("Room routes", () => {
     expect(seen[3]).toMatchObject({
       method: "transferOwner",
       args: [{ spaceId: "space-1", userId: "user-1" }, "room-1", "user-2"],
+    });
+  });
+
+  it("copies picked content into an existing conversation through the public boundary", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let seen: unknown;
+    __setRoomServiceFactoryForTests(() => service({
+      attachConversationReferences: async (identity: unknown, roomId: unknown, sessionId: unknown, input: unknown) => {
+        seen = { identity, roomId, sessionId, input };
+        return { items: [], task_group_ids: [], conversation: null, limit: 50, offset: 0 };
+      },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/conversations/session-1/references",
+      payload: {
+        references: [{ kind: "messages", id: "session-0", item_ids: ["m-1"] }],
+        confirm_disclosure: ["user-2"],
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ items: [], limit: 50, offset: 0 });
+    // The contract reaches the service intact: the picks, and the ids the
+    // person confirmed — never a bare `true` the client did not send.
+    expect(seen).toEqual({
+      identity: { spaceId: "space-1", userId: "user-1" },
+      roomId: "room-1",
+      sessionId: "session-1",
+      input: {
+        references: [{ kind: "messages", id: "session-0", item_ids: ["m-1"] }],
+        confirm_disclosure: ["user-2"],
+      },
+    });
+  });
+
+  it("refuses an attach that names nothing before it reaches the service", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let reached = false;
+    __setRoomServiceFactoryForTests(() => service({
+      attachConversationReferences: async () => { reached = true; return {}; },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/conversations/session-1/references",
+      payload: { references: [] },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(reached).toBe(false);
+  });
+
+  it("carries a disclosure refusal's code to the client, so the dialog can act on it", async () => {
+    // The 409 is only useful if the client can tell it from any other 409:
+    // it has to name who gains access, and it has to be recognisable by code
+    // rather than by prose.
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    __setRoomServiceFactoryForTests(() => service({
+      attachConversationReferences: async () => {
+        throw new HttpError(409, "Confirm the disclosure", {
+          code: "reference_disclosure_confirmation_required",
+          detail: "user-2 could not read this before.",
+          gains_access_user_ids: ["user-2"],
+        });
+      },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/conversations/session-1/references",
+      payload: { references: [{ kind: "thread", id: "session-0" }] },
+    });
+    expect(response.statusCode).toBe(409);
+    // `HttpError`'s payload is the response body, whole: the code and the
+    // named people reach the client as the schema declares them.
+    expect(response.json()).toMatchObject({
+      code: "reference_disclosure_confirmation_required",
+      gains_access_user_ids: ["user-2"],
     });
   });
 });

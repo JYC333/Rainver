@@ -36,7 +36,7 @@ async function stage() {
 
 describe("staging a sandboxed Run's work surface", () => {
   it("writes the Skill and the command into the Run's own HOME", async () => {
-    const { staged, surface } = await stage();
+    const { staged } = await stage();
 
     expect(await readFile(join(staged, "SKILL.md"), "utf8")).toBe(SKILL);
     expect((await stat(join(staged, "rainver"))).mode & 0o777).toBe(0o700);

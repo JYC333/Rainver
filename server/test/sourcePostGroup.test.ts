@@ -7,7 +7,7 @@ import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundSer
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
 import { normalizeActions, normalizeInputConfig, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
 import { defaultModelProviderForSpace, promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
-import { seedAgentWithVersion } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { seedArxivSourceChain } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { resetTables } from "./support/resetTables.js";
@@ -134,6 +134,7 @@ describe("sourcePostProcessingRecoveryDb", () => {
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, current_focus, created_at, updated_at) VALUES ($1,$2,$3,'Research','active','Research',$4,$4)`,
       [PROJECT, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await seedArxivSourceChain(db.pool, { connector: CONNECTOR, connection: CONNECTION, channel: CHANNEL, space: SPACE, owner: OWNER, now });
     await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, name: "Screening Agent", now });
     await db.pool.query(

@@ -1,5 +1,5 @@
 import { HttpError, intQuery } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import type { HomeSummaryOut } from "./frontendSupportTypes.js";
 
 export const ACTIVE_RUN_STATUSES = ["queued", "running", "waiting_for_review"];
@@ -19,16 +19,35 @@ export function boundedQueryInt(
   return parsed;
 }
 
+/**
+ * A viewer-scoped read of the `runs` table aliased `r`.
+ *
+ * The content predicate is not sufficient on its own: its oversight branch
+ * admits a Space owner or admin who is inside the Project, and a Room is a
+ * visibility boundary that holds against them too (ADR 0018 decision 3).
+ * Every Run list must carry both, or the boundary holds on the detail page and
+ * leaks on whichever list forgot.
+ */
 export function runReadSql(userParam: string): string {
-  return contentReadSql("run", "r", userParam);
+  return `${contentReadSql("run", "r", userParam)}
+    AND ${roomRunReadAccessSql("r.id", "r.space_id", userParam)}`;
 }
 
+/**
+ * The same pairing for a Proposal, aliased `p`. A Proposal inherits its
+ * originating Run's Room, which is why `proposals/repository.ts` has always
+ * carried this second term — these Home read models had not, so the Home
+ * pending-proposal list showed what the Proposal page then denied.
+ */
 export function proposalReadSql(userParam: string): string {
-  return contentReadSql("proposal", "p", userParam);
+  return `${contentReadSql("proposal", "p", userParam)}
+    AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", userParam)}`;
 }
 
+/** The same, for an Artifact aliased `a`, which inherits its Run's Room. */
 export function artifactReadSql(userParam: string): string {
-  return contentReadSql("artifact", "a", userParam);
+  return `${contentReadSql("artifact", "a", userParam)}
+    AND ${roomRunReadAccessSql("a.run_id", "a.space_id", userParam)}`;
 }
 
 export function taskReadSql(userParam: string): string {

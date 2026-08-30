@@ -14,6 +14,7 @@ import { InterestStarterPackService } from "../src/modules/informationDigest/sta
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -88,6 +89,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Digest Project','active','{}',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'viewer','active',$5,$5)`,

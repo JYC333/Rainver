@@ -20,6 +20,15 @@ export interface AddMessageInput {
   role: string;
   content: string;
   metadata?: Record<string, unknown> | null;
+  /**
+   * Overrides the wall clock. Every ordering in the system is
+   * `(created_at, id)` and `created_at` is millisecond precision, so two
+   * messages written in one transaction can collide and fall back to a random
+   * UUID. A caller writing several in sequence — references and then the
+   * message that carried them — stamps them explicitly so the order it
+   * intends is the order that is stored.
+   */
+  created_at?: string;
 }
 
 export interface QueryResult<Row> {
@@ -202,6 +211,8 @@ export class PgSessionRepository {
     limit: number,
     offset: number,
     visibleRoomTranscriptOnly = false,
+    /** One message by id, through this same projection rather than a second one. */
+    messageId: string | null = null,
   ): Promise<MessageOut[]> {
     const result = await this.db.query<MessageRow>(
       `SELECT *
@@ -219,11 +230,12 @@ export class PgSessionRepository {
             WHERE m.session_id = $1
               AND m.space_id = $2
               AND ($5::boolean = false OR COALESCE(m.metadata_json->>'room_display', 'conversation') <> 'internal')
+              AND ($6::varchar IS NULL OR m.id = $6)
             ORDER BY m.created_at DESC, m.id DESC
             LIMIT $3 OFFSET $4
          ) message_page
         ORDER BY message_page.created_at ASC, message_page.id ASC`,
-      [sessionId, spaceId, limit, offset, visibleRoomTranscriptOnly],
+      [sessionId, spaceId, limit, offset, visibleRoomTranscriptOnly, messageId],
     );
     return result.rows.map(messageToOut);
   }
@@ -244,6 +256,50 @@ export class PgSessionRepository {
     );
     if (!session) return null;
     return this.loadMessagePage(spaceId, sessionId, limit, offset, true);
+  }
+
+  /**
+   * One Room message by id, gated and projected exactly as the page is.
+   *
+   * For a caller that already knows which message it wants. An idempotent
+   * replay names a thread's *first* message, which falls out of any
+   * recent-page window as soon as the thread grows past it.
+   */
+  async roomMessageById(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    messageId: string,
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
+    if (!session) return null;
+    const page = await this.loadMessagePage(spaceId, sessionId, 1, 0, true, messageId);
+    return page[0] ?? null;
+  }
+
+  /**
+   * Named messages of one conversation, in transcript order.
+   *
+   * For a caller that already holds the conversation and has decided the
+   * viewer may read it; this only fetches what they named. Internal
+   * instructions are excluded, as they are from the transcript: the pick
+   * surface must not be wider than what the person can read.
+   */
+  async roomMessagesByIds(
+    spaceId: string,
+    sessionId: string,
+    ids: readonly string[],
+  ): Promise<Array<{ id: string; role: string; content: string; created_at: string }>> {
+    const result = await this.db.query<{ id: string; role: string; content: string; created_at: string }>(
+      `SELECT id, role, content, created_at
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND id = ANY($3::varchar[])
+          AND COALESCE(metadata_json->>'room_display', '') <> 'internal'
+        ORDER BY created_at ASC, id ASC`,
+      [spaceId, sessionId, [...ids]],
+    );
+    return result.rows;
   }
 
   async listRecentMessagesForContext(
@@ -427,6 +483,38 @@ export class PgSessionRepository {
     }, null);
   }
 
+  /**
+   * Content copied in from elsewhere, as a message in this conversation.
+   *
+   * System role, like an internal instruction: it is execution context and
+   * transcript, but it is not somebody speaking. That distinction is load
+   * bearing — the checkpoint extractor derives `confirmed` from `role='user'`
+   * alone, so a reference can never be read as the person having agreed to
+   * what it contains.
+   *
+   * `user_id` is stored so the transcript can say who attached it; the
+   * provenance block says where it came from and how far to trust it.
+   */
+  async addRoomReference(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    input: { content: string; provenance: Record<string, unknown>; created_at?: string },
+  ): Promise<MessageOut | null> {
+    const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
+    if (!session) return null;
+    return this.insertAttributedMessage(spaceId, userId, sessionId, {
+      content: input.content,
+      role: "system",
+      created_at: input.created_at,
+      metadata: {
+        room_display: "reference",
+        reference: input.provenance,
+      },
+    });
+  }
+
   async findRoomProposalContinuation(
     spaceId: string,
     userId: string,
@@ -485,7 +573,7 @@ export class PgSessionRepository {
     input: AddMessageInput,
     storedUserId: string | null = userId,
   ): Promise<MessageOut> {
-    const now = new Date().toISOString();
+    const now = input.created_at ?? new Date().toISOString();
     // Atomic: insert the message and touch the session's updated_at in one
     // statement (data-modifying CTEs run to completion regardless of the final
     // SELECT).

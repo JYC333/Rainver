@@ -5,6 +5,7 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { blockIds } from "../src/modules/knowledge/noteBlockIds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * The four capture destinations behind one entry (D1/D2).
@@ -62,6 +63,7 @@ beforeEach(async () => {
      VALUES ($1,$2,'Study','active',$3,$4,$4)`,
     [PROJECT, TEAM, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
@@ -438,6 +440,7 @@ describe("capture destinations (real Postgres)", () => {
        VALUES ($1,$2,'Other','active',$3,now(),now())`,
       [otherProject, TEAM, OWNER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     await expect(capture().capture({
       userId: OWNER, requestSpaceId: TEAM, destination: "object_marginalia",

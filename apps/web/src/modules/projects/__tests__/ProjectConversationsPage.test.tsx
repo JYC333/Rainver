@@ -1,13 +1,23 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectConversationsPage from '../ProjectConversationsPage'
-import { ambientSessionsApi, projectsApi } from '../../../api/client'
+import { ambientSessionsApi, projectsApi, roomsApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
-vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ spaceId: 'space-1', userId: 'user-1' }) }))
+const navigated: string[] = []
+vi.mock('../../../core/spaceNav', async () => {
+  const actual = await vi.importActual<typeof import('../../../core/spaceNav')>('../../../core/spaceNav')
+  return { ...actual, useSpaceNavigate: () => (to: string) => { navigated.push(to) } }
+})
+vi.mock('../../../contexts/SpaceContext', () => ({
+  useSpace: () => ({ spaceId: 'space-1', activeSpaceId: 'space-1', userId: 'user-1' }),
+}))
 vi.mock('../../../api/client', () => ({
-  projectsApi: { conversations: vi.fn() },
+  projectsApi: { conversations: vi.fn(), mainlineRoom: vi.fn(), readers: vi.fn() },
+  roomsApi: { create: vi.fn(), inviteUser: vi.fn() },
+  spacesApi: { members: vi.fn() },
   ambientSessionsApi: { listForProject: vi.fn(), pendingExtraction: vi.fn(), extract: vi.fn() },
 }))
 
@@ -23,14 +33,25 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  navigated.length = 0
   vi.mocked(ambientSessionsApi.listForProject).mockResolvedValue({ sessions: [] } as never)
   vi.mocked(ambientSessionsApi.pendingExtraction).mockResolvedValue({ records: 0, sessions: 0 } as never)
+  vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
+    room: { id: 'room-main', is_mainline: true }, joined: false, viewer_can_write: true,
+  } as never)
+  // The picker's candidates are the Project's readers, not the Space's
+  // members: the server refuses to invite anyone who cannot read the Project.
+  vi.mocked(projectsApi.readers).mockResolvedValue({
+    readers: [{ user_id: 'user-2', display_name: 'Alice', email: 'a@x', avatar_url: null }],
+  } as never)
   vi.mocked(projectsApi.conversations).mockResolvedValue({
     items: [
-      { id: 'conv-main', room_id: 'room-main', room_title: 'Daily', room_is_mainline: true, title: 'Main thread',
+      { id: 'conv-main', room_id: 'room-main', room_title: 'Daily', room_is_mainline: true,
+        room_other_member_names: ['Alice'], room_agent_count: 1, title: 'Main thread',
         created_at: '2026-08-27T08:00:00.000Z', last_message_at: '2026-08-27T09:00:00.000Z',
         last_message_role: 'assistant', last_message_preview: 'The summary is drafted.', message_count: 4 },
-      { id: 'conv-tax', room_id: 'room-tax', room_title: 'Tax season', room_is_mainline: false, title: null,
+      { id: 'conv-tax', room_id: 'room-tax', room_title: 'Tax season', room_is_mainline: false,
+        room_other_member_names: ['Bob', 'Carol'], room_agent_count: 2, title: null,
         created_at: '2026-08-26T08:00:00.000Z', last_message_at: null,
         last_message_role: null, last_message_preview: null, message_count: 0 },
     ],
@@ -39,25 +60,89 @@ beforeEach(() => {
 })
 
 describe('Project conversations', () => {
-  it('lists every conversation across Rooms, mainline first, each opening in its Room', async () => {
+  it('names a limited group by its audience, and the Project\'s own conversations not at all', async () => {
     renderPage()
     expect(await screen.findByText('Main thread')).toBeInTheDocument()
     expect(screen.getByText(/The summary is drafted/)).toBeInTheDocument()
-    // A topic Room's conversation says which Room it is in; the mainline does
-    // not need to.
-    expect(screen.getByText('Tax season')).toBeInTheDocument()
     expect(screen.getByText('Untitled conversation')).toBeInTheDocument()
     expect(screen.getByTestId('conversation-conv-main'))
-      .toHaveAttribute('href', '/projects/project-1/rooms?room=room-main&conversation=conv-main')
+      .toHaveAttribute('href', '/spaces/space-1/projects/project-1/rooms?room=room-main&conversation=conv-main')
+
+    // The Project's own conversations lead with no heading; the limited group
+    // is titled by who is in it, and the word "Room" never appears.
     const headings = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent)
-    expect(headings).toEqual(['Mainline', 'Topic Rooms'])
+    expect(headings).toEqual(['With Bob and Carol · 2 agents'])
+    expect(screen.queryByText(/\bRoom\b/)).not.toBeInTheDocument()
+    // Its title is not what names it — the roster is.
+    expect(screen.queryByText('Tax season')).not.toBeInTheDocument()
   })
 
-  it('offers a new topic Room only to a writer', async () => {
-    vi.mocked(projectsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0, viewer_can_write: false } as never)
+  it('renders a Project with only its own conversations as a plain list', async () => {
+    vi.mocked(projectsApi.conversations).mockResolvedValue({
+      items: [
+        { id: 'conv-main', room_id: 'room-main', room_title: 'Daily', room_is_mainline: true,
+          room_other_member_names: [], room_agent_count: 1, title: 'Main thread',
+          created_at: '2026-08-27T08:00:00.000Z', last_message_at: null,
+          last_message_role: null, last_message_preview: null, message_count: 0 },
+      ],
+      total: 1, limit: 100, offset: 0, viewer_can_write: true,
+    } as never)
     renderPage()
-    expect(await screen.findByText('No conversations yet')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /New topic Room/ })).not.toBeInTheDocument()
+    expect(await screen.findByText('Main thread')).toBeInTheDocument()
+    // No section heading at all: the layer is invisible until a visibility
+    // decision has been made (ADR 0018 decision 2).
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0)
+  })
+
+  it('offers exactly the two answers to "who should see this"', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /New conversation/ }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'In this Project' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'With a limited group…' })).toBeInTheDocument()
+  })
+
+  it('lets a reader start a conversation but not open a limited group', async () => {
+    // Speaking in the Project is Room membership, which every reader gets on
+    // first open; opening a limited Room asserts writer authority, because
+    // creating a Room does. Gating both on write locked viewers out of the
+    // panel whose whole purpose is asking the Project's Assistant something.
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(projectsApi.conversations).mockResolvedValue({
+      items: [], empty_rooms: [], total: 0, limit: 100, offset: 0, viewer_can_write: false,
+    } as never)
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /New conversation/ }))
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'In this Project' })).toBeInTheDocument()
+    expect(within(menu).queryByRole('menuitem', { name: 'With a limited group…' })).not.toBeInTheDocument()
+  })
+
+  it('creates the Room when the audience is chosen, and lands in it with no conversation', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(roomsApi.create).mockResolvedValue({ room: { id: 'room-new' } } as never)
+    vi.mocked(roomsApi.inviteUser).mockResolvedValue({} as never)
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /New conversation/ }))
+    await user.click(await screen.findByRole('menuitem', { name: 'With a limited group…' }))
+    expect(await screen.findByText('Who can see this?')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('People who can see this'))
+    fireEvent.click(await screen.findByText('Alice'))
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith(
+      { project_id: 'project-1', title: 'Limited group' },
+      expect.any(String),
+    ))
+    await waitFor(() => expect(roomsApi.inviteUser).toHaveBeenCalledWith('room-new', {
+      user_id: 'user-2', confirm_owned_private_agent_shares: false,
+    }))
+    // The Room exists and no conversation was created with it, because sending
+    // is what creates one (ADR 0018 decision 5) — and the reader lands in that
+    // Room's composer, not in some other conversation.
+    await waitFor(() => expect(navigated).toContain('/projects/project-1/rooms?room=room-new&new=1'))
   })
 })
 
@@ -93,4 +178,21 @@ it("offers extraction only when there is unread imported history to read", async
   vi.mocked(ambientSessionsApi.pendingExtraction).mockResolvedValue({ records: 7, sessions: 2 } as never)
   renderPage()
   expect(await screen.findByRole('button', { name: /Extract to Brief \(7 new records\)/ })).toBeInTheDocument()
+})
+
+it('lists a limited Room nobody has spoken in, with a way back to its roster', async () => {
+  // A Room with no conversation is invisible to a list of conversations,
+  // and it is only reachable through one — so the list carries such Rooms
+  // separately, named by their audience, or opening one and leaving would
+  // have left it with no way back.
+  vi.mocked(projectsApi.conversations).mockResolvedValue({
+    items: [],
+    empty_rooms: [{ room_id: 'room-9', room_is_mainline: false, room_other_member_names: ['Bob'], room_agent_count: 1 }],
+    total: 0, limit: 100, offset: 0, viewer_can_write: true,
+  } as never)
+  renderPage()
+  expect(await screen.findByText('With Bob · 1 agent')).toBeInTheDocument()
+  expect(screen.getByText('Nothing said yet — start the conversation.')).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Manage who can see this group' }))
+    .toHaveAttribute('href', expect.stringContaining('/projects/project-1/rooms?room=room-9'))
 })

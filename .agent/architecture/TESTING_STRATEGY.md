@@ -89,7 +89,11 @@ they fail the suite.
 rows most Project-domain files need (`seedSpaceOwnerProject`,
 `seedAgentWithVersion`); inline the same INSERTs in a new file only when the
 fixture's options cannot express the difference, and promote a seed that
-appears in a third file.
+appears in a third file. A file that inserts `projects` rows directly must
+call `seedMainlineRoomsForAllProjects(pool)` afterwards: every Project is
+created with its mainline Room (ADR 0018 decision 4), and a fixture without
+one builds a shape production cannot produce, which reads that assume the
+mainline exists then report as a broken invariant.
 
 **Clearing rows between tests.** Use `resetTables(pool, tables, { cascade })`
 from `test/support/resetTables.ts`, never `TRUNCATE`. `cascade: true` follows
@@ -127,7 +131,7 @@ before writing setup.
 | `sharedPostgres` | The shared container handle behind it; not called from tests directly |
 | `resetTables` | `resetTables(pool, tables, { cascade })` between tests |
 | `moduleServer` | `buildModuleServer(config, [xModule])` — the app shell with only the modules under test |
-| `domainSeeds` | Space/owner/project, member, agent + version, run, server host |
+| `domainSeeds` | Space/owner/project (with its mainline Room), member, agent + version, run, server host; `seedMainlineRoomsForAllProjects` for files that insert Projects directly |
 | `researchSeeds` | arXiv source chain, relevant corpus item, research Operation, screening gate, question Thread |
 | `customSourceWorld` | The Custom Source connector/provider/mapping world and its Space policy row |
 | `customSourceFixtures` | Runner settings, policy envelopes, listing-page HTML for Custom Source unit tests |

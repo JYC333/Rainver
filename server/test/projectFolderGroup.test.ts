@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
@@ -71,6 +71,7 @@ describe("projectFolderExecutionConfigsDb", () => {
               ($4,$2,$3,'Other Project','active',now(),now())`,
       [PROJECT, SPACE, USER, OTHER_PROJECT],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'Folder','active','code',true,false,false,now(),now())`,

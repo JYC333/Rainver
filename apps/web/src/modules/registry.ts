@@ -431,15 +431,6 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./job_queue/JobQueuePage')),
   },
   {
-    id: 'rooms', label: 'Rooms', path: '/rooms',
-    section: 'agents', group: 'agents', icon: 'messages-square',
-    description: 'Hold project-bound, multi-party conversations and dispatch auditable agent work.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./agent_groups/AgentGroupsPage')),
-  },
-  {
     id: 'evolution', label: 'Evolution', path: '/evolution',
     section: 'agents', group: 'agents', icon: 'git-branch',
     description: 'Review evolution targets, signals, runs, proposals, and validation metrics.',

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeExecutorConfig } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
@@ -81,6 +81,7 @@ describe("experimentsDb", () => {
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at) VALUES ($1,$2,$3,'Research','active',$4,$4)`,
       [PROJECT, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, created_at, updated_at)
        VALUES ($1,$2,$3,$4,'Experiment Folder','active','code',true,false,false,$5,$5)`,

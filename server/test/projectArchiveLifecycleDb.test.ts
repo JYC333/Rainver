@@ -10,6 +10,7 @@ import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orch
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -50,6 +51,7 @@ beforeEach(async () => {
             ($4,$2,$3,'Unaffected project','active',$5,$5)`,
     [PROJECT, SPACE, OWNER, OTHER_PROJECT, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id,space_id,owner_user_id,name,status,visibility,created_at,updated_at)
      VALUES ($1,$2,$3,'Research Agent','active','space_shared',$4,$4)`,

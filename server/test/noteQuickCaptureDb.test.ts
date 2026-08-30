@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * S5 quick capture (U11). Two shapes, and the reason there are two:
@@ -41,6 +42,7 @@ beforeEach(async () => {
      VALUES ($1,$2,'Study','active',$3,$4,$4)`,
     [projectId, SPACE, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 const identity = { spaceId: SPACE, userId: USER };
@@ -130,6 +132,7 @@ describe("quick capture (real Postgres)", () => {
        VALUES ($1,$2,'Other','active',$3,$4,$4)`,
       [other, SPACE, USER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     const a = await repository.jotNoteForObject(identity, { project_id: projectId, text: "A" }) as { id: string };
     const b = await repository.jotNoteForObject(identity, { project_id: other, text: "B" }) as { id: string };

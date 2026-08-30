@@ -114,13 +114,13 @@ Rules (clean model — no old paths):
   `agent_run` worker. Clients follow the canonical RunEvent SSE stream until the
   worker-published `chat_completed` event, then read the durable assistant message. The
   request route never invokes a runtime adapter directly. Chat is not backed by a single
-  space-wide default Assistant identity: `/rooms` resolves a per-speaker,
+  space-wide default Assistant identity: a Room resolves a per-speaker,
   per-recipient typed work-scope CLI binding (`modules/rooms.md`), so which
   Agent and runtime a turn runs against remains a per-conversation, per-user
   choice without making the Room session a vendor-state authority.
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL,
-  minted lazily from the internal `personal_assistant` seed on the first Room
-  creation) is the immutable manager execution identity for Room turns. There
+  minted lazily from the internal `personal_assistant` seed on a Room's **first
+  message**) is the immutable manager execution identity for Room turns. There
   is **one instance per Project**, plus one for the Space itself: two partial
   unique indexes, `uq_agents_system_assistant_per_space` (`project_id IS NULL`)
   and `uq_agents_system_assistant_per_project` — one composite index over
@@ -128,8 +128,8 @@ Rules (clean model — no old paths):
   collide and the Space-level row would be unconstrained. A Project's instance
   is named `<Project name> Assistant`; the Space's keeps *Personal Assistant*
   in personal spaces and *Space Assistant* in shared ones, and is the one the
-  `agent.default_assistant` settings pointer names — creating a Room in a
-  Project must never repoint it.
+  `agent.default_assistant` settings pointer names — provisioning a Project's
+  instance must never repoint it.
 
   Every instance is materialized from the same seed, so they start identical
   and diverge only as each Project is worked with: its own memory, its own
@@ -448,7 +448,10 @@ for use rather than authoring new ones).
 There are no eagerly seeded per-space concrete Agents. The old boot-time
 concrete-agent seeder was removed. Built-in product behavior comes from system
 templates (factories), while a Project's hidden managed Assistant is provisioned lazily
-and only when the first Project Room is created.
+and only when someone first speaks in one of its Rooms. Keeping it off Room
+creation is what lets a Project be created with its mainline Room without a
+Space's backend configuration being able to fail the Project
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4).
 
 Built-in **templates** (global factories, idempotent, seeded by the server agents module,
 seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
@@ -459,9 +462,9 @@ user-instantiable.
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-Project `system_assistant`-kind Agent; dynamic per-invocation selection via Runtime
   Context; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
-  template. A Project's concrete Assistant is created transactionally on that Project's
-  first Room creation; a boot-time reconcile brings every seed-following instance up to
-  a changed seed afterwards.
+  template. A Project's concrete Assistant is created transactionally on the first
+  message sent in one of that Project's Rooms; a boot-time reconcile brings every
+  seed-following instance up to a changed seed afterwards.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
   proposals + reflection summary; `classification_mode: model_selects`; proposal-only durables
 - `memory_reflector` (`memory`) — model-only; memory update/merge/delete proposals only (+ noop);

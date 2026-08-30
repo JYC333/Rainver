@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedRoomManager } from "./support/domainSeeds.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -87,6 +87,44 @@ describe("Project Kernel (real Postgres)", () => {
       project_id: project.id,
       project_folder_count: 0,
     });
+  });
+
+  it("creates a Project with its mainline Room, empty and with no manager Agent", async () => {
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
+
+    // The mainline is a Project attribute on the same footing as the Brief v1
+    // row (ADR 0018 decision 4), so "a Project with no Room" is not a state
+    // any caller has to handle. Continuing an imported CLI session was the one
+    // that could not, and failed on a freshly bound Project.
+    const rooms = await db.pool.query<{ id: string; is_mainline: boolean; title: string; status: string }>(
+      `SELECT id, is_mainline, title, status FROM rooms WHERE space_id = $1 AND project_id = $2`,
+      [SPACE, project.id],
+    );
+    expect(rooms.rows).toHaveLength(1);
+    expect(rooms.rows[0]).toMatchObject({ is_mainline: true, title: "Fresh Project", status: "active" });
+
+    // Its creator is on the roster; nobody else exists yet, and later Project
+    // members enrol when they first open it.
+    const members = await db.pool.query<{ user_id: string; role: string }>(
+      `SELECT user_id, role FROM room_user_members WHERE space_id = $1 AND room_id = $2 AND status = 'active'`,
+      [SPACE, rooms.rows[0]!.id],
+    );
+    expect(members.rows).toEqual([{ user_id: OWNER, role: "owner" }]);
+
+    // Nothing that can fail runs on this path. An Assistant resolves a prompt
+    // asset and needs an eligible backend, and a conversation nobody wrote is
+    // exactly what decision 5 removes — so a Project cannot fail to be created
+    // because of either, and this fixture has neither configured.
+    await expect(db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM room_agent_members WHERE space_id = $1 AND room_id = $2`,
+      [SPACE, rooms.rows[0]!.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    await expect(db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM sessions WHERE space_id = $1 AND room_id = $2`,
+      [SPACE, rooms.rows[0]!.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 
   /** Creation binds no Sources. The Project Template that used to do so is
@@ -448,7 +486,7 @@ describe("Project Kernel (real Postgres)", () => {
     const now = new Date().toISOString();
     await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,created_at,updated_at,visibility,access_level) VALUES ($1,$2,$3,'Room Agent','active',$4,$4,'space_shared','full')`, [roomAgentId, SPACE, OWNER, now]);
     await db.pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Context room','active',$5,$5)`, [roomId, SPACE, project.id, OWNER, now]);
-    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`, [roomAgentMemberId, SPACE, roomId, roomAgentId, now]);
+    await seedRoomManager(db.pool, { id: roomAgentMemberId, space: SPACE, room: roomId, agent: roomAgentId, now });
     await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',$7,$7),($5,$2,$3,$6,'member','active',$7,$7)`, [randomUUID(), SPACE, roomId, OWNER, randomUUID(), VIEWER, now]);
     await db.pool.query(`INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`, [roomSessionId, SPACE, project.id, roomId, now]);
     const roomInput = {

@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { takeReferences } from './pendingReferences'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { Loader2, MessageSquarePlus, Plus, RefreshCw, Users } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, ApiRequestError, projectFoldersApi, projectsApi, roomsApi, spacesApi } from '../../api/client'
+import { agentsApi, projectFoldersApi, projectsApi, roomsApi, spacesApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type {
+  ThreadReferencePick,
   AgentOut,
   ConversationBackendCatalog,
   Project,
   ProjectFolder,
   ProjectOverview,
+  ProjectReader,
   Room,
   RoomConversation as RoomConversationRecord,
   RoomDetail,
@@ -22,10 +25,11 @@ import type {
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
-import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
+import { LimitedRoomDialog } from './LimitedRoomDialog'
 import { RoomRosterPanel } from './RoomRosterPanel'
+import { audienceLabel } from './audience'
 import { RoomConversation, type RoomBackendSelection, type RoutingMode } from './conversation/RoomConversation'
 
 type BackendSelection = {
@@ -39,46 +43,53 @@ export default function AgentGroupsPage() {
   const { projectId: projectRouteId } = useParams()
   const [search, setSearch] = useSearchParams()
   /**
-   * A draft handed over by another page (an imported session's "Continue in
-   * Rainver"), bound to the conversation it was meant for.
+   * References handed over by another page — an imported session's "Continue
+   * in Rainver" — for the conversation the next message will create.
    *
-   * Passed through session storage rather than the URL because it is a
-   * paragraph, not an id, and read once so a reload does not resurrect a draft
-   * the person cleared. The conversation id is part of it because this state
-   * outlives every conversation switch on the page, and without it the next
-   * conversation someone opens would be filled with the previous one's seed.
+   * Passed through session storage rather than the URL because it is a list,
+   * not an id, and read once so a reload does not resurrect a pick the person
+   * abandoned. Keyed by **Room** because the conversation it is meant for does
+   * not exist yet (ADR 0018 decision 5); keying it at all is what stops this
+   * state — which outlives every conversation switch on the page — from
+   * attaching to the next Room someone opens.
    */
-  const [seed] = useState<{ conversationId: string; text: string } | null>(() => {
-    const conversationId = search.get('conversation')
-    if (search.get('seed') !== '1' || !conversationId) return null
-    try {
-      // The key is derived here from the conversation the URL names, never
-      // taken from the URL: a crafted link could otherwise name any
-      // same-origin stored value and have it pasted into the composer.
-      const key = `rainver.seed.${conversationId}`
-      const text = sessionStorage.getItem(key)
-      sessionStorage.removeItem(key)
-      return text ? { conversationId, text } : null
-    } catch {
-      return null
-    }
+  const [pendingReferences, setPendingReferences] = useState<{ roomId: string; picks: ThreadReferencePick[] } | null>(() => {
+    const referencedRoomId = search.get('room')
+    if (search.get('reference') !== '1' || !referencedRoomId) return null
+    const picks = takeReferences(referencedRoomId)
+    return picks ? { roomId: referencedRoomId, picks } : null
   })
   const roomId = search.get('room')
   const conversationId = search.get('conversation')
+  /**
+   * Deliberately composing a new conversation rather than simply having none
+   * selected. Without this the auto-select below would immediately re-open the
+   * newest one, because "nothing selected" is also what a fresh arrival looks
+   * like.
+   */
+  const startingNew = search.get('new') === '1'
+  // Read inside callbacks that must not depend on the current query string.
+  const searchRef = useRef(search)
+  useEffect(() => { searchRef.current = search }, [search])
   const projectFilter = projectRouteId || search.get('project') || undefined
   const isProjectScoped = Boolean(projectRouteId)
   const [rooms, setRooms] = useState<Room[]>([])
   const [projects, setProjects] = useState<Project[]>([])
-  const [projectFolders, setProjectFolders] = useState<ProjectFolder[]>([])
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [spaceMembers, setSpaceMembers] = useState<SpaceMember[]>([])
+  /**
+   * Who may be invited into a Room here. Project-scoped, so it is loaded with
+   * the Project rather than the Space catalog, and empty until then — the
+   * roster panel simply offers nobody rather than offering the wrong people.
+   */
+  const [projectReaders, setProjectReaders] = useState<ProjectReader[]>([])
+  const [openingLimitedRoom, setOpeningLimitedRoom] = useState(false)
   const [pendingApprovals, setPendingApprovals] = useState<RoomPendingApproval[]>([])
   const [detail, setDetail] = useState<RoomDetail | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [boundFolderName, setBoundFolderName] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const locallyCommittedRooms = useRef(new Map<string, Room>())
-  const roomCreationIdempotency = useRef<{ fingerprint: string; key: string } | null>(null)
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
   const [backendCatalogs, setBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
@@ -86,39 +97,10 @@ export default function AgentGroupsPage() {
   const [loading, setLoading] = useState(true)
   const [roomLoading, setRoomLoading] = useState(false)
   const [roomLoadError, setRoomLoadError] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
+  /** A retry of the catalog load is in flight; the empty state's button waits on it. */
+  const [retrying, setRetrying] = useState(false)
   const [roomSetupTargets, setRoomSetupTargets] = useState<string[]>([])
   const [routingMode, setRoutingMode] = useState<RoutingMode>('direct')
-  const [draft, setDraft] = useState({
-    title: '',
-    project_id: projectFilter ?? '',
-    project_folder_id: '',
-  })
-
-  useEffect(() => {
-    if (!draft.project_id) {
-      setProjectFolders([])
-      return
-    }
-    let cancelled = false
-    projectFoldersApi.listExecutionReady(draft.project_id, { status: 'active', limit: '100' })
-      .then(page => {
-        if (cancelled) return
-        setProjectFolders(page.items)
-        setDraft(current => {
-          if (current.project_id !== draft.project_id) return current
-          if (page.items.some(folder => folder.id === current.project_folder_id)) return current
-          return { ...current, project_folder_id: '' }
-        })
-      })
-      .catch(error => {
-        if (!cancelled) toast.error(errMsg(error))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [draft.project_id])
-
   const loadCatalog = useCallback(async () => {
     if (!activeSpaceId) return
     const requestSequence = ++catalogRequestSequence.current
@@ -132,6 +114,9 @@ export default function AgentGroupsPage() {
       agentsApi.list({ status: 'active' }),
       spacesApi.members(activeSpaceId),
       pendingApprovalsRequest,
+      // Only meaningful inside a Project. Failure is not fatal: an empty
+      // candidate list hides the invite control, which is the safe direction.
+      projectFilter ? projectsApi.readers(projectFilter).catch(() => ({ readers: [] })) : Promise.resolve({ readers: [] }),
     ])
     const allRooms = await roomsRequest
     // URL changes and the post-create refresh can overlap. Only the newest
@@ -149,22 +134,14 @@ export default function AgentGroupsPage() {
     // begin without waiting for secondary catalogs used by roster/setup UI.
     if (nextRooms.length > 0) setLoading(false)
 
-    const [projectPage, agentList, members, approvalPage] = await supportingCatalogRequest
+    const [projectPage, agentList, members, approvalPage, readerPage] = await supportingCatalogRequest
     if (requestSequence !== catalogRequestSequence.current) return
     const selectableAgents = agentList.filter(agent => agent.agent_kind !== 'system_assistant')
     setProjects(projectPage.items)
     setAgents(selectableAgents)
     setSpaceMembers(members)
+    setProjectReaders(readerPage.readers)
     setPendingApprovals(approvalPage.items)
-    setDraft(current => ({
-      ...current,
-      project_id:
-        projectRouteId
-        || current.project_id
-        || projectFilter
-        || projectPage.items[0]?.id
-        || '',
-    }))
   }, [activeSpaceId, projectFilter, projectRouteId])
 
   async function decidePendingApproval(item: RoomPendingApproval, decision: 'approved' | 'rejected') {
@@ -275,6 +252,7 @@ export default function AgentGroupsPage() {
     if (
       !roomId
       || conversationId
+      || startingNew
       || detail?.room.id !== roomId
       || conversations.length === 0
     ) return
@@ -284,10 +262,10 @@ export default function AgentGroupsPage() {
       next.set('conversation', conversations[0]!.id)
       return next
     }, { replace: true })
-  }, [conversationId, conversations, detail, roomId, setSearch])
+  }, [conversationId, conversations, detail, roomId, setSearch, startingNew])
 
   useEffect(() => {
-    if (!conversationId || !detail) {
+    if (!detail) {
       setBackendCatalogs({})
       setBackendSelections({})
       return
@@ -297,8 +275,13 @@ export default function AgentGroupsPage() {
       .filter(member => member.agent_kind !== 'system_assistant')
       .map(async member => ({
         agentId: member.agent_id,
+        // Without a session id the server returns the options with no stored
+        // binding, which is exactly right for a conversation that does not
+        // exist yet: since the first message creates it (ADR 0018 decision 5),
+        // requiring one here left the picker empty and disabled until the
+        // second message.
         catalog: await agentsApi.conversationBackends(member.agent_id, {
-          sessionId: conversationId,
+          ...(conversationId ? { sessionId: conversationId } : {}),
         }),
       }))).then(entries => {
       if (cancelled) return
@@ -320,79 +303,45 @@ export default function AgentGroupsPage() {
     }
   }, [conversationId, detail])
 
-  async function createRoom() {
-    if (!draft.title.trim() || !draft.project_id) return
-    if (await openRoom({
-      project_id: draft.project_id,
-      project_folder_id: draft.project_folder_id || null,
-      title: draft.title.trim(),
-    })) {
-      setDraft(current => ({ ...current, title: '' }))
+  /**
+   * Take up a Room the dialog just created.
+   *
+   * The retention matters and is why this is not just a navigation: the Room
+   * is already committed, so it is held locally before any follow-up read. A
+   * lagging detail load or a failed catalog refresh would otherwise restore
+   * the empty state and invite somebody to create a second one.
+   */
+  async function takeUpRoom(room: Room): Promise<void> {
+    setRoomSetupTargets([])
+    locallyCommittedRooms.current.set(room.id, room)
+    setRooms(current => current.some(item => item.id === room.id) ? current : [...current, room])
+    setSearch({ room: room.id })
+    try {
+      await loadCatalog()
+    } catch (error) {
+      toast.error(errMsg(error))
     }
   }
 
   /**
-   * A Room with no conversation cannot be spoken to, and a Room is only ever
-   * created in order to speak — so the first conversation opens with it
-   * rather than being a second thing to go and find.
+   * Start a thread, optionally carrying picked content into it.
+   *
+   * Deselect, rather than create: a conversation comes into existence when
+   * something is said in it (ADR 0018 decision 5), so this only clears the
+   * composer; `upsertConversation` binds to whatever the first message makes.
+   *
+   * Starting one *without* picks drops any that were held — they were made
+   * for a thread the person then abandoned, and re-arming them later would
+   * attach content to a thread nobody chose it for. Except when the unstarted
+   * thread they were made for is the one already open: pressing "New" there
+   * is a no-op, and a no-op must not destroy the draft it is looking at.
    */
-  async function openRoom(input: Parameters<typeof roomsApi.create>[0]): Promise<boolean> {
-    setCreating(true)
-    let createdRoom: Room | null = null
-    const fingerprint = JSON.stringify(input)
-    const key = roomCreationIdempotency.current?.fingerprint === fingerprint
-      ? roomCreationIdempotency.current.key
-      : newRoomCreationIdempotencyKey()
-    roomCreationIdempotency.current = { fingerprint, key }
-    try {
-      const created = await roomsApi.create(input, key)
-      setRoomSetupTargets([])
-      createdRoom = created.room
-      // The Room is already committed. Retain it before any subsequent
-      // request so a lagging detail read or failed catalog refresh cannot
-      // restore the empty-state CTA and create a duplicate.
-      locallyCommittedRooms.current.set(created.room.id, created.room)
-      setRooms(current => current.some(room => room.id === created.room.id)
-        ? current
-        : [...current, created.room])
-      if (!created.conversation) throw new Error('Room creation returned no initial conversation')
-      setSearch({ room: created.room.id, conversation: created.conversation.id })
-      roomCreationIdempotency.current = null
-      return true
-    } catch (error) {
-      if (error instanceof ApiRequestError && error.code === 'conversation_backend_required') {
-        const targets = error.payload?.setup_targets
-        setRoomSetupTargets(Array.isArray(targets)
-          ? targets.filter((target): target is string => typeof target === 'string')
-          : [])
-      }
-      if (createdRoom) {
-        setSearch({ room: createdRoom.id })
-      }
-      toast.error(errMsg(error))
-      return false
-    } finally {
-      try {
-        await loadCatalog()
-      } catch (error) {
-        toast.error(errMsg(error))
-      } finally {
-        setCreating(false)
-      }
-    }
-  }
-
-  async function createConversation() {
+  function startConversation(picks?: ThreadReferencePick[]) {
     if (!roomId) return
-    try {
-      const conversation = await roomsApi.createConversation(roomId, {})
-      setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
-        ? current
-        : [...current, conversation]))
-      setSearch({ room: roomId, conversation: conversation.id })
-    } catch (error) {
-      toast.error(errMsg(error))
-    }
+    const alreadyOnTheirThread = !currentConversation && pendingReferences?.roomId === roomId
+    if (picks?.length) setPendingReferences({ roomId, picks })
+    else if (!alreadyOnTheirThread) setPendingReferences(null)
+    setSearch({ room: roomId, new: '1' })
   }
 
   const roomAgents = useMemo(() => {
@@ -404,11 +353,41 @@ export default function AgentGroupsPage() {
     })) ?? []
   }, [detail])
   const currentConversation = conversations.find(item => item.id === conversationId) ?? null
+  /**
+   * The picks this render hands to the composer, if any.
+   *
+   * Only into the unstarted conversation they were made for; never onto a
+   * thread that already exists. One binding rather than two copies of the
+   * condition, because the send handler has to know whether this render was
+   * the one that used them before it may clear them.
+   */
+  const referencesForThisThread = !currentConversation && detail && pendingReferences
+    && pendingReferences.roomId === detail.room.id
+    ? pendingReferences.picks
+    : undefined
   const upsertConversation = useCallback((conversation: RoomConversationRecord) => {
     setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
       ? current.map(item => item.id === conversation.id ? conversation : item)
       : [...current, conversation]))
-  }, [])
+    // A send with no conversation created one. Bind to it, so the next message
+    // continues the thread that just began rather than starting another.
+    //
+    // Guarded outside the updater: `setSearchParams` navigates unconditionally,
+    // so returning `current` unchanged would still re-render every consumer of
+    // the location — on every poll tick, for as long as a conversation is open.
+    if (searchRef.current.get('conversation') === conversation.id) return
+    setSearch(current => {
+      const next = new URLSearchParams(current)
+      next.set('conversation', conversation.id)
+      next.delete('new')
+      return next
+    }, { replace: true })
+  }, [setSearch])
+  // The server computes the audience once, with the definition the Project's
+  // conversation list uses; this only words it.
+  const roomAudience = detail
+    ? audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count })
+    : ''
   const backendsFor = useCallback((recipientAgentIds: string[]): RoomBackendSelection[] =>
     recipientAgentIds.flatMap(agent_id => {
       const selection = backendSelections[agent_id]
@@ -487,46 +466,6 @@ export default function AgentGroupsPage() {
       {!detail ? (
         <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
           <aside className="space-y-3">
-          {(!isProjectScoped || rooms.length > 0) && <Card className="p-3 space-y-3">
-            <CardTitle>New Room</CardTitle>
-            <div className="space-y-1"><Label>Title</Label><Input value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></div>
-            {!isProjectScoped && (
-              <div className="space-y-1">
-                <Label>Project</Label>
-                <Select
-                  value={draft.project_id}
-                  onChange={project_id => setDraft({
-                    ...draft,
-                    project_id,
-                    project_folder_id: '',
-                  })}
-                  options={[
-                    { value: '', label: 'Choose Project' },
-                    ...projects.map(project => ({ value: project.id, label: project.name })),
-                  ]}
-                />
-              </div>
-            )}
-            <div className="space-y-1">
-              <Label>Project Folder</Label>
-              <Select
-                value={draft.project_folder_id}
-                onChange={project_folder_id => setDraft({ ...draft, project_folder_id })}
-                options={[
-                  { value: '', label: 'No folder' },
-                  ...projectFolders.map(folder => ({ value: folder.id, label: folder.name })),
-                ]}
-              />
-            </div>
-            <Button
-              className="w-full"
-              size="sm"
-              disabled={creating || !draft.title.trim() || !draft.project_id}
-              onClick={createRoom}
-            >
-              {creating ? <Loader2 className="size-3.5 mr-1 animate-spin" /> : <Plus className="size-3.5 mr-1" />}Create Room
-            </Button>
-          </Card>}
             <div className="space-y-2">
             {rooms.map(room => (
               <button
@@ -544,28 +483,30 @@ export default function AgentGroupsPage() {
           </aside>
 
           <Card className="p-8 text-center text-muted-foreground space-y-3">
-            {/* Inside a Project with nothing set up yet, the honest next step
-                is one button, not a form asking which Agent should manage a
-                Room the user has not decided to have yet. */}
             {roomLoading ? (
               <span className="inline-flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading Room…</span>
             ) : isProjectScoped && rooms.length === 0 ? (
+              // Since every Project is created with its mainline (ADR 0018
+              // decision 4), a Project showing none has failed to load them.
+              // The button that used to be here created a Room, which would
+              // now mean a second shared one beside the mainline it could not
+              // see.
               <>
-                <p className="text-sm">Talk to this Project to move it forward.</p>
+                <p className="text-sm">Could not load this Project's conversations.</p>
                 <Button
-                  disabled={creating}
-                  onClick={() => openRoom({
-                    project_id: projectFilter!,
-                    project_folder_id: null,
-                    title: defaultRoomTitle(projects.find(project => project.id === projectFilter)),
-                  })}
+                  variant="outline"
+                  disabled={retrying}
+                  onClick={() => {
+                    setRetrying(true)
+                    void loadCatalog().finally(() => setRetrying(false))
+                  }}
                 >
-                  {creating ? <Loader2 className="size-4 mr-1 animate-spin" /> : <MessageSquarePlus className="size-4 mr-1" />}
-                  Start a conversation
+                  {retrying ? <Loader2 className="size-4 mr-1 animate-spin" /> : null}
+                  Try again
                 </Button>
               </>
             ) : (
-              'Choose or create a Room.'
+              'Choose a Room.'
             )}
           </Card>
           </div>
@@ -594,41 +535,31 @@ export default function AgentGroupsPage() {
                   </button>
                 ))}
               </div>
-              <details className="border-t border-border pt-2">
-                <summary className="flex h-8 cursor-pointer list-none items-center justify-center gap-1.5 rounded-md border border-border text-sm font-medium text-foreground hover:bg-accent/50 [&::-webkit-details-marker]:hidden">
-                  <Plus className="size-3.5" />New Room
-                </summary>
-                <div className="mt-3 space-y-2">
-                  <div className="space-y-1"><Label>Title</Label><Input value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></div>
-                  {!isProjectScoped && (
-                    <div className="space-y-1">
-                      <Label>Project</Label>
-                      <Select
-                        value={draft.project_id}
-                        onChange={project_id => setDraft({ ...draft, project_id, project_folder_id: '' })}
-                        options={[{ value: '', label: 'Choose Project' }, ...projects.map(project => ({ value: project.id, label: project.name }))]}
-                      />
-                    </div>
-                  )}
-                  <div className="space-y-1">
-                    <Label>Project Folder</Label>
-                    <Select
-                      value={draft.project_folder_id}
-                      onChange={project_folder_id => setDraft({ ...draft, project_folder_id })}
-                      options={[{ value: '', label: 'No folder' }, ...projectFolders.map(folder => ({ value: folder.id, label: folder.name }))]}
-                    />
-                  </div>
-                  <Button className="w-full" size="sm" disabled={creating || !draft.title.trim() || !draft.project_id} onClick={createRoom}>
-                    {creating ? <Loader2 className="size-3.5 mr-1 animate-spin" /> : <Plus className="size-3.5 mr-1" />}Create Room
-                  </Button>
-                </div>
-              </details>
+              {detail.viewer_can_write && (
+                <Button
+                  className="w-full"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setOpeningLimitedRoom(true)}
+                >
+                  <Plus className="size-3.5 mr-1" />New Room
+                </Button>
+              )}
+              <LimitedRoomDialog
+                open={openingLimitedRoom}
+                projectId={detail.room.project_id}
+                onClose={() => setOpeningLimitedRoom(false)}
+                onOpened={room => {
+                  setOpeningLimitedRoom(false)
+                  void takeUpRoom(room)
+                }}
+              />
             </Card>
 
             <Card className="p-2">
               <div className="flex items-center justify-between gap-2 px-2 py-1">
                 <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Conversations</CardTitle>
-                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={createConversation} aria-label="New conversation">
+                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => startConversation()} aria-label="New conversation">
                   <MessageSquarePlus className="size-3.5 mr-1" />New
                 </Button>
               </div>
@@ -657,6 +588,7 @@ export default function AgentGroupsPage() {
                   <RoomRosterPanel
                     detail={detail}
                     spaceMembers={spaceMembers}
+                    projectReaders={projectReaders}
                     userId={userId}
                     embedded
                     onChanged={async () => { await Promise.all([loadCatalog(), loadRoom()]) }}
@@ -668,20 +600,52 @@ export default function AgentGroupsPage() {
 
           <main aria-label="Conversation" className="min-w-0">
             <Card className="flex h-[calc(100vh-10rem)] min-h-[640px] max-h-[900px] flex-col overflow-hidden">
-              {!currentConversation ? (
-                <div className="m-auto text-sm text-muted-foreground">Start or choose a conversation.</div>
+              {!currentConversation && conversations.length > 0 && !startingNew ? (
+                <div className="m-auto text-sm text-muted-foreground">Choose a conversation.</div>
               ) : (
                 <>
                   <div className="border-b border-border px-5 py-3">
-                    <CardTitle className="text-base">{currentConversation.title || 'Conversation'}</CardTitle>
+                    <div className="flex items-start justify-between gap-2">
+                      <CardTitle className="text-base">
+                        {currentConversation?.title || 'New conversation'}
+                      </CardTitle>
+                      {currentConversation && (
+                        // The whole thread, at the grain a whole thread has:
+                        // its summary. Thousands of words of transcript have
+                        // no other bounded form, and the per-message picker
+                        // beside it is for when a few messages are what
+                        // actually matters.
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="shrink-0 text-xs"
+                          onClick={() => {
+                            startConversation([{ kind: 'thread', id: currentConversation.id }])
+                          }}
+                        >
+                          <MessageSquarePlus className="size-3.5 mr-1" />Carry into a new thread
+                        </Button>
+                      )}
+                    </div>
+                    {/* A limited Room's header names its audience, because
+                        that is the fact a reader needs before saying anything
+                        in it. The mainline needs none: everyone in the Project
+                        is in it, which is what makes it the mainline. */}
+                    {!detail.room.is_mainline && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{roomAudience}</p>
+                    )}
                   </div>
                   {/* The conversation itself is the shared module the Project
                       chat panel also renders; this page adds only what is the
                       page's — routing and per-agent backends. */}
                   <RoomConversation
-                    key={`${detail.room.id}:${currentConversation.id}`}
+                    key={`${detail.room.id}:${currentConversation?.id ?? 'new'}`}
                     roomId={detail.room.id}
-                    conversationId={currentConversation.id}
+                    // Null for a Room nobody has spoken in — which is every
+                    // Room the moment it is opened, since creating one creates
+                    // no conversation (ADR 0018 decision 5). Sending is what
+                    // makes the conversation, and it comes back on the send.
+                    conversationId={currentConversation?.id ?? null}
                     detail={detail}
                     variant="full"
                     agents={agents}
@@ -689,8 +653,24 @@ export default function AgentGroupsPage() {
                     routingMode={routingMode}
                     backendsFor={backendsFor}
                     isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
-                    seedText={seed?.conversationId === currentConversation.id ? seed.text : null}
+                    references={referencesForThisThread}
+                    onReferencesRejected={() => setPendingReferences(null)}
                     onConversationUpdated={upsertConversation}
+                    onBackendRequired={setRoomSetupTargets}
+                    siblingConversations={conversations}
+                    // The same handoff import continuation uses: the picks
+                    // ride the composer and are written with the message that
+                    // creates the conversation. Nothing is created here, so
+                    // abandoning the draft leaves nothing.
+                    onUseInNewThread={startConversation}
+                    onSent={() => {
+                      setRoomSetupTargets([])
+                      // Consumed. Without this the pick outlives the thread it
+                      // was made for: pressing "New" puts `currentConversation`
+                      // back to null and the same reference silently attaches
+                      // to a second thread nobody picked it for.
+                      if (referencesForThisThread) setPendingReferences(null)
+                    }}
                     onBeforeContinue={async () => {
                       const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
                       if (refreshed) setOverview(refreshed)
@@ -845,13 +825,6 @@ function selectedBackend(catalog: ConversationBackendCatalog): BackendSelection 
         ?? null
       : null,
   }
-}
-
-function newRoomCreationIdempotencyKey(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `room-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 function backendChoices(catalog: ConversationBackendCatalog | undefined) {

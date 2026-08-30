@@ -10,7 +10,7 @@ import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orch
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { createQuestionThreadScope, seedArxivSourceChain, seedPendingScreeningGate, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { resetTables } from "./support/resetTables.js";
@@ -60,6 +60,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
       `INSERT INTO projects (id, space_id, owner_user_id, name, status, current_focus, created_at, updated_at) VALUES ($1,$2,$3,'Research','active','Does X improve Y?',$4,$4)`,
       [PROJECT, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const thread = await new InquiryThreadService(db.pool).createThread(
       identity,
       PROJECT,

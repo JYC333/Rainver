@@ -7,6 +7,7 @@ import { PgSpaceRepository } from "../src/modules/spaces/repository.js";
 import { noteBlocks } from "../src/modules/knowledge/noteBlockIds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Relocation and promotion (ADR 0013 amendment D7).
@@ -59,6 +60,7 @@ beforeEach(async () => {
      VALUES ($1,$2,'Study','active',$3,$4,$4)`,
     [PROJECT, TEAM, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
@@ -322,6 +324,7 @@ describe("the Space boundary (real Postgres)", () => {
        VALUES ($1,$2,'Elsewhere','active',$3,$4,$4)`,
       [OTHER_PROJECT, OTHER_SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
   }
 
   it("refuses a colleague's content crossing into a Project in another Space", async () => {

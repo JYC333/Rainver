@@ -12,6 +12,7 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111"; const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const PROJECT = "55555555-5555-4555-8555-555555555555";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
@@ -45,6 +46,7 @@ async function seedCorpusSourceProvenance(corpusItemId: string, sourceItemId: st
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItemId, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 }
 
 describe("Research Area (real Postgres)", () => {
@@ -408,6 +410,7 @@ describe("Research Area (real Postgres)", () => {
       `INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5) RETURNING id`,
       [randomUUID(), SPACE, USER, otherProject, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await expect(service.notebookChat(identity, PROJECT, {
       message: "Hello", session_id: otherSession.rows[0]!.id, execution: { model_provider_id: PROVIDER },
     })).rejects.toMatchObject({ statusCode: 409 });

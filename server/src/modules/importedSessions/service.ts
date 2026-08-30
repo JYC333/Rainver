@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, dbPool, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
-import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { readImportedSessionForViewer } from "./read.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { acpRuntimeProbes } from "../hosts/runtimeProbes.js";
@@ -538,16 +538,7 @@ export class ImportedSessionService {
   }
 
   async records(identity: SpaceUserIdentity, sessionId: string) {
-    // `full`, not merely "not denied": the gate also grants `summary`, which
-    // an oversight-mode Space gives an admin over a colleague's private
-    // content. A transcript is the content itself, so summary access must not
-    // open it — the same rule Reader and Sources apply.
-    const decision = await contentDecisionFromDb(this.db, identity, "imported_session", sessionId);
-    if (decision !== "full") throw new HttpError(404, "Imported session not found");
-    const session = await this.sessions.byId(identity.spaceId, sessionId);
-    if (!session) throw new HttpError(404, "Imported session not found");
-    const page = await this.sessions.records(identity.spaceId, sessionId);
-    return { session, records: page.records, truncated: page.truncated };
+    return readImportedSessionForViewer(this.db, identity, sessionId);
   }
 
   /**

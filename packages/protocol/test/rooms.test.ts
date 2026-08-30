@@ -54,7 +54,9 @@ describe("Room contracts", () => {
         created_at: now,
         updated_at: now,
       }],
-      conversation: null,
+      viewer_can_write: true,
+      other_member_names: [],
+      agent_count: 1,
     }).room.project_id).toBe("project-1");
 
     const messageRequest = SendRoomMessageRequestSchema.parse({

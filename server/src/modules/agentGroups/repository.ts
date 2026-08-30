@@ -421,12 +421,20 @@ export class PgAgentGroupRepository {
     return requiredRow(result.rows[0], "agent_run_group_members insert returned no row");
   }
 
+  /**
+   * The manager leads, then insertion order.
+   *
+   * `created_at, id` alone was not deterministic: a group's members are
+   * inserted in one transaction and share a timestamp, so the tiebreak fell
+   * to a random UUID and the same data came back in either order — which
+   * surfaced as a test that failed roughly one run in nine.
+   */
   async listMembers(spaceId: string, groupId: string): Promise<AgentRunGroupMemberRecord[]> {
     const result = await this.db.query<AgentRunGroupMemberRecord>(
       `SELECT ${MEMBER_COLUMNS}
          FROM agent_run_group_members
         WHERE space_id = $1 AND group_id = $2
-        ORDER BY created_at ASC, id ASC`,
+        ORDER BY (role <> 'manager'), created_at ASC, id ASC`,
       [spaceId, groupId],
     );
     return result.rows;

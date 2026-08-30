@@ -18,10 +18,11 @@ import { RetrievalProjectionService } from "../retrieval/index.js";
 import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
 import { assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
 import { PgRunRepository } from "../runs/repository.js";
+import { PgRoomRepository } from "../rooms/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 import { requiredPrimaryMode } from "./primaryMode.js";
 
@@ -197,6 +198,33 @@ export class PgProjectRepository {
         `UPDATE projects SET active_brief_version_id=$1 WHERE id=$2 AND space_id=$3`,
         [briefId, projectId, identity.spaceId],
       );
+      // The mainline Room is a Project attribute on the same footing as the
+      // Brief v1 row above: present from creation, empty until spoken in
+      // (ADR 0018 decision 4). Before this, the first Room created became the
+      // mainline, so "a Project with no Room" was a state every caller wanting
+      // to put something in the mainline had to handle — and one of them,
+      // continuing an imported CLI session, could not.
+      //
+      // Nothing that can fail is done here. No Assistant is provisioned (that
+      // moves to the Room's first message) and no conversation is created
+      // (conversations are created by speaking, decision 5), so a Project
+      // cannot fail to be created because of its Room.
+      const roomRepository = new PgRoomRepository(db);
+      const room = await roomRepository.createRoom({
+        space_id: identity.spaceId,
+        project_id: projectId,
+        created_by_user_id: identity.userId,
+        title: name,
+        is_mainline: true,
+        now,
+      });
+      await roomRepository.addUserMember({
+        space_id: identity.spaceId,
+        room_id: room.id,
+        user_id: identity.userId,
+        role: "owner",
+        now,
+      });
       result.rows[0]!.active_brief_version_id = briefId;
       return projectToOut(result.rows[0]!, true, true);
     });
@@ -314,14 +342,20 @@ export class PgProjectRepository {
            FROM artifacts a
           WHERE a.space_id = $1 AND a.project_id = $2
             AND a.surface_role <> 'system_archive'
-            AND ${contentReadSql("artifact", "a", "$3")}`,
+            AND ${contentReadSql("artifact", "a", "$3")}
+            -- An Artifact inherits its Run's Room, and a count is an existence
+            -- signal (ADR 0018 decision 3): without this an oversight admin
+            -- inside the Project sees "2 artifacts" over an Artifacts page
+            -- that lists none.
+            AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
         [identity.spaceId, projectId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(
         `SELECT count(id)::text AS total
            FROM proposals p
           WHERE p.space_id = $1 AND p.project_id = $2 AND p.status = 'pending'
-            AND ${contentReadSql("proposal", "p", "$3")}`,
+            AND ${contentReadSql("proposal", "p", "$3")}
+            AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$3")}`,
         [identity.spaceId, projectId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(
@@ -342,7 +376,10 @@ export class PgProjectRepository {
           WHERE r.space_id = $1
             AND r.project_id = $2
             AND r.status IN ('queued', 'running', 'waiting_for_review')
-            AND ${contentReadSql("run", "r", "$3")}`,
+            AND ${contentReadSql("run", "r", "$3")}
+            -- Same Room boundary the Run list and detail carry, so Pulse's
+            -- count cannot disagree with what the viewer can open.
+            AND ${roomRunReadAccessSql("r.id", "r.space_id", "$3")}`,
         [identity.spaceId, projectId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(

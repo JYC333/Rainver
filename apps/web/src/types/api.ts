@@ -5093,6 +5093,12 @@ export type {
   ProjectWorkUpdatesResponse,
   ProjectMainlineRoomResponse,
   ProjectConversation,
+  ProjectEmptyRoom,
+  ProjectReader,
+  ProjectReadersResponse,
+  ThreadReferencePick,
+  ThreadReferenceProvenance,
+  ThreadReferenceDisclosureRequired,
   ProjectConversationsResponse,
 } from '@rainver/protocol'
 export type { ProjectBoardResponse as ProjectBoard, TaskWorkViewResponse as TaskWorkView } from '@rainver/protocol'

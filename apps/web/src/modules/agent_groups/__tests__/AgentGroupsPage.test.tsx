@@ -12,33 +12,25 @@ import {
   runsApi,
   spacesApi,
 } from '../../../api/client'
-import type { AgentOut, Project, Room, RoomDetail, Run } from '../../../types/api'
+import type { AgentOut, Project, Room, RoomConversation, RoomDetail, Run } from '../../../types/api'
 
 const mockedSpaceContext = vi.hoisted(() => ({ activeSpaceId: 'space-1', userId: 'user-1' }))
 
-vi.mock('../../../api/client', () => ({
-  ApiRequestError: class ApiRequestError extends Error {
-    status: number
-    code?: string
-    payload?: Record<string, unknown>
-    constructor(message: string, status: number, code?: string, payload?: Record<string, unknown>) {
-      super(message)
-      this.status = status
-      this.code = code
-      this.payload = payload
-    }
-  },
+vi.mock('../../../api/client', async () => {
+  const { ApiRequestError } = await import('../../../test/apiClientMock')
+  return {
+  ApiRequestError,
   agentsApi: { list: vi.fn(), conversationBackends: vi.fn() },
-  projectsApi: { list: vi.fn(), getOverview: vi.fn() },
+  projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn() },
   projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
   roomsApi: {
     list: vi.fn(),
     get: vi.fn(),
+    attachReferences: vi.fn(),
     conversations: vi.fn(),
     summary: vi.fn(),
     messages: vi.fn(),
     create: vi.fn(),
-    createConversation: vi.fn(),
     sendMessage: vi.fn(),
     continueAfterProposal: vi.fn(),
     agentCandidates: vi.fn(),
@@ -55,8 +47,26 @@ vi.mock('../../../api/client', () => ({
   runsApi: { get: vi.fn(), streamEvents: vi.fn() },
   spacesApi: { members: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
-}))
+  }
+})
 
+// The editor itself is covered by `RoomMessageComposer.test.tsx`; jsdom cannot
+// type into TipTap, and without this nothing here could exercise a send.
+vi.mock('../RoomMessageComposer', () => ({
+  emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
+  // Reflects `value` as well as reporting changes: a seeded draft arrives
+  // through that prop, so a write-only stand-in could not see one.
+  RoomMessageComposer: ({ value, onChange }: {
+    value: { text: string }
+    onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
+  }) => (
+    <textarea
+      aria-label="Room message"
+      value={value.text}
+      onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
+    />
+  ),
+}))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: mockedSpaceContext.activeSpaceId, userId: mockedSpaceContext.userId }),
 }))
@@ -85,10 +95,13 @@ const initialConversation = {
   status: 'active',
   created_at: room.created_at,
   updated_at: room.updated_at,
-} as Awaited<ReturnType<typeof roomsApi.create>>['conversation']
+} as RoomConversation
 
 const detail: RoomDetail = {
   room,
+  viewer_can_write: true,
+  other_member_names: ['Member'],
+  agent_count: 1,
   user_members: [
     {
       id: 'member-1',
@@ -123,7 +136,41 @@ const detail: RoomDetail = {
     created_at: room.created_at,
     updated_at: room.updated_at,
   }],
-  conversation: null,
+}
+
+
+/** The page at `path`, inside the Project shell's route when the path names one. */
+function roomsAt(path: string) {
+  return (
+    <MemoryRouter initialEntries={[path]}>
+      {path.startsWith('/spaces/') ? (
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
+        </Routes>
+      ) : <AgentGroupsPage />}
+    </MemoryRouter>
+  )
+}
+function renderRooms(path: string) {
+  return render(roomsAt(path))
+}
+
+/** Open a limited Room by choosing `name` in the shared dialog. */
+async function openLimitedRoomWith(name: string) {
+  fireEvent.click(await screen.findByRole('button', { name: 'New Room' }))
+  fireEvent.click(await screen.findByLabelText('People who can see this'))
+  fireEvent.click(await screen.findByRole('option', { name }))
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+}
+
+/** One user message in `session-1`, to be picked. */
+const polarsMessages = {
+  items: [{
+    id: 'm-1', space_id: 'space-1', session_id: 'session-1', role: 'user',
+    user_id: 'user-1', content: 'We ruled out polars', metadata_json: {},
+    created_at: '2026-08-29T09:00:00.000Z',
+  }],
+  total: 1, limit: 50, offset: 0,
 }
 
 describe('Rooms page', () => {
@@ -132,6 +179,7 @@ describe('Rooms page', () => {
     // catalog race tests intentionally install response sequences, and a
     // leftover sequence must not change the next test's page state.
     vi.resetAllMocks()
+    sessionStorage.clear()
     mockedSpaceContext.activeSpaceId = 'space-1'
     mockedSpaceContext.userId = 'user-1'
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
@@ -161,6 +209,9 @@ describe('Rooms page', () => {
     vi.mocked(roomsApi.summary).mockResolvedValue({ state: null, summary: null })
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({ agents: [], presets: [], total: 0, limit: 100, offset: 0 })
     vi.mocked(roomsApi.invitations).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
+    vi.mocked(projectsApi.readers).mockResolvedValue({
+      readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
+    })
     vi.mocked(projectsApi.list).mockResolvedValue({
       items: [{ id: 'project-1', name: 'Project One' } as Project],
       total: 1,
@@ -210,16 +261,86 @@ describe('Rooms page', () => {
     vi.mocked(spacesApi.members).mockResolvedValue([
       { user_id: 'user-1', display_name: 'Owner', email: 'owner@example.test' },
       { user_id: 'user-2', display_name: 'Member', email: 'member@example.test' },
+      // In the Space, not on this Project — what the old candidate source
+      // would have offered and the server would have refused.
+      { user_id: 'user-9', display_name: 'Outsider', email: 'outsider@example.test' },
     ] as Awaited<ReturnType<typeof spacesApi.members>>)
     vi.mocked(runsApi.streamEvents).mockResolvedValue(undefined)
   })
 
+  it('opens a limited Room by choosing who is in it, and invites them', async () => {
+    // The audience is what a Room *is* (ADR 0018), so it is what opening one
+    // asks for; the name is optional and comes after. Same dialog as the
+    // conversation list uses — one act, one implementation.
+    vi.mocked(projectsApi.readers).mockResolvedValue({
+      readers: [{ user_id: 'user-2', display_name: 'Dana', email: null, avatar_url: null }],
+    })
+    vi.mocked(roomsApi.create).mockResolvedValue({
+      room: { ...room, id: 'room-2', title: 'Dana' }, user_members: [], agent_members: [],
+    } as never)
+    vi.mocked(roomsApi.inviteUser).mockResolvedValue({} as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    await openLimitedRoomWith('Dana')
+
+    await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith(
+      { project_id: 'project-1', title: 'Limited group' },
+      expect.any(String),
+    ))
+    await waitFor(() => expect(roomsApi.inviteUser).toHaveBeenCalledWith('room-2', {
+      user_id: 'user-2',
+      confirm_owned_private_agent_shares: false,
+    }))
+  })
+
+  it('offers Project readers as invite candidates, not every Space member', async () => {
+    // A Space member who cannot read the Project is somebody the server
+    // refuses to invite, so offering them is offering a control that only
+    // ever fails. `spacesApi.members` returns two people here; only the one
+    // who reads the Project may be offered.
+    vi.mocked(projectsApi.readers).mockResolvedValue({
+      readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
+    })
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    fireEvent.click(await screen.findByLabelText('Invite a person'))
+    const offered = (await screen.findAllByRole('option')).map(option => option.textContent)
+    expect(offered).toContain('Reader')
+    // Not merely absent because they are already in the Room — `Outsider` is
+    // in the Space and not in this Room, so only the candidate *source*
+    // decides. Under `spacesApi.members` they would be offered and the server
+    // would then refuse them.
+    expect(offered).not.toContain('Outsider')
+  })
+
+  it('shows a reader the roster and none of the controls that would 403', async () => {
+    // Every roster mutation goes through the server's `withRoomWriter`, which
+    // requires Project write authority. Reading the roster does not — so the
+    // panel stays, and only the controls go.
+    // A member, not the Room's owner: `claimOwner` is for exactly this person
+    // when the owner has been suspended.
+    vi.mocked(roomsApi.get).mockResolvedValue({
+      ...detail,
+      viewer_can_write: false,
+      user_members: detail.user_members.map(member => member.user_id === 'user-1'
+        ? { ...member, role: 'member' }
+        : member),
+    } as never)
+    vi.mocked(projectsApi.readers).mockResolvedValue({
+      readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
+    })
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    expect(await screen.findByText('Room roster')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Invite a person')).not.toBeInTheDocument()
+    expect(screen.queryByText('Transfer Room ownership')).not.toBeInTheDocument()
+    // But not everything on this panel answers to Project write. Claiming a
+    // suspended Room needs the Project owner or a Space owner/admin, and
+    // deciding a private-Agent share needs the Agent's owner — who may be a
+    // reader, and is exactly who a blocked invitation is waiting on. Folding
+    // these under the same flag is what left an invitation stuck.
+    expect(screen.getByRole('button', { name: /Claim ownership if suspended/ })).toBeInTheDocument()
+  })
+
   it('shows a project-bound Room with persistent conversations and human/agent rosters', async () => {
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect((await screen.findAllByText('Research Room')).length).toBeGreaterThan(0)
     expect(screen.getByText('2 people · 1 agents')).toBeInTheDocument()
@@ -228,7 +349,7 @@ describe('Rooms page', () => {
     expect(screen.getByRole('navigation', { name: 'Conversations' })).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Room and conversation navigation' })).toBeInTheDocument()
     expect(screen.getByText('Rooms', { selector: 'p' })).toBeInTheDocument()
-    expect(screen.getByText('New Room', { selector: 'summary' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New Room' })).toBeInTheDocument()
     expect(await screen.findByText('Room roster')).toBeInTheDocument()
     expect(screen.getByText('Manager · locked')).toBeInTheDocument()
     expect(roomsApi.agentCandidates).toHaveBeenCalledWith('room-1', { limit: 100 })
@@ -246,11 +367,7 @@ describe('Rooms page', () => {
     vi.mocked(projectsApi.list).mockImplementationOnce(() => new Promise(resolve => {
       resolveProjects = resolve
     }))
-    render(
-      <MemoryRouter initialEntries={['/rooms']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms')
 
     await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-1'))
     // Secondary setup catalogs must not delay the Room's critical path.
@@ -273,6 +390,32 @@ describe('Rooms page', () => {
     }))
   })
 
+  it('composes into a Room with no conversation, creating nothing to get there', async () => {
+    // Where "with a limited group…" lands: the Room exists, nothing has been
+    // said in it, and creating a conversation up front is exactly what ADR
+    // 0018 decision 5 removes.
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    renderRooms('/rooms?room=room-1')
+    expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument()
+    // Nothing to read, so nothing was asked for.
+    expect(roomsApi.messages).not.toHaveBeenCalled()
+  })
+
+  it('starts a separate thread by deselecting, and does not snap back to the newest', async () => {
+    // "Nothing selected" is also what a fresh arrival looks like, so the
+    // auto-select would otherwise reopen the newest conversation the moment
+    // this button cleared it.
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', expect.anything()))
+
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    // The transcript header names the unwritten conversation, not the one
+    // that was open a moment ago.
+    await waitFor(() => expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument())
+    expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+  })
+
   it('keeps conversations in creation-time descending order', async () => {
     vi.mocked(roomsApi.conversations).mockResolvedValue({
       items: [
@@ -285,11 +428,7 @@ describe('Rooms page', () => {
       offset: 0,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-old']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-old')
 
     const navigation = await screen.findByRole('navigation', { name: 'Conversations' })
     await waitFor(() => expect(within(navigation).getAllByRole('button').map(button => button.textContent)).toEqual([
@@ -304,11 +443,7 @@ describe('Rooms page', () => {
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [legacyRoom], total: 1, limit: 50, offset: 0 })
     vi.mocked(roomsApi.get).mockResolvedValue({ ...detail, room: legacyRoom })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect((await screen.findAllByText('Project One Room')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Project conversation')).not.toBeInTheDocument()
@@ -347,11 +482,7 @@ describe('Rooms page', () => {
       })
       .mockImplementationOnce(() => secondMessages)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('First conversation message')).toBeInTheDocument()
     expect(roomsApi.get).toHaveBeenCalledTimes(1)
@@ -402,78 +533,67 @@ describe('Rooms page', () => {
       offset: 0,
     })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByRole('button', { name: 'Personal Agent Memory' })).toBeInTheDocument()
     expect(roomsApi.get).toHaveBeenCalledTimes(1)
     expect(screen.queryByText('New conversation')).not.toBeInTheDocument()
   })
 
-  it('follows new replies at the bottom without pulling back a user reading history', async () => {
+  it('a poll delivers a newer reply without pulling back a reader scrolled up', async () => {
+    // What used to be waited for here was the conversation's five-second poll
+    // firing on real time — five seconds of sleep the hygiene test cannot see,
+    // dressed as a click on the page's Refresh button, which reloads the
+    // catalog and the Room and never the messages. The poll is the subject,
+    // so the clock is faked and advanced past it.
     let resolveMessages!: (value: Awaited<ReturnType<typeof roomsApi.messages>>) => void
     vi.mocked(roomsApi.messages).mockImplementationOnce(() =>
       new Promise(resolve => { resolveMessages = resolve }))
-
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
-
-    const conversation = await screen.findByRole('log', { name: 'Conversation messages' })
-    const scrollTo = vi.fn()
-    Object.defineProperties(conversation, {
-      scrollHeight: { configurable: true, value: 1_000 },
-      clientHeight: { configurable: true, value: 400 },
-      scrollTop: { configurable: true, writable: true, value: 600 },
-      scrollTo: { configurable: true, value: scrollTo },
-    })
-    await act(async () => {
-      resolveMessages({
-        items: [{
-          id: 'message-latest',
-          session_id: 'session-1',
-          space_id: 'space-1',
-          user_id: null,
-          sender_agent_id: 'agent-1',
-          role: 'assistant',
-          content: 'Latest reply',
-          metadata_json: null,
-          created_at: '2026-07-26T00:00:03.000Z',
-        }],
-        task_group_ids: [],
-        limit: 200,
-        offset: 0,
+    vi.useFakeTimers()
+    try {
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      await act(async () => { await Promise.resolve() })
+      const conversation = screen.getByRole('log', { name: 'Conversation messages' })
+      const scrollTo = vi.fn()
+      Object.defineProperties(conversation, {
+        scrollHeight: { configurable: true, value: 1_000 },
+        clientHeight: { configurable: true, value: 400 },
+        scrollTop: { configurable: true, writable: true, value: 600 },
+        scrollTo: { configurable: true, value: scrollTo },
       })
-    })
-    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1_000, behavior: 'auto' }))
+      await act(async () => {
+        resolveMessages({
+          items: [{
+            id: 'message-latest', session_id: 'session-1', space_id: 'space-1', user_id: null,
+            sender_agent_id: 'agent-1', role: 'assistant', content: 'Latest reply', metadata_json: null,
+            created_at: '2026-07-26T00:00:03.000Z',
+          }],
+          task_group_ids: [], limit: 200, offset: 0,
+        })
+      })
+      // The follow-the-tail scroll is scheduled on an animation frame, which
+      // the faked clock holds until advanced.
+      await act(async () => { await vi.advanceTimersByTimeAsync(16) })
+      expect(scrollTo).toHaveBeenCalledWith({ top: 1_000, behavior: 'auto' })
 
-    scrollTo.mockClear()
-    conversation.scrollTop = 100
-    fireEvent.scroll(conversation)
-    vi.mocked(roomsApi.messages).mockResolvedValue({
-      items: [{
-        id: 'message-newer',
-        session_id: 'session-1',
-        space_id: 'space-1',
-        user_id: null,
-        sender_agent_id: 'agent-1',
-        role: 'assistant',
-        content: 'A newer reply',
-        metadata_json: null,
-        created_at: '2026-07-26T00:00:04.000Z',
-      }],
-      task_group_ids: [],
-      limit: 200,
-      offset: 0,
-    })
-    fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
-    expect(await screen.findByText('A newer reply')).toBeInTheDocument()
-    expect(scrollTo).not.toHaveBeenCalled()
+      // The reader scrolls up to read history; the next poll brings a reply.
+      scrollTo.mockClear()
+      conversation.scrollTop = 100
+      fireEvent.scroll(conversation)
+      vi.mocked(roomsApi.messages).mockResolvedValue({
+        items: [{
+          id: 'message-newer', session_id: 'session-1', space_id: 'space-1', user_id: null,
+          sender_agent_id: 'agent-1', role: 'assistant', content: 'A newer reply', metadata_json: null,
+          created_at: '2026-07-26T00:00:04.000Z',
+        }],
+        task_group_ids: [], limit: 200, offset: 0,
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(screen.getByText('A newer reply')).toBeInTheDocument()
+      expect(scrollTo).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses the Project route as the Room scope without rendering a Project picker', async () => {
@@ -543,11 +663,7 @@ describe('Rooms page', () => {
       })
     })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Owner contribution')).toBeInTheDocument()
     expect(screen.getByText('Member contribution')).toBeInTheDocument()
@@ -582,11 +698,7 @@ describe('Rooms page', () => {
       },
     } as unknown as Run)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('approval needed')).toBeInTheDocument()
     expect(screen.getByText('Review request')).toBeInTheDocument()
@@ -594,62 +706,40 @@ describe('Rooms page', () => {
     expect(runsApi.streamEvents).not.toHaveBeenCalled()
   })
 
-  it('loads older Room history and does not refetch terminal Runs', async () => {
+  it('loads older Room history, and a later poll does not refetch terminal Runs', async () => {
+    // Same repair as above: the third `messages` call this test counts is the
+    // poll, not the Refresh button it used to click.
     const recent = Array.from({ length: 50 }, (_, index) => ({
-      id: `message-${index}`,
-      session_id: 'session-1',
-      space_id: 'space-1',
-      user_id: 'user-1',
-      sender_agent_id: null,
-      role: 'user' as const,
-      content: `Recent ${index}`,
+      id: `message-${index}`, session_id: 'session-1', space_id: 'space-1', user_id: 'user-1',
+      sender_agent_id: null, role: 'user' as const, content: `Recent ${index}`,
       metadata_json: index === 0 ? { run_ids: ['run-terminal'] } : null,
       created_at: `2026-07-26T00:00:${String(index).padStart(2, '0')}.000Z`,
     }))
     vi.mocked(roomsApi.messages)
+      .mockResolvedValueOnce({ items: recent, task_group_ids: ['group-1'], limit: 50, offset: 0 })
       .mockResolvedValueOnce({
-        items: recent,
-        task_group_ids: ['group-1'],
-        limit: 50,
-        offset: 0,
+        items: [{ ...recent[0], id: 'message-older', content: 'Oldest message' }],
+        task_group_ids: ['group-1'], limit: 50, offset: 50,
       })
-      .mockResolvedValueOnce({
-        items: [{
-          ...recent[0],
-          id: 'message-older',
-          content: 'Oldest message',
-        }],
-        task_group_ids: ['group-1'],
-        limit: 50,
-        offset: 50,
-      })
-      .mockResolvedValue({
-        items: recent,
-        task_group_ids: ['group-1'],
-        limit: 50,
-        offset: 0,
-      })
-    vi.mocked(runsApi.get).mockResolvedValue({
-      id: 'run-terminal',
-      status: 'succeeded',
-    } as Run)
+      .mockResolvedValue({ items: recent, task_group_ids: ['group-1'], limit: 50, offset: 0 })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-terminal', status: 'succeeded' } as Run)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    vi.useFakeTimers()
+    try {
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      await act(async () => { await Promise.resolve() })
+      fireEvent.click(screen.getByRole('button', { name: 'Load older' }))
+      await act(async () => { await Promise.resolve() })
+      expect(screen.getByText('Oldest message')).toBeInTheDocument()
+      expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', { limit: 50, offset: 50 })
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Load older' }))
-    expect(await screen.findByText('Oldest message')).toBeInTheDocument()
-    expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', {
-      limit: 50,
-      offset: 50,
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledTimes(3))
-    expect(runsApi.get).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(roomsApi.messages).toHaveBeenCalledTimes(3)
+      // A terminal Run was fetched once and is not asked about again.
+      expect(runsApi.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renders an inline Proposal card on an agent-drafted conclusion and accepts it without leaving the Room', async () => {
@@ -698,11 +788,7 @@ describe('Rooms page', () => {
       run_ids: ['run-continue'],
     })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Record conclusion: Does caching help?')).toBeInTheDocument()
     expect(await screen.findByText('Needs confirmation')).toBeInTheDocument()
@@ -754,11 +840,7 @@ describe('Rooms page', () => {
     })
     vi.mocked(proposalsApi.get).mockResolvedValue({ status: 'rejected' } as Awaited<ReturnType<typeof proposalsApi.get>>)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Record conclusion: Does caching help?')).toBeInTheDocument()
     expect(await screen.findByText('Rejected')).toBeInTheDocument()
@@ -795,11 +877,7 @@ describe('Rooms page', () => {
     })
     vi.mocked(proposalsApi.get).mockResolvedValue({ status: 'superseded' } as Awaited<ReturnType<typeof proposalsApi.get>>)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('A recovery attempted the same question again.')).toBeInTheDocument()
     expect(await screen.findByText('Duplicate research question')).toBeInTheDocument()
@@ -867,11 +945,7 @@ describe('Rooms page', () => {
       })
     })
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
     expect(screen.getByText('项目目标、范围和成功标准已保存。')).toBeInTheDocument()
@@ -911,142 +985,381 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByText('已接受，助手正在处理…')).not.toBeInTheDocument())
   })
 
-  it('opens a Project conversation in one click when the Project has no Room yet, without asking for a roster', async () => {
-    vi.mocked(roomsApi.list).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 })
-    vi.mocked(roomsApi.create).mockResolvedValue({ room, user_members: [], agent_members: [], conversation: initialConversation } as Awaited<ReturnType<typeof roomsApi.create>>)
-
-    render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    const startButton = await screen.findByRole('button', { name: /start a conversation/i })
-    expect(screen.queryByText('Manager agent')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Create Room' })).not.toBeInTheDocument()
-    fireEvent.click(startButton)
-
-    // One click has to produce a Room *and* its first conversation — a Room
-    // with no conversation cannot be spoken to.
-    await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith(expect.objectContaining({
-      project_id: 'project-1',
-      title: 'Project One Room',
-    }), expect.any(String)))
-    expect(roomsApi.createConversation).not.toHaveBeenCalled()
-  })
-
-  it('turns a missing backend response into actionable setup links', async () => {
-    vi.mocked(roomsApi.list).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 })
-    vi.mocked(roomsApi.create).mockRejectedValue(new ApiRequestError(
+  it('surfaces backend setup links when the first message finds no usable Agent', async () => {
+    // Provisioning moved to the first message (ADR 0018 decision 4), so this
+    // error arrives from a send, not from creating the Room. It used to be
+    // caught on the create path, which can no longer raise it — leaving a
+    // Space with no configured provider an error and no next step.
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(roomsApi.sendMessage).mockRejectedValue(new ApiRequestError(
       'Configure a conversation backend',
       409,
       'conversation_backend_required',
       { code: 'conversation_backend_required', setup_targets: ['model_providers', 'cli_credentials'] },
     ))
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    fireEvent.click(await screen.findByRole('button', { name: /start a conversation/i }))
     expect(await screen.findByText(/set up a conversation backend/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /configure an api provider/i })).toHaveAttribute('href', '/spaces/space-1/providers')
     expect(screen.getByRole('link', { name: /grant a cli credential/i })).toHaveAttribute('href', '/cli-profiles')
   })
 
-  it('retains a successfully created Room when the catalog is stale and the detail read fails', async () => {
-    vi.mocked(roomsApi.list)
-      .mockResolvedValueOnce({ items: [], total: 0, limit: 50, offset: 0 })
-      .mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 })
-    vi.mocked(roomsApi.get).mockRejectedValue(new Error('Detail lagged'))
-    vi.mocked(roomsApi.create).mockResolvedValue({ room, user_members: [], agent_members: [], conversation: initialConversation } as Awaited<ReturnType<typeof roomsApi.create>>)
-
-    const view = render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    fireEvent.click(await screen.findByRole('button', { name: /start a conversation/i }))
-
-    expect(roomsApi.createConversation).not.toHaveBeenCalled()
-    await waitFor(() => expect(screen.getAllByText('Research Room').length).toBeGreaterThan(0))
-    expect(screen.queryByRole('button', { name: /start a conversation/i })).not.toBeInTheDocument()
-    expect(roomsApi.create).toHaveBeenCalledTimes(1)
-
-    mockedSpaceContext.activeSpaceId = 'space-2'
-    view.rerender(
-      <MemoryRouter initialEntries={['/spaces/space-2/projects/project-2/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-    await waitFor(() => expect(screen.queryByText('Research Room')).not.toBeInTheDocument())
-  })
-
-  it('keeps the locally committed Room when a delayed catalog response is still empty', async () => {
-    type RoomPage = Awaited<ReturnType<typeof roomsApi.list>>
-    const emptyPage: RoomPage = { items: [], total: 0, limit: 50, offset: 0 }
-    let resolveRefresh!: (page: RoomPage) => void
-    vi.mocked(roomsApi.list)
-      .mockResolvedValueOnce(emptyPage)
-      .mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve }))
-      .mockResolvedValue(emptyPage)
-    vi.mocked(roomsApi.get).mockRejectedValue(new Error('Detail lagged'))
-    vi.mocked(roomsApi.create).mockResolvedValue({ room, user_members: [], agent_members: [], conversation: initialConversation } as Awaited<ReturnType<typeof roomsApi.create>>)
-
-    render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    fireEvent.click(await screen.findByRole('button', { name: /start a conversation/i }))
-    await waitFor(() => expect(roomsApi.list).toHaveBeenCalledTimes(2))
-
-    await act(async () => {
-      resolveRefresh(emptyPage)
-      await Promise.resolve()
-    })
-
-    expect(await screen.findByText('Research Room')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /start a conversation/i })).not.toBeInTheDocument()
-    expect(roomsApi.create).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps a created Room reachable when catalog refresh fails', async () => {
+  it('keeps a Room it just created when the catalog refresh fails', async () => {
+    // `openRoom` commits the Room locally before any follow-up read, so a
+    // failing catalog cannot restore an empty state and invite a duplicate.
     let refreshShouldFail = false
     vi.mocked(roomsApi.list).mockImplementation(() => refreshShouldFail
       ? Promise.reject(new Error('Refresh failed'))
-      : Promise.resolve({ items: [], total: 0, limit: 50, offset: 0 }))
-    vi.mocked(roomsApi.create).mockResolvedValue({ room, user_members: [], agent_members: [], conversation: initialConversation } as Awaited<ReturnType<typeof roomsApi.create>>)
+      : Promise.resolve({ items: [room], total: 1, limit: 50, offset: 0 }))
+    vi.mocked(roomsApi.create).mockResolvedValue({
+      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
+    } as never)
 
-    render(
-      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/rooms']}>
-        <Routes>
-          <Route path="/spaces/:spaceId/projects/:projectId/rooms" element={<AgentGroupsPage />} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
 
-    const startButton = await screen.findByRole('button', { name: /start a conversation/i })
+    fireEvent.click(await screen.findByRole('button', { name: 'New Room' }))
+    fireEvent.click(await screen.findByLabelText('People who can see this'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Reader' }))
     refreshShouldFail = true
-    fireEvent.click(startButton)
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
-    await waitFor(() => expect(screen.getAllByText('Research Room').length).toBeGreaterThan(0))
-    expect(screen.queryByRole('button', { name: /start a conversation/i })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByText('Second Room').length).toBeGreaterThan(0))
     expect(roomsApi.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends a Room-keyed reference with the message that creates the conversation', async () => {
+    // The consuming half of the import continuation handoff. The pick is
+    // stored under the Room because the conversation it is for is created by
+    // the message that carries it (ADR 0018 decision 5), and the two are
+    // written in one transaction.
+    sessionStorage.setItem(
+      'rainver.reference.room.room-1',
+      JSON.stringify([{ kind: 'imported_session', id: 'imported-1' }]),
+    )
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-1', session_id: 'session-new', role: 'user', content: 'Picking this up', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' },
+      task_group_ids: [], run_ids: [],
+    } as never)
+    renderRooms('/rooms?room=room-1&new=1&reference=1')
+    const composer = await screen.findByLabelText('Room message')
+    // Read once: a reload must not resurrect a pick the person abandoned.
+    expect(sessionStorage.getItem('rainver.reference.room.room-1')).toBeNull()
+
+    fireEvent.change(composer, { target: { value: 'Picking this up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+      references: [{ kind: 'imported_session', id: 'imported-1' }],
+    }), expect.any(String)))
+  })
+
+  it('picks messages at the source and attaches them to another thread', async () => {
+    // Picking happens where the content can be read, not in a browser opened
+    // from the destination. What travels is a `messages` pick naming the
+    // conversation it came from.
+    vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+    vi.mocked(roomsApi.conversations).mockResolvedValue({
+      items: [initialConversation, { ...initialConversation, id: 'session-2', title: 'Other thread' }],
+      total: 2, limit: 50, offset: 0,
+    } as never)
+    vi.mocked(roomsApi.attachReferences).mockResolvedValue({ messages: [] } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    const checkboxes = await screen.findAllByLabelText('Pick this message')
+    fireEvent.click(checkboxes[0]!)
+    expect(await screen.findByText('1 message picked')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('Attach to a thread'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Other thread' }))
+
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-2', {
+      references: [{ kind: 'messages', id: 'session-1', item_ids: [expect.any(String)] }],
+    }))
+  })
+
+  it('holds a pick for a new thread, creating nothing until the first message', async () => {
+    // The phase's headline deliverable. Nothing exists until the message: a
+    // thread comes into being when somebody speaks in it (ADR 0018 decision
+    // 5), so an abandoned draft leaves nothing behind.
+    vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Following up', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' },
+      task_group_ids: [], run_ids: [],
+    } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: /Use in a new thread/ }))
+
+    // Held, not sent: no conversation was created to hold it.
+    expect(roomsApi.attachReferences).not.toHaveBeenCalled()
+    expect(roomsApi.sendMessage).not.toHaveBeenCalled()
+
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    // Written with the message that creates the conversation, in one call.
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+      references: [{ kind: 'messages', id: 'session-1', item_ids: ['m-1'] }],
+    }), expect.any(String)))
+  })
+
+  it('drops a pick the server will never accept, instead of wedging the composer', async () => {
+    // A whole-thread pick needs the source thread's summary, and a young
+    // thread has none. The pick is invisible in the composer, so leaving it
+    // in place would make every further attempt fail identically and the only
+    // escape would be a reload — which discards it anyway.
+    sessionStorage.setItem(
+      'rainver.reference.room.room-1',
+      JSON.stringify([{ kind: 'thread', id: 'session-9' }]),
+    )
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(roomsApi.sendMessage).mockRejectedValueOnce(
+      new ApiRequestError('no summary', 409, 'reference_summary_unavailable', {
+        detail: 'That thread has no summary yet.',
+      }),
+    )
+    renderRooms('/rooms?room=room-1&new=1&reference=1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
+
+    // The second attempt carries no reference, so it can actually be sent.
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-1', session_id: 'session-new', role: 'user', content: 'Following up', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' },
+      task_group_ids: [], run_ids: [],
+    } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).not.toHaveProperty('references')
+  })
+
+  it('names who would gain access before copying across an audience boundary', async () => {
+    // A confirmation that cannot say who is being let in is not informed
+    // consent. Declining attaches nothing; confirming sends back the ids the
+    // refusal named, never a bare `true`.
+    vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+    vi.mocked(roomsApi.conversations).mockResolvedValue({
+      items: [initialConversation, { ...initialConversation, id: 'session-2', title: 'Other thread' }],
+      total: 2, limit: 50, offset: 0,
+    } as never)
+    vi.mocked(roomsApi.attachReferences).mockRejectedValueOnce(
+      new ApiRequestError('refused', 409, 'reference_disclosure_confirmation_required', {
+        detail: 'Dana could not read this before.',
+        gains_access_user_ids: ['user-2'],
+      }),
+    )
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
+    fireEvent.click(await screen.findByLabelText('Attach to a thread'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Other thread' }))
+
+    // Named, not counted.
+    expect(await screen.findByText('Member')).toBeInTheDocument()
+    vi.mocked(roomsApi.attachReferences).mockResolvedValue({ messages: [] } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Share it with them' }))
+
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenLastCalledWith('room-1', 'session-2', {
+      references: [{ kind: 'messages', id: 'session-1', item_ids: [expect.any(String)] }],
+      confirm_disclosure: ['user-2'],
+    }))
+  })
+
+  it('links a conversation reference back to the thread it came from', async () => {
+    // The branch `source_room_id` exists for, and the one that was broken:
+    // hand-building the path missed the Space prefix every route lives under,
+    // so "open the source" navigated to Home.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',
+        content: 'We ruled out polars.', created_at: '2026-08-29T10:00:00.000Z',
+        metadata_json: {
+          room_display: 'reference',
+          reference: {
+            kind: 'messages', source_id: 'session-7', source_room_id: 'room-7',
+            source_title: 'Storage options', item_ids: ['m-9'], trust: 'domain_approved',
+            clipped: false, attached_by_user_id: 'user-1',
+            attached_at: '2026-08-29T10:00:00.000Z',
+          },
+        },
+      }],
+      total: 1, limit: 50, offset: 0,
+    } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByRole('link', { name: 'Storage options' }))
+      .toHaveAttribute('href', '/spaces/space-1/projects/project-1/rooms?room=room-7&conversation=session-7')
+    // Rainver's own record of what a colleague said, so it is not fenced off.
+    expect(screen.queryByText('outside Rainver')).not.toBeInTheDocument()
+  })
+
+  it('carries a whole thread into a new one, shows the draft, and lets it be dropped', async () => {
+    // The header action holds a `thread` pick for the next thread. A draft
+    // has to be visible to be a draft, and droppable: an invisible pick with
+    // no way out is the failure this exists to close.
+    vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Next', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' },
+      task_group_ids: [], run_ids: [],
+    } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Carry into a new thread/ }))
+    expect(await screen.findByText(/A conversation will be copied in with this message/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Do not carry this in' }))
+    await waitFor(() => expect(screen.queryByText(/will be copied in with this message/)).not.toBeInTheDocument())
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(roomsApi.sendMessage).mock.calls[0]![2]).not.toHaveProperty('references')
+  })
+
+  it('attaches nothing when the disclosure is declined', async () => {
+    // Declining is a real answer, not a dismissal: no partial attach, because
+    // the picks are resolved and written in one transaction on the server.
+    vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+    vi.mocked(roomsApi.conversations).mockResolvedValue({
+      items: [initialConversation, { ...initialConversation, id: 'session-2', title: 'Other thread' }],
+      total: 2, limit: 50, offset: 0,
+    } as never)
+    vi.mocked(roomsApi.attachReferences).mockRejectedValue(
+      new ApiRequestError('refused', 409, 'reference_disclosure_confirmation_required', {
+        detail: 'Member could not read this before.',
+        gains_access_user_ids: ['user-2'],
+      }),
+    )
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
+    fireEvent.click(await screen.findByLabelText('Attach to a thread'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Other thread' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Don't attach/ }))
+    await waitFor(() => expect(screen.queryByText(/could not read this before/)).not.toBeInTheDocument())
+    // One call — the refused one. Declining sent nothing further.
+    expect(roomsApi.attachReferences).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders a reference as its origin, not as somebody speaking', async () => {
+    // A reference is `role: 'system'` and has no speaker. Rendered as a
+    // bubble it would read as the Agent having said a colleague's words, or a
+    // vendor transcript's — which is exactly what the trust label exists to
+    // prevent anyone concluding.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',
+        content: 'Quoted transcript.', created_at: '2026-08-29T10:00:00.000Z',
+        metadata_json: {
+          room_display: 'reference',
+          reference: {
+            kind: 'imported_session', source_id: 'imported-1', source_room_id: null,
+            source_title: 'Branch review', item_ids: [], trust: 'external_untrusted',
+            clipped: false, attached_by_user_id: 'user-1',
+            attached_at: '2026-08-29T10:00:00.000Z',
+          },
+        },
+      }],
+      total: 1, limit: 50, offset: 0,
+    } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByTestId('reference-m-ref')).toBeInTheDocument()
+    expect(screen.getByText(/brought in an imported session/)).toBeInTheDocument()
+    expect(screen.getByText('outside Rainver')).toBeInTheDocument()
+    // Its origin is reachable, and it is the session's own page.
+    expect(screen.getByRole('link', { name: 'Branch review' }))
+      .toHaveAttribute('href', '/spaces/space-1/projects/project-1/imported-sessions/imported-1')
+  })
+
+  it('does not carry a used reference into the next thread', async () => {
+    // The pick outlives every conversation switch on the page, so consuming it
+    // has to be explicit. Pressing "New" after sending puts the page back into
+    // the same state the pick was read in — without clearing it, the same
+    // content silently attaches to a second thread nobody picked it for.
+    sessionStorage.setItem(
+      'rainver.reference.room.room-1',
+      JSON.stringify([{ kind: 'imported_session', id: 'imported-1' }]),
+    )
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-1', session_id: 'session-new', role: 'user', content: 'First', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' },
+      task_group_ids: [], run_ids: [],
+    } as never)
+    renderRooms('/rooms?room=room-1&new=1&reference=1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'First' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+      references: [{ kind: 'imported_session', id: 'imported-1' }],
+    }), expect.any(String)))
+
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Second' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).not.toHaveProperty('references')
+  })
+
+  it('does not attach a reference onto a conversation that already exists', async () => {
+    sessionStorage.setItem(
+      'rainver.reference.room.room-1',
+      JSON.stringify([{ kind: 'imported_session', id: 'imported-1' }]),
+    )
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-1', session_id: 'session-1', role: 'user', content: 'Hello', metadata_json: {} },
+      conversation: initialConversation, task_group_ids: [], run_ids: [],
+    } as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1&reference=1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Hello' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    // The server refuses references on an addressed send, so the client must
+    // not offer them there either.
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith(
+      'room-1', 'session-1', expect.not.objectContaining({ references: expect.anything() }),
+    ))
+  })
+
+  it('keeps a locally committed Room when a slower catalog response still lacks it', async () => {
+    // The stale-response guard: a refresh issued before the create can resolve
+    // after it, and its older list would drop the Room that is already
+    // committed. Distinct from a *failing* refresh, which the test above
+    // covers.
+    type RoomPage = Awaited<ReturnType<typeof roomsApi.list>>
+    const onlyExisting: RoomPage = { items: [room], total: 1, limit: 50, offset: 0 }
+    let resolveRefresh!: (page: RoomPage) => void
+    vi.mocked(roomsApi.list)
+      .mockResolvedValueOnce(onlyExisting)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve }))
+      .mockResolvedValue(onlyExisting)
+    vi.mocked(roomsApi.create).mockResolvedValue({
+      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
+    } as never)
+
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    await openLimitedRoomWith('Reader')
+    await waitFor(() => expect(resolveRefresh).toBeTypeOf('function'))
+
+    await act(async () => { resolveRefresh(onlyExisting); await Promise.resolve() })
+    expect(await screen.findByText('Second Room')).toBeInTheDocument()
+    expect(roomsApi.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a locally committed Room when the active Space changes', async () => {
+    // The pending entry is Space-scoped: carrying it across a Space switch
+    // would show a Room from somewhere else.
+    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
+    vi.mocked(roomsApi.create).mockResolvedValue({
+      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
+    } as never)
+
+    const view = renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    await openLimitedRoomWith('Reader')
+    await waitFor(() => expect(screen.getAllByText('Second Room').length).toBeGreaterThan(0))
+
+    mockedSpaceContext.activeSpaceId = 'space-2'
+    view.rerender(roomsAt('/spaces/space-2/projects/project-2/rooms?room=room-1&conversation=session-1'))
+    await waitFor(() => expect(screen.queryByText('Second Room')).not.toBeInTheDocument())
   })
 
   it('renders the Project state panel beside the conversation, deep-linking into the owning Area (Phase B)', async () => {
@@ -1058,11 +1371,7 @@ describe('Rooms page', () => {
       attention: [{ id: 'attention-1', title: 'Candidate awaiting review', summary: null, href: '/projects/project-1/inquiry?candidate=candidate-1' }],
     } as unknown as Awaited<ReturnType<typeof projectsApi.getOverview>>)
 
-    render(
-      <MemoryRouter initialEntries={['/rooms?room=room-1&conversation=session-1']}>
-        <AgentGroupsPage />
-      </MemoryRouter>,
-    )
+    renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Project initialized')).toBeInTheDocument()
     // The panel shows the same attention list Pulse and the shell show, and

@@ -10,7 +10,7 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import {
   addOptionalFilter,
@@ -917,33 +917,21 @@ export class PgRunRepository {
     return result.rows[0] ? this.withRunUsage(result.rows[0]) : null;
   }
 
+  /**
+   * The Room rule and the content rule, in the shape a single-row read needs:
+   * a non-member gets a 404 rather than a silently filtered row.
+   *
+   * It calls `roomRunReadAccessSql` rather than restating it. This method used
+   * to hand-write the equivalent join, and `listRuns` carried no Room rule at
+   * all — so the list showed Runs this path then denied. One definition is
+   * what stops that recurring.
+   */
   async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<RunRecord | null> {
-    const roomScope = await this.db.query<{ room_id: string | null; project_id: string | null }>(
-      `SELECT COALESCE(group_row.room_id, session_row.room_id) AS room_id,
-              COALESCE(group_row.project_id, session_row.project_id) AS project_id
-         FROM runs run_row
-         LEFT JOIN agent_run_groups group_row
-           ON group_row.id=run_row.run_group_id AND group_row.space_id=run_row.space_id
-         LEFT JOIN sessions session_row
-           ON session_row.id=run_row.session_id AND session_row.space_id=run_row.space_id
-        WHERE run_row.space_id=$1 AND run_row.id=$2`,
-      [spaceId, runId],
+    const roomReadable = await this.db.query<{ allowed: boolean }>(
+      `SELECT ${roomRunReadAccessSql("$2", "$1", "$3")} AS allowed`,
+      [spaceId, runId, userId],
     );
-    const roomId = roomScope.rows[0]?.room_id;
-    if (roomId) {
-      const readable = await this.db.query(
-        `SELECT 1
-           FROM rooms room
-           JOIN room_user_members member
-             ON member.space_id=room.space_id AND member.room_id=room.id
-            AND member.user_id=$3 AND member.status='active'
-          WHERE room.space_id=$1 AND room.id=$2 AND room.status='active'
-            AND ${projectReadAccessSql("room.space_id", "room.project_id", "$3")}
-          LIMIT 1`,
-        [spaceId, roomId, userId],
-      );
-      if (!readable.rows[0]) return null;
-    }
+    if (!roomReadable.rows[0]?.allowed) return null;
     const decision = await contentDecisionFromDb(
       this.db,
       { spaceId, userId },
@@ -958,6 +946,13 @@ export class PgRunRepository {
     const clauses = [
       "space_id = $1",
       contentReadSql("run", "runs", "$2"),
+      // A Room is a visibility boundary (ADR 0018 decision 3), and the content
+      // predicate alone does not enforce it: its oversight branch admits a
+      // Space owner or admin who is inside the Project but not the Room. The
+      // detail path has always carried this rule, so without it here the list
+      // showed Runs the detail page then 404'd on. Same predicate the Proposal
+      // and Artifact reads use, so there is one definition of it.
+      roomRunReadAccessSql("runs.id", "runs.space_id", "$2"),
     ];
     const params: unknown[] = [filters.space_id, filters.user_id];
     addOptionalFilter(clauses, params, "status", filters.status);

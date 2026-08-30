@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedSpaceMember, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { ProjectCorpusRepository, syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository.js";
 import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService.js";
@@ -393,6 +393,7 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
        VALUES ($1,$2,$3,'Archived Research','archived',$4,$4,$4)`,
       [archivedProjectId, SPACE, OWNER, now],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_source_bindings (
          id, space_id, project_id, source_channel_id, binding_key,

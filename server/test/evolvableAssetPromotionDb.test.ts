@@ -9,6 +9,7 @@ import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modul
 import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for evaluation-run metadata and the
 // evolvable_asset_version_promote proposal applier: approval is
@@ -45,6 +46,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 function repo(): EvolvableAssetRepository {

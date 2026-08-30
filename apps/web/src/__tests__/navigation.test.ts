@@ -65,7 +65,6 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/proposals')?.id).toBe('review')
     expect(sceneForPath('/spaces/x/projects')).toBeNull()
     expect(sceneForPath('/spaces/x/agents')?.id).toBe('agents')
-    expect(sceneForPath('/spaces/x/rooms')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/sessions')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/artifacts')?.id).toBe('artifacts')
     // Knowledge intentionally has no scene sidebar — it uses an in-header breadcrumb switcher.
@@ -77,13 +76,16 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/activity')?.id).not.toBe(sceneForPath('/spaces/x/proposals')?.id)
   })
 
-  it('includes Rooms in the Agents scene sidebar', () => {
-    const agentsScene = sceneForPath('/spaces/x/rooms')
+  it('does not offer Rooms as a navigation destination', () => {
+    // A Room is a visibility boundary, not a place (ADR 0018 decision 2). It
+    // is reached through the Project whose conversations it holds, so a
+    // top-level entry would make every user pass a picker to reach the only
+    // Room they have.
+    const agentsScene = sceneForPath('/spaces/x/agents')
     expect(agentsScene?.kind).toBe('route')
     if (agentsScene?.kind !== 'route') throw new Error('expected route scene')
-    expect(agentsScene.items).toEqual(expect.arrayContaining([
-      { label: 'Rooms', to: '/rooms' },
-    ]))
+    expect(agentsScene.items.map(item => item.to)).not.toContain('/rooms')
+    expect(sceneForPath('/spaces/x/rooms')).toBeNull()
   })
 })
 

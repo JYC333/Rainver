@@ -13,6 +13,7 @@ import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
 import type { ServerConfig } from "../src/config.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -52,6 +53,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Reusable Source Agent','active',NULL,$4,$4,'space_shared')`,

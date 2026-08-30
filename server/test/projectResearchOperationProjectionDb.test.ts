@@ -6,6 +6,7 @@ import { resetTables } from "./support/resetTables.js";
 import { advanceOperation, type ResearchOperationState } from "../src/modules/projectResearch/operationProjection.js";
 import { ProjectOperationService } from "../src/modules/projects/projectOperationService.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -94,6 +95,7 @@ describe("project research operation projection store (real Postgres)", () => {
       `SELECT progress_json->>'current_stage' AS current_stage, status, version FROM project_operations WHERE id=$1`,
       [OPERATION],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     expect(row.rows[0]).toEqual({ current_stage: "backfill", status: "active", version: 2 });
   });
 

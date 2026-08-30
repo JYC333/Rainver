@@ -8,6 +8,7 @@ import type {
   AcademicPaper,
   ProjectBoard,
   ProjectMainlineRoomResponse,
+  ProjectReadersResponse,
   ProjectConversationsResponse,
   ProjectWorkUpdatesResponse,
   TaskWorkView,
@@ -320,6 +321,7 @@ import type {
   RoomPendingApprovalListResponse,
   RoomOwnerTransferRequest,
   RoomMessage,
+  ThreadReferencePick,
   ContinueRoomAfterProposalRequest,
   Run,
   RunAttempt,
@@ -1341,6 +1343,23 @@ export const roomsApi = {
   create: (body: CreateRoomRequest, idempotencyKey?: string) =>
     post<CreateRoomResponse>('/rooms', body, { idempotencyKey }),
   get: (roomId: string) => get<RoomDetail>(`/rooms/${roomId}`),
+  /**
+   * Copy picked content into a conversation that already exists.
+   *
+   * The other way in is the session-less send, which carries `references` so
+   * the first message and what it opens with are written together.
+   */
+  attachReferences: (
+    roomId: string,
+    sessionId: string,
+    body: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | string[] },
+  ) => post<{
+    items: RoomMessage[]
+    task_group_ids: string[]
+    conversation: RoomConversation | null
+    limit: number
+    offset: number
+  }>(`/rooms/${roomId}/conversations/${sessionId}/references`, body),
   agentCandidates: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1375,8 +1394,6 @@ export const roomsApi = {
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`)
   },
-  createConversation: (roomId: string, body: { title?: string | null }) =>
-    post<RoomConversation>(`/rooms/${roomId}/conversations`, body),
   summary: (roomId: string, sessionId: string) =>
     get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`),
   messages: (
@@ -1397,13 +1414,31 @@ export const roomsApi = {
     }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`)
     )
   },
-  sendMessage: (roomId: string, sessionId: string, body: SendRoomMessageRequest) =>
+  /**
+   * `sessionId` may be null: a Room that has not been spoken in has no
+   * conversation, and the first message creates one. The response carries it
+   * either way, so the caller binds to what the send produced rather than
+   * creating a conversation first and risking an empty one.
+   *
+   * `idempotencyKey` applies to the session-less send only, which is the one
+   * that creates a conversation. A retry after a lost response would otherwise
+   * make a second thread — and, since that send carries `references`, copy and
+   * disclose their content a second time.
+   */
+  sendMessage: (
+    roomId: string,
+    sessionId: string | null,
+    body: SendRoomMessageRequest,
+    idempotencyKey?: string,
+  ) =>
     post<{
       message: RoomMessage
       conversation: RoomConversation
       task_group_ids: string[]
       run_ids: string[]
-    }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+    }>(sessionId
+      ? `/rooms/${roomId}/conversations/${sessionId}/messages`
+      : `/rooms/${roomId}/messages`, body, sessionId ? {} : { idempotencyKey }),
   continueAfterProposal: (
     roomId: string,
     sessionId: string,
@@ -2753,6 +2788,14 @@ export const projectsApi = {
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
   getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
   mainlineRoom: (id: string) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`),
+  /**
+   * Everyone who can read this Project.
+   *
+   * The roster picker's candidate source. Not `spacesApi.members`: a Space
+   * member who cannot read the Project is someone the server refuses to invite,
+   * so offering them produces a control that only ever fails.
+   */
+  readers: (id: string) => get<ProjectReadersResponse>(`/projects/${id}/readers`),
   conversations: (id: string, params: { limit?: number; offset?: number } = {}) =>
     get<ProjectConversationsResponse>(`/projects/${id}/conversations?` + new URLSearchParams(
       Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),

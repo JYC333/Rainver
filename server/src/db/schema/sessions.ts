@@ -133,6 +133,12 @@ export const messages = pgTable("messages", {
 	index("ix_messages_user_id").using("btree", table.userId.asc().nullsLast()),
 	index("ix_messages_sender_agent_id").on(table.senderAgentId),
 	unique("uq_messages_id_space_session").on(table.id, table.spaceId, table.sessionId),
+	// Whether a conversation ever held content from outside Rainver, asked
+	// once per reference pick while the Room row lock is held. Partial, so a
+	// thread that never held any has no entry at all and the question is
+	// answered from the index instead of by visiting every message it has.
+	index("ix_messages_external_reference").on(table.spaceId, table.sessionId)
+		.where(sql`metadata_json->'reference'->>'trust' = 'external_untrusted'`),
 	uniqueIndex("uq_messages_assistant_run").on(
 		table.spaceId,
 		sql`(metadata_json->>'run_id')`,

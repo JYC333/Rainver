@@ -243,15 +243,52 @@ summary generation (`projects/publicSummaryGenerator.ts`) passes
 `includeOversight: false` on every candidate query, because its output can
 become `review_status = 'approved'` and readable by the whole Space — an
 oversight admin's own extra visibility must never leak another member's
-private content into that space-wide artifact. Retrieval and per-run context
-injection do inherit oversight by design (an admin-initiated run may compile
-other members' otherwise-private content into that run's own context/output,
-scoped to that run), which is a deliberate consequence of the same
-canonical-predicate mechanism, not a separate feature.
+private content into that space-wide artifact. A **thread reference** does the same
+(`rooms/threadReferences.ts`, through `importedSessions/read.ts`): a person may
+open a colleague's private transcript by oversight, which is audit, but copying
+it into a thread other people read is publication, so the copy is read with
+`includeOversight: false` under the attacher's own identity. See "Copying
+content across an audience boundary" below.
+
+Retrieval and per-run context injection do inherit oversight by design (an
+admin-initiated run may compile other members' otherwise-private content into
+that run's own context/output, scoped to that run), which is a deliberate
+consequence of the same canonical-predicate mechanism, not a separate
+feature.
 
 Oversight does not pierce project_folder/project scope gates, source consent
-gates, or any other post-visibility deny gate besides the `highly_restricted`
-exception above. Cross-space reads always fail regardless of oversight;
+gates, **the Room boundary**, or any other post-visibility deny gate besides
+the `highly_restricted` exception above. A Room is a visibility boundary
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 3), and
+because oversight sits *inside* the visibility disjunction it would otherwise
+admit an admin who is a member of the Project but not the Room. Every read of
+Room-derived output therefore carries `roomRunReadAccessSql` alongside
+the content predicate, so a list cannot show what its detail page then 404s
+on. It is applied by `runs.listRuns` and `runs.getVisibleRun`; the Home and
+cross-space Run lists and the failed-run count, and the Home Proposal and
+Artifact lists (`frontendSupport`'s `runReadSql`, `proposalReadSql`,
+`artifactReadSql`); the Project Pulse in-progress count; and the canonical
+Proposal and Artifact repository reads. It also gates Proposal accept, reject
+and egress approval (`proposals/applyService.ts`), so widening it widens a
+write authority — which is why the predicate has no mainline exemption even
+though the mainline's `room_user_members` row is written lazily, on first open
+of the Project. Not seeing a mainline Run until you have opened the Project
+once is stricter and self-healing; exempting the mainline would have let a
+Project member who never opened it decide that Run's Proposals.
+
+Some reads are covered by their parent rather than by this predicate.
+`listRunIdsForGroup`, `listArtifactIdsForRuns` and `listProposalIdsForRuns`
+sit behind `requireReadableGroup`, which checks Room membership directly.
+`listTaskRuns`, `listTaskArtifacts` and `listTaskProposals` sit behind a
+content predicate on the Task with no Room term — no path writes a Room-scoped
+Run into `task_runs` today, so those are latent rather than live, and they are
+where to look first if one ever does. The Board read model's run and output
+columns (`boardReadModel.ts`, through `task_runs` / `task_artifacts`) are the
+same latent class. `listPolicyDecisionRecordIdsForGroup` carries no viewer
+predicate at all and rests entirely on its parent. The daily-report artifact
+reads (`dailyReports/`) carry no Room term either; in practice they are
+restricted to the viewer's own non-Room artifacts, but they have not been
+audited against this rule. Cross-space reads always fail regardless of oversight;
 targeted publications remain the only cross-space transfer path.
 
 ### Usage events
@@ -297,6 +334,35 @@ owner ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)'s hard
 rule), except that a session whose Location has since been unregistered stays
 administrable by its owner so unbinding a folder cannot strand its history.
 See [modules/imported-sessions.md](../modules/imported-sessions.md).
+
+### Copying content across an audience boundary
+
+A **thread reference** copies content a person picked into another thread. It
+is the one path that deliberately moves content between audiences, so it is
+gated twice.
+
+The copy is read under the **attacher's own identity**, with
+`includeOversight: false`. Oversight is audit; a copy other people will read is
+publication, and an admin's audit reach must not become a route to publish.
+
+Where the destination's audience is wider than the source's, the attach is
+**refused** with a coded 409 naming `gains_access_user_ids`, and proceeds only
+when the request confirms it. The confirmation is server-enforced, not a client
+courtesy, and it must name people — the client echoes back the ids the refusal
+gave rather than a bare `true`, because a roster can grow in between.
+
+Audiences are computed by asking the read gates themselves, never by a second
+description of them — the roster is not the mainline's audience, and a Room
+membership is not a Project readership. Which gate answers for which kind of
+source is [modules/rooms.md](../modules/rooms.md)'s to state, and stating it
+twice is how the two drift.
+
+Generating an imported session's summary is a metered model call charged to
+that session's **owner**, so both gates — source readability and destination
+reachability — run before anything is spent, under the caller's identity.
+
+See [modules/rooms.md](../modules/rooms.md) and
+[ADR 0018](../decisions/0018-room-as-visibility-boundary.md).
 
 ---
 

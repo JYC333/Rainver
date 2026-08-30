@@ -35,6 +35,7 @@ import {
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for which model backend the control plane picks for a
 // host's runtime adapter, and what it refuses. Precedence and validation are
@@ -457,6 +458,7 @@ async function seedDispatchableThread(): Promise<void> {
      VALUES ($1,$2,$3,'Work','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_folders (id, space_id, project_id, name, kind, status, protected, system_managed, created_at, updated_at)
      VALUES ($1,$2,$3,'repo','code','active',false,false,$4,$4)`,

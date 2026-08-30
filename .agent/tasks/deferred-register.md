@@ -312,6 +312,21 @@ neither item is a hidden extension point in the current API.
 | Master-key rotation | Suspected exposure or a future multi-instance requirement |
 | Commercialization posture | A real external-user/product decision |
 
+## Thread references — deferred at close
+
+Shipped 2026-08-29 (`10a02a31`, `60b86670`, `92375c49`, `27f12464`); these
+were deliberately left, each with the reason it is safe to leave.
+
+| Item | Trigger | Why it is safe today |
+|---|---|---|
+| Agent members are not counted in the disclosure calculus — `disclosureGainedBy` measures human audiences only | A Room's Agents can read a thread's history on behalf of somebody outside the Room's human audience | An Agent's reach is already bounded by its Room grants, which require an active membership in the same Room |
+| No `claimTurn` and no cost bound on the attach endpoint; the schema permits 20 picks in one call | A product path emits more than one pick at a time — the picker attaches one | Record and message picks fetch only the ids they name. A whole-session pick's model call runs *before* the transaction opens, so it is never under the Room row lock. What is under the lock is one lookup per conversation pick against a partial index (`ix_messages_external_reference`), which a thread that never held external content has no entry in |
+| Two people referencing the same unsummarized session at once both pay for it | Observed duplicate spend, or a second worker process | The outcome is correct — the monotonic upsert settles the write — and the obvious fix, an advisory lock held across the model call, would violate the rule against holding a transaction across a provider call |
+| A provider outage during a continuation leaves the first message unsendable; the "attach records instead" fallback was not built | A Space runs without an eligible provider, or an outage is observed during real use | The pick can now be dropped from the composer by hand, so the thread is no longer wedged — only the reference is lost |
+| `item_ids` is capped at 200 by the schema with no client-side cap or warning | Somebody hits the raw 422, or a picker gains select-all | Nothing is lost when it happens: the send is refused before anything is written, and the pick survives for the person to narrow. Reachable today — the imported-session page lists up to 2,000 records, each with a checkbox — so this is a rough edge, not an unreachable one |
+| `picked` and `disclosure` are not reset by `RoomConversation` itself | A consumer keeps the component mounted across a conversation switch | Both current consumers remount via `key`, so the state cannot outlive its conversation |
+| A whole-thread pick of a thread holding external content is labelled `external_untrusted`, but the *summarizer* is not told its input is untrusted | Prompt injection is observed surviving summarization | The label and fence are applied to the carried copy; this is about the summary's own production, which is the Room summary service's contract, not a reference's |
+
 ## Parked ideas
 
 Not part of any implementation sequence. Do not pull one in without a separately

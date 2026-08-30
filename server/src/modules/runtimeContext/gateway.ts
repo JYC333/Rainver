@@ -5,7 +5,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Pool, Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import { roomScopedAgentReadSql } from "./workContextService.js";
+import { isExplicitReferenceType, roomScopedAgentReadSql } from "./workContextService.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
@@ -558,8 +558,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         await this.authorizeRetrievalSource(db, input, control, item, viewerSpaceRole, egress);
       } else if (item.acquisition === "explicit"
         || (item.acquisition === "direct"
-          && (item.source_ref.type === "project_brief_version"
-            || item.source_ref.type === "project_instruction_version"))) {
+          && isExplicitReferenceType(item.source_ref.type))) {
         await this.authorizeExplicitSource(db, input, control, item);
       }
     }

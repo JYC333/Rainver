@@ -20,6 +20,7 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
+import { projectReaders } from "./access.js";
 import {
   RetrievalFeedbackService,
   RetrievalSearchService,
@@ -633,6 +634,33 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await repository().listMembers(identity, params(request).projectId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  /**
+   * Everyone who can read this Project.
+   *
+   * Distinct from `/members`, which is the Project-level memory ACL and omits
+   * the owner. This is the roster picker's candidate source: a Room's audience
+   * is chosen from it, and offering anyone outside it produces an invitation
+   * the server then refuses.
+   *
+   * The gate is the answer itself. A caller who is not among the readers
+   * cannot read the Project, and so gets the same 404 a Project that does not
+   * exist would give — no roster, and no signal that there was one.
+   */
+  app.get("/api/v1/projects/:projectId/readers", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = params(request).projectId ?? "";
+      const readers = await projectReaders(dbPool(context.config), identity.spaceId, projectId);
+      if (!readers.some((reader) => reader.user_id === identity.userId)) {
+        throw new HttpError(404, "Project not found");
+      }
+      return reply.send({ readers });
     } catch (error) {
       return sendRouteError(reply, error);
     }

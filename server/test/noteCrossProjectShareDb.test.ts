@@ -6,6 +6,7 @@ import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReord
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * S6 boundary set. `contentAccessSql` evaluates the Project scope as a hard AND
@@ -71,6 +72,7 @@ async function makeProject(name: string, ownerUserId: string): Promise<string> {
      VALUES ($1,$2,$3,'active',$4,$5,$5)`,
     [id, SPACE, name, ownerUserId, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,$4,'owner','active',$5,$5)`,

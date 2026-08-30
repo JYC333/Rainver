@@ -273,6 +273,65 @@ these should be evaluated and chosen per invocation by the Manager Agent or a
 dedicated research agent — e.g. provider mix from the question's domain, budget
 from project scale — instead of one static default set.
 
+### R1.5 — A conversation-scoped Work Context Setup
+
+**Import continuation no longer needs this.** Thread references (shipped
+2026-08-29; [../modules/rooms.md](../modules/rooms.md) §Thread References)
+settle the per-thread *reference* need as a one-shot message copied into the
+target thread, which touches no scope. What remains here is the wider,
+still-unexampled need for per-thread *configuration*; the five decisions
+below stand, and the live `imported_session` explicit reference this entry
+describes as "wired end to end" is removed by that plan's Phase 1.
+
+Today a Room run's `work_context_scope_id` is `room_agent_members.id` — the
+`(Room, agent)` pair — and `work_context_setups` is unique on
+`(space_id, work_context_scope_id, user_id, version)`. So a Room conversation
+has **no per-conversation setup**: two threads with the same agent in one Room
+share one, and nothing that belongs to a single thread can be configured.
+
+This surfaced when import continuation wanted to pin the imported session as
+an explicit reference on the new conversation. Pinning at the only scope that
+exists would attach it to every conversation that person has with that agent
+in that Room — bounded and arguably right for a personal Room, wrong for the
+mainline, where a shared continuation lands.
+
+Nothing is pinned as a result. The `imported_session` explicit reference that
+was briefly wired end to end has since been removed by the thread-references
+work, which settles the per-thread *reference* need as a one-shot copy and
+leaves this entry to the per-thread *configuration* need.
+
+Two alternatives were weighed and rejected, 2026-08-29:
+
+- **Give every continuation its own Room.** Makes the pin boundary exact, but a
+  shared continuation excludes nobody, so that Room carries no visibility
+  meaning — it is Room-as-topic, which ADR 0018 decision 1 rejects by name, and
+  the roster-titled sections would render it as a split with the same audience
+  as the Project's own conversations.
+- **A tool that reads a named imported session**, with the id carried in the
+  seed. Literally "on demand", no scope change, and the content gate already
+  exists. Cheaper, and it answers the narrow need — weigh it first if the only
+  driver is import continuation.
+
+The scope change is the right long-term shape because it closes the wider gap,
+not because of imports. What it needs, and what no plan currently contains:
+
+1. **Addressing.** `(conversation, agent)` has no row today. Either a new table
+   or `session_id` in the setup key — and `work_context_scope_id` is passed
+   around as a single varchar token, including in a JSON expression index on
+   `jobs` (`db/schema/jobs.ts`).
+2. **Inheritance.** Does a conversation-scoped setup replace or layer over the
+   Room-scoped one, and if layered, which field wins?
+3. **Snapshot reproducibility.** Setups are versioned and fingerprinted, and
+   invocation snapshots record which version ran. A second scope level changes
+   what a snapshot must record — ADR 0014 audit territory.
+4. **Lifecycle.** Conversation archived, membership revoked: what happens to
+   the setup, and do old snapshots still resolve?
+5. **Who edits it.** The Work Context surface is organised per Room recipient.
+
+Blast radius includes `scope_kind = 'room_recipient'` branches hardcoded in the
+agent re-authorization SQL (`runtimeContext/gateway.ts`, twice) and
+`productionAcquisition.ts`, plus the invocation-snapshot and continuity chain.
+
 ## 7. Harness And Scope Convergence
 
 Two remaining specifications cover capability shrink and the two-Scope user

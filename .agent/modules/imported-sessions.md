@@ -125,6 +125,31 @@ process that died can be swept back, which the pending count does before
 reporting, because that count is what decides whether the button that would
 have swept it is shown at all.
 
+`imported_history_summaries` holds one short account per session — what a
+whole-session reference carries, since a thousand-record transcript has no
+other bounded form. Deliberately not the Room's summary machinery: that
+service compacts a *growing* message thread, carrying a covered-through
+message and a supersession chain, and an imported session has neither. Its
+records are fixed until the folder is re-synced, so one row is enough,
+rewritten when `last_record_at` moves past `covered_through_record_at`. The
+upsert is monotonic, because two runs may overlap and the slower one read the
+older records.
+
+One is produced **on demand**: when somebody references a whole session and no
+current summary exists, in the attach path but outside the Room row-lock
+transaction. Nothing is generated at import, and that is deliberate. A first
+sync can land two hundred sessions; describing every one of them to serve the
+few anyone reaches for is waste, and on a *scheduled* sync it is also spending
+nobody was present to authorize
+([ADR 0010](../decisions/0010-agent-workbench-product-direction.md)). The
+person's own press of "Continue in Rainver" is both the consent and the bound.
+
+Generating it therefore needs the same access gate the copy does — `full`,
+`includeOversight: false`, under the asking person's identity — because the
+call is metered to the session's *owner*. Without that gate a session id alone
+would let anyone spend a colleague's budget, and the timing would tell them
+whether the session exists.
+
 Each sync writes one `ActivityRecord` pointer (B24A: the Inbox holds pointers,
 never content) and forwards any reported token usage to the canonical ledger
 under `source_type = ambient_host_history`, attributed to the host owner and
@@ -182,10 +207,58 @@ being present, and attended consent does not stand in for unattended spending
   Project's own, marked as such on the row rather than only on the page they
   open, plus "Extract to Brief" when there is something unread.
 - **An imported session** — a deterministic derived view (files touched,
-  commands run) above the transcript, and "Continue in Rainver", which seeds
-  the Room's own composer with a draft rather than dispatching from a second
-  path beside it. Offered only for a shared session, since its destination is
-  the Project's Room.
+  commands run) above the transcript, and a continuation that hands the Room's
+  own composer a **reference** to the session rather than dispatching from a
+  second path beside it.
+
+  Where it lands follows the session's own audience, and the test is that
+  everyone in the destination can already read *all* of it — `space_shared` at
+  `full` access continues in the Project's mainline. Everything else continues
+  in the person's **personal Room** in that Project — a Room whose audience is
+  them alone, opened the first time it is needed and reused after
+  ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)). That covers
+  a private session, and equally `selected_users` or a `summary`-level share:
+  both name a narrower audience than the Project's readers, so landing them in
+  the mainline would be a disclosure the server refuses without a confirmation
+  the UI cannot yet show. The button is no longer withheld from a private
+  session, because the destination now protects it by construction — which is
+  what withholding it was protecting.
+
+  What is held for the composer is the reference, keyed by Room, not seed
+  text; the first message writes the reference and the conversation together.
+  Nothing is created before that message, so abandoning the draft leaves
+  nothing behind.
+
+  An imported session's records can also be **referenced** into a conversation:
+  picked at the source and copied in as a `reference` message, once, with
+  provenance and `external_untrusted` trust
+  ([`rooms.md`](rooms.md) §Thread References).
+  A *whole* session can be too: that grain carries the session's
+  `imported_history_summaries` row, written on demand if it has none. The 409
+  naming the records as the alternative is now reserved for a session that
+  cannot be summarized at all — no readable records — rather than one whose
+  turn has not come. Either way it is refused rather than silently shipping a
+  truncated transcript under the name "the session".
+
+  The read is `readImportedSessionForViewer`, the module's own, so the
+  transcript gate has one definition. Two things about it. It requires `full`,
+  not merely "not denied", because the gate also grants `summary` and a
+  transcript is the content itself. And the reference path passes
+  `includeOversight: false`: `full` alone does *not* exclude oversight — an
+  admin in a Space with `oversight_mode` of `content` or `full` reaches it on a
+  colleague's private session — which is right for a person opening the page
+  and wrong for a caller that copies the transcript where other people read
+  it. Oversight is audit, not a route to publish.
+
+  The live explicit-reference wiring that briefly existed — resolver,
+  context-authority read, delivery re-authorization — is gone. It re-resolved
+  a pointer every turn, which is the shape a reference deliberately is not.
+
+  Carrying a session into a thread is what a thread reference is for; a
+  per-conversation Work Context Setup, which would pin one, stays on the
+  backlog as R1.5 — a Room conversation's scope is `(Room, agent)`, so pinning
+  there would reach every conversation that person has with that agent in that
+  Room.
 
 Server-host Locations show none of this: server-side CLIs run under managed
 profiles and have no ambient history.

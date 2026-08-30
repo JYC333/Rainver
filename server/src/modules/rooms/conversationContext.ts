@@ -1,5 +1,5 @@
 import type { MessageOut } from "@rainver/protocol";
-import { estimateModelTokens } from "../usage/modelCatalog.js";
+import { estimateModelTokens, fitTextToTokenBudget } from "../usage/modelCatalog.js";
 
 export const ROOM_SUMMARY_TOKEN_BUDGET = 2_000;
 export const ROOM_RECENT_TOKEN_BUDGET = 6_000;
@@ -117,16 +117,13 @@ export function estimateRoomSummaryTokens(text: string, estimateTokens: RoomToke
   return estimateTokens(text);
 }
 
+/** The Room's summary budget, with the Room's own clipping marker. */
 export function fitRoomSummaryToBudget(
   text: string,
   budget = ROOM_SUMMARY_TOKEN_BUDGET,
   estimateTokens: RoomTokenEstimator = estimateModelTokens,
 ): string {
-  const normalized = text.trim();
-  if (estimateTokens(normalized) <= budget) return normalized;
-  const marker = "\n[summary clipped to the Room context budget]";
-  const prefix = trimUtf8(normalized, Math.max(0, budget - estimateTokens(marker)), estimateTokens);
-  return `${prefix.trimEnd()}${marker}`.trim();
+  return fitTextToTokenBudget(text, budget, "[summary clipped to the Room context budget]", estimateTokens);
 }
 
 function selectRecent(messages: readonly MessageOut[], budget: number, estimateTokens: RoomTokenEstimator): {
@@ -179,17 +176,4 @@ function isAfterCoverage(
 
 function sumTokens(messages: readonly MessageOut[], estimateTokens: RoomTokenEstimator): number {
   return messages.reduce((total, message) => total + estimateTokens(message.content), 0);
-}
-
-function trimUtf8(text: string, maxTokens: number, estimateTokens: RoomTokenEstimator): string {
-  // Tokenizer implementations are intentionally injectable. The shared
-  // fallback is conservative and character-boundary safe; provider-specific
-  // implementations can replace it without changing cursor semantics.
-  let result = "";
-  for (const character of text) {
-    const candidate = result + character;
-    if (estimateTokens(candidate) > maxTokens) break;
-    result = candidate;
-  }
-  return result;
 }

@@ -1,6 +1,5 @@
 import { foreignKey, index, pgTable, timestamp, unique, varchar, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { rooms } from "./rooms.js";
-import { sessions } from "./sessions.js";
 import { spaces } from "./spaces.js";
 import { users } from "./auth.js";
 
@@ -11,7 +10,6 @@ export const roomCreationIdempotencies = pgTable("room_creation_idempotencies", 
   idempotencyKey: varchar("idempotency_key", { length: 128 }).notNull(),
   requestFingerprint: varchar("request_fingerprint", { length: 64 }).notNull(),
   roomId: varchar("room_id", { length: 36 }).notNull(),
-  conversationId: varchar("conversation_id", { length: 36 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -20,5 +18,4 @@ export const roomCreationIdempotencies = pgTable("room_creation_idempotencies", 
   foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "room_creation_idempotencies_space_fkey" }).onDelete("cascade"),
   foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "room_creation_idempotencies_user_fkey" }).onDelete("cascade"),
   foreignKey({ columns: [table.roomId, table.spaceId], foreignColumns: [rooms.id, rooms.spaceId], name: "room_creation_idempotencies_room_fkey" }).onDelete("cascade"),
-  foreignKey({ columns: [table.conversationId, table.spaceId], foreignColumns: [sessions.id, sessions.spaceId], name: "room_creation_idempotencies_conversation_fkey" }).onDelete("cascade"),
 ]);

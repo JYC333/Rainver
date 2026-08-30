@@ -1300,7 +1300,14 @@ export async function completeProviderText(
   store: ProviderCommandStore,
   spaceId: string,
   input: ProviderTextCompletionInput,
-): Promise<{ text: string; provider: string; model: string; usage: Record<string, unknown> }> {
+): Promise<{
+  text: string;
+  provider: string;
+  /** The ModelProvider row, so a caller storing what answered can join it back. */
+  provider_id: string;
+  model: string;
+  usage: Record<string, unknown>;
+}> {
   return completeProviderMessages(store, spaceId, {
     provider_id: input.provider_id,
     model: input.model,

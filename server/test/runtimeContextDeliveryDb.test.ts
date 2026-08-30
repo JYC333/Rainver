@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@rainver/protocol";
 import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
@@ -1005,6 +1005,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
        VALUES ($1,$2,$3,'Delivery Project','active',now(),now())`,
       [PROJECT, SPACE, USER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO project_folders (
          id,space_id,project_id,created_by_user_id,name,status,kind,is_primary,
@@ -1251,6 +1252,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
        VALUES ($1,$2,$3,'Inquiry Project','active',now(),now())`,
       [PROJECT, SPACE, USER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const threadSessionId = randomUUID();
     await db.pool.query(
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,

@@ -71,6 +71,9 @@ export * from "./runOrchestration.js";
 export * from "./agentGroupRuns.js";
 export * from "./rooms.js";
 
+// Thread references: content copied from one conversation into another
+export * from "./threadReferences.js";
+
 // Policy enforcement contracts
 export * from "./policy.js";
 

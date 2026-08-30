@@ -7,10 +7,16 @@
 A Room is a persistent, project-bound, multi-party collaboration container: a
 human and agent roster plus multiple durable conversations. It is the
 frontend-facing surface for dispatching work to agents from inside a
-conversation. `/projects/:projectId/rooms` is the primary in-Project workspace;
-`/rooms` is the cross-Project index. Together they replace the old Project
-Chat surface and the hardcoded default-Assistant chat entry — neither exists
-anymore.
+conversation.
+
+The Project's **Conversations** page is where they are read, and
+`/projects/:projectId/rooms` is one Room's own surface — its roster, run
+settings and full transcript — reached from that list. There is no
+cross-Project Rooms index and no Rooms entry in the top navigation: a Room is
+a visibility boundary rather than a place, so a picker in front of it would
+charge every reader for a layer most Projects never use. This replaced the old
+Project Chat surface and the hardcoded default-Assistant chat entry — neither
+exists anymore.
 
 A Room does not create a new orchestration mechanism. Every message opens one
 `agent_run_group` as one collaboration task (see `modules/agents.md` and
@@ -26,14 +32,18 @@ task/audit authority, not a second conversation UI.
 - `RoomService` — room/conversation creation, membership, message dispatch (`server/src/modules/rooms/service.ts`)
 - `RoomConversationSummaryService` — owner-funded asynchronous rolling summaries and
   member-visible freshness (`server/src/modules/rooms/conversationSummaryService.ts`)
+- Thread references — content picked from another thread or an imported
+  session, copied once with provenance and a disclosure gate
+  (`server/src/modules/rooms/threadReferences.ts` resolves and gates;
+  `server/src/modules/rooms/referenceService.ts` prepares before the
+  transaction and copies inside it; the endpoint stays on `RoomService`)
 - `RoomConversationTitleService` — immediate zero-cost first-message titles plus an
   asynchronous low-token `room_conversation_title` provider-task refinement;
   the sending user's eligible default Provider is the fallback, and a Space
   task policy can route this work to a free or cheaper chat model
 - Room API routes under `/api/v1/rooms/*`
 - Shared Room UI (`apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`) at
-  `/rooms` for the cross-Project index and `/projects/:projectId/rooms` inside
-  the persistent Project Shell
+  `/projects/:projectId/rooms`, inside the persistent Project Shell
 - One conversation component
   (`apps/web/src/modules/agent_groups/conversation/RoomConversation.tsx`):
   messages, paging, sending, Run progress/streaming, polling, scroll-follow
@@ -46,17 +56,32 @@ task/audit authority, not a second conversation UI.
 ## Navigation And Ordering
 
 - Opening a Rooms route without an explicit selection enters the newest
-  visible Room and then its newest conversation; the creation form is an
-  action, not the page's default content when Rooms already exist. The client
-  resolves that selection behind a loading state and never renders an
-  intermediate choose/create page.
+  visible Room and then its newest conversation. The client resolves that
+  selection behind a loading state and never renders an intermediate
+  choose/create page.
 - The selected Room never replaces Room navigation: the sidebar always keeps
-  the Room list and an explicit `New Room` control visible.
+  the Room list, and a `New Room` control beside it for a viewer who can write
+  the Project. Opening one is a dialog, not a form on the page: it asks who
+  can see the Room, because the audience is what a Room is
+  ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)). One dialog
+  serves both this page and the Project conversation list, and its candidates
+  are the Project's **readers** — `inviteUser` refuses anyone who cannot read
+  the Project, so a Space-wide list offers people the server rejects.
 - Conversation lists are ordered by immutable `created_at DESC, id DESC`.
   Message activity and asynchronous title refinement must not reshuffle them.
-- The one-click Project empty state creates a Room named from the Project.
-  Clients present the retired `Project conversation` default as
-  `<Project name> Room` for existing records.
+- A Project showing no Rooms has failed to load them, since every Project is
+  created with its mainline (ADR 0018 decision 4). The empty state offers a
+  retry, never creation: a Room made there would be a second shared one beside
+  the mainline it could not see. Clients present the retired
+  `Project conversation` default as `<Project name> Room` for existing
+  records.
+- Roster controls follow the authority each one needs, not one flag. Invite,
+  remove, transfer and the specialist controls go through the server's
+  `withRoomWriter` and are shown only to a Project writer. Deciding a
+  private-Agent share is the Agent owner's, who may be a reader and is exactly
+  who a blocked invitation waits on; claiming a suspended Room is the Project
+  owner's or a Space owner/admin's. Folding those two under write authority is
+  how a reader gets locked out of a decision only they can make.
 - Accepting one proposed Inquiry question continues only that accepted
   question. The continuation reports pending siblings from the original batch
   and is not allowed to create rewritten copies of them. Superseded duplicate
@@ -284,19 +309,52 @@ runtime-profile capabilities. Routing excludes registered System Action ids
 from its capability hard filter, so a valid conversation backend does not have
 to duplicate the Room allowance in its AgentVersion or runtime profile.
 
-Room creation adds the creator and the hidden managed Assistant — the
-**Project's own instance**, provisioned on first use, so two Projects have two
-Agents that start identical and accumulate their own token attribution
-and evolution.
+Room creation adds the creator, and nothing else. The hidden managed
+Assistant — the **Project's own instance**, so two Projects have two Agents
+that start identical and accumulate their own token attribution and
+evolution — is provisioned by the Room's **first message**, not by its
+creation.
 
-**The first Room in a Project is its mainline** (`rooms.is_mainline`, one
-active per Project). Mainline membership *is* Project membership: every
-active Project member and the owner are enrolled when it is created, and a
-member who joins the Project later is enrolled the first time they open it
+**A Room is a visibility boundary** ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)):
+its roster answers *who may see these conversations*, and the only reason to
+open a second Room is to exclude someone. Which agents take part in a given
+exchange is per-message recipient selection inside one Room, not a second
+Room.
+
+**The layer is invisible until a visibility decision has to be made.** The
+Project's Conversations page shows conversations, and a Project with only its
+mainline never says the word "Room". Conversations of a limited Room appear in
+the same list, in a section titled by its roster ("With Alice and Bob · 2
+agents") with the roster surface reached from that section. Creating a
+conversation offers two things — *in this Project*, or *with a limited group…*
+— and the second is a roster picker whose completion creates the Room. There
+is no Rooms entry in the top navigation and no cross-Project Rooms index;
+`/projects/:projectId/rooms` remains, as one Room's own surface, and a
+conversation's header there names the Room's audience when it is a limited one.
+
+A Room nobody has spoken in holds no conversation, so a query over
+conversations would hide it — and a Room is reached *through* a conversation.
+`GET /projects/:projectId/conversations` therefore also returns `empty_rooms`:
+the viewer's Rooms with nothing in them yet, named the same way, so a group
+opened and then abandoned is still reachable rather than stranded.
+
+**A Project's mainline Room is created with the Project** (`rooms.is_mainline`,
+one active per Project, enforced by a partial unique index). "A Project with no
+Room" is therefore not a state, and `getProjectMainline` reports its absence as
+a broken invariant rather than returning null — no caller branches on it.
+Mainline membership *is* Project membership: the Project's creator is enrolled
+with it, and everyone else the first time they open it
 (`GET /projects/:projectId/mainline-room`, which the Project chat panel binds
 to). Because that membership follows the Project, the roster API refuses to
 remove someone from the mainline — remove them from the Project instead.
-Topic Rooms created afterwards keep the invite-only roster.
+Rooms opened afterwards are never mainline and keep the invite-only roster.
+
+**A personal Room** (`rooms.personal_for_user_id`, at most one active per
+person per Project) is a Room whose audience is one person: where private
+continuation lands so it is not seeded into the Project's shared channel.
+`createRoom` with `personal: true` reuses the existing one rather than opening
+a second. The marker is cleared the moment anyone else joins, so a Room with
+two people in it stops being reused for content meant for one.
 
 ### Deciding what a turn proposed
 
@@ -333,8 +391,10 @@ may converse there: asking the Project's Assistant "is this one done?" is the
 panel's whole purpose, and reading the answer is what a viewer is for. What a
 viewer says cannot change the Project's work — every Task-addressed action an
 Agent takes on their instruction requires writer authority on the Project and
-is refused — and starting the mainline in the first place requires writer
-authority. The manager
+is refused. Speaking *first* is no longer a separate authority either: the
+mainline is created with the Project, so a viewer can be the one who opens the
+Project's conversation, and that message provisions the Assistant the same way
+any other first message does. The manager
 is system-controlled and cannot be selected, replaced, or removed. Later roster
 mutation adds/removes specialist Agents through Room-owned authorization, with
 explicit confirmation before a private Agent is shared. The shared Run
@@ -365,14 +425,22 @@ Room-scoped Proposal review.
 
 ## Opening a Room
 
-A Room exists in order to be spoken to, so the server creates its first
-Conversation in the same transaction as the Room and manager membership.
-`openRoom` consumes that returned Conversation rather than issuing a second
-create request. Inside a Project with no Room yet, the empty state offers one
-"Start a conversation" button regardless of ordinary Agent count. The server
-first ensures the Project's Assistant and verifies that the creator has an eligible
-API or explicitly granted CLI backend; otherwise no Room or Assistant partial
-state is committed.
+Creating a Room creates a Room. **The first message creates the first
+conversation**, in the transaction that writes the message
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 5), so
+an empty conversation is impossible by construction rather than forbidden by a
+rule. `POST /api/v1/rooms/:roomId/messages` — no session id — is that entry
+point, and the conversation it creates comes back on the response. It is how a
+Room's first conversation begins and how a further one does, so "start a
+separate thread" is not a create followed by a send: it is a send with nothing
+to continue.
+
+The Project's Assistant is provisioned on the same first message, and it is
+there that an ineligible backend is reported (`conversation_backend_required`).
+Keeping it off Room creation is what lets the mainline be created with the
+Project: a Space with no eligible API or granted CLI backend would otherwise be
+unable to create a Project at all. A first message that fails commits nothing —
+no Assistant, and no conversation whose only content was a message never sent.
 
 The Room page has independent catalog, Room-detail, and conversation-message
 loading boundaries. Selecting a Room or conversation preserves the page shell,
@@ -415,9 +483,120 @@ scoped out of Phase B (it would need new aggregation across a Project's open
 Threads, which is not the "small mapping move" this phase is) and stays a
 deferred item pending real usage evidence.
 
+## Thread References
+
+A **reference** is content a person picks from one conversation — or from an
+imported CLI session — and copies *once* into another thread. It is content,
+not a pointer: resolved at the moment it is attached and never re-read
+afterwards. That is what keeps one act of disclosure from becoming an ongoing
+one, and keeps what an Agent knows inside a thread the same for everyone who
+speaks in it
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)).
+
+It lands as a `role: 'system'` message with `metadata_json.room_display =
+'reference'` and the provenance in `metadata_json.reference`. Being a message
+is the whole design: it is then the thread's own content — rendered in the
+transcript with its origin, compacted by the thread's own summary job,
+archived with the thread — and needs no per-thread slot, no per-turn injection
+and no new acquisition path.
+
+Grains: a whole conversation (carried as its summary), specific messages, a
+whole imported session (its `imported_history_summaries` row), or specific
+imported records. Two ways in — `references` on the session-less send, written
+in the same transaction as the message that creates the conversation, and
+`POST /rooms/:roomId/conversations/:sessionId/references` for a thread that
+already exists.
+
+Reuse / Dependency Check (recorded at close; the plan omitted it)
+- Existing repository capability found? Yes — `contentAccessSql` /
+  `projectReadAccessSql` for every audience, `readImportedSessionForViewer` for
+  the transcript gate, the `Idempotency-Key` + fingerprint table pattern from
+  Room creation, `fitTextToTokenBudget` for clipping. The Room conversation
+  summary service was evaluated and rejected for imported sessions: it compacts
+  a growing thread behind a lease, and a session's records are fixed.
+- Existing installed dependency found? `zod`, `pg`, `node:crypto` — nothing new.
+- Mature external option evaluated? n/a — domain logic.
+- Chosen approach: extend (one new message kind; two tables —
+  `imported_history_summaries`, `room_first_message_idempotencies`; three
+  routes — the session-less send, the attach, and `/projects/:id/readers`).
+- Why: a reference is content already governed by the Room's own gates; the
+  only new authority is the disclosure calculus, which asks existing predicates.
+
+### Disclosure is confirmed, and names who gains
+
+Copying from a narrower audience into a wider one publishes that content to
+people who could not read it. That is a person's act and it is allowed, but it
+is **server-enforced**: the attach is refused with a coded 409
+(`reference_disclosure_confirmation_required`) naming `gains_access_user_ids`
+until the request carries `confirm_disclosure`. A confirmation that cannot say
+who is being let in is not informed consent (ADR 0013). The client echoes back
+the ids the refusal named rather than a bare `true`, because a roster can grow
+between the refusal and the answer.
+
+Audiences are measured by asking the read gates, never by describing them: the
+mainline's is `projectReaderIds` (the roster lags — membership is materialised
+on first open), a limited Room's is its roster **intersected with** Project
+readability, and an imported session's is `contentAccessSql` at `full` with
+`includeOversight: false`. Oversight is audit, not a route to publish, and not
+a licence to spend.
+
+### Trust follows provenance, however many hops back
+
+Content from another Rainver thread is `domain_approved`; content from a
+vendor CLI transcript is `external_untrusted` and is **fenced** in the message
+body — quoted between nonce-suffixed markers, with the vendor-controlled title
+inside the fence, under a line saying it is information to read and never
+instructions to follow. Built at attach time so it survives the turn render,
+the CLI replay and any later summary of the thread.
+
+The label is derived from the *conversation*, not from the rows picked out of
+it: if anything in a thread came from outside Rainver, everything picked from
+that thread carries `external_untrusted`. Deliberately blunt. An Agent's reply
+quoting a transcript, and a summary condensing one, are both untrusted content
+wearing no markers — a per-message rule would miss them, and missing them is
+what lets vendor text arrive labelled as a colleague's word. The cost is that
+a purely internal message picked out of a once-tainted thread is over-labelled
+and fenced too; that is the safe direction, and it is the intended one.
+
+Neither label is user evidence. The checkpoint extractor derives `confirmed`
+from `role = 'user'` alone, and a reference is a system-role message, so it
+can never be read as the person having confirmed what it contains.
+
+### Cost and ordering
+
+An imported session's summary is generated **on demand** — when a whole-session
+reference needs one and none exists — in the attach path but before the
+transaction opens, because it is a model call and the attach holds the Room
+row lock. It is metered to the session's *owner*, so the caller must first
+prove they can read that session and reach the destination Room; both gates
+run before anything is spent. See
+[imported-sessions.md](imported-sessions.md).
+
+A reference is written strictly before the message it arrives with, on a
+timestamp floored above the conversation's own maximum, so a thread reads in
+the order it was assembled.
+
+### Idempotency
+
+`room_first_message_idempotencies` keys the session-less send on
+`(space_id, user_id, Idempotency-Key)` with a fingerprint of the request. A
+duplicated first message would otherwise create a second thread *and* copy its
+references into it again. The replay fetches the recorded message by id: the
+message a key names is the thread's first, and looking for it in a page of
+recent ones fails as soon as the thread grows past that page.
+
 ## API Surface
 
-- `POST /api/v1/rooms` — create a Room (writer authority on the Project)
+- `POST /api/v1/rooms` — create a Room (writer authority on the Project).
+  `personal: true` opens, or reuses, the caller's personal Room in that Project
+- `POST /api/v1/rooms/:roomId/messages` — speak without naming a conversation;
+  the message creates one and the response carries it. Takes `references` and
+  `confirm_disclosure`, and an `Idempotency-Key` header
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/references` — copy
+  picked content into a thread that already exists
+- `GET /api/v1/projects/:projectId/readers` — who may be invited into a Room
+  here. The gate is the answer: a caller absent from the result gets the 404 a
+  missing Project gives
 - `GET /api/v1/rooms` — list Rooms, optional `project_id` filter
 - `GET /api/v1/rooms/:roomId` — Room detail with rosters
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
@@ -438,7 +617,6 @@ deferred item pending real usage evidence.
   writer Room member
 - `POST /api/v1/rooms/:roomId/owner-claim` — recover a suspended Room for a
   Project owner or Space owner/admin
-- `POST /api/v1/rooms/:roomId/conversations` — open a durable conversation
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/summary` — active summary,
@@ -450,6 +628,14 @@ deferred item pending real usage evidence.
 ## Invariants
 
 - Room membership never widens Project authority.
+- A reference is resolved once, under the attacher's identity, with oversight
+  excluded, and never re-read. Nothing re-authorizes it per turn, because
+  there is nothing live to re-authorize.
+- A copy into a wider audience is refused until confirmed, and the refusal
+  names who would gain access. Audiences are measured by asking the read
+  gates, never by a second description of them.
+- Content from outside Rainver is fenced at attach time and labelled
+  `external_untrusted`, and that label survives being copied again.
 - Room-only grants never widen global Agent visibility; every grant check also
   requires an active membership in the same Room.
 - There is exactly one active Manager and it is always the system-managed
@@ -459,10 +645,11 @@ deferred item pending real usage evidence.
 - There is at most one active Room owner. Removing an owner requires transfer;
   claim is permitted only while the previous owner can no longer write the
   bound Project.
-- Project-originated Room navigation stays inside the Project Shell. The
-  Project sidebar and Overview link use `/projects/:projectId/rooms`; the
-  global `/rooms` route remains the cross-Project index, not a second Room
-  implementation.
+- Room navigation stays inside the Project Shell. A Room is reached from the
+  Project's Conversations list — a conversation row, a limited group's ⚙, or
+  the chat panel's "Full Room" link — never from top-level navigation. There is
+  no global `/rooms` route: it was a picker in front of a layer that should be
+  invisible, and every Room already belongs to exactly one Project.
 - A Room does not turn `agent_run_groups` into a conversation container; each
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and

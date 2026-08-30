@@ -9,6 +9,7 @@ import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/project
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -118,6 +119,7 @@ async function seedProject(id: string, name: string, updatedAt: string): Promise
      ) VALUES ($1, $2, $3, $4, 'active', 'delivery', $5, $5)`,
     [id, SPACE, USER, name, updatedAt],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 }
 
 async function seedEvolutionSignals(

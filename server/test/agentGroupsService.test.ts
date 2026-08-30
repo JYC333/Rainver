@@ -77,6 +77,19 @@ class AgentGroupServiceDb {
         rowCount: this.rootRunId ? 1 : 0,
       };
     }
+    if (sql.includes("room_read_run")) {
+      // `roomRunReadAccessSql`, the Room-boundary probe `getVisibleRun` runs.
+      // This fake models neither `rooms` nor `room_user_members`, so it
+      // answers "allowed" and leaves that rule to `roomsDb.test.ts`, which
+      // runs against real PostgreSQL. Two things about this arm:
+      // it must precede the `"FROM runs r"` arm, because the probe's subquery
+      // says `FROM runs room_run` and would otherwise be answered with a run
+      // row carrying no `allowed` column — reading as a denial; and it keys on
+      // the predicate's own table alias rather than on `"AS allowed"`, which
+      // two unrelated queries also end in, so an unmodelled path still reaches
+      // the fallback that throws instead of being silently allowed.
+      return { rows: [{ allowed: true } as Row], rowCount: 1 };
+    }
     if (sql.includes("FROM runs r")) {
       const runId = String(params[1] ?? this.rootRunId ?? "run-root");
       const run = this.insertedRuns.get(runId) ?? runRecord(runId);

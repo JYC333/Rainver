@@ -47,6 +47,7 @@ import { assertBudgetSourcesAvailable, checkRunBudget } from "../src/modules/run
 import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -105,6 +106,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$6,NULL,'Elsewhere','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, OTHER_PROJECT, OTHER_SPACE],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Agent','active',NULL,$4,$4,'space_shared')`,

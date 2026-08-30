@@ -7,6 +7,7 @@ import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 import { PgUsageRepository } from "../src/modules/usage/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // The project research review read model must use the canonical usage ledger.
 // Provider-reported usage must remain visible in the review UI through the
@@ -53,6 +54,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
      VALUES ($1,$2,$3,'Research Agent','active',NULL,$4,$4,'space_shared')`,

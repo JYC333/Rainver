@@ -173,6 +173,19 @@ decisions, primary mode, workspace identity/boundary, source references, and
 authorship alongside goal/scope/success/constraints/assumptions. Goal-only UI
 edits carry forward the user-owned aggregate fields; the server snapshots the
 current Project-owned status/focus/mode in the same transaction.
+
+A Project's **mainline Room** is a second structural singleton on the same
+footing ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision
+4): created in the same transaction, present from the start, empty until
+spoken in. "A Project with no Room" is not a state, so no caller handles its
+absence. Nothing that can fail runs on that path — no Assistant is provisioned
+and no conversation created, both of which wait for the Room's first message —
+so a Space's backend configuration cannot stand between someone and a new
+Project. `PgProjectRepository.create` writes `rooms` and `room_user_members`
+directly through `PgRoomRepository`, rather than through `RoomService`, because
+that service opens its own transaction and asserts writer authority on a
+Project that does not exist yet.
+
 `project_instruction_versions` follows the same lifecycle; only the active
 published Instruction is runtime-authoritative. Brief writer authority and
 Instruction/publish owner-level authority are rechecked and locked inside the

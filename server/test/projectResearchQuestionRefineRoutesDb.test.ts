@@ -11,6 +11,7 @@ import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -70,6 +71,7 @@ beforeAll(async () => {
     `INSERT INTO projects (id,space_id,owner_user_id,name,description,status,created_at,updated_at) VALUES ($1,$2,$3,'Research','A project about reliable tool use.','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   const thread = await new InquiryThreadService(db.pool).createThread(
     { spaceId: SPACE, userId: OWNER }, PROJECT, { kind: "question", statement: "agent" },
   );

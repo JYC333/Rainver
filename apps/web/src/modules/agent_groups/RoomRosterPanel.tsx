@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { personLabel } from './audience'
 import { Loader2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, roomsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type {
+  ProjectReader,
   RoomAgentCandidate,
   RoomDetail,
   RoomInvitation,
@@ -17,12 +19,21 @@ import { Select } from '../../components/ui/select'
 export function RoomRosterPanel({
   detail,
   spaceMembers,
+  projectReaders,
   userId,
   onChanged,
   embedded = false,
 }: {
   detail: RoomDetail
+  /** For rendering names of people already here — a superset, and stable. */
   spaceMembers: SpaceMember[]
+  /**
+   * Who may be invited: `project_members ∪ owner`.
+   *
+   * Not the Space's members. `inviteUser` refuses anyone who cannot read the
+   * Project, so offering them is offering a control that only ever fails.
+   */
+  projectReaders: ProjectReader[]
   userId: string
   onChanged: () => Promise<void>
   embedded?: boolean
@@ -39,7 +50,19 @@ export function RoomRosterPanel({
     () => detail.user_members.filter(member => member.status === 'active').map(member => member.user_id),
     [detail.user_members],
   )
-  const inviteableUsers = spaceMembers.filter(member => !activeUserIds.includes(member.user_id))
+  const inviteableUsers = projectReaders.filter(reader => !activeUserIds.includes(reader.user_id))
+  /**
+   * Project write authority, which is what `withRoomWriter` requires — and so
+   * what invite, remove, transfer and the specialist controls need. A reader
+   * is shown the roster and none of *those*, not because reading is
+   * restricted, but because each would 403 on the press.
+   *
+   * Deliberately not applied to everything on this panel. Two controls answer
+   * to different authorities and are gated by their own rules below: deciding
+   * a private-Agent share (the Agent's owner, who may be a reader) and
+   * claiming a suspended Room (the Project owner or a Space owner/admin).
+   */
+  const canAdminister = detail.viewer_can_write
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -184,14 +207,16 @@ export function RoomRosterPanel({
         {specialists.map(member => (
           <div key={member.agent_id} className="flex items-center justify-between gap-2 rounded border p-2 text-sm">
             <span className="truncate">{member.agent_name}</span>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void removeAgent(member.agent_id, member.agent_name)}>
-              <UserRoundX className="size-3.5" />
-            </Button>
+            {canAdminister && (
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void removeAgent(member.agent_id, member.agent_name)}>
+                <UserRoundX className="size-3.5" />
+              </Button>
+            )}
           </div>
         ))}
       </div>
 
-      {(availableAgents.length > 0 || presets.length > 0) && (
+      {canAdminister && (availableAgents.length > 0 || presets.length > 0) && (
         <div className="space-y-2 border-t border-border pt-3">
           <div className="flex items-center gap-2 text-xs font-medium"><UserPlus className="size-3.5" />Add a specialist</div>
           {availableAgents.map(candidate => (
@@ -208,19 +233,24 @@ export function RoomRosterPanel({
         </div>
       )}
 
-      {inviteableUsers.length > 0 && (
+      {canAdminister && inviteableUsers.length > 0 && (
         <div className="space-y-2 border-t border-border pt-3">
           <div className="text-xs font-medium">Invite a person</div>
           <Select
             ariaLabel="Invite a person"
             value={invitee}
             onChange={setInvitee}
-            options={[{ value: '', label: 'Choose Space member' }, ...inviteableUsers.map(member => ({ value: member.user_id, label: member.display_name || member.email }))]}
+            options={[{ value: '', label: 'Choose a Project reader' }, ...inviteableUsers.map(reader => ({ value: reader.user_id, label: personLabel(reader) }))]}
           />
           <Button size="sm" className="w-full" disabled={busy || !invitee} onClick={() => void inviteUser()}>Invite</Button>
         </div>
       )}
 
+      {/* Not behind `canAdminister`. `decideInvitation` requires an active
+          Space user who is the inviter, the invitee, or **the owner of the
+          private Agent** — Project write is never consulted. A reader who owns
+          a private specialist is exactly who this is waiting on, and hiding it
+          from them is what leaves the invitation blocked. */}
       {pendingDecisions.length > 0 && (
         <div className="space-y-2 border-t border-border pt-3">
           <div className="text-xs font-medium">Private-Agent approvals</div>
@@ -228,7 +258,7 @@ export function RoomRosterPanel({
             <div key={`${invitation.id}:${approval.agent_id}`} className="rounded border p-2 text-xs space-y-2">
               <div>
                 Approve sharing Agent {candidates.find(candidate => candidate.agent_id === approval.agent_id)?.name ?? approval.agent_id}
-                {' '}with invited user {spaceMembers.find(member => member.user_id === invitation.invitee_user_id)?.display_name ?? invitation.invitee_user_id}?
+                {' '}with invited user {personLabel(spaceMembers.find(member => member.user_id === invitation.invitee_user_id) ?? { user_id: invitation.invitee_user_id })}?
               </div>
               <div className="flex gap-2">
                 <Button size="sm" disabled={busy} onClick={() => void decide(invitation, approval.agent_id, 'approved')}>Approve</Button>
@@ -239,27 +269,33 @@ export function RoomRosterPanel({
         </div>
       )}
 
-      {isOwner && detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').length > 0 && (
+      {canAdminister && isOwner && detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').length > 0 && (
         <div className="space-y-2 border-t border-border pt-3">
           <div className="text-xs font-medium">Ownership</div>
           <Select
             ariaLabel="Transfer Room ownership"
             value=""
             onChange={value => { void transferOwner(value) }}
-            options={[{ value: '', label: 'Transfer ownership…' }, ...detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').map(member => ({ value: member.user_id, label: spaceMembers.find(user => user.user_id === member.user_id)?.display_name ?? member.user_id }))]}
+            options={[{ value: '', label: 'Transfer ownership…' }, ...detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').map(member => ({ value: member.user_id, label: personLabel(spaceMembers.find(user => user.user_id === member.user_id) ?? { user_id: member.user_id }) }))]}
           />
         </div>
       )}
 
+      {/* Also not `canAdminister`. `claimOwner` requires the Project owner or
+          a Space owner/admin — a strict subset of Project writers, so gating
+          on write would offer it to a Project member who is then refused. The
+          client is not told which of those the viewer is, so the button stays
+          where it was: offered to a member of a Room whose owner may be
+          suspended, and answered by the server. */}
       {!isOwner && activeUserIds.includes(userId) && (
         <Button variant="outline" size="sm" className="w-full text-xs" disabled={busy} onClick={() => void claimOwner()}>
           Claim ownership if suspended
         </Button>
       )}
 
-      {isOwner && detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').map(member => (
+      {canAdminister && isOwner && detail.user_members.filter(member => member.status === 'active' && member.role !== 'owner').map(member => (
         <Button key={member.user_id} variant="ghost" size="sm" className="w-full justify-start text-xs" disabled={busy} onClick={() => void removeMember(member.user_id)}>
-          <UserRoundMinus className="size-3.5 mr-1" />Remove {spaceMembers.find(user => user.user_id === member.user_id)?.display_name ?? member.user_id}
+          <UserRoundMinus className="size-3.5 mr-1" />Remove {personLabel(spaceMembers.find(user => user.user_id === member.user_id) ?? { user_id: member.user_id })}
         </Button>
       ))}
     </Card>

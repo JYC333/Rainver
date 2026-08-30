@@ -7,6 +7,7 @@ import { hostsModule } from "../src/modules/hosts/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 import type { CurrentUser } from "../src/modules/auth/identity.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the hosts HTTP surface (pairing-code issue ->
 // daemon register -> owner-scoped list -> revoke). Auth identity resolution
@@ -193,6 +194,7 @@ describe("hosts routes", () => {
        VALUES ('workspace-project', 'workspace-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     const issue = await app.inject({
       method: "POST",
@@ -282,6 +284,7 @@ describe("hosts routes", () => {
        VALUES ('cross-host-project', 'cross-host-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     async function pairAndRegister(name: string): Promise<string> {
       const issue = await app!.inject({
@@ -374,6 +377,7 @@ describe("hosts routes", () => {
        VALUES ('upload-project', 'upload-space', $1, 'Project', 'active', now(), now())`,
       [OWNER],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await db.pool.query(
       `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
        VALUES ('upload-agent', 'upload-space', NULL, 'Agent', 'active', 'standard', 'space_shared', now(), now())`,

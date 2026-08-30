@@ -79,3 +79,36 @@ export function trimTextToModelTokens(text: string, maximumTokens: number): stri
   }
   return result;
 }
+
+/**
+ * `text`, cut to `budget` tokens with `marker` appended when it was cut.
+ *
+ * Beside the estimator because it is the estimator's counterpart, and owned by
+ * neither of the two modules that clip text to a budget — the Room's summary
+ * and an imported session's — so that neither has to import the other for it.
+ */
+export function fitTextToTokenBudget(
+  text: string,
+  budget: number,
+  marker: string,
+  estimateTokens: (text: string) => number = estimateModelTokens,
+): string {
+  const normalized = text.trim();
+  if (estimateTokens(normalized) <= budget) return normalized;
+  const suffix = `\n${marker}`;
+  const prefix = trimUtf8(normalized, Math.max(0, budget - estimateTokens(suffix)), estimateTokens);
+  return `${prefix.trimEnd()}${suffix}`.trim();
+}
+
+function trimUtf8(text: string, maxTokens: number, estimateTokens: (text: string) => number): string {
+  // Tokenizer implementations are intentionally injectable. The shared
+  // fallback is conservative and character-boundary safe; provider-specific
+  // implementations can replace it without changing cursor semantics.
+  let result = "";
+  for (const character of text) {
+    const candidate = result + character;
+    if (estimateTokens(candidate) > maxTokens) break;
+    result = candidate;
+  }
+  return result;
+}

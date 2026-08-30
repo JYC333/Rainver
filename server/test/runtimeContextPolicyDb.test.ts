@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RuntimeContextPolicyRepository } from "../src/modules/policy/runtimeContextPolicyRepository.js";
 import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots.js";
@@ -58,6 +58,7 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Project','active',now(),now())`,
     [PROJECT, SPACE, OWNER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES ($1,$2,$3,$4,'member','active',now(),now())`,

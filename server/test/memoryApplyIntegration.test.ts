@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { seedRun } from "./support/domainSeeds.js";
+import { seedRun, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import {
@@ -194,6 +194,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       }),
       USER,
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     expect(out.memory.project_id).toBe("project-1");
     const row = (await db.pool.query("SELECT project_id FROM memory_entries WHERE id = $1", [out.memory.id])).rows[0];
@@ -209,6 +210,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     await db.pool.query(
       "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-other', 'space-other', 'project-other', 'active', now(), now())",
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     await expect(
       applyCreate(
         proposal({
@@ -285,6 +287,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-promotion', $1, 'project-promotion', 'active', now(), now())",
       [SPACE],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     const out = await applyUpdate(
       proposal({
@@ -365,6 +368,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-target', $1, 'project-target', 'active', now(), now())",
       [SPACE],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
 
     const out = await applyUpdate(
       proposal({
@@ -517,6 +521,7 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
       "INSERT INTO projects (id, space_id, name, status, created_at, updated_at) VALUES ('project-scope', $1, 'project-scope', 'active', now(), now())",
       [SPACE],
     );
+    await seedMainlineRoomsForAllProjects(db.pool);
     const projectScope = proposal({
       id: "p-project",
       payload_json: {

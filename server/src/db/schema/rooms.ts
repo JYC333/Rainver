@@ -35,12 +35,24 @@ export const rooms = pgTable("rooms", {
    * being Project members, so the chat panel has a stable Room to bind to
    * rather than "whichever Room the viewer happens to be in that was most
    * recently active" — which switched under people and was empty for anyone
-   * not on a roster. The first Room created in a Project becomes it.
+   * not on a roster. It is created with the Project (ADR 0018 decision 4);
+   * a Room opened afterwards is never the mainline.
    */
   isMainline: boolean("is_mainline").default(false).notNull(),
+  /**
+   * A Room whose audience is one person: the Room private continuation lands
+   * in, so a private imported session is not seeded into the Project's shared
+   * channel. Set at creation and cleared the moment anyone else is added,
+   * because a "personal" Room with two members would keep being reused for
+   * content meant for one.
+   */
+  personalForUserId: varchar("personal_for_user_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
   index("ix_rooms_project_updated").on(table.spaceId, table.projectId, table.updatedAt),
   uniqueIndex("uq_rooms_mainline_per_project").on(table.spaceId, table.projectId).where(sql`is_mainline AND status = 'active'`),
+  uniqueIndex("uq_rooms_personal_per_project")
+    .on(table.spaceId, table.projectId, table.personalForUserId)
+    .where(sql`personal_for_user_id IS NOT NULL AND status = 'active'`),
   index("ix_rooms_space_updated").on(table.spaceId, table.updatedAt),
   unique("uq_rooms_id_space").on(table.id, table.spaceId),
   unique("uq_rooms_id_space_project").on(table.id, table.spaceId, table.projectId),
@@ -64,7 +76,13 @@ export const rooms = pgTable("rooms", {
     foreignColumns: [users.id],
     name: "rooms_created_by_user_id_fkey",
   }).onDelete("restrict"),
+  foreignKey({
+    columns: [table.personalForUserId],
+    foreignColumns: [users.id],
+    name: "rooms_personal_for_user_id_fkey",
+  }).onDelete("restrict"),
   check("ck_rooms_status", sql`status IN ('active', 'archived')`),
+  check("ck_rooms_personal_not_mainline", sql`personal_for_user_id IS NULL OR NOT is_mainline`),
 ]);
 
 export const roomUserMembers = pgTable("room_user_members", {

@@ -12,7 +12,7 @@ import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectRes
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
@@ -114,11 +114,7 @@ describe("researchAcquisitionPipelineDb", () => {
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, ROOM, OWNER, now],
     );
-    await db.pool.query(
-      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`,
-      [randomUUID(), SPACE, ROOM, AGENT, now],
-    );
+    await seedRoomManager(db.pool, { space: SPACE, room: ROOM, agent: AGENT, now });
   });
 
   const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };

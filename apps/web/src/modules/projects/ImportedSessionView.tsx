@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { holdReferences } from '../agent_groups/pendingReferences'
 import { useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, MessageSquarePlus, Terminal, Wrench } from 'lucide-react'
+import { deriveAmbientActivity } from '@rainver/protocol'
+import { AlertTriangle, ArrowLeft, MessageSquarePlus, Quote, Terminal, Wrench, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { ambientSessionsApi, projectsApi, roomsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
@@ -10,6 +12,19 @@ import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
+
+/**
+ * Everyone in the Project's mainline can already read all of this.
+ *
+ * Not "not private": `selected_users`, and `space_shared` demoted to `summary`
+ * access, both name an audience narrower than the Project's readers, so
+ * carrying one into the mainline is a disclosure. One function rather than a
+ * copy per caller — the destination, the button's affordances and the
+ * write-authority probe all have to agree, and two copies is how they stop.
+ */
+function isFullyShared(session: Pick<ImportedSession, 'visibility' | 'access_level'> | null): boolean {
+  return session?.visibility === 'space_shared' && session.access_level === 'full'
+}
 
 /**
  * One imported CLI session, read-only.
@@ -27,6 +42,15 @@ export default function ImportedSessionView() {
   const { projectId = '', sessionId = '' } = useParams()
   const navigate = useSpaceNavigate()
   const [continuing, setContinuing] = useState(false)
+  /** Records chosen to be carried, rather than the whole session's summary. */
+  const [picked, setPicked] = useState<string[]>([])
+  /**
+   * Continuing a private session opens the person's own Room, which needs
+   * write authority on the Project; continuing a shared one only reads the
+   * mainline. A reader who owns a private session would otherwise press the
+   * button and get a bare 403.
+   */
+  const [canWrite, setCanWrite] = useState(true)
   const [session, setSession] = useState<ImportedSession | null>(null)
   const [records, setRecords] = useState<ImportedSessionRecord[]>([])
   const [truncated, setTruncated] = useState(false)
@@ -36,6 +60,20 @@ export default function ImportedSessionView() {
     setLoading(true)
     try {
       const result = await ambientSessionsApi.records(sessionId)
+      // Only where continuing opens a personal Room, which needs write
+      // authority. `mainlineRoom` is not a free read — it enrols the viewer in
+      // the mainline and bumps its roster revision — so a fully shared
+      // session, which continues there anyway, must not trigger it.
+      //
+      // The same `fullyShared` test as the destination and the button. When
+      // this probed `private` alone, a narrowly-shared session left `canWrite`
+      // at its optimistic default and offered a button that 403s on the press.
+      if (!isFullyShared(result.session)) {
+        setCanWrite(await projectsApi.mainlineRoom(projectId).then(
+          page => page.viewer_can_write,
+          () => true,
+        ))
+      }
       setSession(result.session)
       setRecords(result.records)
       setTruncated(result.truncated)
@@ -44,39 +82,62 @@ export default function ImportedSessionView() {
     } finally {
       setLoading(false)
     }
-  }, [sessionId])
+  }, [projectId, sessionId])
 
   useEffect(() => { void load() }, [load])
 
-  const derived = useMemo(() => deriveActivity(records), [records])
+  const derived = useMemo(() => deriveAmbientActivity(records), [records])
 
   /**
-   * Starts a Rainver conversation seeded from this session — never a resume of
-   * the vendor's own (ADR 0004): the seed is Rainver's own record of what
-   * happened, so the new conversation is governed, snapshotted, and auditable
-   * like any other, and nothing depends on vendor state that may already be
-   * gone.
+   * Everyone in the Project's mainline can already read all of this.
+   *
+   * Not "not private": `selected_users`, and `space_shared` demoted to
+   * `summary` access, both name an audience narrower than the Project's
+   * readers, so carrying one into the mainline is a disclosure. Both the
+   * destination and the button's own affordances key on this single test, so
+   * they cannot drift apart.
    */
-  async function continueHere() {
+  const fullyShared = isFullyShared(session)
+
+  /**
+   * Starts a Rainver conversation carrying this session — never a resume of
+   * the vendor's own (ADR 0004). What travels is a *reference*: Rainver's own
+   * copy of the session, made once and stamped with its provenance, so the
+   * new conversation is governed, snapshotted and auditable like any other
+   * and nothing depends on vendor state that may already be gone.
+   */
+  async function continueHere(recordIds: string[] = []) {
     if (!session) return
     setContinuing(true)
     try {
-      const { room } = await projectsApi.mainlineRoom(projectId)
-      if (!room) throw new Error('This Project has no mainline Room to continue in')
-      const conversation = await roomsApi.createConversation(room.id, {
-        title: `Continuing: ${session.title ?? 'imported session'}`,
-      })
-      // The seed is a draft in the real composer, not a message sent from
-      // here: recipients and backends are the Room's to resolve, and a second
-      // dispatch path beside it is exactly the duplication to avoid.
-      // Derived from the conversation, not carried in the URL: a link that
-      // named its own key could paste any same-origin stored value into the
-      // composer.
-      const key = `rainver.seed.${conversation.id}`
-      try {
-        sessionStorage.setItem(key, seedMessage(session, records, derived, truncated))
-      } catch { /* a draft is not worth failing over */ }
-      navigate(`/projects/${projectId}/rooms?room=${room.id}&conversation=${conversation.id}&seed=1`)
+      // Where it lands follows the session's own audience, and the test is
+      // "everyone can already read all of it" — not merely "not private".
+      // `selected_users`, and `space_shared` demoted to `summary` access, both
+      // name an audience narrower than the Project's readers, so continuing
+      // one in the mainline would be a disclosure the server refuses without
+      // a confirmation. It could be confirmed now that the dialog exists —
+      // but a continuation is not the moment to ask. The person opened a
+      // session to carry on working, not to decide who else should read it,
+      // and the answer that costs nothing is available: anything short of
+      // fully shared continues in their personal Room, whose audience is a
+      // subset of every source, so no disclosure arises at all.
+      const roomId = fullyShared
+        ? (await projectsApi.mainlineRoom(projectId)).room.id
+        : (await roomsApi.create({
+            project_id: projectId,
+            title: 'Just me',
+            personal: true,
+          })).room.id
+      // Held for the composer, which sends it with the first message so the
+      // reference and the conversation are written together. No conversation
+      // is created here — sending is what creates one (ADR 0018 decision 5) —
+      // so abandoning the draft leaves nothing behind.
+          // Records when some were picked, the whole session otherwise. The
+          // whole grain carries a summary; picked records carry themselves.
+      holdReferences(roomId, [recordIds.length > 0
+            ? { kind: 'imported_records', id: session.id, item_ids: recordIds }
+            : { kind: 'imported_session', id: session.id }])
+      navigate(`/projects/${projectId}/rooms?room=${roomId}&new=1&reference=1`)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -102,14 +163,21 @@ export default function ImportedSessionView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Offered only for a shared session. The mainline Room is the
-              Project's, so seeding it from a session the person kept to
-              themselves would move private content across the boundary they
-              chose — quietly, and through a button that says nothing about
-              it. Sharing the session first is the explicit act. */}
-          {session.visibility !== 'private' && (
+          {/* Offered for a restricted session too. It continues in the
+              person's own Room rather than the Project's, so the boundary they
+              chose holds without the button having to be withheld.
+              The condition is `fullyShared`, the same test the destination
+              uses — keying this on `private` alone would offer a `Continue in
+              Rainver` button to a reader whose session lands in a personal
+              Room they cannot create. */}
+          {!fullyShared && !canWrite ? (
+            <span className="text-xs text-muted-foreground">
+              Continuing this privately needs write access to the Project.
+            </span>
+          ) : (
             <Button size="sm" variant="outline" disabled={continuing} onClick={() => void continueHere()}>
-              <MessageSquarePlus className="size-4" />Continue in Rainver
+              <MessageSquarePlus className="size-4" />
+              {fullyShared ? 'Continue in Rainver' : 'Continue privately'}
             </Button>
           )}
           <Badge variant="outline">Read-only</Badge>
@@ -150,8 +218,41 @@ export default function ImportedSessionView() {
         </Card>
       )}
 
+      {/* The same guard as the header button, not a second judgement. A
+          personal-Room destination needs Project write, and offering the
+          action here without checking is how a reader gets a 403 and loses
+          what they picked. */}
+      {picked.length > 0 && (fullyShared || canWrite) && (
+        <Card className="sticky top-2 z-10 flex flex-wrap items-center gap-2 p-2 text-sm">
+          <Quote className="size-4 shrink-0 text-muted-foreground" />
+          <span className="font-medium">{picked.length} {picked.length === 1 ? 'record' : 'records'} picked</span>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={continuing} onClick={() => void continueHere(picked)}>
+              <MessageSquarePlus className="size-4" />
+              {fullyShared ? 'Use in Rainver' : 'Use privately'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setPicked([])} aria-label="Cancel picking">
+              <X className="size-3.5" />
+            </Button>
+          </div>
+        </Card>
+      )}
+
       <div className="space-y-2">
-        {records.map(record => <RecordRow key={record.id} record={record} />)}
+        {records.map(record => (
+          <RecordRow
+            key={record.id}
+            record={record}
+            // The same test the toolbar and the header use. Without it a
+            // reader ticks records and no toolbar ever appears — no action,
+            // no explanation, beside a header that already gave one.
+            pickable={fullyShared || canWrite}
+            picked={picked.includes(record.id)}
+            onPickedChange={next => setPicked(current => next
+              ? [...current, record.id]
+              : current.filter(id => id !== record.id))}
+          />
+        ))}
         {truncated && (
           <p className="text-xs text-muted-foreground">
             This session is longer than what is shown; the rest was not loaded.
@@ -162,7 +263,44 @@ export default function ImportedSessionView() {
   )
 }
 
-function RecordRow({ record }: { record: ImportedSessionRecord }) {
+/**
+ * One record, with the control that picks it.
+ *
+ * Picking happens here — at the source — because choosing which parts of a
+ * transcript matter needs the transcript in front of you. The checkbox wraps
+ * the row rather than living inside each of its three shapes, so a new record
+ * kind is pickable without being told to be.
+ */
+function RecordRow({
+  record,
+  pickable,
+  picked,
+  onPickedChange,
+}: {
+  record: ImportedSessionRecord
+  /** False where nothing can be done with a pick; the control is not offered. */
+  pickable: boolean
+  picked: boolean
+  onPickedChange: (picked: boolean) => void
+}) {
+  return (
+    <div className={`group flex items-start gap-2 rounded ${picked ? 'bg-accent/40' : ''}`}>
+      {pickable && (
+        <label className={`flex shrink-0 items-start pt-4 ${picked ? '' : 'opacity-0 focus-within:opacity-100 group-hover:opacity-100'}`}>
+          <input
+            type="checkbox"
+            checked={picked}
+            aria-label="Pick this record"
+            onChange={event => onPickedChange(event.target.checked)}
+          />
+        </label>
+      )}
+      <div className="min-w-0 flex-1"><RecordBody record={record} /></div>
+    </div>
+  )
+}
+
+function RecordBody({ record }: { record: ImportedSessionRecord }) {
   if (record.kind === 'tool_call') {
     return (
       <Card className="flex items-start gap-2 p-3 text-xs">
@@ -194,61 +332,4 @@ function RecordRow({ record }: { record: ImportedSessionRecord }) {
       <Terminal className="size-3.5" />{record.kind === 'plan' ? 'Plan' : 'Other activity'}
     </Card>
   )
-}
-
-/**
- * Files and commands, read straight out of the tool calls.
- *
- * Deterministic on purpose: it needs no model, it is available the instant an
- * import lands, and it says only what the records actually contain.
- */
-export function deriveActivity(records: readonly ImportedSessionRecord[]): {
-  files: string[]
-  commands: Array<{ tool: string; status: string | null }>
-} {
-  const files = new Set<string>()
-  const commands: Array<{ tool: string; status: string | null }> = []
-  for (const record of records) {
-    if (record.kind !== 'tool_call') continue
-    commands.push({ tool: record.tool_name ?? 'tool', status: record.tool_status })
-    if (!record.tool_input) continue
-    for (const match of record.tool_input.matchAll(/["']((?:\/|\.\/|[\w.-]+\/)[\w./-]+\.[\w]{1,8})["']/g)) {
-      const path = match[1]
-      if (path) files.add(path)
-    }
-  }
-  return { files: [...files], commands }
-}
-
-/**
- * The seed for a continued conversation.
- *
- * Deliberately the deterministic view plus the last few things actually said,
- * not a model's summary: it is available immediately, it cannot invent
- * anything, and the agent reading it can ask for more from the Project's own
- * context if it needs to.
- */
-function seedMessage(
-  session: ImportedSession,
-  records: readonly ImportedSessionRecord[],
-  derived: ReturnType<typeof deriveActivity>,
-  truncated: boolean,
-): string {
-  const said = records
-    .filter(record => record.kind === 'user_message' || record.kind === 'agent_message')
-    .slice(-6)
-    .map(record => `${record.kind === 'user_message' ? 'Me' : 'Agent'}: ${(record.text ?? '').slice(0, 400)}`)
-  return [
-    `Picking up from a ${session.adapter_type} session imported into this Project`
-      + `${session.title ? ` ("${session.title}")` : ''}.`,
-    derived.files.length > 0 ? `Files it touched: ${derived.files.slice(0, 15).join(', ')}` : null,
-    derived.commands.length > 0
-      ? `Commands it ran: ${derived.commands.slice(0, 10).map(command => command.tool).join(', ')}`
-      : null,
-    said.length > 0
-      // Said plainly when it is not actually the end: the page is capped, so
-      // for a long session these are the last six of what was loaded.
-      ? `${truncated ? 'Where the loaded part left off' : 'How it ended'}:\n${said.join('\n')}`
-      : null,
-  ].filter(Boolean).join('\n\n')
 }

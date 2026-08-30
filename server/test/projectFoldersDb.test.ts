@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { seedServerHost } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,6 +52,7 @@ beforeEach(async () => {
        ($3,$6,$5,'Other','active',now(),now())`,
     [PROJECT, SECOND_PROJECT, OTHER_PROJECT, SPACE, USER, OTHER_SPACE],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 async function insertFolder(

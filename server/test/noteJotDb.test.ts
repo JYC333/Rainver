@@ -4,6 +4,7 @@ import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // NC/N7: notes and evidence connect both ways. The "jot a note" affordance on
 // an evidence or material card has to create the note *and* the link in one
@@ -68,6 +69,7 @@ beforeEach(async () => {
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 describe("jot a note from an evidence card (real Postgres)", () => {

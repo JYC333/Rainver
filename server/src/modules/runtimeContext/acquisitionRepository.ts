@@ -8,6 +8,8 @@ import { canAccessProject } from "../memory/projectAccess.js";
 import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import {
   resolveExplicitReferences,
+  isExplicitReferenceType,
+  type ExplicitReferenceType,
   resolveWorkContextScopeBindings,
 } from "../runtimeContext/workContextService.js";
 
@@ -230,7 +232,7 @@ export class PgRuntimeContextAcquisitionRepository {
   ): Promise<{
     brief: Record<string, unknown> | null;
     instruction: Record<string, unknown> | null;
-    pinnedReferences: Array<{ type: "project_brief_version" | "project_instruction_version"; value: Record<string, unknown> }>;
+    pinnedReferences: Array<{ type: ExplicitReferenceType; value: Record<string, unknown> }>;
     excludedReferences: Array<{ type: string; id: string }>;
     retrievalPreferences: { enabled?: boolean; max_candidates?: number };
   }> {
@@ -283,7 +285,7 @@ export class PgRuntimeContextAcquisitionRepository {
       ? setup.retrieval_preferences_json as { enabled?: boolean; max_candidates?: number }
       : {};
     const excludedKeys = new Set(excludedReferences.map((ref) => `${ref.type}:${ref.id}`));
-    let pinnedReferences: Array<{ type: "project_brief_version" | "project_instruction_version"; value: Record<string, unknown> }> = [];
+    let pinnedReferences: Array<{ type: ExplicitReferenceType; value: Record<string, unknown> }> = [];
     if (setup && userId) {
       const scopeBindings = await resolveWorkContextScopeBindings(
         this.db,
@@ -296,12 +298,13 @@ export class PgRuntimeContextAcquisitionRepository {
         || (scopeBindings.agent_id !== null && setup.agent_id !== scopeBindings.agent_id)) {
         throw new HttpError(409, "Work Context Setup no longer matches its work scope");
       }
+      // The resolver's own list, so a type it accepts cannot be silently
+      // dropped here by a second enumeration drifting from the first.
       const refs = Array.isArray(setup.pinned_refs_json)
         ? setup.pinned_refs_json.filter(
-            (ref): ref is { type: "project_brief_version" | "project_instruction_version"; id: string } =>
+            (ref): ref is { type: ExplicitReferenceType; id: string } =>
               Boolean(ref && typeof ref === "object"
-                && ((ref as { type?: unknown }).type === "project_brief_version"
-                  || (ref as { type?: unknown }).type === "project_instruction_version")
+                && isExplicitReferenceType((ref as { type?: unknown }).type)
                 && typeof (ref as { id?: unknown }).id === "string"),
           )
         : [];

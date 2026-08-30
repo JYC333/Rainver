@@ -3,6 +3,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the ADR 0016 D7 upload path: a remote host may
 // only upload diff/output artifacts for a Run bound to its own Folder, and
@@ -41,6 +42,7 @@ beforeEach(async () => {
      VALUES (gen_random_uuid()::varchar, $1, $2, 'member', 'active', $3, $3)`,
     [SPACE, MEMBER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'member', 'active', $4, $4)`,

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const USER = "tenant-integrity-user";
 const SPACE_A = "tenant-integrity-space-a";
@@ -49,6 +50,7 @@ beforeEach(async () => {
        ($2, $4, $5, 'Project B', 'active', $6, $6)`,
     [PROJECT_A, PROJECT_B, SPACE_A, SPACE_B, USER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, current_version_id,

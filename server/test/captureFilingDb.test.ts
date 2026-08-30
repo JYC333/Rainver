@@ -5,6 +5,7 @@ import { PgActivityRepository } from "../src/modules/activity/repository.js";
 import { PgAnnotationRepository } from "../src/modules/reader/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const STRANGER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -47,6 +48,7 @@ beforeEach(async () => {
      VALUES ($1, $2, 'Team Project', 'active', $3, now(), now())`,
     [PROJECT, TEAM, OWNER],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO activity_records
        (id, space_id, user_id, owner_user_id, activity_type, title, content,

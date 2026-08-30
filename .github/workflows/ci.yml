@@ -54,6 +54,12 @@ jobs:
 
       - name: Typecheck server
         run: pnpm --filter @rainver/server typecheck
+      # The only guard that the migration baseline still matches the schema
+      # source. `baselineSchema.test.ts` proves the migration applies; it does
+      # not prove it is what `src/db/schema/` generates. A schema edit shipped
+      # without regenerating passes every other step here.
+      - name: Server schema baseline is in sync
+        run: pnpm --filter @rainver/server schema:check
 
       - name: Test server
         env:

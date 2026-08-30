@@ -1,3 +1,4 @@
+import type { RoomDetail } from "@rainver/protocol";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
@@ -633,6 +634,8 @@ export class RoomRosterService {
          DO UPDATE SET role = 'owner', status = 'active', updated_at = now()`,
         [randomUUID(), identity.spaceId, room.id, identity.userId],
       );
+      // Same reason as on invitation: a claimant is a second person.
+      await new PgRoomRepository(client).clearPersonalMarker(identity.spaceId, room.id);
       await roster.incrementRosterRevision(identity.spaceId, room.id);
       return this.roomDetail(client, identity, room.id);
     });
@@ -687,6 +690,11 @@ export class RoomRosterService {
        DO UPDATE SET role = 'member', status = 'active', updated_at = now()`,
       [randomUUID(), identity.spaceId, room.id, invitation.invitee_user_id],
     );
+    // A Room whose audience is now two people is not personal to either, so it
+    // stops being the one private continuation reuses. Clearing the marker is
+    // cheaper than refusing the invitation and costs only a fresh Room next
+    // time.
+    await rooms.clearPersonalMarker(identity.spaceId, room.id);
     for (const agent of currentPrivate) {
       await roster.grantPrivateAgent({
         space_id: identity.spaceId,
@@ -849,7 +857,17 @@ export class RoomRosterService {
       }));
   }
 
-  private async roomDetail(client: PoolClient, identity: RoomIdentity, roomId: string) {
+  /**
+   * Typed as `RoomDetail` on purpose. The schema is `.strict()` and every
+   * field required, but nothing validates a response at runtime — so without
+   * the annotation a missing field is invisible until a consumer reads
+   * `undefined` and treats it as `false`, hiding every control.
+   */
+  private async roomDetail(
+    client: PoolClient,
+    identity: RoomIdentity,
+    roomId: string,
+  ): Promise<RoomDetail> {
     const repository = new PgRoomRepository(client);
     const room = await repository.getVisibleRoom(identity.spaceId, identity.userId, roomId);
     if (!room) throw new HttpError(404, "Room not found in this space");
@@ -857,6 +875,8 @@ export class RoomRosterService {
       room,
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
       agent_members: await repository.listAgentMembers(identity.spaceId, room.id),
+      viewer_can_write: await canWriteProject(client, identity.spaceId, room.project_id, identity.userId),
+      ...(await repository.audienceForViewer(identity.spaceId, room.id, identity.userId)),
     };
   }
 }

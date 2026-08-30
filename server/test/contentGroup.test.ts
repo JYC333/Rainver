@@ -13,6 +13,7 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("contentAccessDefencesDb", () => {
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -237,6 +238,7 @@ describe("contentCreationContextDb", () => {
          VALUES ($1, $2, 'Project', $3, 'active', $4, $4)`,
         [projectId, teamSpaceId, userId, now],
       );
+      await seedMainlineRoomsForAllProjects(db.pool);
       await db.pool.query(
         `INSERT INTO project_members
            (id, space_id, project_id, user_id, role, status, created_at, updated_at)

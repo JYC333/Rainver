@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ThreadReferencePickSchema } from "./threadReferences.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import {
   AgentRunMessageRecipientSegmentSchema,
@@ -20,6 +21,12 @@ export const RoomSchema = z.object({
   roster_revision: z.number().int().nonnegative().optional(),
   /** The Project's mainline conversation, which every Project member belongs to. */
   is_mainline: z.boolean().default(false),
+  /**
+   * Set when the Room's audience is one person — where private continuation
+   * lands so it is not seeded into the Project's shared channel. Cleared the
+   * moment anyone else joins.
+   */
+  personal_for_user_id: IdSchema.nullish(),
   ...SecretResponseGuards,
 }).strict();
 
@@ -28,11 +35,12 @@ export const RoomSchema = z.object({
  *
  * Membership is Project membership: a reader who is not yet on the roster is
  * enrolled by this read, so `joined` says whether that just happened.
- * `viewer_can_write` tells a surface with no Room yet whether offering to
- * start one is honest.
+ * `viewer_can_write` is Project write authority — whether offering to open a
+ * Room is honest. Speaking in the mainline needs no such authority.
  */
 export const ProjectMainlineRoomResponseSchema = z.object({
-  room: RoomSchema.nullable(),
+  // Never null: a Project is created with its mainline (ADR 0018 decision 4).
+  room: RoomSchema,
   joined: z.boolean(),
   viewer_can_write: z.boolean(),
 }).strict();
@@ -219,6 +227,17 @@ export const ProjectConversationSchema = z.object({
   room_id: IdSchema,
   room_title: z.string(),
   room_is_mainline: z.boolean(),
+  /**
+   * The other people who can see this conversation — the Room's active human
+   * roster minus the viewer, by display name. The interface names a Room by
+   * its audience rather than by its title, because the audience is what a Room
+   * *is* ([ADR 0018](../../../.agent/decisions/0018-room-as-visibility-boundary.md)
+   * decision 1) and the title is a label somebody typed. Empty when the
+   * viewer is the only person in the Room, which is what a personal Room is.
+   */
+  room_other_member_names: z.array(z.string()),
+  /** Active Agents on that Room's roster, the manager included. */
+  room_agent_count: z.number().int().nonnegative(),
   title: z.string().nullable(),
   created_at: ISODateTimeSchema,
   last_message_at: ISODateTimeSchema.nullable(),
@@ -228,12 +247,35 @@ export const ProjectConversationSchema = z.object({
 }).strict();
 export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
 
+/**
+ * A Room of the viewer's that holds no conversation yet.
+ *
+ * Listing conversations would hide it entirely, and a Room becomes reachable
+ * only through a conversation in it — so opening one and walking away before
+ * saying anything left it with no way back. It is named by its audience like
+ * any other section.
+ */
+export const ProjectEmptyRoomSchema = z.object({
+  room_id: IdSchema,
+  room_is_mainline: z.boolean(),
+  room_other_member_names: z.array(z.string()),
+  room_agent_count: z.number().int().nonnegative(),
+}).strict();
+export type ProjectEmptyRoom = z.infer<typeof ProjectEmptyRoomSchema>;
+
 export const ProjectConversationsResponseSchema = z.object({
   items: z.array(ProjectConversationSchema),
+  /** Rooms the viewer is in that nobody has spoken in yet. Always present. */
+  empty_rooms: z.array(ProjectEmptyRoomSchema),
   total: z.number().int().nonnegative(),
   limit: z.number().int().positive(),
   offset: z.number().int().nonnegative(),
-  /** Whether the viewer may start a Room (and so a conversation) here. */
+  /**
+   * Project **write** authority — whether the viewer may open a Room here.
+   * Not whether they may speak: a Project reader is enrolled in the mainline
+   * on first open and the server accepts their messages, which is the whole
+   * point of the chat panel for a viewer.
+   */
   viewer_can_write: z.boolean(),
 }).strict();
 export type ProjectConversationsResponse = z.infer<typeof ProjectConversationsResponseSchema>;
@@ -306,6 +348,11 @@ export const CreateRoomRequestSchema = z.object({
   project_id: IdSchema,
   project_folder_id: IdSchema.nullish(),
   title: z.string().trim().min(1).max(256),
+  /**
+   * Open (or reuse) the caller's personal Room in this Project rather than a
+   * new shared one. A Project has at most one per person.
+   */
+  personal: z.boolean().optional(),
 }).strict();
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequestSchema>;
 
@@ -313,7 +360,25 @@ export const RoomDetailSchema = z.object({
   room: RoomSchema,
   user_members: z.array(RoomUserMemberSchema),
   agent_members: z.array(RoomAgentMemberSchema),
-  conversation: RoomConversationSchema.nullish(),
+  /**
+   * Project **write** authority — whether the viewer may mutate this Room's
+   * roster. Every roster mutation goes through `withRoomWriter`, which
+   * requires exactly this, so it is what the roster controls are shown on.
+   *
+   * Deliberately not whether they may speak: a Project reader is enrolled in
+   * the mainline on first open and the server accepts their messages. Reading
+   * one authority as the other is how a reader gets locked out of the chat, or
+   * offered a control that 403s.
+   */
+  viewer_can_write: z.boolean(),
+  /**
+   * Who else is in it, and how many Agents — the same definition the Project
+   * conversation list uses, so one Room is never described two ways. Computed
+   * here rather than on the client from the roster: the client's copy sorted
+   * differently and named people the catalog had not loaded yet "Someone".
+   */
+  other_member_names: z.array(z.string()),
+  agent_count: z.number().int().nonnegative(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomDetail = z.infer<typeof RoomDetailSchema>;
@@ -323,9 +388,12 @@ export const RoomAgentMutationResponseSchema = RoomDetailSchema.extend({
 }).strict();
 export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponseSchema>;
 
-export const CreateRoomResponseSchema = RoomDetailSchema.extend({
-  conversation: RoomConversationSchema,
-}).strict();
+/**
+ * Creating a Room creates a Room. No conversation comes back because none is
+ * made: the first message creates the first conversation (ADR 0018 decision
+ * 5), so an empty conversation is impossible rather than merely discouraged.
+ */
+export const CreateRoomResponseSchema = RoomDetailSchema;
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
 
 export const RoomBackendSetupTargetSchema = z.enum(["model_providers", "cli_credentials"]);
@@ -335,10 +403,6 @@ export const RoomBackendRequiredErrorSchema = z.object({
   setup_targets: z.array(RoomBackendSetupTargetSchema).min(1),
 }).strict();
 export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSchema>;
-
-export const CreateRoomConversationRequestSchema = z.object({
-  title: z.string().trim().min(1).max(512).nullish(),
-}).strict();
 
 /**
  * What the person is looking at while they type.
@@ -361,6 +425,16 @@ export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
 
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().min(1).max(8000),
+  /**
+   * References to copy in with this message. Only meaningful on the
+   * session-less send, where they land in the conversation the message
+   * creates, in the same transaction — a thread does not exist until its
+   * first message (ADR 0018 decision 5), so a pick made "for a new thread"
+   * has to ride the message that starts it.
+   */
+  references: z.array(ThreadReferencePickSchema).max(20).optional(),
+  /** See `AttachThreadReferencesRequestSchema` — same meaning, same shape. */
+  confirm_disclosure: z.union([z.boolean(), z.array(IdSchema)]).optional(),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
@@ -389,3 +463,25 @@ export const SendRoomMessageResponseSchema = z.object({
   run_ids: z.array(IdSchema).min(1),
   ...SecretResponseGuards,
 }).strict();
+
+/**
+ * Everyone who can read a Project — the roster picker's candidate set.
+ *
+ * Distinct from the Project *members* list, which is the memory ACL and omits
+ * the owner. A Room's audience is chosen from this, and the server refuses to
+ * invite anyone outside it, so offering a wider list produces controls that
+ * only ever fail.
+ */
+export const ProjectReaderSchema = z.object({
+  user_id: IdSchema,
+  display_name: z.string(),
+  /** Nullable on `users`; a Space member may have been created without one. */
+  email: z.string().nullable(),
+  avatar_url: z.string().nullable(),
+}).strict();
+export type ProjectReader = z.infer<typeof ProjectReaderSchema>;
+
+export const ProjectReadersResponseSchema = z.object({
+  readers: z.array(ProjectReaderSchema),
+}).strict();
+export type ProjectReadersResponse = z.infer<typeof ProjectReadersResponseSchema>;

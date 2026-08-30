@@ -7,6 +7,7 @@ import { withNoteWrites } from "../src/modules/knowledge/noteWriter.js";
 import { blockIds } from "../src/modules/knowledge/noteBlockIds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * The shared note writer, asserted through the three things that were wrong
@@ -59,6 +60,7 @@ beforeEach(async () => {
     `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Project','active',$3,$4,$4)`,
     [PROJECT, SPACE, OWNER, now],
   );
+  await seedMainlineRoomsForAllProjects(db.pool);
 });
 
 const owner = { spaceId: SPACE, userId: OWNER };
