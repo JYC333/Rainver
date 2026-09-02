@@ -237,10 +237,12 @@ export default function AgentFormPage() {
       ...cliRuntimes.map(c => ({ value: c.runtime, label: `${c.runtime} (tools, filesystem)` })),
     ]
     if (!options.some(option => option.value === runtime)) {
-      options.push({ value: runtime, label: `${runtime} (template default)` })
+      // The current runtime may come from a template's default or from a host
+      // adapter choice; the server's own installed-CLI list knows neither.
+      options.push({ value: runtime, label: templateId ? `${runtime} (template default)` : `${runtime} (host runtime)` })
     }
     return options
-  }, [cliRuntimes, runtime])
+  }, [cliRuntimes, runtime, templateId])
 
   const isCli = runtime !== 'model_api'
   const isClaudeCli = runtime === 'claude_code'
@@ -416,14 +418,17 @@ export default function AgentFormPage() {
             <select
               value={runtime}
               onChange={e => handleRuntimeChange(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
+              disabled={Boolean(hostExecution)}
+              className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm disabled:opacity-60"
             >
               {runtimeOptions.map(option => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
             <p className="text-xs text-muted-foreground">
-              {isCli
+              {hostExecution
+                ? 'Set by the host runtime chosen below — change the adapter there.'
+                : isCli
                 ? isClaudeCli
                   ? 'Uses Claude Code login by default; optionally select a Claude-compatible provider below.'
                   : isCodexCli

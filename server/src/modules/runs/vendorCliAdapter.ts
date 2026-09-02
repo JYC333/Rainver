@@ -52,7 +52,9 @@ import {
 } from "./runtimeEventNormalization.js";
 import { getDbPool } from "../../db/pool.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
-import { renderWorkSkill, workSkillContentHash, workSkillPromptPointer } from "../capabilities/workSkill.js";
+import { renderWorkSkill, workSkillContentHash, workSkillPromptPointer, type WorkSkillOptions } from "../capabilities/workSkill.js";
+import { stallTimeoutSeconds } from "./stallTimeout.js";
+import { workSkillOptionsForRun } from "./runWorkSurface.js";
 import type { RunToolIdentityPort } from "./runToolIdentityRepository.js";
 import { stageSandboxWorkSurface, type SandboxWorkSurface } from "./sandboxWorkSurface.js";
 import { buildSubprocessEnv } from "./cliSubprocessEnv.js";
@@ -117,6 +119,7 @@ export interface VendorCliAdapterInput {
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
+  workspace_mounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
 }
 
 export interface VendorCliAdapterDeps {
@@ -290,9 +293,9 @@ export async function executeVendorCliAdapter(
   // Deliberately absent from a sandboxed Run's Skill: `artifact.submit` is not
   // granted here and `$RAINVER_OUTPUT_DIR` is a remote-host variable, so the
   // delivery workflow would send the agent to write a file nothing collects.
-  const SANDBOX_SKILL_OPTIONS = { deliverOutputs: false } as const;
+  const skillOptions: WorkSkillOptions = { ...workSkillOptionsForRun(input.run), deliverOutputs: false };
   const skill = toolGrants.length > 0 && toolIdentities
-    ? renderWorkSkill(SANDBOX_SKILL_OPTIONS)
+    ? renderWorkSkill(skillOptions)
     : null;
   let toolToken: string | null = null;
   let workSurface: SandboxWorkSurface | null = null;
@@ -361,6 +364,7 @@ export async function executeVendorCliAdapter(
     prompts: withWorkSurfacePointer(
       deliveryPrompts ?? [input.prompt ?? input.run.prompt ?? ""],
       workSurface,
+      skillOptions,
     ),
     cwd: input.sandbox_cwd!,
     // `supports_model_override: false` in specs.ts gates only the argv
@@ -421,6 +425,7 @@ export async function executeVendorCliAdapter(
             stringValue(input.adapter_config?.run_exchange_output_dir),
           )
         : undefined,
+      workspace_access: input.workspace_mounts,
     });
     result = await runRendered(rendered, stdioController);
   } finally {
@@ -508,12 +513,13 @@ function renderCliDeliveryMessages(delivery: InvocationDelivery): string[] {
 export function withWorkSurfacePointer(
   prompts: readonly string[],
   surface: SandboxWorkSurface | null,
+  options: WorkSkillOptions = { deliverOutputs: false },
 ): string[] {
   // An empty list stays empty: `createCliConversationController` treats it as
   // "nothing to send" and forms no controller at all, and manufacturing a
   // prompt out of the pointer alone would start a turn nobody asked for.
   if (!surface || prompts.length === 0) return [...prompts];
-  const pointer = workSkillPromptPointer(surface.env.RAINVER_SKILL_PATH!, { deliverOutputs: false });
+  const pointer = workSkillPromptPointer(surface.env.RAINVER_SKILL_PATH!, { ...options, deliverOutputs: false });
   const [first = "", ...rest] = prompts;
   return [[first, pointer].filter(Boolean).join("\n\n"), ...rest];
 }
@@ -933,14 +939,6 @@ function timeoutSeconds(
   return Math.min(selected, spec.limits.max_timeout_seconds, maxDuration ?? Number.MAX_SAFE_INTEGER);
 }
 
-function stallTimeoutSeconds(
-  adapterConfig: Record<string, unknown> | undefined,
-  timeoutSeconds: number,
-): number {
-  const configured = Number(adapterConfig?.stall_timeout_seconds);
-  const requested = Number.isFinite(configured) && configured > 0 ? configured : 300;
-  return Math.min(requested, Math.max(1, timeoutSeconds - 1));
-}
 
 function profileId(input: VendorCliAdapterInput): string | null {
   return stringValue(input.adapter_config?.credential_profile_id);

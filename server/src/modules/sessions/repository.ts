@@ -396,6 +396,30 @@ export class PgSessionRepository {
     return sessionToOut(result.rows[0]!);
   }
 
+  async findOpenRoomDraft(input: {
+    space_id: string;
+    room_id: string;
+  }): Promise<SessionOut | null> {
+    const result = await this.db.query<SessionRow>(
+      `SELECT s.id, s.space_id, s.user_id, s.project_folder_id, s.project_id,
+              s.room_id, s.title, s.status, s.created_at, s.updated_at
+         FROM sessions s
+        WHERE s.space_id = $1
+          AND s.room_id = $2
+          AND s.status = 'active'
+          AND s.metadata_json->>'execution_setup_started' = 'true'
+          AND NOT EXISTS (
+            SELECT 1 FROM messages m
+             WHERE m.space_id = s.space_id AND m.session_id = s.id
+          )
+        ORDER BY s.created_at DESC, s.id DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [input.space_id, input.room_id],
+    );
+    return result.rows[0] ? sessionToOut(result.rows[0]) : null;
+  }
+
   async addMessage(
     spaceId: string,
     userId: string,
@@ -501,6 +525,83 @@ export class PgSessionRepository {
         room_display: "system_notice",
       },
     }, null);
+  }
+
+  /**
+   * A durable, visible execution-context event for either a direct or Room
+   * Conversation. The visibility check deliberately reuses the same
+   * conversation projection as the read routes, and the event key makes a
+   * retried initialization/access mutation idempotent.
+   */
+  async addExecutionSystemEvent(
+    spaceId: string,
+    userId: string,
+    sessionId: string,
+    input: {
+      event: string;
+      eventKey: string;
+      content: string;
+      details: Record<string, unknown>;
+    },
+  ): Promise<MessageOut | null> {
+    const session = await this.getConversationForBackendSelection(spaceId, userId, sessionId);
+    if (!session) return null;
+    const existing = await this.db.query<MessageRow>(
+      `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
+              content, metadata_json, created_at
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND role = 'system'
+          AND metadata_json->>'room_display' = 'system_notice'
+          AND metadata_json->>'execution_event' = $3
+          AND metadata_json->>'execution_event_key' = $4
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [spaceId, sessionId, input.event, input.eventKey],
+    );
+    if (existing.rows[0]) return messageToOut(existing.rows[0]);
+    return this.insertAttributedMessage(spaceId, userId, sessionId, {
+      role: "system",
+      content: input.content,
+      metadata: {
+        room_display: "system_notice",
+        execution_event: input.event,
+        execution_event_key: input.eventKey,
+        execution_details: input.details,
+      },
+    });
+  }
+
+  /** Locate a previously committed execution mutation by its client-stable key. */
+  async findExecutionSystemEvent(
+    spaceId: string,
+    userId: string,
+    sessionId: string,
+    eventKey: string,
+  ): Promise<{ attachment_id: string; effective_after_run_id: string | null } | null> {
+    const session = await this.getConversationForBackendSelection(spaceId, userId, sessionId);
+    if (!session) return null;
+    const result = await this.db.query<{ metadata_json: unknown }>(
+      `SELECT metadata_json
+         FROM messages
+        WHERE space_id = $1 AND session_id = $2 AND role = 'system'
+          AND metadata_json->>'room_display' = 'system_notice'
+          AND metadata_json->>'execution_event' LIKE 'execution_attachment_%'
+          AND metadata_json->>'execution_event_key' = $3
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [spaceId, sessionId, eventKey],
+    );
+    const metadata = result.rows[0]?.metadata_json;
+    if (!metadata || typeof metadata !== "object") return null;
+    const details = (metadata as Record<string, unknown>).execution_details;
+    if (!details || typeof details !== "object") return null;
+    const attachmentId = (details as Record<string, unknown>).attachment_id;
+    const effectiveAfterRunId = (details as Record<string, unknown>).effective_after_run_id;
+    if (typeof attachmentId !== "string") return null;
+    return {
+      attachment_id: attachmentId,
+      effective_after_run_id: typeof effectiveAfterRunId === "string" ? effectiveAfterRunId : null,
+    };
   }
 
   /**

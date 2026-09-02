@@ -124,7 +124,19 @@ function buildLaunchRequest(
     mounts.push(mountRef(resolve(exchangeInput, ".."), config, "/run-exchange/input", "read_only"));
     mounts.push(mountRef(exchangeOutput, config, "/run-exchange/output", "read_write"));
   }
-  const environment = typedEnvironment(input.env, Boolean(exchangeInput));
+  const attachmentAccess = (input.workspace_access ?? []).map((attachment, index) => ({
+    mount: mountRef(
+      attachment.path,
+      config,
+      `/attachments/${index}` as `/attachments/${number}`,
+      attachment.access_mode === "write" ? "read_write" : "read_only",
+    ),
+    workspace_location_id: attachment.workspace_location_id,
+    access_mode: attachment.access_mode,
+    target: `/attachments/${index}` as `/attachments/${number}`,
+  }));
+  mounts.push(...attachmentAccess.map(({ mount }) => mount));
+  const environment = typedEnvironment(input.env, Boolean(exchangeInput), attachmentAccess);
   const requestedEgress = input.egress_profile ?? egressProfile(environment);
   if (requestedEgress === "provider" || requestedEgress === "provider_and_tools") {
     environment.provider_channel = {
@@ -196,7 +208,11 @@ function translateArgument(value: string, paths: Record<string, string | undefin
   return value;
 }
 
-function typedEnvironment(env: Record<string, string>, exchange: boolean): SandboxRuntimeEnvironment {
+function typedEnvironment(
+  env: Record<string, string>,
+  exchange: boolean,
+  attachments: Array<{ workspace_location_id: string; access_mode: "read" | "write"; target: `/attachments/${number}` }> = [],
+): SandboxRuntimeEnvironment {
   return {
     locale: env.LANG,
     term: env.TERM,
@@ -217,6 +233,11 @@ function typedEnvironment(env: Record<string, string>, exchange: boolean): Sandb
         }
       : undefined,
     exchange,
+    workspace_access: attachments.map(({ workspace_location_id, access_mode, target }) => ({
+      workspace_location_id,
+      access_mode,
+      target,
+    })),
   };
 }
 
@@ -253,7 +274,7 @@ async function connectAndRun(host: string, port: number, request: SandboxLaunchR
     const finish = (result: CliExecutionResult) => { if (settled) return; settled = true; registry?.deregister(request.run_id); socket.destroy(); resolveResult(result); };
     socket.setTimeout(10_000, () => finish(unavailable("Sandbox Runner connection timed out.")));
     socket.once("error", (error) => finish(unavailable(error.message)));
-    socket.once("connect", () => send({ type: "launch", token, request }));
+    socket.once("connect", () => { send({ type: "launch", token, request }); });
     socket.on("data", (chunk) => {
       buffer += decoder.write(chunk);
       const lines = buffer.split(/\r?\n/); buffer = lines.pop() ?? "";

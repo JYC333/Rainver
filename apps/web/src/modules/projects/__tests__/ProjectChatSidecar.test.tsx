@@ -2,12 +2,15 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
-import { projectsApi, proposalsApi, roomsApi } from '../../../api/client'
+import { projectsApi, proposalsApi, roomsApi, sessionsApi } from '../../../api/client'
 import { projectTaskHref } from '../taskHref'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ spaceId: 'space-1', userId: 'user-1' }),
+}))
+vi.mock('../ProjectConversationBackendCard', () => ({
+  default: () => <div>Project Agent runtime details</div>,
 }))
 // The rich composer is TipTap, which jsdom cannot type into; the send path
 // is what is under test here, not the editor.
@@ -31,8 +34,14 @@ vi.mock('../../../api/client', async () => {
     continueAfterProposal: vi.fn(),
     list: vi.fn(),
     conversations: vi.fn(),
+    createConversation: vi.fn(),
     messages: vi.fn(),
     sendMessage: vi.fn(),
+  },
+  sessionsApi: {
+    executionContext: vi.fn(),
+    initializeExecution: vi.fn(),
+    mutateExecutionAttachments: vi.fn(),
   },
   }
 })
@@ -93,6 +102,16 @@ beforeEach(() => {
     items: [], task_group_ids: [], limit: 50, offset: 0,
     conversation: { id: 'conv-2', room_id: 'room-1', title: 'Depth repair' },
   } as never)
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+    summary: {
+      session_id: 'conv-2', state: 'initialized',
+      host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
+      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'claude', runtime_installation: 'claude' },
+      primary: { kind: 'managed', managed_workspace_id: 'conv-2', display_path: null }, attachments: [],
+      dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+    },
+    available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+  } as never)
 })
 
 describe('focus refs', () => {
@@ -132,6 +151,8 @@ describe('Project chat sidecar', () => {
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/tasks/${TASK}`)
     expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+    expect(screen.getByText('Project Agent runtime details')).toBeVisible()
+    expect(screen.getByText('Runtime & workspace').closest('details')).toHaveAttribute('open')
     expect(roomsApi.create).not.toHaveBeenCalled()
     // Nothing to load, so nothing was asked for.
     expect(roomsApi.messages).not.toHaveBeenCalled()
@@ -148,6 +169,18 @@ describe('Project chat sidecar', () => {
     } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+  })
+
+  it('keeps the first-message draft and shows the canonical Host recovery destination in the sidecar', async () => {
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    const composer = await screen.findByLabelText('Room message')
+    fireEvent.change(composer, { target: { value: 'Please inspect the workspace.' } })
+    expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(composer).toHaveValue('Please inspect the workspace.')
+    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/command-center?tab=hosts')
+    expect(screen.queryByRole('link', { name: /project runtime settings/i })).not.toBeInTheDocument()
   })
 
   it('shows a failed mainline read as an error, not as an empty Project', async () => {
@@ -275,12 +308,16 @@ describe('Project chat sidecar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Start a separate thread' }))
 
+    vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'conv-3', room_id: 'room-1', title: 'New conversation' } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'A new topic' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    // Addressed to the Room, with no conversation id.
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.anything(), expect.any(String)))
-    // The conversation the send created is what the panel binds to, and what
-    // it remembers per Room.
+    // Explicit setup created the draft before the message, so the send is
+    // addressed to the selected conversation rather than creating one behind
+    // the user's back.
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-3', expect.anything()))
     await waitFor(() => expect(localStorage.getItem('project.sidecar.room.room-1.conversation')).toBe('conv-3'))
   })
 

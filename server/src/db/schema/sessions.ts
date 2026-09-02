@@ -72,10 +72,14 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	sessionId: varchar("session_id", { length: 36 }).notNull(),
-	userId: varchar("user_id", { length: 36 }).notNull(),
+	boundByUserId: varchar("bound_by_user_id", { length: 36 }).notNull(),
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
 	runtimeProfileId: varchar("runtime_profile_id", { length: 36 }).notNull(),
 	credentialProfileId: varchar("credential_profile_id", { length: 36 }),
+	modelNameSnapshot: varchar("model_name_snapshot", { length: 255 }),
+	modelProviderIdSnapshot: varchar("model_provider_id_snapshot", { length: 36 }),
+	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
+	runtimePolicySnapshotJson: jsonb("runtime_policy_snapshot_json").default({}).notNull(),
 	runtimeStateKey: varchar("runtime_state_key", { length: 36 }).notNull(),
 	runtimeSessionId: varchar("runtime_session_id", { length: 512 }),
 	runtimeContextFingerprint: varchar("runtime_context_fingerprint", { length: 64 }),
@@ -87,7 +91,7 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	index("ix_session_conversation_backends_space_id").on(table.spaceId),
 	index("ix_session_conversation_backends_runtime_profile_id").on(table.runtimeProfileId),
 	index("ix_session_conversation_backends_credential_profile_id").on(table.credentialProfileId),
-	unique("uq_session_conversation_backends_session_user_agent").on(table.sessionId, table.userId, table.agentId),
+	unique("uq_session_conversation_backends_session_agent").on(table.sessionId, table.agentId),
 	unique("uq_session_conversation_backends_runtime_state_key").on(table.runtimeStateKey),
 	foreignKey({
 		columns: [table.sessionId, table.spaceId],
@@ -100,20 +104,20 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 		name: "session_conversation_backends_space_id_fkey",
 	}).onDelete("cascade"),
 	foreignKey({
-		columns: [table.userId],
+		columns: [table.boundByUserId],
 		foreignColumns: [users.id],
-		name: "session_conversation_backends_user_id_fkey",
-	}).onDelete("cascade"),
+		name: "session_conversation_backends_bound_by_user_id_fkey",
+	}),
 	foreignKey({
 		columns: [table.runtimeProfileId, table.spaceId, table.agentId],
 		foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId],
 		name: "session_conversation_backends_runtime_scope_fkey",
 	}).onDelete("cascade"),
 	foreignKey({
-		columns: [table.credentialProfileId, table.userId],
+		columns: [table.credentialProfileId, table.boundByUserId],
 		foreignColumns: [cliCredentialProfiles.id, cliCredentialProfiles.ownerUserId],
 		name: "session_conversation_backends_credential_owner_fkey",
-	}).onDelete("cascade"),
+	}),
 ]);
 
 export const messages = pgTable("messages", {

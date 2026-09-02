@@ -103,8 +103,8 @@ async function seedTopology(): Promise<void> {
   await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind, display_path,
-       execution_ready, status, preferred, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',true,$5,$5)`,
+       execution_ready, status, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',$5,$5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
 }
@@ -117,7 +117,7 @@ describe("ambient session sync", () => {
       db.pool,
       [
         "token_usage_events", "imported_session_records", "imported_sessions", "activity_records",
-        "host_threads", "workspace_locations", "project_folders", "project_members", "hosts", "machines",
+        "host_threads", "sessions", "workspace_locations", "project_folders", "project_members", "hosts", "machines",
         "projects", "space_memberships", "users", "spaces",
       ],
       { cascade: true },
@@ -286,8 +286,8 @@ describe("ambient session sync", () => {
     await db.pool.query(
       `INSERT INTO workspace_locations (
          id, space_id, project_folder_id, execution_host_id, execution_host_kind, display_path,
-         execution_ready, status, preferred, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',true,now(),now())`,
+         execution_ready, status, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',now(),now())`,
       [REBOUND, SPACE, FOLDER, HOST],
     );
 
@@ -334,6 +334,12 @@ describe("ambient session sync", () => {
       `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline = true LIMIT 1`,
       [SPACE, PROJECT],
     );
+    const sessionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, project_id, room_id, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', now(), now())`,
+      [sessionId, SPACE, PROJECT, room.rows[0]!.id],
+    );
     const agentId = randomUUID();
     await db.pool.query(
       `INSERT INTO agents (id, space_id, project_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
@@ -342,11 +348,11 @@ describe("ambient session sync", () => {
     );
     await db.pool.query(
       `INSERT INTO host_threads (
-         id, workspace_location_id, room_id, agent_id, adapter_type,
+         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, adapter_type,
          runtime_installation, vendor_session_id, status, created_by_user_id,
          created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, 'claude_code', 'own', 'agent-session-1', 'active', $5, now(), now())`,
-      [randomUUID(), LOCATION, room.rows[0]!.id, agentId, OWNER],
+       ) VALUES ($1, $2, $3, $4, 'location', $5, $6, 'conversation', 'claude_code', 'own', 'agent-session-1', 'active', $7, now(), now())`,
+      [randomUUID(), SPACE, HOST, LOCATION, sessionId, agentId, OWNER],
     );
     stubHost([replay("agent-session-1")], ["agent-session-1"]);
 
@@ -365,6 +371,12 @@ describe("ambient session sync", () => {
       `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline = true LIMIT 1`,
       [SPACE, PROJECT],
     );
+    const sessionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, project_id, room_id, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', now(), now())`,
+      [sessionId, SPACE, PROJECT, room.rows[0]!.id],
+    );
     const agentId = randomUUID();
     await db.pool.query(
       `INSERT INTO agents (id, space_id, project_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
@@ -374,19 +386,19 @@ describe("ambient session sync", () => {
     const threadId = randomUUID();
     await db.pool.query(
       `INSERT INTO host_threads (
-         id, workspace_location_id, room_id, agent_id, adapter_type,
+         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, adapter_type,
          runtime_installation, vendor_session_id, status, created_by_user_id,
          created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, 'claude_code', 'own', 'agent-session-old', 'active', $5, now(), now())`,
-      [threadId, LOCATION, room.rows[0]!.id, agentId, OWNER],
+       ) VALUES ($1, $2, $3, $4, 'location', $5, $6, 'conversation', 'claude_code', 'own', 'agent-session-old', 'active', $7, now(), now())`,
+      [threadId, SPACE, HOST, LOCATION, sessionId, agentId, OWNER],
     );
     const threads = new PgHostThreadRepository(db.pool);
     // Reset moves the thread on from its first session; the second session
     // then breaks on resume; finally the specialist leaves the Room.
-    await threads.resetRoomAgent(room.rows[0]!.id, agentId);
+    await threads.resetConversationAgent(threadId);
     await threads.recordRunOutcome(threadId, { lastRunId: randomUUID(), vendorSessionId: "agent-session-mid", sessionReset: false });
     await threads.recordRunOutcome(threadId, { lastRunId: randomUUID(), vendorSessionId: null, sessionReset: true });
-    await threads.closeRoomAgent(room.rows[0]!.id, agentId);
+    await threads.closeConversationAgentForRoom(SPACE, room.rows[0]!.id, agentId);
     await expect(db.pool.query<{ vendor_session_id: string | null; retired: string[] }>(
       `SELECT vendor_session_id, retired_vendor_session_ids AS retired FROM host_threads WHERE id = $1`,
       [threadId],

@@ -64,7 +64,6 @@ function project(overrides: Partial<Project> = {}): Project {
     status: 'active',
     current_focus: null,
     settings_json: null,
-    primary_mode: 'research',
     active_brief_version_id: null,
     created_at: '2026-07-08T10:00:00.000Z',
     updated_at: '2026-07-08T10:00:00.000Z',

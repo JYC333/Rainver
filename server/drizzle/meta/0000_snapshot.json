@@ -1,5 +1,5 @@
 {
-  "id": "3b74c1d0-bfa2-441a-a347-350879d1afb5",
+  "id": "d0ad3680-346d-4c0f-858c-89d703247ad3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -43947,12 +43947,6 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "primary_mode": {
-          "name": "primary_mode",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
         "workspace_identity_json": {
           "name": "workspace_identity_json",
           "type": "jsonb",
@@ -44161,10 +44155,6 @@
         "ck_project_brief_versions_project_status": {
           "name": "ck_project_brief_versions_project_status",
           "value": "project_status IN ('active', 'archived', 'deleted')"
-        },
-        "ck_project_brief_versions_primary_mode": {
-          "name": "ck_project_brief_versions_primary_mode",
-          "value": "primary_mode IN ('research', 'delivery', 'operations', 'learning')"
         },
         "ck_project_brief_versions_confirmed_decisions_array": {
           "name": "ck_project_brief_versions_confirmed_decisions_array",
@@ -44576,157 +44566,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.project_mode_transitions": {
-      "name": "project_mode_transitions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(36)",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "from_mode": {
-          "name": "from_mode",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "to_mode": {
-          "name": "to_mode",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger_ref": {
-          "name": "trigger_ref",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "confirmed_by_user_id": {
-          "name": "confirmed_by_user_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "ix_project_mode_transitions_project_id": {
-          "name": "ix_project_mode_transitions_project_id",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_project_mode_transitions_space_id": {
-          "name": "ix_project_mode_transitions_space_id",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_mode_transitions_space_project_fkey": {
-          "name": "project_mode_transitions_space_project_fkey",
-          "tableFrom": "project_mode_transitions",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id",
-            "space_id"
-          ],
-          "columnsTo": [
-            "id",
-            "space_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_mode_transitions_space_id_fkey": {
-          "name": "project_mode_transitions_space_id_fkey",
-          "tableFrom": "project_mode_transitions",
-          "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "project_mode_transitions_confirmed_by_user_id_fkey": {
-          "name": "project_mode_transitions_confirmed_by_user_id_fkey",
-          "tableFrom": "project_mode_transitions",
-          "tableTo": "users",
-          "columnsFrom": [
-            "confirmed_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "ck_project_mode_transitions_to_mode": {
-          "name": "ck_project_mode_transitions_to_mode",
-          "value": "(to_mode)::text = ANY (ARRAY[('research'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.project_public_summaries": {
       "name": "project_public_summaries",
       "schema": "",
@@ -44992,13 +44831,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "primary_mode": {
-          "name": "primary_mode",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'research'"
-        },
         "focus_area_id": {
           "name": "focus_area_id",
           "type": "varchar(36)",
@@ -45220,10 +45052,6 @@
         "ck_projects_status": {
           "name": "ck_projects_status",
           "value": "(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text, ('deleted'::character varying)::text])"
-        },
-        "ck_projects_primary_mode": {
-          "name": "ck_projects_primary_mode",
-          "value": "(primary_mode)::text = ANY (ARRAY[('research'::character varying)::text, ('delivery'::character varying)::text, ('operations'::character varying)::text, ('learning'::character varying)::text])"
         }
       },
       "isRLSEnabled": false
@@ -50570,146 +50398,6 @@
       "uniqueConstraints": {
         "uq_room_creation_idempotency_scope": {
           "name": "uq_room_creation_idempotency_scope",
-          "nullsNotDistinct": false,
-          "columns": [
-            "space_id",
-            "user_id",
-            "idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.room_first_message_idempotencies": {
-      "name": "room_first_message_idempotencies",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(36)",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "space_id": {
-          "name": "space_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "room_id": {
-          "name": "room_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "room_first_message_idempotencies_space_fkey": {
-          "name": "room_first_message_idempotencies_space_fkey",
-          "tableFrom": "room_first_message_idempotencies",
-          "tableTo": "spaces",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_first_message_idempotencies_user_fkey": {
-          "name": "room_first_message_idempotencies_user_fkey",
-          "tableFrom": "room_first_message_idempotencies",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_first_message_idempotencies_room_fkey": {
-          "name": "room_first_message_idempotencies_room_fkey",
-          "tableFrom": "room_first_message_idempotencies",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "room_id",
-            "space_id"
-          ],
-          "columnsTo": [
-            "id",
-            "space_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "room_first_message_idempotencies_session_fkey": {
-          "name": "room_first_message_idempotencies_session_fkey",
-          "tableFrom": "room_first_message_idempotencies",
-          "tableTo": "sessions",
-          "columnsFrom": [
-            "session_id",
-            "space_id"
-          ],
-          "columnsTo": [
-            "id",
-            "space_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_room_first_message_idempotency_scope": {
-          "name": "uq_room_first_message_idempotency_scope",
           "nullsNotDistinct": false,
           "columns": [
             "space_id",
@@ -57000,8 +56688,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "user_id": {
-          "name": "user_id",
+        "bound_by_user_id": {
+          "name": "bound_by_user_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
@@ -57023,6 +56711,32 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
+        },
+        "model_name_snapshot": {
+          "name": "model_name_snapshot",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model_provider_id_snapshot": {
+          "name": "model_provider_id_snapshot",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "runtime_config_snapshot_json": {
+          "name": "runtime_config_snapshot_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "runtime_policy_snapshot_json": {
+          "name": "runtime_policy_snapshot_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "runtime_state_key": {
           "name": "runtime_state_key",
@@ -57143,17 +56857,17 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "session_conversation_backends_user_id_fkey": {
-          "name": "session_conversation_backends_user_id_fkey",
+        "session_conversation_backends_bound_by_user_id_fkey": {
+          "name": "session_conversation_backends_bound_by_user_id_fkey",
           "tableFrom": "session_conversation_backends",
           "tableTo": "users",
           "columnsFrom": [
-            "user_id"
+            "bound_by_user_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "session_conversation_backends_runtime_scope_fkey": {
@@ -57179,24 +56893,23 @@
           "tableTo": "cli_credential_profiles",
           "columnsFrom": [
             "credential_profile_id",
-            "user_id"
+            "bound_by_user_id"
           ],
           "columnsTo": [
             "id",
             "owner_user_id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uq_session_conversation_backends_session_user_agent": {
-          "name": "uq_session_conversation_backends_session_user_agent",
+        "uq_session_conversation_backends_session_agent": {
+          "name": "uq_session_conversation_backends_session_agent",
           "nullsNotDistinct": false,
           "columns": [
             "session_id",
-            "user_id",
             "agent_id"
           ]
         },
@@ -57522,6 +57235,517 @@
         "ck_sessions_conversation_owner": {
           "name": "ck_sessions_conversation_owner",
           "value": "\n\t\t(room_id IS NOT NULL AND project_id IS NOT NULL AND user_id IS NULL AND agent_id IS NULL)\n\t\tOR (room_id IS NULL AND user_id IS NOT NULL)\n\t"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.conversation_execution_contexts": {
+      "name": "conversation_execution_contexts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "execution_host_id": {
+          "name": "execution_host_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_workspace_mode": {
+          "name": "primary_workspace_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_project_folder_id": {
+          "name": "primary_project_folder_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_workspace_location_id": {
+          "name": "primary_workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'draft'"
+        },
+        "initialized_at": {
+          "name": "initialized_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initialized_by_user_id": {
+          "name": "initialized_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dispatch_lock_id": {
+          "name": "dispatch_lock_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "queue_paused_at": {
+          "name": "queue_paused_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_conversation_execution_contexts_space_id": {
+          "name": "ix_conversation_execution_contexts_space_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_conversation_execution_contexts_host_id": {
+          "name": "ix_conversation_execution_contexts_host_id",
+          "columns": [
+            {
+              "expression": "execution_host_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversation_execution_contexts_session_scope_fkey": {
+          "name": "conversation_execution_contexts_session_scope_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_space_id_fkey": {
+          "name": "conversation_execution_contexts_space_id_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_execution_host_id_fkey": {
+          "name": "conversation_execution_contexts_execution_host_id_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "hosts",
+          "columnsFrom": [
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_primary_folder_scope_fkey": {
+          "name": "conversation_execution_contexts_primary_folder_scope_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "project_folders",
+          "columnsFrom": [
+            "primary_project_folder_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_primary_location_folder_fkey": {
+          "name": "conversation_execution_contexts_primary_location_folder_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "primary_workspace_location_id",
+            "primary_project_folder_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_folder_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_primary_location_host_fkey": {
+          "name": "conversation_execution_contexts_primary_location_host_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "primary_workspace_location_id",
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id",
+            "execution_host_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_execution_contexts_initialized_by_user_id_fkey": {
+          "name": "conversation_execution_contexts_initialized_by_user_id_fkey",
+          "tableFrom": "conversation_execution_contexts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "initialized_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_conversation_execution_contexts_session_space": {
+          "name": "uq_conversation_execution_contexts_session_space",
+          "nullsNotDistinct": false,
+          "columns": [
+            "session_id",
+            "space_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_conversation_execution_contexts_state": {
+          "name": "ck_conversation_execution_contexts_state",
+          "value": "state IN ('draft', 'initialized')"
+        },
+        "ck_conversation_execution_contexts_primary_mode": {
+          "name": "ck_conversation_execution_contexts_primary_mode",
+          "value": "\n\t\tprimary_workspace_mode IS NULL\n\t\tOR primary_workspace_mode IN ('managed', 'location')\n\t"
+        },
+        "ck_conversation_execution_contexts_primary_shape": {
+          "name": "ck_conversation_execution_contexts_primary_shape",
+          "value": "\n\t\t(primary_workspace_mode IS NULL AND primary_project_folder_id IS NULL AND primary_workspace_location_id IS NULL)\n\t\tOR (primary_workspace_mode = 'managed' AND primary_project_folder_id IS NULL AND primary_workspace_location_id IS NULL)\n\t\tOR (primary_workspace_mode = 'location' AND primary_project_folder_id IS NOT NULL AND primary_workspace_location_id IS NOT NULL)\n\t"
+        },
+        "ck_conversation_execution_contexts_initialization": {
+          "name": "ck_conversation_execution_contexts_initialization",
+          "value": "\n\t\t(state = 'draft' AND initialized_at IS NULL)\n\t\tOR (\n\t\t\tstate = 'initialized'\n\t\t\tAND initialized_at IS NOT NULL\n\t\t\tAND execution_host_id IS NOT NULL\n\t\t\tAND primary_workspace_mode IS NOT NULL\n\t\t)\n\t"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.conversation_folder_access_grants": {
+      "name": "conversation_folder_access_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_folder_id": {
+          "name": "project_folder_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_location_id": {
+          "name": "workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access_mode": {
+          "name": "access_mode",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'read'"
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "granted_by_user_id": {
+          "name": "granted_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_at": {
+          "name": "granted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_conversation_folder_access_grants_session": {
+          "name": "ix_conversation_folder_access_grants_session",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_conversation_folder_access_grants_folder": {
+          "name": "ix_conversation_folder_access_grants_folder",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_folder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_conversation_folder_access_grants_active": {
+          "name": "uq_conversation_folder_access_grants_active",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_folder_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversation_folder_access_grants_session_scope_fkey": {
+          "name": "conversation_folder_access_grants_session_scope_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_folder_access_grants_project_folder_scope_fkey": {
+          "name": "conversation_folder_access_grants_project_folder_scope_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "project_folders",
+          "columnsFrom": [
+            "project_folder_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_folder_access_grants_location_folder_fkey": {
+          "name": "conversation_folder_access_grants_location_folder_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id",
+            "project_folder_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_folder_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_folder_access_grants_space_id_fkey": {
+          "name": "conversation_folder_access_grants_space_id_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_folder_access_grants_granted_by_user_id_fkey": {
+          "name": "conversation_folder_access_grants_granted_by_user_id_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "granted_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversation_folder_access_grants_revoked_by_user_id_fkey": {
+          "name": "conversation_folder_access_grants_revoked_by_user_id_fkey",
+          "tableFrom": "conversation_folder_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_conversation_folder_access_grants_mode": {
+          "name": "ck_conversation_folder_access_grants_mode",
+          "value": "access_mode IN ('read', 'write')"
+        },
+        "ck_conversation_folder_access_grants_status": {
+          "name": "ck_conversation_folder_access_grants_status",
+          "value": "status IN ('active', 'revoked')"
+        },
+        "ck_conversation_folder_access_grants_revocation": {
+          "name": "ck_conversation_folder_access_grants_revocation",
+          "value": "\n\t\t(status = 'active' AND revoked_at IS NULL)\n\t\tOR (status = 'revoked' AND revoked_at IS NOT NULL)\n\t"
         }
       },
       "isRLSEnabled": false
@@ -68965,6 +69189,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "default_adapter_type": {
+          "name": "default_adapter_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "daemon_server_url": {
           "name": "daemon_server_url",
           "type": "varchar(512)",
@@ -69172,6 +69402,12 @@
           "primaryKey": true,
           "notNull": true
         },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_host_id": {
           "name": "execution_host_id",
           "type": "varchar(36)",
@@ -69197,8 +69433,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "room_id": {
-          "name": "room_id",
+        "session_id": {
+          "name": "session_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
@@ -69334,11 +69570,32 @@
           "method": "btree",
           "with": {}
         },
-        "uq_host_threads_room_agent_active": {
-          "name": "uq_host_threads_room_agent_active",
+        "ix_host_threads_session_id": {
+          "name": "ix_host_threads_session_id",
           "columns": [
             {
-              "expression": "room_id",
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_host_threads_conversation_agent_active": {
+          "name": "uq_host_threads_conversation_agent_active",
+          "columns": [
+            {
+              "expression": "session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -69351,7 +69608,7 @@
             }
           ],
           "isUnique": true,
-          "where": "status IN ('active', 'session_reset')",
+          "where": "container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -69406,6 +69663,21 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
+        "host_threads_workspace_location_host_fkey": {
+          "name": "host_threads_workspace_location_host_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id",
+            "execution_host_id"
+          ],
+          "columnsTo": [
+            "id",
+            "execution_host_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "host_threads_task_id_fkey": {
           "name": "host_threads_task_id_fkey",
           "tableFrom": "host_threads",
@@ -69419,15 +69691,32 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "host_threads_room_id_fkey": {
-          "name": "host_threads_room_id_fkey",
+        "host_threads_session_space_fkey": {
+          "name": "host_threads_session_space_fkey",
           "tableFrom": "host_threads",
-          "tableTo": "rooms",
+          "tableTo": "sessions",
           "columnsFrom": [
-            "room_id"
+            "session_id",
+            "space_id"
           ],
           "columnsTo": [
-            "id"
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "host_threads_agent_space_fkey": {
+          "name": "host_threads_agent_space_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -69456,11 +69745,11 @@
         },
         "ck_host_threads_owner": {
           "name": "ck_host_threads_owner",
-          "value": "\n\t\t(workspace_location_id IS NOT NULL AND room_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)\n\t\tOR (task_id IS NULL AND room_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'room' AND container_user_id IS NULL)\n\t\tOR (task_id IS NULL AND room_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)\n\t"
+          "value": "\n\t\t(workspace_location_id IS NOT NULL AND session_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)\n\t\tOR (task_id IS NULL AND session_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)\n\t\tOR (task_id IS NULL AND session_id IS NOT NULL AND space_id IS NOT NULL AND execution_host_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'conversation' AND container_user_id IS NULL)\n\t"
         },
         "ck_host_threads_container_kind": {
           "name": "ck_host_threads_container_kind",
-          "value": "container_kind IS NULL OR container_kind IN ('room', 'direct')"
+          "value": "container_kind IS NULL OR container_kind IN ('direct', 'conversation')"
         },
         "ck_host_threads_status": {
           "name": "ck_host_threads_status",
@@ -69493,7 +69782,7 @@
           "name": "project_id",
           "type": "varchar(36)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "run_id": {
           "name": "run_id",
@@ -70524,13 +70813,6 @@
           "notNull": true,
           "default": "'active'"
         },
-        "preferred": {
-          "name": "preferred",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "last_seen_at": {
           "name": "last_seen_at",
           "type": "timestamp with time zone",
@@ -70610,8 +70892,8 @@
           "method": "btree",
           "with": {}
         },
-        "uq_workspace_locations_one_preferred_per_folder": {
-          "name": "uq_workspace_locations_one_preferred_per_folder",
+        "uq_workspace_locations_one_active_per_folder": {
+          "name": "uq_workspace_locations_one_active_per_folder",
           "columns": [
             {
               "expression": "project_folder_id",
@@ -70621,7 +70903,7 @@
             }
           ],
           "isUnique": true,
-          "where": "preferred",
+          "where": "status = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -70702,6 +70984,14 @@
           "columns": [
             "id",
             "project_folder_id"
+          ]
+        },
+        "uq_workspace_locations_id_host": {
+          "name": "uq_workspace_locations_id_host",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "execution_host_id"
           ]
         }
       },

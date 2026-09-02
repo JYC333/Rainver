@@ -40,7 +40,7 @@ const REMOTE_LOCATION = {
   id: 'location-1', project_folder_id: 'folder-1', execution_host_id: 'host-1',
   execution_host_kind: 'remote' as const, display_path: '/home/user/mapping', root_path: null,
   branch: 'main', git_head: 'abc123', dirty: false, status: 'active' as const,
-  preferred: true, execution_ready: true, last_seen_at: '', created_at: '', updated_at: '',
+  execution_ready: true, last_seen_at: '', created_at: '', updated_at: '',
 }
 
 const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true }

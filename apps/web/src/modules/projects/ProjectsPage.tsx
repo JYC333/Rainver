@@ -83,7 +83,6 @@ export default function ProjectsPage() {
         description: newDescription.trim() || null,
         current_focus: null,
         settings_json: null,
-        primary_mode: 'research',
         goal: null,
         scope_included: null,
         success_definition: null,

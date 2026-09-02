@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { History, ArrowLeft, ShieldAlert, Folder } from 'lucide-react'
 import { toast } from 'sonner'
-import { projectFoldersApi } from '../../api/client'
+import { projectFoldersApi, projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
 import type { MemberRole, ProjectFolder, WorkspaceLocation } from '../../types/api'
@@ -26,6 +26,7 @@ export default function ProjectFolderSettingsPage() {
   const { activeSpaceId, spaces } = useSpace()
   const activeSpace = spaces.find(s => s.id === activeSpaceId)
   const manageable = canManageSpace(activeSpace?.role)
+  const [projectWritable, setProjectWritable] = useState(false)
 
   const [folder, setFolder] = useState<ProjectFolder | null>(null)
   const [locations, setLocations] = useState<WorkspaceLocation[]>([])
@@ -33,17 +34,20 @@ export default function ProjectFolderSettingsPage() {
   const [retentionDays, setRetentionDays] = useState('')
   const [maxCount, setMaxCount] = useState('')
   const [saving, setSaving] = useState(false)
+  const [activatingLocationId, setActivatingLocationId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!projectId || !folderId) return
     setLoading(true)
     try {
-      const [f, folderLocations] = await Promise.all([
+      const [f, folderLocations, project] = await Promise.all([
         projectFoldersApi.get(projectId, folderId),
         projectFoldersApi.locations(projectId, folderId),
+        projectsApi.get(projectId),
       ])
       setFolder(f)
       setLocations(folderLocations)
+      setProjectWritable(project.current_user_can_write === true)
       setRetentionDays(f.snapshot_retention_days !== null ? String(f.snapshot_retention_days) : '')
       setMaxCount(f.snapshot_max_count !== null ? String(f.snapshot_max_count) : '')
     } catch (e) {
@@ -70,6 +74,21 @@ export default function ProjectFolderSettingsPage() {
       toast.error(errMsg(e))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleActivateLocation(location: WorkspaceLocation) {
+    if (!projectId || !folderId || location.status !== 'stale') return
+    if (!window.confirm('Use this checkout for new conversations and mark the current active checkout as stale? Existing conversations will stay on their current checkout.')) return
+    setActivatingLocationId(location.id)
+    try {
+      await projectFoldersApi.activateLocation(projectId, folderId, location.id)
+      await load()
+      toast.success('Workspace Location activated for new conversations')
+    } catch (e) {
+      toast.error(errMsg(e))
+    } finally {
+      setActivatingLocationId(null)
     }
   }
 
@@ -135,8 +154,18 @@ export default function ProjectFolderSettingsPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={location.execution_ready ? 'success' : 'muted'}>{location.execution_ready ? 'ready' : 'not ready'}</Badge>
                     <Badge variant="outline">{location.execution_host_kind}</Badge>
-                    {location.preferred && <Badge variant="secondary">preferred</Badge>}
+                    <Badge variant={location.status === 'active' ? 'secondary' : 'muted'}>{location.status}</Badge>
                     {location.dirty !== null && <span className="text-xs text-muted-foreground">{location.dirty ? 'dirty' : 'clean'}</span>}
+                    {projectWritable && location.status === 'stale' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!location.execution_ready || activatingLocationId !== null}
+                        onClick={() => void handleActivateLocation(location)}
+                      >
+                        {activatingLocationId === location.id ? 'Activating…' : 'Use for new conversations'}
+                      </Button>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">{location.branch ?? 'no branch'} · {location.git_head ?? 'no git head'}</div>
                   {location.display_path && <div className="font-mono text-xs text-muted-foreground break-all">{location.display_path}</div>}

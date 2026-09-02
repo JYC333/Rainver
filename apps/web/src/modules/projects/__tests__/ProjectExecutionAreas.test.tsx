@@ -40,16 +40,14 @@ beforeEach(() => {
     status: 'active',
     current_focus: null,
     settings_json: null,
-    primary_mode: 'delivery',
     active_brief_version_id: null,
     created_at: '2026-07-24T00:00:00.000Z',
     updated_at: '2026-07-24T00:00:00.000Z',
     archived_at: null,
   })
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
-    project: { id: 'project-1', name: 'Execution Project', primary_mode: 'delivery', status: 'active' },
+    project: { id: 'project-1', name: 'Execution Project', status: 'active' },
     brief: null,
-    available_modes: ['research', 'delivery', 'operations', 'learning'],
     attention: [
       { id: 'task:task-1', title: 'Ship release', summary: null, href: '/tasks/task-1', attention_class: 'gate', severity: 'high', source_type: 'task', source_id: 'task-1' },
       { id: 'operational_alert:alert-1', title: 'Health check failed', summary: 'Deployment is unhealthy', href: '/projects/project-1/operations?alert=alert-1', attention_class: 'gate', severity: 'high', source_type: 'operational_alert', source_id: 'alert-1' },

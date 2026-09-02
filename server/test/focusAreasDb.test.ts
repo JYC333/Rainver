@@ -117,8 +117,8 @@ describe("focus areas (real Postgres)", () => {
     const projectId = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO projects (id,space_id,owner_user_id,name,status,primary_mode,created_at,updated_at)
-       VALUES ($1,$2,$3,'Tax return','active','delivery',$4,$4)`,
+      `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'Tax return','active',$4,$4)`,
       [projectId, SPACE, OWNER, now],
     );
     await seedMainlineRoomsForAllProjects(db.pool);

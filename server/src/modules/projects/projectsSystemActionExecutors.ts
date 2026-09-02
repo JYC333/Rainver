@@ -8,8 +8,9 @@ import { ProjectSourceProposalService } from "./projectSourceProposalService.js"
 import { ProjectDefinitionProposalService } from "./projectDefinitionProposalService.js";
 
 /**
- * `project.source.propose_bind` and `project.propose_definition` (action
- * authority consolidation plan, P1.5). Both draft a reviewable Proposal;
+ * `project.source.propose_bind` and `project.propose_definition` (the retired
+ * action authority consolidation plan, P1.5; see
+ * `.agent/architecture/SYSTEM_ACTIONS.md`). Both draft a reviewable Proposal;
  * durable mutation happens only through the owning applier after
  * acceptance.
  */

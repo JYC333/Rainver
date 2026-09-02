@@ -61,6 +61,22 @@ describe('HostExecutionTargetPicker', () => {
     })
   })
 
+  it('hides the Location select entirely in managed mode', async () => {
+    mockedApi.executionTargets.mockResolvedValueOnce({
+      targets: [{
+        host_id: 'host-1', host_name: 'Workstation', host_online: true,
+        managed_workspace_available: true, locations: [],
+        adapters: [{ adapter_type: 'claude_code', display_name: 'Claude Code', installations: [{ id: 'own', version: '1.0.0', logged_in: true }] }],
+      }],
+    })
+    mockedApi.listRuntimeAdapters.mockResolvedValueOnce({ items: [] })
+    render(<HostExecutionTargetPicker projectId="" value={null} onChange={() => undefined} />)
+    fireEvent.click(await screen.findByLabelText('Execution host'))
+    fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))
+    expect(await screen.findByLabelText('Workspace mode')).toHaveTextContent('Managed workspace on this host')
+    expect(screen.queryByLabelText('Execution Location')).not.toBeInTheDocument()
+  })
+
   it('says why no host is offered: no Project yet, or no directory registered for it', async () => {
     const { rerender } = render(<HostExecutionTargetPicker projectId="" value={null} onChange={() => undefined} />)
     expect(screen.getByText(/Space-level managed workspace/)).toBeInTheDocument()

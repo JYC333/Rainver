@@ -3,7 +3,7 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { AmbientSessionCountSchema, ManagedWorkspaceHeartbeatSchema } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostHelloInfoSchema, type HostHelloInfo } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
@@ -33,7 +33,7 @@ import { commandServices } from "../runs/routes.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
-import { normalizeHostCapabilities } from "./capabilities.js";
+import { hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
 import { dispatchOptions } from "./dispatchOptions.js";
 import { settleTaskAfterQueuedMessageWithdrawal } from "../tasks/taskRunStatusProjection.js";
 
@@ -152,7 +152,7 @@ async function requireThreadProjectWriter(
       JOIN workspace_locations wl ON wl.id = t.workspace_location_id
       JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE t.id = $1
-        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.task_id IS NOT NULL AND t.session_id IS NULL AND t.agent_id IS NULL
         AND t.status IN ('active', 'session_reset')
       LIMIT 1`,
     [threadId],
@@ -169,58 +169,22 @@ async function requireThreadProjectWriter(
 }
 
 /**
- * The whole of what a daemon's hello/heartbeat frame contributes, validated
- * field by field because the frame is untrusted input.
+ * What a daemon's hello/heartbeat frame contributes to its host row.
  *
- * Every field of `DaemonHelloInfo` is optional, so a field the daemon sends
- * and this function forgets compiles cleanly and is dropped in silence —
- * that is exactly how `server_url` went missing, and it surfaced only as
- * every provider-bound run on the host failing dispatch. A field added to the
- * daemon's `helloInfo()` has to be added here, with coverage that a frame
- * carrying it reaches the host row.
+ * The frame is already the contract's (`HostHelloFrameSchema`), so nothing is
+ * read field by field here — which is how `server_url` once went missing:
+ * every field of `DaemonHelloInfo` is optional, and a hand-written mapping
+ * that forgot one compiled cleanly. The one transformation is the
+ * capabilities blob, normalized into the shape every reader uses; its wire
+ * format and history are `capabilities.ts`'s concern alone.
  */
-function daemonHelloInfo(payload: Record<string, unknown>): DaemonHelloInfo {
-  const workspaceReports = Array.isArray(payload.workspace_reports)
-    ? payload.workspace_reports.flatMap((value) => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-        const report = value as Record<string, unknown>;
-        if (typeof report.location_id !== "string" || typeof report.execution_ready !== "boolean") return [];
-        return [{
-          location_id: report.location_id,
-          branch: typeof report.branch === "string" ? report.branch : null,
-          git_head: typeof report.git_head === "string" ? report.git_head : null,
-          dirty: typeof report.dirty === "boolean" ? report.dirty : null,
-          execution_ready: report.execution_ready,
-        }];
-      })
-    : null;
-  const ambientSessions = Array.isArray(payload.ambient_sessions)
-    ? payload.ambient_sessions.flatMap((value) => {
-        const parsed = AmbientSessionCountSchema.safeParse(value);
-        return parsed.success ? [parsed.data] : [];
-      })
-    : null;
-  const managedWorkspaces = Array.isArray(payload.managed_workspaces)
-    ? payload.managed_workspaces.flatMap((value) => {
-        const parsed = ManagedWorkspaceHeartbeatSchema.safeParse(value);
-        return parsed.success ? [parsed.data] : [];
-      })
-    : null;
+function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
+  const { capabilities_json, ...info } = frame;
   return {
-    ambient_sessions: ambientSessions,
-    platform: typeof payload.platform === "string" ? payload.platform : null,
-    arch: typeof payload.arch === "string" ? payload.arch : null,
-    daemon_version: typeof payload.daemon_version === "string" ? payload.daemon_version : null,
-    server_url: typeof payload.server_url === "string" ? payload.server_url : null,
-    // Stored in the one shape every reader uses; the daemon's wire format
-    // and its history are `capabilities.ts`'s concern alone.
-    capabilities_json:
-      payload.capabilities_json && typeof payload.capabilities_json === "object" && !Array.isArray(payload.capabilities_json)
-        ? (normalizeHostCapabilities(payload.capabilities_json) as unknown as Record<string, unknown>)
-        : null,
-    environment_kind: typeof payload.environment_kind === "string" ? payload.environment_kind : null,
-    workspace_reports: workspaceReports,
-    managed_workspaces: managedWorkspaces,
+    ...info,
+    capabilities_json: capabilities_json
+      ? (normalizeHostCapabilities(capabilities_json) as unknown as Record<string, unknown>)
+      : null,
   };
 }
 
@@ -272,7 +236,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const payload = body<{ pairing_code: string } & Record<string, unknown>>(request);
     const code = typeof payload.pairing_code === "string" ? payload.pairing_code : "";
     if (!code) return reply.code(422).send({ detail: "pairing_code is required" });
-    const result = await hosts.registerViaPairingCode(code, daemonHelloInfo(payload));
+    // The same hello info the daemon later sends over the socket, in the same shape.
+    const info = HostHelloInfoSchema.safeParse(payload);
+    if (!info.success) return reply.code(422).send({ detail: `Malformed host info: ${info.error.issues[0]?.path.join(".") ?? "body"}` });
+    const result = await hosts.registerViaPairingCode(code, daemonHelloInfo(info.data));
     if (isFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
     return reply.code(201).send(result);
   });
@@ -434,17 +401,77 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // every backend with whether it is usable and why not. The composer
   // renders this rather than reconstructing it from bindings, providers and
   // capabilities — three sources that drifted apart in the browser.
+  // Plan host-workspace-frontend-registration: the web UI's remote-directory
+  // browser and workspace registration. Both are owner-only host actions the
+  // daemon answers; the server forwards a request and never opens a path.
+  app.post("/api/v1/hosts/:hostId/default-adapter", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const payload = body<{ adapter_type?: string | null }>(request);
+    const adapterType = typeof payload.adapter_type === "string" && payload.adapter_type.trim()
+      ? payload.adapter_type.trim()
+      : null;
+    if (adapterType) {
+      const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
+      if (hostInstallationIds(host.rows[0]?.capabilities_json, adapterType).length === 0) {
+        return reply.code(422).send({ detail: `This host reports no installation of '${adapterType}'` });
+      }
+    }
+    const hosts = hostRepositoryFromConfig(context.config);
+    const updated = hosts ? await hosts.setDefaultAdapter(resolved.hostId, adapterType) : false;
+    if (!updated) return reply.code(404).send({ detail: "Host not found" });
+    return reply.send({ host_id: resolved.hostId, default_adapter_type: adapterType });
+  });
+
+  app.post("/api/v1/hosts/:hostId/browse-directories", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const payload = body<{ path?: string }>(request);
+    const listing = await sharedHostConnectionRegistry.listHostDirectories(resolved.hostId, payload.path ?? null);
+    if (!listing.ok) {
+      const offline = listing.error === "host_offline" || listing.error === "host_timeout";
+      return reply.code(offline ? 409 : 422).send({ detail: offline ? "The host is offline or did not respond." : listing.error, code: offline ? listing.error : undefined });
+    }
+    return reply.send({ path: listing.path, parent: listing.parent, dirs: listing.dirs, truncated: listing.truncated });
+  });
+
+  app.post("/api/v1/hosts/:hostId/workspaces", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const payload = body<{ path?: string; project_id?: string; name?: string }>(request);
+    if (!payload.project_id || typeof payload.project_id !== "string") return reply.code(422).send({ detail: "project_id is required" });
+    if (!payload.path || typeof payload.path !== "string") return reply.code(422).send({ detail: "path is required" });
+    if (!payload.name || typeof payload.name !== "string" || !payload.name.trim()) return reply.code(422).send({ detail: "name is required" });
+    try {
+      await assertProjectWriter(resolved.pool, resolved.spaceId, payload.project_id, resolved.userId);
+    } catch (error) {
+      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
+      throw error;
+    }
+    const registration = await sharedHostConnectionRegistry.registerHostWorkspace(resolved.hostId, {
+      path: payload.path,
+      projectId: payload.project_id,
+      name: payload.name.trim(),
+    });
+    if (!registration.ok) {
+      const offline = registration.error === "host_offline" || registration.error === "host_timeout";
+      return reply.code(offline ? 409 : 422).send({ detail: offline ? "The host is offline or did not respond." : registration.error, code: offline ? registration.error : undefined });
+    }
+    return reply.code(201).send({ workspace_id: registration.workspace_id, display_path: registration.display_path });
+  });
+
   app.get("/api/v1/hosts/:hostId/dispatch-options", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
     const query = request.query as Record<string, string | undefined>;
-    const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
+    const host = await resolved.pool.query<{ capabilities_json: unknown; default_adapter_type: string | null }>(`SELECT capabilities_json, default_adapter_type FROM hosts WHERE id = $1`, [resolved.hostId]);
     return reply.send(await dispatchOptions({
       db: resolved.pool,
       providers: resolveProvidersDbPort(context.config),
       spaceId: resolved.spaceId,
       userId: resolved.userId,
       hostId: resolved.hostId,
+      defaultAdapterType: host.rows[0]?.default_adapter_type ?? null,
       capabilities: host.rows[0]?.capabilities_json ?? null,
       adapterType: query.adapter_type?.trim() || null,
       installation: query.installation?.trim() || null,
@@ -1023,32 +1050,47 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             socket.close(1011, "database_unavailable");
             return;
           }
-          let frame: Record<string, unknown>;
+          let raw_frame: unknown;
           try {
-            frame = JSON.parse(raw.toString("utf8"));
+            raw_frame = JSON.parse(raw.toString("utf8"));
           } catch {
-            socket.send(JSON.stringify({ type: "error", detail: "invalid_json" }));
+            frameSink.send({ type: "error", detail: "invalid_json" });
             return;
           }
+          // One parse against the shared contract; every branch below reads
+          // the typed frame and rebuilds nothing. A frame that does not parse
+          // is answered, not dropped: the daemon logs the detail, and a
+          // heartbeat that keeps failing shows up as the host going offline
+          // rather than as a field quietly missing from its row.
+          const parsed = HostDaemonFrameSchema.safeParse(raw_frame);
+          if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            const rawType = raw_frame && typeof raw_frame === "object" && typeof (raw_frame as { type?: unknown }).type === "string"
+              ? (raw_frame as { type: string }).type
+              : "unknown";
+            frameSink.send({ type: "error", detail: `invalid_frame ${rawType}: ${issue ? `${issue.path.join(".") || "frame"}: ${issue.message}` : "malformed"}` });
+            return;
+          }
+          const frame = parsed.data;
           if (frame.type === "hello") {
             if (authenticatedHostId || helloInProgress) {
-              socket.send(JSON.stringify({ type: "error", detail: "hello_already_processed" }));
+              frameSink.send({ type: "error", detail: "hello_already_processed" });
               socket.close(1008, "hello_already_processed");
               return;
             }
             helloInProgress = true;
-            const token = typeof frame.token === "string" ? frame.token : bearerToken(request) ?? "";
+            const token = frame.token || (bearerToken(request) ?? "");
             try {
               const host = await hosts.authenticate(token);
               if (!host) {
-                socket.send(JSON.stringify({ type: "error", detail: "invalid_token" }));
+                frameSink.send({ type: "error", detail: "invalid_token" });
                 socket.close(1008, "invalid_token");
                 return;
               }
               authenticatedHostId = host.id;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
-              socket.send(JSON.stringify({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() }));
+              frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
             } finally {
@@ -1057,113 +1099,92 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             return;
           }
           if (!authenticatedHostId) {
-            socket.send(JSON.stringify({ type: "error", detail: "not_authenticated" }));
+            frameSink.send({ type: "error", detail: "not_authenticated" });
             socket.close(1008, "not_authenticated");
             return;
           }
-          if (frame.type === "heartbeat") {
-            await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
-            socket.send(JSON.stringify({ type: "heartbeat_ack" }));
-            void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), authenticatedHostId)
-              .catch(() => undefined);
-            // Standing consent on a Location is what makes a new terminal
-            // conversation arrive without anyone pressing a button, and a
-            // heartbeat is when this host is known reachable. Deliberately not
-            // awaited: an import replays sessions and takes minutes, while an
-            // acknowledged heartbeat must not wait for anything.
-            scheduleAmbientSyncs(dbPool(context.config), context.config, authenticatedHostId);
-            return;
-          }
-          if (frame.type === "launched") {
-            const runId = typeof frame.run_id === "string" ? frame.run_id : null;
-            if (runId) sharedHostConnectionRegistry.receiveLaunched(authenticatedHostId, runId);
-            return;
-          }
-          if (frame.type === "output") {
-            const runId = typeof frame.run_id === "string" ? frame.run_id : null;
-            const chunk = typeof frame.chunk === "string" ? frame.chunk : null;
-            if (runId && chunk !== null) sharedHostConnectionRegistry.receiveOutput(authenticatedHostId, runId, chunk);
-            return;
-          }
-          // C5: the full stderr stream, not just the failure-tail the
-          // `complete` frame already carries — diagnostic events for the UI.
-          if (frame.type === "stderr") {
-            const runId = typeof frame.run_id === "string" ? frame.run_id : null;
-            const chunk = typeof frame.chunk === "string" ? frame.chunk : null;
-            if (runId && chunk !== null) sharedHostConnectionRegistry.receiveStderr(authenticatedHostId, runId, chunk);
-            return;
-          }
-          if (frame.type === "complete") {
-            const runId = typeof frame.run_id === "string" ? frame.run_id : null;
-            if (runId) {
-              sharedHostConnectionRegistry.receiveComplete(authenticatedHostId, runId, {
-                exit_code: typeof frame.exit_code === "number" ? frame.exit_code : -1,
-                timed_out: frame.timed_out === true,
-                error: typeof frame.error === "string" ? frame.error : null,
+          switch (frame.type) {
+            case "heartbeat": {
+              await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
+              frameSink.send({ type: "heartbeat_ack" });
+              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), authenticatedHostId)
+                .catch(() => undefined);
+              // Standing consent on a Location is what makes a new terminal
+              // conversation arrive without anyone pressing a button, and a
+              // heartbeat is when this host is known reachable. Deliberately not
+              // awaited: an import replays sessions and takes minutes, while an
+              // acknowledged heartbeat must not wait for anything.
+              scheduleAmbientSyncs(dbPool(context.config), context.config, authenticatedHostId);
+              return;
+            }
+            case "launched":
+              sharedHostConnectionRegistry.receiveLaunched(authenticatedHostId, frame.run_id, frame.launch_id);
+              return;
+            case "output":
+              sharedHostConnectionRegistry.receiveOutput(authenticatedHostId, frame.run_id, frame.chunk, frame.launch_id);
+              return;
+            // C5: the full stderr stream, not just the failure-tail the
+            // `complete` frame already carries — diagnostic events for the UI.
+            case "stderr":
+              sharedHostConnectionRegistry.receiveStderr(authenticatedHostId, frame.run_id, frame.chunk, frame.launch_id);
+              return;
+            case "complete":
+              sharedHostConnectionRegistry.receiveComplete(authenticatedHostId, frame.run_id, {
+                exit_code: frame.exit_code,
+                timed_out: frame.timed_out,
+                error: frame.error,
+              }, frame.launch_id);
+              return;
+            case "login_output":
+              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, frame.session_id, { type: "output", data: frame.data });
+              return;
+            case "login_exit":
+              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, frame.session_id, { type: "exit", exit_code: frame.exit_code, logged_in: frame.logged_in });
+              return;
+            case "ambient_import_session":
+              sharedHostConnectionRegistry.receiveAmbientImportSession(authenticatedHostId, frame.request_id, frame.session);
+              return;
+            case "ambient_import_result":
+              sharedHostConnectionRegistry.receiveAmbientImportResult(authenticatedHostId, frame.request_id, {
+                ok: frame.ok,
+                error: frame.error,
+                session_count: frame.session_count,
+                listed_session_ids: frame.listed_session_ids,
               });
+              return;
+            case "folder_read_result": {
+              // The shape is the contract's; what the result *contains* is
+              // checked against the folder-read limits and path policy here,
+              // because that is policy, not wire shape. A result that fails
+              // still settles its caller: leaving it pending would surface as
+              // a timeout, hiding the real cause.
+              const result = parseFolderReadResultFrame(frame)
+                ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
+              sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, frame.request_id, result);
+              return;
             }
-            return;
-          }
-          if (frame.type === "login_output" || frame.type === "login_exit") {
-            const sessionId = typeof frame.session_id === "string" ? frame.session_id : null;
-            if (sessionId) {
-              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, sessionId, frame.type === "login_output"
-                ? { type: "output", data: typeof frame.data === "string" ? frame.data : "" }
-                : { type: "exit", exit_code: typeof frame.exit_code === "number" ? frame.exit_code : -1, logged_in: typeof frame.logged_in === "boolean" ? frame.logged_in : null });
+            case "list_dirs_result":
+            case "workspace_register_result":
+            case "workspace_forget_result": {
+              const { type: _type, request_id, ...result } = frame;
+              sharedHostConnectionRegistry.receiveHostActionResult(authenticatedHostId, request_id, result);
+              return;
             }
-            return;
-          }
-          if (frame.type === "ambient_import_session") {
-            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-            if (requestId) sharedHostConnectionRegistry.receiveAmbientImportSession(authenticatedHostId, requestId, frame.session);
-            return;
-          }
-          if (frame.type === "ambient_import_result") {
-            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-            if (requestId) {
-              sharedHostConnectionRegistry.receiveAmbientImportResult(authenticatedHostId, requestId, {
-                ok: frame.ok === true,
-                error: typeof frame.error === "string" ? frame.error : null,
-                session_count: typeof frame.session_count === "number" ? frame.session_count : 0,
-                listed_session_ids: Array.isArray(frame.listed_session_ids)
-                  ? frame.listed_session_ids.filter((value): value is string => typeof value === "string")
-                  : null,
+            case "managed_workspace_result":
+              sharedHostConnectionRegistry.receiveManagedWorkspaceResult(authenticatedHostId, frame.request_id, {
+                ok: frame.ok,
+                changed: frame.changed,
+                error: frame.error,
               });
-            }
-            return;
-          }
-          if (frame.type === "folder_read_result") {
-            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-            // A frame that fails validation still settles its caller: leaving
-            // it pending would surface as a timeout, hiding the real cause.
-            const result = parseFolderReadResultFrame(frame)
-              ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
-            if (requestId) sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, requestId, result);
-            return;
-          }
-          if (frame.type === "managed_workspace_result") {
-            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-            if (requestId) {
-              sharedHostConnectionRegistry.receiveManagedWorkspaceResult(authenticatedHostId, requestId, {
-                ok: frame.ok === true,
-                changed: frame.changed === true,
-                error: typeof frame.error === "string" ? frame.error : null,
+              return;
+            case "tool_result":
+              sharedHostConnectionRegistry.receiveToolResult(authenticatedHostId, frame.request_id, {
+                ok: frame.ok,
+                error: frame.error,
+                installation: frame.installation,
               });
-            }
-            return;
+              return;
           }
-          if (frame.type === "tool_result") {
-            const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-            if (requestId) {
-              sharedHostConnectionRegistry.receiveToolResult(authenticatedHostId, requestId, {
-                ok: frame.ok === true,
-                error: typeof frame.error === "string" ? frame.error : null,
-                installation: typeof frame.installation === "string" ? frame.installation : null,
-              });
-            }
-            return;
-          }
-          socket.send(JSON.stringify({ type: "error", detail: "unknown_frame_type" }));
         })().catch(() => {
           socket.close(1011, "host_frame_failed");
         });

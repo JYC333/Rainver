@@ -98,7 +98,7 @@ produce one deterministic winner or block preparation.
 
 Project runtime context is two versioned objects: `ProjectBriefVersion`
 (reference data — goal, status, focus, confirmed decisions, constraints,
-primary mode, Folder identity/boundary, sources, review metadata) and
+Folder identity/boundary, sources, review metadata) and
 `ProjectInstructionVersion` (delegated instruction, Project owner-level
 approval). Contributors may propose reference content; model-derived
 conclusions require user confirmation; promotion to Instructions uses the

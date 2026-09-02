@@ -4,6 +4,7 @@ import type {
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import { resolveAgentActorId } from "../../db/actorResolver.js";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import {
@@ -16,6 +17,7 @@ import {
   type RunRecord,
 } from "./repository.js";
 import { requestRoomConversationSummary } from "../rooms/conversationSummaryService.js";
+import { InvocationAuthorityNotFoundError } from "../runtimeContext/continuity/service.js";
 
 const TERMINAL_STATUSES = new Set([
   "succeeded",
@@ -41,6 +43,8 @@ export interface ChatTurnFinalizerDeps {
     & Partial<Pick<PgSessionRepository, "addRoomAgentMessageForRun">>;
   loadActionPreviews?: typeof loadProjectChatActionPreviews;
   continuity?: Pick<RuntimeContextContinuityService, "finalizeChatTurn">;
+  /** Ensures the Agent's actor row exists and returns its id (`db/actorResolver`). */
+  resolveAgentActorId?: (spaceId: string, agentId: string) => Promise<string>;
 }
 
 export async function finalizeChatTurn(
@@ -180,11 +184,20 @@ export async function finalizeChatTurn(
   }
 
   const continuity = deps.continuity ?? productionContinuity(config);
-  await continuity.finalizeChatTurn({
-    invocationId: run.id,
-    messageId: terminalMessageId,
-    failedRun: !outcome.ok,
-  });
+  try {
+    await continuity.finalizeChatTurn({
+      invocationId: run.id,
+      messageId: terminalMessageId,
+      failedRun: !outcome.ok,
+    });
+  } catch (error) {
+    // A Run that died before execution (routing failure, admission refusal)
+    // never created an invocation authority, so there is no context to
+    // finalize — treating that as fatal wedged the whole completion path:
+    // the reconciler re-threw forever and the host thread's dispatch lock
+    // was never released.
+    if (!(error instanceof InvocationAuthorityNotFoundError)) throw error;
+  }
   const completion: ChatTurnCompletion = {
     schema_version: "chat_turn_completion.v1",
     session_id: metadata.session_id,
@@ -196,12 +209,18 @@ export async function finalizeChatTurn(
     assistant_message: assistantMessage,
     ...(actionPreviews.length > 0 ? { action_previews: actionPreviews } : {}),
   };
+  // The Agent's actor row is created lazily by the first executed step, so a
+  // Run that died before execution (routing failure, admission refusal) has
+  // none yet — resolve (upsert) it rather than violate the actor FK.
+  const resolveActor = deps.resolveAgentActorId
+    ?? ((spaceId: string, agentId: string) => resolveAgentActorId(getDbPool(config.databaseUrl!), spaceId, agentId));
+  const actorId = await resolveActor(run.space_id, run.agent_id);
   await repository.appendRunEvent({
     run_id: run.id,
     space_id: run.space_id,
     event_type: "chat_completed",
     status: outcome.ok ? "succeeded" : "failed",
-    actor_id: run.agent_id,
+    actor_id: actorId,
     summary: outcome.ok
       ? "Chat turn completed."
       : "Chat turn completed without an assistant reply.",

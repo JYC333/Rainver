@@ -21,6 +21,8 @@ import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extrac
 import { registerInquiryAdviceHandler } from "../inquiry/adviceJob.js";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob.js";
 import type { RuntimeHostLogger } from "../runtimeHost/index.js";
+import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
+import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { finalizeChatTurn } from "../runs/chatTurnFinalizer.js";
 import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
@@ -220,6 +222,13 @@ export async function reconcileTerminalChatRuns(
       }
       const current = await runs.getRun(item.space_id, item.id);
       if (current && isHardTerminalRunStatus(current.status)) {
+        // Safety net for a job that died between terminal status and its
+        // host-thread bookkeeping: release the thread's dispatch claim and
+        // record the vendor-session outcome before publishing completion.
+        const hostThread = hostThreadDispatchInputs(current);
+        if (hostThread.thread_id) {
+          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted);
+        }
         await finalizeChatTurn(config, runs, current, finalizerDeps);
       }
     } catch (error) {

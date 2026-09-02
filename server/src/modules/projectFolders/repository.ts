@@ -22,14 +22,15 @@ import { withTransaction } from "../../db/tx.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce } from "../policy/service.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { assertProjectWriter } from "../projects/access.js";
+import { assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { projectFolderReadAccessSql } from "./access.js";
-import { PgHostRepository } from "../hosts/repository.js";
+import { isStale, PgHostRepository } from "../hosts/repository.js";
 import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
-  resolvePreferredLocationWithHost,
-  type PreferredLocationWithHost,
+  resolveActiveLocationWithHost,
+  type ActiveLocationWithHost,
+  type WorkspaceLocationOut,
 } from "./workspaceLocations.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
@@ -239,8 +240,7 @@ export class PgProjectFolderRepository {
         ],
       );
       // execution-topology-and-project-control-plane-plan.md P1 / D2: this
-      // flow's single physical checkout is this Folder's one (and, at
-      // creation time, only) Location — created `preferred` automatically.
+      // flow's single physical checkout is this Folder's one active Location.
       await new PgWorkspaceLocationRepository(db).create({
         spaceId: identity.spaceId,
         projectFolderId: id,
@@ -250,7 +250,7 @@ export class PgProjectFolderRepository {
       });
       return folderToOut(row.rows[0]!);
     });
-    const location = await new PgWorkspaceLocationRepository(this.db).getPreferred(id);
+    const location = await new PgWorkspaceLocationRepository(this.db).getActive(id);
     if (location) await new PgWorkspaceLocationRepository(this.db).refreshGitStatus(location, this.config.workspaceRoot);
     return folder;
   }
@@ -320,6 +320,76 @@ export class PgProjectFolderRepository {
     const folder = await this.get(identity, projectId, folderId);
     if (!folder) throw new HttpError(404, "Project Folder not found");
     return new PgWorkspaceLocationRepository(this.db).listForFolder(identity, folderId);
+  }
+
+  async activateLocation(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    locationId: string,
+  ): Promise<WorkspaceLocationOut> {
+    await withTransactionIfPool(this.db, async (db) => {
+      await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      await assertProjectWriterForMutation(db, identity.spaceId, projectId, identity.userId);
+      const folder = await db.query<{ id: string }>(
+        `SELECT id FROM project_folders
+          WHERE id = $1 AND space_id = $2 AND project_id = $3 AND status = 'active'
+          FOR UPDATE`,
+        [folderId, identity.spaceId, projectId],
+      );
+      if (!folder.rows[0]) throw new HttpError(404, "Project Folder not found");
+      const target = await db.query<{
+        id: string;
+        status: string;
+        execution_ready: boolean;
+        execution_host_kind: string;
+        host_owner_user_id: string | null;
+        host_status: string;
+        last_heartbeat_at: string | null;
+      }>(
+        `SELECT location.id, location.status, location.execution_ready,
+                location.execution_host_kind,
+                host.owner_user_id AS host_owner_user_id,
+                host.status AS host_status, host.last_heartbeat_at
+           FROM workspace_locations location
+           JOIN hosts host ON host.id = location.execution_host_id
+          WHERE location.id = $1
+            AND location.project_folder_id = $2
+            AND location.space_id = $3
+          FOR UPDATE OF location`,
+        [locationId, folderId, identity.spaceId],
+      );
+      const candidate = target.rows[0];
+      if (!candidate) throw new HttpError(404, "Workspace Location not found");
+      if (candidate.status !== "stale") {
+        throw new HttpError(409, "Only a stale Workspace Location candidate can become active");
+      }
+      if (!candidate.execution_ready) {
+        throw new HttpError(409, "The Workspace Location must be ready before it can become active");
+      }
+      if (candidate.execution_host_kind === "remote") {
+        if (candidate.host_owner_user_id !== identity.userId) {
+          throw new HttpError(403, "Only the target Host owner can activate this Workspace Location");
+        }
+        if (candidate.host_status !== "online" || isStale(candidate.last_heartbeat_at)) {
+          throw new HttpError(409, "The target execution Host is offline");
+        }
+      }
+      await db.query(
+        `UPDATE workspace_locations
+            SET status = 'stale', updated_at = now()
+          WHERE project_folder_id = $1 AND space_id = $2 AND status = 'active'`,
+        [folderId, identity.spaceId],
+      );
+      await db.query(
+        `UPDATE workspace_locations SET status = 'active', updated_at = now()
+          WHERE id = $1 AND project_folder_id = $2 AND space_id = $3 AND status = 'stale'`,
+        [locationId, folderId, identity.spaceId],
+      );
+    });
+    const activated = await new PgWorkspaceLocationRepository(this.db).get(identity, folderId, locationId);
+    if (!activated) throw new HttpError(409, "Workspace Location activation did not complete");
+    return activated;
   }
 
   async listHostExecutionTargets(identity: SpaceUserIdentity, projectId: string) {
@@ -495,7 +565,7 @@ export class PgProjectFolderRepository {
 
   async getTree(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<FileNode> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
       return this.readRemote(folder, identity.userId, location, "tree");
     }
@@ -510,7 +580,7 @@ export class PgProjectFolderRepository {
 
   async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string): Promise<FileContent> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
       return this.readRemote(folder, identity.userId, location, "file", requestedPath);
     }
@@ -527,7 +597,7 @@ export class PgProjectFolderRepository {
 
   async getGitStatus(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<GitStatus> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
       return this.readRemote(folder, identity.userId, location, "git_status");
     }
@@ -543,7 +613,7 @@ export class PgProjectFolderRepository {
     requestedPath: string | null,
   ): Promise<{ diff: string; path: string | null; truncated: boolean; redacted: boolean }> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolvePreferredLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
       return this.readRemote(folder, identity.userId, location, "git_diff", requestedPath ?? undefined);
     }
@@ -699,7 +769,7 @@ export class PgProjectFolderRepository {
   private async readRemote<K extends FolderReadKind>(
     folder: ProjectFolderRow,
     userId: string,
-    location: PreferredLocationWithHost,
+    location: ActiveLocationWithHost,
     kind: K,
     requestedPath?: string,
   ): Promise<FolderReadPayload[K]> {

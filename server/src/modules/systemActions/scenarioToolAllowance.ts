@@ -33,7 +33,7 @@ import type { SystemActionId } from "@rainver/protocol";
  * coordination actions — `agent.delegate` is independently constrained by
  * the Room's one-level/two-specialist delegation budget, and
  * `research.start_acquisition` is idempotency-guarded rather than
- * proposal-gated (room-advancement-reliability-plan Phase 4: the Thread was
+ * proposal-gated (the retired room-advancement-reliability plan, Phase 4: the Thread was
  * already human-accepted at creation). `research.cancel_acquisition` is its
  * stop lever, listed here so a Room notification about running research
  * always has a matching in-Room action — a report the user can
@@ -79,7 +79,10 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "inquiry.create_thread",
   "inquiry.record_conclusion",
   "inquiry.promote_knowledge",
+  // Both halves of delegation: a Manager that can hand work out but never
+  // collect it can only say "I've asked" and end the turn.
   "agent.delegate",
+  "agent.wait_for_results",
   // The Project write surface. Without these an Agent can describe a
   // decomposition in a reply but not create it, which is the gap between
   // sounding like it advanced the work and having advanced it.
@@ -89,12 +92,21 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.handoff",
   "task.advance_stage",
   "task.request_review",
+  // A plan with structure, not only flat Tasks. Proposal-gated, so it widens
+  // nothing that skips approval; without it "make me a plan" could only
+  // produce undated Tasks.
+  "task.plan.propose",
   "research.list_operations",
   "research.start_acquisition",
   "research.cancel_acquisition",
   // "Accept it", said to the Assistant, is the same approval as the button.
   "proposal.list_pending",
   "proposal.decide",
+  // Bringing a Source into the Project. Both are proposals (ADR 0017 §1), so
+  // they widen nothing that skips approval. They were the whole of what a
+  // direct chat could do before it shared this list.
+  "project.source.propose_bind",
+  "source.backfill.propose_start",
 ];
 
 /**
@@ -135,7 +147,8 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * directory and `recordOutputArtifacts` gives those files the type and Task
  * link the Run declared. A server-host Run's artifacts come through
  * `materializationService` instead, which does not consume declarations yet
- * (`agent-work-surface-plan.md` P2). Granting it there would let an agent be
+ * (the retired agent-work-surface plan, P2; see `.agent/modules/hosts.md`).
+ * Granting it there would let an agent be
  * told its deliverable was recorded when nothing would ever act on it, which
  * is worse than not offering the action at all.
  */
@@ -151,3 +164,32 @@ export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   ...ROOM_PROJECT_TOOL_ALLOWANCE,
   ...CONVERSATION_TOOL_ALLOWANCE,
 ];
+
+/**
+ * What a conversation Run declares and is allowed, given where it was opened.
+ *
+ * One function for every way a person or a Room talks to an Agent — a Room
+ * message, a delegation the Room's Agent makes, a direct chat — so the
+ * allowance is decided once. Before this each path computed it on its own:
+ * direct chat kept a three-action list from before scenario allowances
+ * existed, and a delegated child declared nothing and so could call nothing,
+ * not even the actions its parent was granted in the same conversation.
+ *
+ * Host kind is intentionally absent. It selects how the Run-scoped tool
+ * surface is delivered, not what a conversation may do.
+ */
+export function conversationToolGrantInput(scope: {
+  room_id?: string | null;
+  project_id?: string | null;
+}): {
+  capabilities_json: SystemActionId[];
+  scenario_tool_allowance: readonly SystemActionId[];
+} {
+  // A Room is the Project's conversation surface; a direct chat opened in a
+  // Project is the same conversation with one audience. Either way the
+  // Project write surface belongs to the place, not to the Agent.
+  const allowance = scope.room_id || scope.project_id
+    ? ROOM_CONVERSATION_TOOL_ALLOWANCE
+    : CONVERSATION_TOOL_ALLOWANCE;
+  return { capabilities_json: [...allowance], scenario_tool_allowance: allowance };
+}

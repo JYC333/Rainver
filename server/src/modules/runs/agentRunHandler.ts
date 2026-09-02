@@ -14,6 +14,7 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 import type { RuntimeHostLogger } from "../runtimeHost/index.js";
 import { finalizeChatTurn } from "./chatTurnFinalizer.js";
 import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
+import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { protocolRunStatus } from "./orchestrationResults.js";
 import { withDbTransaction } from "../routeUtils/common.js";
 
@@ -136,6 +137,13 @@ async function handleAgentRun(
   if (!job.user_id) {
     throw new Error("agent_run job requires user_id");
   }
+  // Which host thread this Run belongs to and which vendor session it resumes
+  // are read from the Run itself, never from the payload: twenty places
+  // enqueue this job and most of them do not know they are re-dispatching a
+  // thread-bound Run (the supervisor retry, an authorization re-enqueue, the
+  // resume endpoint, direct chat). See `hostThreadDispatchInputs`.
+  const queuedRun = await repository.getRun(job.space_id, runId);
+  const hostThread = hostThreadDispatchInputs(queuedRun ?? { host_task_thread_id: null, model_override_json: null });
   let result: Awaited<ReturnType<RunOrchestrationService["executeRun"]>>;
   try {
     result = await orchestration.executeRun({
@@ -146,13 +154,14 @@ async function handleAgentRun(
       command_source: "job",
       // control-center-phase2-plan.md P1: the hosts dispatch endpoint no
       // longer calls executeRun synchronously — it enqueues this job instead
-      // (async dispatch) and carries the task thread's vendor resume session
-      // id and requested timeout here, the same way the endpoint used to
-      // pass both as direct caller parameters (the timeout was dropped
-      // silently by the P1 migration until P1 discovery review caught it —
-      // no other agent_run job carries timeout_ms today, so both fields are
-      // undefined/null for every job but this endpoint's).
-      adapter_config: recordValue(job.payload.adapter_config),
+      // (async dispatch) and carries the requested timeout here (dropped
+      // silently by the P1 migration until discovery review caught it — no
+      // other agent_run job carries timeout_ms today). The vendor session to
+      // resume comes from the Run, above, so a retry keeps it.
+      adapter_config: {
+        ...recordValue(job.payload.adapter_config),
+        ...(hostThread.resume_session_id ? { remote_resume_session_id: hostThread.resume_session_id } : {}),
+      },
       timeout_ms: numberValue(job.payload.timeout_ms),
     });
   } catch (error) {
@@ -180,16 +189,15 @@ async function handleAgentRun(
           const currentTerminal = await repository.getRun(job.space_id, runId);
           if (currentTerminal && isTerminalRun(currentTerminal.status)) {
             await orchestration.reconcileTerminalDelegation(currentTerminal);
-            await finalizeChatTurn(config, repository, currentTerminal);
-            const exhaustedThreadId = stringValue(job.payload.host_task_thread_id);
-            if (exhaustedThreadId) {
+            if (hostThread.thread_id) {
               await recordHostThreadOutcome(
                 config,
-                exhaustedThreadId,
+                hostThread.thread_id,
                 currentTerminal,
-                job.payload.host_thread_resume_attempted === true,
+                hostThread.resume_attempted,
               );
             }
+            await finalizeChatTurn(config, repository, currentTerminal);
           }
         }
       }
@@ -212,21 +220,22 @@ async function handleAgentRun(
   if (completedRun && isTerminalRun(completedRun.status)) {
     await orchestration.reconcileTerminalDelegation(completedRun);
   }
-  if (completedRun) {
-    await finalizeChatTurn(config, repository, completedRun);
-  }
   // control-center-phase2-plan.md P1: the hosts dispatch endpoint now
   // enqueues this job instead of awaiting executeRun inline, so task-thread
   // outcome recording (vendor session id, session_reset detection) has to
   // happen here instead, gated on the run actually carrying a thread.
-  const hostTaskThreadId = stringValue(job.payload.host_task_thread_id);
-  if (completedRun && hostTaskThreadId) {
+  // Before chat finalization on purpose: releasing the thread's dispatch
+  // lock must not depend on message materialization succeeding.
+  if (completedRun && isTerminalRun(completedRun.status) && hostThread.thread_id) {
     await recordHostThreadOutcome(
       config,
-      hostTaskThreadId,
+      hostThread.thread_id,
       completedRun,
-      job.payload.host_thread_resume_attempted === true,
+      hostThread.resume_attempted,
     );
+  }
+  if (completedRun) {
+    await finalizeChatTurn(config, repository, completedRun);
   }
   // Research runs use the normal Run/Materialization authority. This hook is
   // only a latency optimization: the reconciler observes the committed run

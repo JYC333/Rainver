@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Server } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -22,7 +23,8 @@ export default function CommandCenterPage() {
   // initial project/workspace/prompt into it from a "dispatch diagnostic
   // run" quick action without turning it into a fully controlled component.
   const [composerSeed, setComposerSeed] = useState({ nonce: 0, projectId: '', folderId: '', prompt: '' })
-  const [tab, setTab] = useState('work-stream')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') === 'hosts' ? 'hosts' : 'work-stream'
   const [refreshNonce, setRefreshNonce] = useState(0)
 
   function diagnose(run: Run, folderId: string | null) {
@@ -34,7 +36,7 @@ export default function CommandCenterPage() {
       folderId: folderId ?? '',
       prompt: `The previous run in this workspace failed${run.error_message ? `: ${run.error_message}` : '.'}\n\nInvestigate and fix it.`,
     }))
-    setTab('work-stream')
+    setSearchParams({}, { replace: true })
   }
 
   return (
@@ -63,12 +65,15 @@ export default function CommandCenterPage() {
         initialPrompt={composerSeed.prompt}
         onDispatched={() => {
           toast.success('Dispatched')
-          setTab('work-stream')
+          setSearchParams({}, { replace: true })
           setRefreshNonce(n => n + 1)
         }}
       />
 
-      <Tabs value={tab} onValueChange={setTab}>
+      <Tabs
+        value={tab}
+        onValueChange={next => setSearchParams(next === 'hosts' ? { tab: 'hosts' } : {}, { replace: true })}
+      >
         <TabsList>
           <TabsTrigger value="work-stream">Work Stream</TabsTrigger>
           <TabsTrigger value="hosts">Hosts</TabsTrigger>

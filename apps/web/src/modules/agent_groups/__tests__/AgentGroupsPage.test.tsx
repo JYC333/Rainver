@@ -11,6 +11,7 @@ import {
   proposalsApi,
   roomsApi,
   runsApi,
+  sessionsApi,
   spacesApi,
 } from '../../../api/client'
 import type { AgentOut, Project, Room, RoomConversation, RoomDetail, Run } from '../../../types/api'
@@ -21,7 +22,7 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
-  agentsApi: { list: vi.fn(), conversationBackends: vi.fn() },
+  agentsApi: { list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
   projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
   hostsApi: { listRuntimeAdapters: vi.fn() },
   projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
@@ -30,6 +31,7 @@ vi.mock('../../../api/client', async () => {
     get: vi.fn(),
     attachReferences: vi.fn(),
     conversations: vi.fn(),
+    createConversation: vi.fn(),
     summary: vi.fn(),
     messages: vi.fn(),
     create: vi.fn(),
@@ -46,6 +48,11 @@ vi.mock('../../../api/client', async () => {
     transferOwner: vi.fn(),
     claimOwner: vi.fn(),
     resetAgentContext: vi.fn(),
+  },
+  sessionsApi: {
+    executionContext: vi.fn(),
+    initializeExecution: vi.fn(),
+    mutateExecutionAttachments: vi.fn(),
   },
   runsApi: { get: vi.fn(), streamEvents: vi.fn() },
   spacesApi: { members: vi.fn() },
@@ -225,10 +232,9 @@ describe('Rooms page', () => {
     vi.mocked(projectsApi.hostExecutionTargets).mockResolvedValue({ targets: [] })
     vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [] })
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
-      project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
+      project: { id: 'project-1', name: 'Project One', status: 'active' },
       brief: null,
       definition_status: { status: 'initialized', basis: 'published_brief_goal', goal_or_problem: 'Understand memory quality' },
-      available_modes: ['research'],
       attention: [],
     } as unknown as Awaited<ReturnType<typeof projectsApi.getOverview>>)
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
@@ -264,6 +270,17 @@ describe('Rooms page', () => {
       }],
       binding: null,
     })
+    vi.mocked(agentsApi.listRuntimeProfiles).mockResolvedValue([])
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      summary: {
+        session_id: 'session-1', state: 'initialized',
+        host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'codex_cli', runtime_installation: 'codex' },
+        primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null }, attachments: [],
+        dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+      },
+      available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+    } as never)
     vi.mocked(spacesApi.members).mockResolvedValue([
       { user_id: 'user-1', display_name: 'Owner', email: 'owner@example.test' },
       { user_id: 'user-2', display_name: 'Member', email: 'member@example.test' },
@@ -1044,25 +1061,17 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByText('已接受，助手正在处理…')).not.toBeInTheDocument())
   })
 
-  it('surfaces backend setup links when the first message finds no usable Agent', async () => {
-    // Provisioning moved to the first message (ADR 0018 decision 4), so this
-    // error arrives from a send, not from creating the Room. It used to be
-    // caught on the create path, which can no longer raise it — leaving a
-    // Space with no configured provider an error and no next step.
+  it('surfaces the canonical Host recovery link before the first message', async () => {
+    // A missing Host/CLI is a preflight state now. The composer stays blocked
+    // with its draft intact while the user gets the canonical Host recovery link.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
-    vi.mocked(roomsApi.sendMessage).mockRejectedValue(new ApiRequestError(
-      'Configure a conversation backend',
-      409,
-      'conversation_backend_required',
-      { code: 'conversation_backend_required', setup_targets: ['model_providers', 'cli_credentials'] },
-    ))
     renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-
-    expect(await screen.findByText(/set up a conversation backend/i)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /configure an api provider/i })).toHaveAttribute('href', '/spaces/space-1/providers')
-    expect(screen.getByRole('link', { name: /grant a cli credential/i })).toHaveAttribute('href', '/cli-profiles')
+    expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center?tab=hosts')
+    expect(screen.queryByRole('link', { name: /configure cli/i })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Room message')).toHaveValue('Anyone there?')
   })
 
   it('keeps a Room it just created when the catalog refresh fails', async () => {
@@ -1088,11 +1097,10 @@ describe('Rooms page', () => {
     expect(roomsApi.create).toHaveBeenCalledTimes(1)
   })
 
-  it('sends a Room-keyed reference with the message that creates the conversation', async () => {
+  it('keeps a Room-keyed reference through explicit conversation setup', async () => {
     // The consuming half of the import continuation handoff. The pick is
-    // stored under the Room because the conversation it is for is created by
-    // the message that carries it (ADR 0018 decision 5), and the two are
-    // written in one transaction.
+    // stored under the Room until the user opens a draft, then attached to
+    // that explicitly selected Conversation before its first message.
     sessionStorage.setItem(
       'rainver.reference.room.room-1',
       JSON.stringify([{ kind: 'imported_session', id: 'imported-1' }]),
@@ -1103,16 +1111,54 @@ describe('Rooms page', () => {
       conversation: { ...initialConversation, id: 'session-new' },
       task_group_ids: [], run_ids: [],
     } as never)
+    vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     const composer = await screen.findByLabelText('Room message')
     // Read once: a reload must not resurrect a pick the person abandoned.
     expect(sessionStorage.getItem('rainver.reference.room.room-1')).toBeNull()
 
     fireEvent.change(composer, { target: { value: 'Picking this up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'imported_session', id: 'imported-1' }],
-    }), expect.any(String)))
+    }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() })))
+  })
+
+  it('forwards disclosure confirmation when attaching a picked reference to a new draft', async () => {
+    sessionStorage.setItem(
+      'rainver.reference.room.room-1',
+      JSON.stringify([{ kind: 'imported_session', id: 'imported-1' }]),
+    )
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
+    vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
+    vi.mocked(roomsApi.attachReferences).mockRejectedValueOnce(
+      new ApiRequestError('refused', 409, 'reference_disclosure_confirmation_required', {
+        detail: 'Dana could not read this before.',
+        gains_access_user_ids: ['user-2'],
+      }),
+    )
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-disclosure', session_id: 'session-new', role: 'user', content: 'Share this', metadata_json: {} },
+      conversation: { ...initialConversation, id: 'session-new' }, task_group_ids: [], run_ids: [],
+    } as never)
+
+    renderRooms('/rooms?room=room-1&new=1&reference=1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Share this' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('Member')).toBeInTheDocument()
+    vi.mocked(roomsApi.attachReferences).mockResolvedValue({ messages: [] } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Share it with them' }))
+
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenLastCalledWith('room-1', 'session-new', {
+      references: [{ kind: 'imported_session', id: 'imported-1' }],
+      confirm_disclosure: ['user-2'],
+    }))
   })
 
   it('picks messages at the source and attaches them to another thread', async () => {
@@ -1138,16 +1184,16 @@ describe('Rooms page', () => {
     }))
   })
 
-  it('holds a pick for a new thread, creating nothing until the first message', async () => {
-    // The phase's headline deliverable. Nothing exists until the message: a
-    // thread comes into being when somebody speaks in it (ADR 0018 decision
-    // 5), so an abandoned draft leaves nothing behind.
+  it('holds a pick until explicit conversation setup', async () => {
+    // Preflight opens a visible draft before any message can run. The pick is
+    // still held in the composer and is attached only to that selected draft.
     vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({
       message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Following up', metadata_json: {} },
       conversation: { ...initialConversation, id: 'session-new' },
       task_group_ids: [], run_ids: [],
     } as never)
+    vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
     renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
     fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
     fireEvent.click(await screen.findByRole('button', { name: /Use in a new thread/ }))
@@ -1157,42 +1203,29 @@ describe('Rooms page', () => {
     expect(roomsApi.sendMessage).not.toHaveBeenCalled()
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    // Written with the message that creates the conversation, in one call.
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'messages', id: 'session-1', item_ids: ['m-1'] }],
-    }), expect.any(String)))
+    }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.anything()))
   })
 
-  it('drops a pick the server will never accept, instead of wedging the composer', async () => {
-    // A whole-thread pick needs the source thread's summary, and a young
-    // thread has none. The pick is invisible in the composer, so leaving it
-    // in place would make every further attempt fail identically and the only
-    // escape would be a reload — which discards it anyway.
+  it('does not send a picked draft until execution is configured', async () => {
+    // The preflight gate owns the send boundary. A missing execution context
+    // must not make the message or the picked content disappear.
     sessionStorage.setItem(
       'rainver.reference.room.room-1',
       JSON.stringify([{ kind: 'thread', id: 'session-9' }]),
     )
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
-    vi.mocked(roomsApi.sendMessage).mockRejectedValueOnce(
-      new ApiRequestError('no summary', 409, 'reference_summary_unavailable', {
-        detail: 'That thread has no summary yet.',
-      }),
-    )
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
-
-    // The second attempt carries no reference, so it can actually be sent.
-    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
-      message: { id: 'm-1', session_id: 'session-new', role: 'user', content: 'Following up', metadata_json: {} },
-      conversation: { ...initialConversation, id: 'session-new' },
-      task_group_ids: [], run_ids: [],
-    } as never)
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
-    expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).not.toHaveProperty('references')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(roomsApi.sendMessage).not.toHaveBeenCalled()
+    expect(screen.getByText(/will be attached to this conversation/i)).toBeInTheDocument()
   })
 
   it('names who would gain access before copying across an audience boundary', async () => {
@@ -1266,11 +1299,15 @@ describe('Rooms page', () => {
     renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
 
     fireEvent.click(await screen.findByRole('button', { name: /Carry into a new thread/ }))
-    expect(await screen.findByText(/A conversation will be copied in with this message/)).toBeInTheDocument()
+    expect(await screen.findByText(/will be attached to this conversation before the message/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Do not carry this in' }))
-    await waitFor(() => expect(screen.queryByText(/will be copied in with this message/)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/will be attached to this conversation before the message/)).not.toBeInTheDocument())
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Next' } })
+    vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
     expect(vi.mocked(roomsApi.sendMessage).mock.calls[0]![2]).not.toHaveProperty('references')
@@ -1331,6 +1368,29 @@ describe('Rooms page', () => {
       .toHaveAttribute('href', '/spaces/space-1/projects/project-1/imported-sessions/imported-1')
   })
 
+  it('renders execution system events as labeled timeline entries', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-execution',
+        space_id: 'space-1',
+        session_id: 'session-1',
+        user_id: null,
+        sender_agent_id: null,
+        role: 'system',
+        content: 'Execution context initialized on Local Host.',
+        metadata_json: { event_type: 'execution_context_initialized' },
+        created_at: '2026-08-29T10:00:00.000Z',
+      }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    } as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const entry = await screen.findByText('Execution context initialized on Local Host.')
+    expect(entry.closest('[data-role="system"]')).toBeInTheDocument()
+    expect(within(entry.closest('[data-role="system"]')!).getByText('Execution')).toBeInTheDocument()
+  })
+
   it('does not carry a used reference into the next thread', async () => {
     // The pick outlives every conversation switch on the page, so consuming it
     // has to be explicit. Pressing "New" after sending puts the page back into
@@ -1346,15 +1406,25 @@ describe('Rooms page', () => {
       conversation: { ...initialConversation, id: 'session-new' },
       task_group_ids: [], run_ids: [],
     } as never)
+    vi.mocked(roomsApi.createConversation)
+      .mockResolvedValueOnce({ ...initialConversation, id: 'session-new' } as never)
+      .mockResolvedValueOnce({ ...initialConversation, id: 'session-second' } as never)
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'First' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', null, expect.objectContaining({
+    await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'imported_session', id: 'imported-1' }],
-    }), expect.any(String)))
+    }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() })))
 
     fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Second' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
     expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).not.toHaveProperty('references')
@@ -1423,10 +1493,9 @@ describe('Rooms page', () => {
 
   it('renders the Project state panel beside the conversation, deep-linking into the owning Area (Phase B)', async () => {
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
-      project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
+      project: { id: 'project-1', name: 'Project One', status: 'active' },
       brief: null,
       definition_status: { status: 'initialized', basis: 'published_brief_goal', goal_or_problem: 'Understand memory quality' },
-      available_modes: ['research'],
       attention: [{ id: 'attention-1', title: 'Candidate awaiting review', summary: null, href: '/projects/project-1/inquiry?candidate=candidate-1' }],
     } as unknown as Awaited<ReturnType<typeof projectsApi.getOverview>>)
 

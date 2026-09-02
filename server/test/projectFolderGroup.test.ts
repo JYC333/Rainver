@@ -79,8 +79,8 @@ describe("projectFolderExecutionConfigsDb", () => {
     await db.pool.query(
       `INSERT INTO workspace_locations (
          id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-         execution_ready, status, preferred, created_at, updated_at
-       ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',true,now(),now())`,
+         execution_ready, status, created_at, updated_at
+       ) VALUES (gen_random_uuid()::varchar,$1,$2,$3,'server',true,'active',now(),now())`,
       [SPACE, FOLDER, HOST],
     );
     await db.pool.query(

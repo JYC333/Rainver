@@ -41,6 +41,16 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
   conformance_suite_version: string | null;
 }
 
+interface ConversationBindingSnapshot extends ProviderEligibilityRow {
+  runtime_profile_id: string;
+  model_name: string | null;
+  model_provider_id: string | null;
+  runtime_config_json: unknown;
+  runtime_policy_json: unknown;
+  conformance_status: "passed" | "failed" | "partial" | null;
+  conformance_suite_version: string | null;
+}
+
 interface CliCredentialAvailability {
   availableProfiles(
     spaceId: string,
@@ -67,18 +77,119 @@ export class PgRouteDecisionRepository {
     const hints = routeHintsForRun(run);
     const requiredCapabilities = await runtimeRequiredCapabilities(run.capabilities_json);
     const requestedCredentialProfileId = conversationCredentialProfileId(run.model_override_json);
-    const allCandidates = await this.listCandidates(
+    const rawCandidates = await this.listCandidates(
       run.space_id,
       run.agent_id,
       run.owner_user_id ?? null,
       requestedCredentialProfileId,
     );
     const override = record(run.model_override_json);
+    const workspaceAccess = workspaceAccessFromOverride(override.workspace_access);
     const hostThread = record(override.host_thread);
-    const roomHostBoundRun = override.execution_mode === "room_conversation.v1"
-      && hostThread.schema_version === "host_thread.v1";
-    const candidates = allCandidates.filter((candidate) => roomHostBoundRun
-      ? candidate.host_bound === true && candidate.workspace_location_id === run.workspace_location_id
+    // The host_thread override is the discriminator, not the surface: a Room
+    // turn and a direct chat both pin their run to a host thread, while
+    // execution_mode differs per surface (room_conversation.v1 vs the chat
+    // path's conversation_lightweight.v1). Keying on the mode filtered every
+    // host-bound candidate out of a direct chat, which then failed routing
+    // with an empty candidate set.
+    const hostBoundRun = hostThread.schema_version === "host_thread.v1";
+    const pinnedHostThread = hostBoundRun
+      ? (await this.db.query<{
+          execution_host_id: string;
+          workspace_mode: "location" | "managed";
+          workspace_location_id: string | null;
+          adapter_type: string;
+          runtime_installation: string;
+          status: "active" | "session_reset" | "closed";
+          container_kind: "conversation" | "direct" | null;
+          container_user_id: string | null;
+          session_id: string | null;
+        }>(
+          `SELECT execution_host_id, workspace_mode, workspace_location_id,
+                  adapter_type, runtime_installation, status,
+                  container_kind, container_user_id, session_id
+             FROM host_threads
+            WHERE id = $1 AND space_id = $2
+              AND (
+                (container_kind = 'conversation' AND session_id = $3)
+                OR (container_kind = 'direct' AND container_user_id = $4)
+              )
+            LIMIT 1`,
+          [hostThread.thread_id, run.space_id, run.session_id, run.owner_user_id ?? run.instructed_by_user_id ?? null],
+        )).rows[0] ?? null
+      : null;
+    if (hostBoundRun && (!pinnedHostThread || pinnedHostThread.status === "closed")) {
+      throw new RouteSelectionError(
+        "conversation_runtime_continuity_missing",
+        "The Conversation runtime thread is unavailable; the Run cannot be dispatched.",
+      );
+    }
+    const conversationSnapshot = hostBoundRun && pinnedHostThread?.container_kind === "conversation"
+      ? (await this.db.query<ConversationBindingSnapshot>(
+          `SELECT binding.runtime_profile_id,
+                  binding.model_name_snapshot AS model_name,
+                  binding.model_provider_id_snapshot AS model_provider_id,
+                  binding.runtime_config_snapshot_json AS runtime_config_json,
+                  binding.runtime_policy_snapshot_json AS runtime_policy_json,
+                  conformance.status AS conformance_status,
+                  conformance.suite_version AS conformance_suite_version,
+                  provider.provider_type,
+                  provider.enabled AS provider_enabled,
+                  provider_grant.enabled AS provider_grant_enabled,
+                  provider.owner_user_id AS provider_owner_user_id,
+                  provider_credential.credential_type AS provider_credential_type,
+                  ${providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential")}
+                    AS provider_has_eligible_credential
+             FROM session_conversation_backends binding
+             LEFT JOIN model_providers provider
+               ON provider.id = binding.model_provider_id_snapshot
+             LEFT JOIN model_provider_space_grants provider_grant
+               ON provider_grant.provider_id = binding.model_provider_id_snapshot
+              AND provider_grant.space_id = binding.space_id
+             LEFT JOIN credentials provider_credential
+               ON provider_credential.id = provider.credential_id
+             JOIN host_threads thread
+               ON thread.space_id = binding.space_id
+              AND thread.session_id = binding.session_id
+              AND thread.agent_id = binding.agent_id
+              AND thread.container_kind = 'conversation'
+              AND thread.status IN ('active', 'session_reset')
+             LEFT JOIN runtime_conformance_results conformance
+               ON conformance.runtime_adapter_type = thread.adapter_type
+              AND conformance.runtime_version = COALESCE(binding.runtime_config_snapshot_json->>'runtime_tool_version', '')
+            WHERE binding.space_id = $1
+              AND binding.session_id = $2
+              AND binding.agent_id = $3
+              AND binding.runtime_profile_id = $4
+            LIMIT 1`,
+          [run.space_id, run.session_id, run.agent_id, run.requested_runtime_profile_id],
+        )).rows[0] ?? null
+      : null;
+    if (hostBoundRun && pinnedHostThread?.container_kind === "conversation" && !conversationSnapshot) {
+      throw new RouteSelectionError(
+        "conversation_runtime_snapshot_missing",
+        "The pinned Conversation runtime snapshot is unavailable; the Run cannot be dispatched.",
+      );
+    }
+    if (conversationSnapshot?.model_provider_id && !isProviderEligibleForUser(
+      conversationSnapshot,
+      run.owner_user_id ?? run.instructed_by_user_id ?? null,
+    )) {
+      throw new RouteSelectionError(
+        "conversation_model_provider_unavailable",
+        "The pinned Conversation model provider is unavailable; the Run cannot be dispatched.",
+      );
+    }
+    const allCandidates = conversationSnapshot
+      ? rawCandidates.map((candidate) => candidate.runtime_profile_id === conversationSnapshot.runtime_profile_id
+          ? applyConversationSnapshot(candidate, conversationSnapshot)
+          : candidate)
+      : rawCandidates;
+    const candidates = allCandidates.filter((candidate) => hostBoundRun
+      ? candidate.host_bound === true
+        && candidate.execution_host_id === pinnedHostThread!.execution_host_id
+        && candidate.workspace_mode === pinnedHostThread!.workspace_mode
+        && candidate.workspace_location_id === pinnedHostThread!.workspace_location_id
       : candidate.host_bound !== true);
     const attemptNumber = await this.currentAttemptNumber(run);
     const retryRoute = attemptNumber > 1 ? await this.retryRouteContext(run, attemptNumber) : null;
@@ -132,7 +243,7 @@ export class PgRouteDecisionRepository {
           attemptNumber,
           selected ? "selected" : "no_route",
           selected?.runtime_profile_id ?? null,
-          selected?.adapter_type ?? null,
+          pinnedHostThread?.adapter_type ?? selected?.adapter_type ?? null,
           selected?.model_provider_id ?? null,
           decision.reason,
           JSON.stringify(hints),
@@ -169,6 +280,24 @@ export class PgRouteDecisionRepository {
     if (!persistedDecisionId) {
       throw new RouteSelectionError("route_decision_not_persisted", "Route decision could not be persisted.");
     }
+    if (hostBoundRun && pinnedHostThread && (
+      selected.runtime_profile_id !== run.requested_runtime_profile_id
+      || selected.execution_host_id !== pinnedHostThread.execution_host_id
+      || selected.workspace_mode !== pinnedHostThread.workspace_mode
+      || selected.workspace_location_id !== pinnedHostThread.workspace_location_id
+      || selected.adapter_type !== pinnedHostThread.adapter_type
+      || selected.runtime_installation !== pinnedHostThread.runtime_installation
+    )) {
+      throw new RouteSelectionError(
+        "conversation_runtime_profile_changed",
+        "The pinned Conversation CLI runtime is no longer available; start a new Conversation to change it.",
+      );
+    }
+    const selectedAdapterType = pinnedHostThread?.adapter_type ?? selected.adapter_type;
+    const selectedExecutionHostId = pinnedHostThread?.execution_host_id ?? selected.execution_host_id;
+    const selectedWorkspaceLocationId = pinnedHostThread?.workspace_location_id ?? selected.workspace_location_id;
+    const selectedWorkspaceMode = pinnedHostThread?.workspace_mode ?? selected.workspace_mode;
+    const selectedRuntimeInstallation = pinnedHostThread?.runtime_installation ?? selected.runtime_installation;
 
     const modelOverride = {
       ...record(run.model_override_json),
@@ -203,19 +332,19 @@ export class PgRouteDecisionRepository {
         run.id,
         persistedDecisionId,
         selected.runtime_profile_id,
-        selected.adapter_type,
+        selectedAdapterType,
         selected.model_provider_id,
         JSON.stringify(modelOverride),
         JSON.stringify({
           id: selected.runtime_profile_id,
           name: selected.profile_name,
-          adapter_type: selected.adapter_type,
+          adapter_type: selectedAdapterType,
           model_provider_id: selected.model_provider_id,
           model_name: selected.model_name,
-          execution_host_id: selected.execution_host_id,
-          workspace_location_id: selected.workspace_location_id,
-          workspace_mode: selected.workspace_mode,
-          runtime_installation: selected.runtime_installation,
+          execution_host_id: selectedExecutionHostId,
+          workspace_location_id: selectedWorkspaceLocationId,
+          workspace_mode: selectedWorkspaceMode,
+          runtime_installation: selectedRuntimeInstallation,
           credential_profile_id: selected.credential_profile_id,
           runtime_config_json: {
             ...selected.runtime_config_json,
@@ -225,6 +354,7 @@ export class PgRouteDecisionRepository {
           },
           runtime_policy_json: selected.runtime_policy_json,
           ...(override.workspace ? { workspace: override.workspace } : {}),
+          ...(workspaceAccess !== null ? { workspace_access: workspaceAccess } : {}),
           is_default: selected.is_default,
         }),
         now,
@@ -553,6 +683,31 @@ function isHostBoundRuntime(row: Pick<RuntimeCandidateRow, "execution_host_id" |
   return Boolean(row.execution_host_id && row.workspace_mode && row.runtime_installation);
 }
 
+function applyConversationSnapshot(
+  candidate: RouteCandidate,
+  snapshot: ConversationBindingSnapshot,
+): RouteCandidate {
+  const runtimeConfig = record(snapshot.runtime_config_json);
+  const runtimePolicy = record(snapshot.runtime_policy_json);
+  const rawSnapshotCapabilities = runtimeConfig.capabilities ?? runtimePolicy.capabilities;
+  const hasSnapshotCapabilities = Array.isArray(rawSnapshotCapabilities);
+  const spec = getRuntimeAdapterSpec(candidate.adapter_type);
+  return {
+    ...candidate,
+    model_name: snapshot.model_name,
+    model_provider_id: snapshot.model_provider_id,
+    runtime_config_json: runtimeConfig,
+    runtime_policy_json: runtimePolicy,
+    capabilities: hasSnapshotCapabilities ? stringArray(rawSnapshotCapabilities) : candidate.capabilities,
+    tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
+    supports_live: runtimeConfig.supports_live !== false,
+    supports_dry_run: runtimeConfig.supports_dry_run !== false,
+    effective_trust_level: effectiveTrustLevel(spec, snapshot.conformance_status),
+    conformance_status: snapshot.conformance_status,
+    conformance_suite_version: snapshot.conformance_suite_version,
+  };
+}
+
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function conversationCredentialProfileId(value: unknown): string | null {
   const backend = record(record(value).conversation_backend);
@@ -560,6 +715,41 @@ function conversationCredentialProfileId(value: unknown): string | null {
   return typeof credentialProfileId === "string" && credentialProfileId.trim()
     ? credentialProfileId
     : null;
+}
+
+function workspaceAccessFromOverride(
+  value: unknown,
+): Array<{ workspace_location_id: string; access_mode: "read" | "write" }> | null {
+  const hasValue = value !== undefined;
+  if (!hasValue) return null;
+  if (!Array.isArray(value)) {
+    throw new RouteSelectionError(
+      "conversation_workspace_access_invalid",
+      "The Conversation workspace access snapshot is invalid; refusing to route the Run.",
+    );
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RouteSelectionError(
+        "conversation_workspace_access_invalid",
+        `The Conversation workspace access entry ${index} is invalid; refusing to route the Run.`,
+      );
+    }
+    const candidate = entry as Record<string, unknown>;
+    const id = typeof candidate.workspace_location_id === "string"
+      ? candidate.workspace_location_id.trim()
+      : "";
+    const accessMode = candidate.access_mode;
+    if (!id || (accessMode !== "read" && accessMode !== "write") || seen.has(id)) {
+      throw new RouteSelectionError(
+        "conversation_workspace_access_invalid",
+        `The Conversation workspace access entry ${index} is invalid; refusing to route the Run.`,
+      );
+    }
+    seen.add(id);
+    return { workspace_location_id: id, access_mode: accessMode };
+  });
 }
 export async function runtimeRequiredCapabilities(value: unknown): Promise<string[]> {
   const declared = stringArray(value);

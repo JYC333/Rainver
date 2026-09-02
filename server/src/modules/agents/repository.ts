@@ -29,6 +29,7 @@ import {
 } from "../access/contentAccessSql.js";
 import { isContentVisibility } from "../access/contentAccessTypes.js";
 import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
+import { canReadProject, canWriteProject } from "../projects/access.js";
 import {
   DEFAULT_MEMORY_POLICY,
   defaultModelConfigFor,
@@ -99,6 +100,17 @@ export interface AgentRuntimeProfileRecord {
   is_default: boolean;
   created_at: unknown;
   updated_at: unknown;
+}
+
+export interface HostRuntimeProfileTarget {
+  spaceId: string;
+  agentId: string;
+  actorUserId: string;
+  executionHostId: string;
+  workspaceLocationId: string | null;
+  workspaceMode: "location" | "managed";
+  adapterType: string;
+  runtimeInstallation: string;
 }
 
 export interface AgentVersionRecord {
@@ -630,11 +642,48 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
 
+  /**
+   * Runtime profiles expose execution targets, so system-managed Agents use
+   * their owning Project's read boundary rather than the generic Agent list
+   * (which intentionally excludes system assistants).
+   */
+  async canReadRuntimeProfiles(spaceId: string, userId: string, agentId: string): Promise<boolean> {
+    const result = await this.pool.query<{ agent_kind: string; project_id: string | null }>(
+      `SELECT agent_kind, project_id
+         FROM agents
+        WHERE space_id = $1 AND id = $2 AND status = 'active'
+        LIMIT 1`,
+      [spaceId, agentId],
+    );
+    const agent = result.rows[0];
+    if (!agent) return false;
+    if (agent.agent_kind === "system_assistant") {
+      return agent.project_id ? canReadProject(this.pool, spaceId, agent.project_id, userId) : false;
+    }
+    return Boolean(await this.getVisible(spaceId, userId, agentId));
+  }
+
+  async canWriteRuntimeProfiles(spaceId: string, userId: string, agentId: string): Promise<boolean> {
+    const result = await this.pool.query<{ agent_kind: string; project_id: string | null }>(
+      `SELECT agent_kind, project_id
+         FROM agents
+        WHERE space_id = $1 AND id = $2 AND status = 'active'
+        LIMIT 1`,
+      [spaceId, agentId],
+    );
+    const agent = result.rows[0];
+    if (!agent) return false;
+    if (agent.agent_kind === "system_assistant") {
+      return agent.project_id ? canWriteProject(this.pool, spaceId, agent.project_id, userId) : false;
+    }
+    return Boolean(await this.getVisible(spaceId, userId, agentId));
+  }
+
   async listRuntimeProfiles(
     spaceId: string,
     agentId: string,
   ): Promise<AgentRuntimeProfileOut[]> {
-    await this.requireAgent(spaceId, agentId);
+    await this.requireAgent(spaceId, agentId, { allowSystemAssistant: true });
     const result = await this.pool.query<AgentRuntimeProfileRecord>(
       `SELECT ${RUNTIME_PROFILE_COLUMNS}
          FROM agent_runtime_profiles arp
@@ -665,7 +714,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       actorUserId?: string;
     },
   ): Promise<AgentRuntimeProfileOut> {
-    await this.requireAgent(spaceId, agentId);
+    await this.requireAgent(spaceId, agentId, { allowSystemAssistant: true });
     const normalized = await this.normalizeRuntimeProfileInput(spaceId, { ...input, agentId });
     return withTransaction(this.pool, async (client) => {
       if (normalized.isDefault) {
@@ -678,6 +727,73 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       });
       return runtimeProfileOut(created);
     });
+  }
+
+  /**
+   * Canonical Host/CLI/Workspace resolver used by every setup surface.
+   * A Host installation is the user's choice; an Agent runtime profile is
+   * the reusable persisted representation, not a separate prerequisite.
+   */
+  async ensureHostRuntimeProfile(input: HostRuntimeProfileTarget): Promise<AgentRuntimeProfileOut> {
+    return withTransaction(this.pool, (client) => this.ensureHostRuntimeProfileInTransaction(client, input));
+  }
+
+  async ensureHostRuntimeProfileInTransaction(
+    db: Queryable,
+    input: HostRuntimeProfileTarget,
+  ): Promise<AgentRuntimeProfileOut> {
+    const lockedAgent = await db.query<{ id: string }>(
+      `SELECT id FROM agents
+        WHERE space_id = $1 AND id = $2 AND status = 'active'
+        FOR UPDATE`,
+      [input.spaceId, input.agentId],
+    );
+    if (!lockedAgent.rows[0]) throw new HttpError(404, "Agent not found");
+
+    const normalized = await this.normalizeRuntimeProfileInput(input.spaceId, {
+      agentId: input.agentId,
+      name: hostRuntimeProfileName(input),
+      adapterType: input.adapterType,
+      executionHostId: input.executionHostId,
+      workspaceLocationId: input.workspaceLocationId,
+      workspaceMode: input.workspaceMode,
+      runtimeInstallation: input.runtimeInstallation,
+      actorUserId: input.actorUserId,
+      enabled: true,
+      isDefault: false,
+    }, db);
+    const existing = await db.query<AgentRuntimeProfileRecord>(
+      `SELECT ${RUNTIME_PROFILE_COLUMNS}
+         FROM agent_runtime_profiles arp
+         LEFT JOIN model_providers mp ON mp.id = arp.model_provider_id
+        WHERE arp.space_id = $1
+          AND arp.agent_id = $2
+          AND arp.execution_host_id = $3
+          AND arp.workspace_mode = $4
+          AND arp.workspace_location_id IS NOT DISTINCT FROM $5
+          AND arp.adapter_type = $6
+          AND arp.runtime_installation = $7
+          AND arp.enabled = true
+        ORDER BY arp.is_default DESC, arp.created_at ASC, arp.id ASC
+        LIMIT 1`,
+      [
+        input.spaceId,
+        input.agentId,
+        normalized.executionHostId,
+        normalized.workspaceMode,
+        normalized.workspaceLocationId,
+        normalized.adapterType,
+        normalized.runtimeInstallation,
+      ],
+    );
+    if (existing.rows[0]) return runtimeProfileOut(existing.rows[0]);
+
+    const created = await this.insertRuntimeProfile(db, {
+      ...normalized,
+      spaceId: input.spaceId,
+      agentId: input.agentId,
+    });
+    return runtimeProfileOut(created);
   }
 
   async updateRuntimeProfile(
@@ -702,6 +818,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   ): Promise<AgentRuntimeProfileOut> {
     const existing = await this.getRuntimeProfile(spaceId, agentId, profileId);
     if (!existing) throw new HttpError(404, "Runtime profile not found");
+    // An omitted default flag means “reconcile this profile without changing
+    // the user's current default”. Callers that intentionally choose or
+    // clear a default pass true/false explicitly.
     const normalized = await this.normalizeRuntimeProfileInput(spaceId, {
       agentId,
       name: patch.name ?? existing.name,
@@ -794,16 +913,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const providerId = input.defaultModelProviderId ?? null;
     const modelName = input.defaultModel ?? null;
+    // A caller that names a Location has named the mode: 'location' was the
+    // only shape before managed workspaces existed, so it stays the default
+    // for that input. 'managed' must always be explicit.
+    const workspaceMode = input.workspaceMode ?? (input.workspaceLocationId != null ? "location" : null);
     const hostBound = input.executionHostId != null
       || input.workspaceLocationId != null
-      || input.workspaceMode != null
+      || workspaceMode != null
       || input.runtimeInstallation != null;
     if (hostBound) {
-      // A caller that names a Location has named the mode: 'location' was the
-      // only shape before managed workspaces existed, so it stays the default
-      // for that input. 'managed' must always be explicit.
-      if (input.workspaceMode == null && input.workspaceLocationId != null) input.workspaceMode = "location";
-      if (input.workspaceMode !== "location" && input.workspaceMode !== "managed") {
+      if (workspaceMode !== "location" && workspaceMode !== "managed") {
         throw new HttpError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
       }
       if (providerId !== null || modelName !== null) {
@@ -815,7 +934,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         actorUserId: input.userId,
         executionHostId: input.executionHostId ?? null,
         workspaceLocationId: input.workspaceLocationId ?? null,
-        workspaceMode: input.workspaceMode ?? null,
+        workspaceMode,
         runtimeInstallation: input.runtimeInstallation ?? null,
         adapterType,
       });
@@ -856,7 +975,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       outputSchemaJson: input.outputSchemaJson ?? {},
       executionHostId: input.executionHostId ?? null,
       workspaceLocationId: input.workspaceLocationId ?? null,
-      workspaceMode: input.workspaceMode ?? null,
+      workspaceMode,
       runtimeInstallation: input.runtimeInstallation ?? null,
     });
   }
@@ -920,7 +1039,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimeConfigJson: input.runtimeConfigJson,
       runtimePolicyJson: input.runtimePolicyJson,
       enabled: true,
-      isDefault: input.isDefault ?? false,
+      isDefault: input.isDefault ?? existing.rows[0]?.is_default ?? false,
       runtimeToolVersion: input.runtimeToolVersion,
       agentId,
       actorUserId: input.actorUserId,
@@ -1666,13 +1785,17 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return { ...config, runtime_tool_version: version };
   }
 
-  private async requireAgent(spaceId: string, agentId: string): Promise<void> {
+  private async requireAgent(
+    spaceId: string,
+    agentId: string,
+    options: { allowSystemAssistant?: boolean } = {},
+  ): Promise<void> {
     const found = await this.pool.query<{ id: string }>(
       `SELECT id
          FROM agents
         WHERE space_id = $1
           AND id = $2
-          AND agent_kind <> 'system_assistant'
+          ${options.allowSystemAssistant ? "" : "AND agent_kind <> 'system_assistant'"}
         LIMIT 1`,
       [spaceId, agentId],
     );
@@ -1809,7 +1932,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     agentId: string,
     profileId: string,
   ): Promise<AgentRuntimeProfileRecord | null> {
-    await this.requireAgent(spaceId, agentId);
+    await this.requireAgent(spaceId, agentId, { allowSystemAssistant: true });
     return this.getRuntimeProfileWithClient(this.pool, spaceId, agentId, profileId);
   }
 
@@ -1945,16 +2068,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const adapterType = normalizeAdapterType(input.adapterType);
     const modelProviderId = input.modelProviderId ?? null;
     const modelName = input.modelName ?? null;
+    // A caller that names a Location has named the mode: 'location' was the
+    // only shape before managed workspaces existed, so it stays the default
+    // for that input. 'managed' must always be explicit.
+    const workspaceMode = input.workspaceMode ?? (input.workspaceLocationId != null ? "location" : null);
     const hostBound = input.executionHostId != null
       || input.workspaceLocationId != null
-      || input.workspaceMode != null
+      || workspaceMode != null
       || input.runtimeInstallation != null;
     if (hostBound) {
-      // A caller that names a Location has named the mode: 'location' was the
-      // only shape before managed workspaces existed, so it stays the default
-      // for that input. 'managed' must always be explicit.
-      if (input.workspaceMode == null && input.workspaceLocationId != null) input.workspaceMode = "location";
-      if (input.workspaceMode !== "location" && input.workspaceMode !== "managed") {
+      if (workspaceMode !== "location" && workspaceMode !== "managed") {
         throw new HttpError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
       }
       if (modelProviderId !== null || modelName !== null) {
@@ -1972,7 +2095,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         actorUserId: input.actorUserId ?? agentRow.owner_user_id,
         executionHostId: input.executionHostId ?? null,
         workspaceLocationId: input.workspaceLocationId ?? null,
-        workspaceMode: input.workspaceMode ?? null,
+        workspaceMode,
         runtimeInstallation: input.runtimeInstallation ?? null,
         adapterType,
       });
@@ -1993,7 +2116,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       modelName,
       executionHostId: input.executionHostId ?? null,
       workspaceLocationId: input.workspaceLocationId ?? null,
-      workspaceMode: input.workspaceMode ?? null,
+      workspaceMode,
       runtimeInstallation: input.runtimeInstallation ?? null,
       runtimeConfigJson,
       runtimePolicyJson: buildRuntimePolicy(adapterType, input.runtimePolicyJson),
@@ -2194,6 +2317,14 @@ function runtimeProfileOut(row: AgentRuntimeProfileRecord): AgentRuntimeProfileO
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+function hostRuntimeProfileName(input: HostRuntimeProfileTarget): string {
+  const workspace = input.workspaceMode === "managed"
+    ? "managed"
+    : `Location ${input.workspaceLocationId?.slice(0, 8) ?? "unknown"}`;
+  const descriptive = `${input.adapterType} · ${input.runtimeInstallation} · ${workspace}`;
+  return `${descriptive.slice(0, 112)} · ${randomUUID().slice(0, 8)}`;
 }
 
 function normalizedRuntimeConfig(

@@ -53,6 +53,7 @@ export interface CliCommandExecutor {
     raw_stdio_controller?: CliRawStdioController;
     terminal?: boolean;
     read_only?: ReadOnlyCliExecutionOptions;
+    workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
     egress_profile?: "none" | "provider" | "tools" | "provider_and_tools";
   }): Promise<CliExecutionResult>;
 }

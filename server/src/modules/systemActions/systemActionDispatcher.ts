@@ -60,7 +60,7 @@ export class SystemActionDispatcher {
   private constructor(
     private readonly run: RunRecord,
     private readonly gateway: SystemActionGateway,
-    private readonly grantedActionIds: Set<string>,
+    private readonly permittedActionIds: Set<string>,
     readonly retrieval: ResolvedRetrievalToolBinding | null,
     readonly delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
     readonly genericDefinitions: CanonicalToolDefinition[],
@@ -125,7 +125,7 @@ export class SystemActionDispatcher {
     const permittedResearchAcquisitionBindings = researchAcquisitionBindings.filter((tool) => permitted.has(tool.id));
 
     registerModuleSystemActionExecutors(executors, config, run, {
-      generic: genericDefinitions.length > 0,
+      generic: permittedGenericDefinitions.length > 0,
       researchAcquisition: permittedResearchAcquisitionDefinitions.length > 0,
     });
 
@@ -207,7 +207,9 @@ export class SystemActionDispatcher {
     return new SystemActionDispatcher(
       run,
       gateway,
-      grantedActionIds,
+      // The permitted set, not the raw grants: `list`/`describe` show what
+      // `permitted` allows, and dispatch must refuse exactly what they hide.
+      permitted,
       retrieval,
       delegation,
       permittedGenericDefinitions,
@@ -237,7 +239,7 @@ export class SystemActionDispatcher {
   }
 
   async dispatch(call: CanonicalToolCall): Promise<SystemActionDispatchResult> {
-    if (!this.grantedActionIds.has(call.name)) {
+    if (!this.permittedActionIds.has(call.name)) {
       return {
         modelResult: {
           ok: false,

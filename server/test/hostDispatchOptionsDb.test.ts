@@ -112,8 +112,8 @@ beforeEach(async () => {
   locationId = randomUUID();
   await db.pool.query(
     `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-       display_path, preferred, execution_ready, status, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'remote','/home/u/repo',true,true,'active',$5,$5)`,
+       display_path, execution_ready, status, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'remote','/home/u/repo',true,'active',$5,$5)`,
     [locationId, SPACE, FOLDER, hostId, now],
   );
   await db.pool.query(
@@ -168,7 +168,13 @@ describe("dispatch options", () => {
 
   it("follows a thread's pin and names the conversation's own backend", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
-    const thread = await new PgHostThreadRepository(db.pool).create({ workspaceLocationId: locationId, adapterType: "opencode", runtimeInstallation: "own", createdByUserId: OWNER });
+    const thread = await new PgHostThreadRepository(db.pool).create({
+      workspaceLocationId: locationId,
+      adapterType: "opencode",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+      taskId: TASK,
+    });
     await new PgHostThreadMessageRepository(db.pool).enqueue(thread.id, TASK, "hi", OWNER, { provider_id: OPENAI_PROVIDER, model: "deepseek-chat" });
     // The query's adapter is ignored: the thread decides.
     const result = await options(`?adapter_type=claude_code&thread_id=${thread.id}`);

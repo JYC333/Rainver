@@ -60,13 +60,7 @@ const MESSAGE_PAGE_SIZE = 50
 
 export interface RoomConversationProps {
   roomId: string
-  /**
-   * Null for a Room nobody has spoken in. There is no conversation to load and
-   * none to create up front: the first message creates it
-   * ([ADR 0018](../../../../../.agent/decisions/0018-room-as-visibility-boundary.md)
-   * decision 5) and comes back on the send, which is reported through
-   * `onConversationUpdated` so the surface can bind to it.
-   */
+  /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
   /** The Room's roster, for mentions and labels. Fetched when not supplied. */
   detail?: RoomDetail | null
@@ -76,19 +70,13 @@ export interface RoomConversationProps {
   agents?: Array<{ id: string; name: string; kind?: string; status?: string }>
   humans?: SpaceMember[]
   routingMode?: RoutingMode
-  /** Which backend each recipient runs on. Omitted, the server uses the stored binding. */
+  /** Which backend each recipient runs on before the Conversation is initialized. */
   backendsFor?: (recipientAgentIds: string[]) => RoomBackendSelection[]
   /** What the person is looking at; a hint the server states in the turn. */
   focusRefs?: Array<{ type: 'task'; id: string }>
   /** The conversation record the server returned with a send or a page — its title may have been generated. */
   onConversationUpdated?: (conversation: RoomConversationRecord) => void
-  /**
-   * A send refused for want of a usable Agent backend, with the setup targets
-   * the server named. Provisioning moved to the first message (ADR 0018
-   * decision 4), so this is where a Space with no configured provider or
-   * granted CLI credential now finds out — a toast alone would leave the
-   * person with an error and no next step.
-   */
+  /** A send refused for want of a usable Agent backend, with the setup targets the server named. */
   onBackendRequired?: (setupTargets: string[]) => void
   /** A send that succeeded, so a surface showing a setup prompt can drop it. */
   onSent?: () => void
@@ -103,8 +91,8 @@ export interface RoomConversationProps {
    * Hold these picks for a thread that does not exist yet.
    *
    * The page owns that handoff — the picks ride its composer and are written
-   * with the message that creates the conversation — so this only hands them
-   * over rather than navigating itself.
+   * after the user explicitly opens that conversation — so this only hands
+   * them over rather than navigating itself.
    */
   onUseInNewThread?: (picks: ThreadReferencePick[]) => void
   /**
@@ -118,15 +106,13 @@ export interface RoomConversationProps {
   onBeforeContinue?: (action: RoomActionDecision) => Promise<void>
   /** Rendered between the transcript and the composer (the page's run settings). */
   runSettings?: ReactNode
+  /** Persistent execution selection shown immediately above the composer. */
+  executionPreflight?: ReactNode
+  /** False while the execution context is missing, blocked, or being configured. */
+  executionReady?: boolean
   isOwner?: boolean
   emptyHint?: ReactNode
-  /**
-   * Content picked elsewhere, to be copied in with the first message.
-   *
-   * Only meaningful when `conversationId` is null: they are written in the
-   * same transaction as the message that creates the conversation, so they
-   * are the thread's opening and abandoning the composer leaves nothing.
-   */
+  /** Content picked elsewhere to attach before the next message in this thread. */
   references?: ThreadReferencePick[]
 }
 
@@ -148,6 +134,8 @@ export function RoomConversation({
   onReferencesRejected,
   onBeforeContinue,
   runSettings,
+  executionPreflight,
+  executionReady = true,
   isOwner = false,
   emptyHint,
   references,
@@ -167,6 +155,7 @@ export function RoomConversation({
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const [composer, setComposer] = useState(emptyRoomMessageComposerValue)
+  const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)
@@ -183,15 +172,19 @@ export function RoomConversation({
   const [picked, setPicked] = useState<string[]>([])
   const [picking, setPicking] = useState(false)
   const pickingRef = useRef(false)
-  /**
-   * One key per attempt at *this* first message, held across retries.
-   *
-   * Only the session-less send needs it: it creates the conversation, and it
-   * is the send that carries references — so a retry after a lost response
-   * would otherwise make a second thread and copy their content into it
-   * again. Cleared once a send succeeds, so the next new thread gets its own.
-   */
-  const firstMessageKey = useRef<string | null>(null)
+  const referencesAttachedRef = useRef(false)
+
+  useEffect(() => {
+    const previous = previousConversationId.current
+    // Keep a draft typed before explicit execution setup when the new
+    // Conversation is opened. All other navigation starts with a clean
+    // composer, so text cannot accidentally follow an existing thread.
+    if (previous !== undefined && !(previous === null && conversationId !== null)) {
+      setComposer(emptyRoomMessageComposerValue())
+      setResetToken(value => value + 1)
+    }
+    previousConversationId.current = conversationId
+  }, [conversationId])
 
   useEffect(() => { runsRef.current = runs }, [runs])
   // Held in a ref, never in a dependency list. `loadMessages` reports the
@@ -296,6 +289,7 @@ export function RoomConversation({
     setRuns({})
     setRunProgress({})
     setRunDeltas({})
+    referencesAttachedRef.current = false
     loadMessages()
       .catch(error => toast.error(errMsg(error)))
       .finally(() => { if (!cancelled) setMessagesLoading(false) })
@@ -351,7 +345,7 @@ export function RoomConversation({
 
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
-    if (!text || sendingRef.current) return
+    if (!conversationId || !text || sendingRef.current || !executionReady) return
     const segments = composer.routingSegments
       .map(segment => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids), content: segment.content.trim() }))
       .filter(segment => segment.recipient_agent_ids.length > 0 && segment.content)
@@ -364,32 +358,30 @@ export function RoomConversation({
     setSending(true)
     followRef.current = true
     try {
-      // Only the send that creates a conversation is keyed; an addressed one
-      // is already guarded by `claimTurn` on the conversation it names.
-      if (conversationId === null && !firstMessageKey.current) {
-        firstMessageKey.current = crypto.randomUUID()
+      // Preflight opens the draft explicitly, so attach held references
+      // immediately before the first addressed send and keep them idempotent
+      // across retries.
+      if (references?.length && !referencesAttachedRef.current) {
+        await roomsApi.attachReferences(roomId, conversationId, {
+          references,
+          ...(confirmDisclosure ? { confirm_disclosure: confirmDisclosure } : {}),
+        })
+        referencesAttachedRef.current = true
       }
       const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
         content: text,
-        ...(conversationId === null && references?.length
-          ? { references, ...(confirmDisclosure ? { confirm_disclosure: confirmDisclosure } : {}) }
-          : {}),
         routing_mode: routingMode,
         ...(variant === 'full' && routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
           : variant === 'full' ? { recipient_segments: null } : {}),
         backends: backendsFor?.(recipientAgentIds) ?? [],
         ...(focusRefs ? { focus_refs: focusRefs } : {}),
-      }, ...(conversationId === null ? [firstMessageKey.current!] as const : [] as const))
+      })
       watchRuns(dispatched.run_ids)
       setMessages(current => uniqueMessages([...current, dispatched.message]))
-      // Reported when this instance had no conversation — that is the only
-      // case the surface must bind to, and reporting otherwise drags a reader
-      // who switched conversations mid-send back to the one they left.
-      if (dispatched.conversation && (conversationId === null || dispatched.conversation.id === conversationId)) {
+      if (dispatched.conversation?.id === conversationId) {
         conversationUpdatedRef.current?.(dispatched.conversation)
       }
-      firstMessageKey.current = null
       onSentRef.current?.()
       setResetToken(value => value + 1)
     } catch (error) {
@@ -425,7 +417,7 @@ export function RoomConversation({
       sendingRef.current = false
       setSending(false)
     }
-  }, [backendsFor, composer, conversationId, focusRefs, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [backendsFor, composer, conversationId, executionReady, focusRefs, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: RoomActionDecision) => {
@@ -496,10 +488,10 @@ export function RoomConversation({
   /**
    * Whether messages may be picked at all.
    *
-   * Needs a conversation — a reference names the one its messages came from,
-   * and there is none until the first message — *and* somewhere for a pick to
-   * go. Without the second test a surface that supplies neither destination
-   * still shows checkboxes and a button that silently does nothing.
+   * Needs an existing conversation — a reference names the one its messages
+   * came from — and somewhere for a pick to go. Without the second test a
+   * surface that supplies neither destination still shows checkboxes and a
+   * button that silently does nothing.
    */
   const canPick = Boolean(conversationId) && (
     Boolean(onUseInNewThread) || (siblingConversations?.length ?? 0) > 1
@@ -603,11 +595,11 @@ export function RoomConversation({
             On the same condition the send uses, not merely "there are picks":
             a banner promising content the send would drop is the failure this
             exists to close. */}
-        {conversationId === null && (references?.length ?? 0) > 0 && (
+        {(references?.length ?? 0) > 0 && (
           <div className="flex items-center gap-2 rounded border border-dashed border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
             <Quote className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-              {referenceDraftLabel(references!)} will be copied in with this message
+              {referenceDraftLabel(references!)} will be attached to this conversation before the message
             </span>
             {onReferencesRejected && (
               <Button
@@ -622,20 +614,24 @@ export function RoomConversation({
             )}
           </div>
         )}
+        {executionPreflight}
         {runSettings}
         <RoomMessageComposer
           value={composer}
           onChange={setComposer}
           agents={roomAgents}
           members={detail?.agent_members ?? []}
+          // Setup gates sending, not drafting: a blocked/offline preflight
+          // must still let the user write and retain the message.
           disabled={sending}
           resetToken={resetToken}
           onSubmit={() => void sendMessage()}
         />
         <div className="flex justify-end">
-          <Button size={compact ? 'sm' : 'default'} disabled={sending || !composer.text.trim()} onClick={() => void sendMessage()}>
+          <Button size={compact ? 'sm' : 'default'} disabled={sending || !executionReady || !composer.text.trim()} onClick={() => void sendMessage()}>
             {sending ? <Loader2 className="mr-1 size-4 animate-spin" /> : <Send className="mr-1 size-4" />}Send
           </Button>
+          {!executionReady && <span className="mr-auto text-xs text-muted-foreground">Configure the execution context before sending.</span>}
         </div>
       </div>
     </div>
@@ -653,7 +649,7 @@ function RoomMessageView({
   /**
    * Whether it may be picked at all. False for a conversation that does not
    * exist yet: a reference names the conversation its messages came from, and
-   * there is nothing to name until the first message has been sent.
+   * there is no transcript to select from before a draft has been opened.
    */
   pickable: boolean
   onPickedChange: (picked: boolean) => void
@@ -667,8 +663,11 @@ function RoomMessageView({
 }) {
   const runIds = metadataRunIds(message.metadata_json)
   const mine = message.role === 'user'
+  const system = message.role === 'system'
   const human = humans.find(member => member.user_id === message.user_id)
-  const label = mine
+  const label = system
+    ? 'Execution'
+    : mine
     ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? 'You' : 'Person'))
     : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? 'Agent'
   const previews = metadataActionPreviews(message.metadata_json)
@@ -677,7 +676,7 @@ function RoomMessageView({
     // text, so the two sides differ in alignment, fill and edge at once.
     <div
       className={`group ${mine ? 'flex justify-end pl-6' : 'flex justify-start pr-6'} ${picked ? 'bg-accent/40' : ''}`}
-      data-role={mine ? 'user' : 'agent'}
+      data-role={system ? 'system' : mine ? 'user' : 'agent'}
     >
       {pickable && (
         // Shown on hover, or whenever anything is picked, so the transcript
@@ -692,7 +691,9 @@ function RoomMessageView({
           />
         </label>
       )}
-      <div className={mine
+      <div className={system
+        ? 'max-w-full rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2 text-muted-foreground'
+        : mine
         ? `${compact ? 'max-w-full' : 'max-w-[82%]'} rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground`
         : `${compact ? 'max-w-full' : 'max-w-[82%]'} rounded-2xl rounded-bl-sm border border-border bg-muted/60 px-3 py-2`}>
         <div className={`mb-1 flex items-center gap-2 text-[11px] font-medium ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>

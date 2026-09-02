@@ -34,11 +34,10 @@ longer write it.
 `frame → plan → act → verify → conclude`, declared in
 `packages/protocol/src/projectWork.ts`.
 
-A **system constant**, not per-Project configuration. `primary_mode` swaps the
-labels (`verify` reads *Evaluate* in a research Project and *Verify* in a
-delivery one) and changes nothing else — same keys, same order, same meaning
-everywhere. A versioned per-Project loop definition would carry only those
-labels, which does not justify a configuration table with a publish lifecycle.
+A **system constant**, not per-Project configuration, and one wording:
+*Frame / Plan / Act / Verify / Conclude* in every Project. Four per-mode
+wordings for the same stages were the last thing a Project "mode" did, and
+went with it ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
 
 Movement is classified, not restricted. `stageTransitionKind()` reads the
 ordering to label a move `advance / regress / skip / reopen`:
@@ -292,6 +291,13 @@ Person-facing writes:
   `recordStageChange` the agent path will use.
 - `POST /tasks` records `task.created`, in the same transaction as the insert.
 
+The Board and Pulse re-read on a five-second interval while visible and when
+the tab comes back (`hooks/usePeriodicRefresh.ts`, the cadence the Inquiry Area
+already used for a live Thread), quietly — no skeleton over what is drawn. They
+used to load once on arrival, so a Task or a question an Agent recorded from the
+Room appeared only after leaving the page and returning. A read cadence only;
+nothing is decided by it.
+
 ### Updates
 
 `GET /projects/:projectId/updates` (`updatesReadModel.ts`) is the third read
@@ -471,18 +477,6 @@ the current widening. A Task-domain change, recorded rather than done.
 
 **Known smaller gaps**, recorded so they are decisions rather than oversights:
 
-- A flow status with no Board lane would be counted and never drawn.
-  `ck_tasks_status` and `ck_board_columns_status_key` carry the same list and
-  `COLUMN_FOR_STATUS` maps the one exception, so it is unreachable today —
-  but nothing enforces the correspondence.
-- The Delivery attention adapter uses the same responsibility SQL as the
-  Board, but its own coverage is fixture-staged rather than database-backed;
-  the chain itself is exercised against real Postgres through the Board.
-- The four Task-addressed Agent actions carry no Run-to-Project constraint
-  (`task.create` does), so a Project's Assistant can append to another
-  Project's stream if instructed by someone who can read both. Recorded in
-  `SYSTEM_ACTIONS.md` as intended — an Agent's reach is the instructing
-  person's — but it sits awkwardly beside one-Assistant-per-Project.
 - No periodic job re-materializes a managed Assistant when its seed changes;
   it happens on the next Room creation in that Project. See
   [`../modules/agents.md`](../modules/agents.md).

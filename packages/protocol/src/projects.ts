@@ -96,18 +96,6 @@ export type ProjectPublicSummaryDraftRequest = z.infer<
 // Overview. See `.agent/architecture/PROJECTS.md` and ADR 0011.
 // ---------------------------------------------------------------------------
 
-// One classification axis, valued by how work advances rather than by subject
-// matter. `inquiry` and `decision` were absorbed into `research`: asking is how
-// research starts and deciding is where it ends, and both remain entities with
-// their own Areas that a Project of any Mode can hold.
-export const ProjectPrimaryModeSchema = z.enum([
-  "research",
-  "delivery",
-  "operations",
-  "learning",
-]);
-export type ProjectPrimaryMode = z.infer<typeof ProjectPrimaryModeSchema>;
-
 export const ProjectBriefVersionSchema = z
   .object({
     id: IdSchema,
@@ -123,7 +111,6 @@ export const ProjectBriefVersionSchema = z
     project_status: z.string().trim().min(1),
     current_focus: z.string().nullable(),
     confirmed_decisions: z.array(z.string()),
-    primary_mode: ProjectPrimaryModeSchema,
     workspace_identity: z.record(z.unknown()),
     workspace_boundary: z.record(z.unknown()),
     source_refs: z.array(z.record(z.unknown())),
@@ -172,20 +159,6 @@ export const ProjectInstructionVersionWriteRequestSchema = z.object({
   title: z.string().trim().min(1).max(256),
   instruction_text: z.string().trim().min(1).max(50_000),
 }).strict();
-
-export const ProjectModeTransitionSchema = z
-  .object({
-    id: IdSchema,
-    space_id: IdSchema,
-    project_id: IdSchema,
-    from_mode: ProjectPrimaryModeSchema.nullable(),
-    to_mode: ProjectPrimaryModeSchema,
-    reason: z.string().nullable(),
-    trigger_ref: z.string().nullable(),
-    confirmed_by_user_id: IdSchema.nullable(),
-    created_at: ISODateTimeSchema,
-  })
-  .passthrough();
 
 export const ProjectAttentionSeveritySchema = z.enum(["low", "normal", "high", "critical"]);
 export type ProjectAttentionSeverity = z.infer<typeof ProjectAttentionSeveritySchema>;
@@ -258,7 +231,6 @@ export const ProjectOverviewResponseSchema = z
       .object({
         id: IdSchema,
         name: z.string(),
-        primary_mode: ProjectPrimaryModeSchema,
         status: z.string(),
       })
       .passthrough(),
@@ -268,7 +240,13 @@ export const ProjectOverviewResponseSchema = z
       basis: z.enum(["published_brief_goal", "missing_published_brief_goal"]),
       goal_or_problem: z.string().nullable(),
     }).strict(),
-    available_modes: z.array(ProjectPrimaryModeSchema),
+    /**
+     * Whether any active Project Folder is connected. A Folder is optional —
+     * chat and non-file work need none — but a Project with code or files and
+     * no Folder has its Agents working in a managed workspace on the Host
+     * rather than in that code, so the front page says so until one exists.
+     */
+    has_project_folder: z.boolean(),
     attention: z.array(ProjectAttentionItemSchema),
     in_progress: z.array(ProjectRunningOperationSchema),
   })

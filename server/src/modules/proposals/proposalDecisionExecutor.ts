@@ -1,3 +1,4 @@
+import { createDefaultConversationContinuationRegistry } from "./continuationRegistry.js";
 import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -86,11 +87,25 @@ export function registerProposalDecisionExecutor(
       ? await apply.accept(body.proposal_id, identity)
       : await apply.reject(body.proposal_id, identity);
     if (!result) throw new HttpError(409, "That proposal was decided by someone else first");
+    const status = body.decision === "accept" ? "accepted" : "rejected";
+    // The same continuation the Accept button dispatches as a follow-up turn
+    // (`RoomService.continueAfterProposal`), handed back in-turn: a decision
+    // typed into the conversation must unblock the same work a click does.
+    const decided = await pool.query<{
+      id: string; space_id: string; project_id: string | null; proposal_type: string;
+      status: "accepted" | "rejected"; proposed_title: string; payload_json: unknown; created_by_run_id: string | null;
+    }>(
+      `SELECT id, space_id, project_id, proposal_type, status, title AS proposed_title, payload_json, created_by_run_id
+         FROM proposals WHERE space_id = $1 AND id = $2`,
+      [run.space_id, body.proposal_id],
+    );
+    const continuation = decided.rows[0]
+      ? await createDefaultConversationContinuationRegistry().resolve(pool, decided.rows[0])
+      : null;
+    const outcome = { proposal_id: body.proposal_id, status, decided_by: userId, via: "room_instruction" };
     return {
-      proposal_id: body.proposal_id,
-      status: body.decision === "accept" ? "accepted" : "rejected",
-      decided_by: userId,
-      via: "room_instruction",
+      modelResult: { ok: true, tool: "proposal.decide", ...outcome, next_step: continuation?.instruction ?? null },
+      summary: { tool_name: "proposal.decide", ok: true, ...outcome },
     };
   });
 }

@@ -80,6 +80,7 @@ describe("terminal Chat Run reconciliation", () => {
         },
       },
       {
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: {
           async finalizeChatTurn() {
             return {
@@ -97,6 +98,95 @@ describe("terminal Chat Run reconciliation", () => {
         event_type: "chat_completed",
         status: "failed",
         error_code: "orphaned",
+      }),
+    ]);
+  });
+
+  it("completes a chat turn whose Run died before creating an invocation authority", async () => {
+    const events: RunEventInput[] = [];
+    const run: RunRecord = {
+      id: "run-routing-failed",
+      space_id: "space-1",
+      agent_id: "agent-1",
+      agent_version_id: "version-1",
+      status: "failed",
+      mode: "live",
+      prompt: "hello",
+      instruction: null,
+      project_folder_id: null,
+      session_id: "session-1",
+      project_id: null,
+      adapter_type: "claude_code",
+      model_provider_id: null,
+      model_override_json: {
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: "session-1",
+          user_id: "user-1",
+          user_message_id: "message-user-1",
+          agent_id: "agent-1",
+          agent_version_id: "version-1",
+          project_id: null,
+        },
+      },
+      output_json: null,
+      error_json: {
+        error_code: "run_orchestration_failed",
+        error_text: "No runtime candidate passed routing hard filters.",
+      },
+      required_sandbox_level: "none",
+      trigger_origin: "manual",
+      instructed_by_user_id: "user-1",
+      started_at: "2026-08-30T10:00:00.000Z",
+      ended_at: "2026-08-30T10:00:01.000Z",
+    };
+    const repository = {
+      async listTerminalChatRunsAwaitingCompletion() {
+        return [{ id: run.id, space_id: run.space_id }];
+      },
+      async listWaitingRoomChatRunsAwaitingReply() {
+        return [];
+      },
+      async getRun() {
+        return run;
+      },
+      async listRunEventsPage() {
+        return { items: [], total: 0, limit: 1, offset: 0 };
+      },
+      async appendRunEvent(input: RunEventInput) {
+        events.push(input);
+        return {} as never;
+      },
+    } as unknown as PgRunRepository;
+
+    await reconcileTerminalChatRuns(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
+      repository,
+      undefined,
+      {
+        async finalizeRun() {
+          return { kind: "activity", status: "succeeded", activity_id: "finalization-2", metadata_json: {} };
+        },
+      },
+      {
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
+        continuity: {
+          async finalizeChatTurn() {
+            const { InvocationAuthorityNotFoundError } = await import("../src/modules/runtimeContext/continuity/service.js");
+            throw new InvocationAuthorityNotFoundError();
+          },
+        },
+      },
+    );
+
+    // The missing authority is expected for a Run that never executed; the
+    // completion must land instead of deferring forever.
+    expect(events).toEqual([
+      expect.objectContaining({
+        run_id: "run-routing-failed",
+        event_type: "chat_completed",
+        status: "failed",
+        error_code: "run_orchestration_failed",
       }),
     ]);
   });

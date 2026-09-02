@@ -79,49 +79,6 @@ evidence — see
 
 ## 4. Project Surfaces
 
-### G1.1 — Project-level entry point for the academic citation graph
-
-Scope corrected 2026-08-13. The earlier claim that this graph is reachable only
-by hand-assembling a URL is no longer true: `ProjectSourcesPage` builds a
-Project-scoped graph link and already derives the lens from the Project's active
-Source bindings' extraction profiles. What is still missing is narrower.
-
-- [ ] Add a Project-scoped Graph destination under Explore, beside Inquiry and
-  Sources, so the map is reachable from Project navigation rather than only from
-  the Sources page.
-- [ ] Confirm the lens degrades honestly for Projects with no academic entities,
-  rather than rendering an empty canvas with no explanation.
-
-Constraint: the graph stays read-only and the projection contract stays the
-producer's; this is navigation and defaulting, not a graph feature. Distinct from
-the Inquiry Area's Map view, which projects Thread-to-Thread structure.
-
-### G1.3 — Loose ends from the Project workbench build
-
-Recorded 2026-08-27 when `project-workbench-plan.md` was retired. Current state
-is in [`../architecture/PROJECT_WORK.md`](../architecture/PROJECT_WORK.md) §9,
-which carries the reasoning; these are the items that want an actual change.
-
-- [ ] Pin the Board's lane set to the flow-status set. `ck_tasks_status` and
-  `ck_board_columns_status_key` carry the same list and `COLUMN_FOR_STATUS`
-  maps the one deliberate exception (`blocked` as an overlay), so a status with
-  no lane is unreachable — but nothing asserts the correspondence, and a card
-  that is counted and never drawn is exactly the defect P2 shipped once
-  already.
-- [ ] Give the Delivery attention adapter real-database coverage. It uses the
-  same responsibility SQL the Board does, and that SQL *is* exercised against
-  real Postgres through the Board — but the adapter's own tests stage their
-  rows, so a change to how it consumes the chain would not be caught. This is
-  the surface that decides whether a person is interrupted at all.
-- [ ] Decide whether a Project's Assistant should be able to act on another
-  Project's Tasks. The four Task-addressed Agent actions carry no
-  Run-to-Project constraint (`task.create` does), which `SYSTEM_ACTIONS.md`
-  records as intended — an Agent's reach is the instructing person's — but it
-  sits awkwardly beside one-Assistant-per-Project, where the Assistant is
-  named for and scoped to one Project.
-- [x] Re-materialize a managed Assistant when its seed changes — done at boot
-  (`reconcileSeedFollowersForAllSpaces`), daily as a backstop.
-
 ### G1.2 — Two loose ends left by the Inquiry Step model
 
 Both are unreachable today and neither blocks anything; they are recorded so the
@@ -236,32 +193,6 @@ routing deliberately does not take it: a provider API has no file primitive, and
 a server-side `file.write` tool is a worse version of what a CLI runtime does
 natively while turning an ungated mutation surface loose in the one path that
 currently has none.
-
-### G1.5 — Every Project shows all fifteen Areas from birth
-
-Found 2026-08-16. `ProjectAreaLayout.tsx` declares its navigation as a
-hardcoded four-group, fifteen-item `as const`: Project (Overview, Notes, Rooms,
-Raw material), Explore (Inquiry, Research, Sources, Digest, Files & Code,
-Experiments), Decide & learn (Decisions, Learning, Knowledge review), Execute
-(Delivery, Operations).
-
-`primary_mode` is read in that file only to render the words "<mode> mode" — it
-does not filter. There is no visibility or presence check anywhere in the
-component. So a Project created to hold a few notes presents the same fifteen
-destinations as one running experiments and deliveries, and most of them will
-never hold data.
-
-- [ ] Decide what governs an Area's visibility — `primary_mode`, data presence,
-  explicit enablement, or a combination.
-- [ ] Make the list contributed rather than literal. The back end is already
-  contribution-based (`projects/attentionRegistry.ts` plus the per-module
-  `projectIntegration.ts` files); only this component is not.
-
-Constraint: an Area that has data must never become unreachable. Hiding is a
-default, not a deletion — a Project whose Mode changes cannot lose access to
-what it already produced.
-
-## 6. Rooms And Research Control
 
 ### R1.2 — Research start parameters should be auto-selected, not fixed defaults
 
@@ -467,11 +398,15 @@ integration gate.
   agent to use `$RAINVER_CLI`. `hosts.daemon_version` is recorded and never
   read; either read it, or have the daemon declare the capability in its
   `hello`.
-- [ ] The work-surface wire shape is declared twice —
+- [x] The work-surface wire shape is declared twice —
   `runs/runWorkSurface.ts`'s `RunWorkSurfaceFrame` and the daemon's
-  `WorkSurfaceFrame` — with nothing pinning them together. It follows the
-  `provider_binding` precedent, so it is not a regression, but both packages
-  already depend on `@rainver/protocol`, which is where one copy would live.
+  `WorkSurfaceFrame` — with nothing pinning them together. **Resolved
+  2026-09-02:** the whole host WebSocket wire, both directions, is one
+  contract (`packages/protocol/src/hostWire.ts`); the daemon depends on
+  `@rainver/protocol` at runtime and parses every frame with it, the server
+  parses daemon frames with it, and both type their sends against it. The
+  daemon's `WorkSurfaceFrame` is now an alias of the contract's type. Found
+  because `work_surface` was in fact dropped at that boundary.
 
 ### Interactive permission gate for headless dispatch
 

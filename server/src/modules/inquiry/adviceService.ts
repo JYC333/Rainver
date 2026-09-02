@@ -212,7 +212,7 @@ export class InquiryAdviceService {
     // `getAdvice` returns the latest row whatever its state, so without these
     // two an already-taken or stale recommendation would be adopted again.
     if (!current || current.status !== "open" || current.stale) {
-      throw new HttpError(404, "This Thread has no current next step to adopt");
+      throw new HttpError(404, "This Thread has no recorded next step to adopt yet — inquiry.list_threads shows next_step only for Threads that have one; recommend a step in conversation instead.");
     }
     // One transaction for all three writes. Committing the focus and the
     // adoption and then failing to record the event leaves an advancement

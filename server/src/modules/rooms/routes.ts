@@ -31,6 +31,7 @@ type RoomServicePort = Pick<
   | "transferOwner"
   | "claimOwner"
   | "listConversations"
+  | "createConversationDraft"
   | "listMessages"
   | "getConversationSummary"
   | "sendMessage"
@@ -285,6 +286,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  /**
+   * Explicitly open a Conversation draft so its execution context can be
+   * reviewed and initialized before the first message. Opening the draft is a
+   * visible user action, and it never changes a Host or Primary Workspace
+   * implicitly.
+   */
+  app.post("/api/v1/rooms/:roomId/conversations", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.code(201).send(
+        await service(context).createConversationDraft(identity, roomId(request)),
+      );
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
   app.get(
     "/api/v1/rooms/:roomId/conversations/:sessionId/messages",
     async (request, reply) => {
@@ -323,38 +342,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   );
 
   /**
-   * Speak in a Room without naming a conversation: the message creates one,
-   * in the transaction that writes it, and it comes back on the response (ADR
-   * 0018 decision 5). This is both how a Room's first conversation begins and
-   * how a further one does, so there is no separate "create the conversation
-   * first" step that could leave an empty one behind.
-   */
-  app.post("/api/v1/rooms/:roomId/messages", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.SendRoomMessageRequestSchema.parse(jsonBody(request));
-      // Only this route takes the key: it is the one that creates a
-      // conversation, so a retry here costs a duplicate thread rather than a
-      // rejected turn.
-      const rawKey = request.headers["idempotency-key"];
-      return reply.code(201).send(
-        await service(context).sendMessage(identity, roomId(request), null, {
-          ...body,
-          idempotency_key: typeof rawKey === "string" ? rawKey : null,
-        }),
-      );
-    } catch (error) {
-      return sendRoomError(reply, error);
-    }
-  });
-
-  /**
    * Copy content picked elsewhere into this conversation.
-   *
-   * The other way in is the session-less send, which carries references for a
-   * thread that does not exist yet. This is the same operation on a thread
-   * that does.
    */
   app.post("/api/v1/rooms/:roomId/conversations/:sessionId/references", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

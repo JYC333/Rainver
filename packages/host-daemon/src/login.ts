@@ -1,3 +1,4 @@
+import type { HostDaemonFrame, HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -15,12 +16,8 @@ import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCom
  * logs in with `HOME` set to its own home, so the state lands in that copy
  * and nowhere else; the machine's own copy logs in as the machine.
  */
-export interface LoginOpenFrame {
-  session_id: string;
-  adapter_type: string;
-  installation: string;
-  login: ToolLoginSpec | null;
-}
+/** The wire's `login_open` frame, minus its type tag. */
+export type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
 
 export interface LoginSession {
   write(data: string): void;
@@ -58,7 +55,7 @@ function ptyArgv(command: string[]): { command: string; args: string[] } {
 
 export function openLoginSession(
   frame: LoginOpenFrame,
-  send: (frame: Record<string, unknown>) => void,
+  send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
 ): LoginSession {
   if (platform() === "win32") throw new Error("Interactive login is not supported on Windows hosts yet.");
@@ -106,26 +103,4 @@ export function openLoginSession(
 
 export function loginSession(sessionId: string): LoginSession | undefined {
   return sessions.get(sessionId);
-}
-
-export function parseLoginOpenFrame(frame: Record<string, unknown>): LoginOpenFrame {
-  const { session_id, adapter_type, installation } = frame;
-  if (typeof session_id !== "string" || typeof adapter_type !== "string" || typeof installation !== "string") {
-    throw new Error("login_open frame is missing session_id, adapter_type, or installation");
-  }
-  const login = frame.login as Record<string, unknown> | null | undefined;
-  return {
-    session_id,
-    adapter_type,
-    installation,
-    login: login && Array.isArray(login.command) && typeof login.home_subdir === "string" && typeof login.credential_file === "string"
-      ? {
-          command: login.command.map(String),
-          ...(Array.isArray(login.managed_command) ? { managed_command: login.managed_command.map(String) } : {}),
-          home_subdir: login.home_subdir,
-          credential_file: login.credential_file,
-          ...(typeof login.hint === "string" ? { hint: login.hint } : {}),
-        }
-      : null,
-  };
 }

@@ -31,7 +31,9 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// this cannot drift. Without it, the Project timeline (which scans this
 	// table, not `host_threads`, since this is the higher-volume one)
 	// would need a three-hop join per row.
-	projectId: varchar("project_id", { length: 36 }).notNull(),
+	// Null for a managed-workspace thread: it has no Location, no Folder, and
+	// so no Project — its events belong to the Room or direct chat instead.
+	projectId: varchar("project_id", { length: 36 }),
 	runId: varchar("run_id", { length: 36 }).notNull(),
 	eventIndex: integer("event_index").notNull(),
 	eventType: varchar("event_type", { length: 32 }).notNull(),

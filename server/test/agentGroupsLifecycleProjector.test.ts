@@ -360,13 +360,14 @@ class FakeClient {
       return { rows: [row as Row], rowCount: 1 };
     }
     if (sql.includes("INSERT INTO jobs")) {
+      const ensuredAgentRun = sql.includes("WITH existing AS");
       const row: JobRecord = {
-        id: String(params[0]),
-        space_id: String(params[1]),
-        user_id: params[2] ? String(params[2]) : null,
-        project_folder_id: params[3] ? String(params[3]) : null,
-        agent_id: params[4] ? String(params[4]) : null,
-        job_type: String(params[5]),
+        id: String(params[ensuredAgentRun ? 2 : 0]),
+        space_id: String(params[ensuredAgentRun ? 0 : 1]),
+        user_id: params[ensuredAgentRun ? 3 : 2] ? String(params[ensuredAgentRun ? 3 : 2]) : null,
+        project_folder_id: params[ensuredAgentRun ? 4 : 3] ? String(params[ensuredAgentRun ? 4 : 3]) : null,
+        agent_id: params[ensuredAgentRun ? 5 : 4] ? String(params[ensuredAgentRun ? 5 : 4]) : null,
+        job_type: ensuredAgentRun ? "agent_run" : String(params[5]),
         status: "pending",
         priority: Number(params[6]),
         payload_json: JSON.parse(String(params[7])) as Record<string, unknown>,
@@ -462,6 +463,39 @@ function projectorFor(state: FakeState): AgentGroupRunLifecycleProjector {
 }
 
 describe("AgentGroupRunLifecycleProjector", () => {
+  it("enqueues the first queued delegated child after its parent yields", async () => {
+    const parent = childRun({
+      id: "run-parent",
+      agent_id: "agent-manager",
+      parent_run_id: null,
+      root_run_id: "run-parent",
+      delegation_id: null,
+      status: "waiting_for_dependency",
+    });
+    const queuedChild = childRun({ status: "queued" });
+    const state: FakeState = {
+      group: group(),
+      runs: new Map([[parent.id, parent], [queuedChild.id, queuedChild]]),
+      delegations: new Map([["delegation-1", delegation()]]),
+      messages: [],
+      events: [],
+      jobs: [],
+    };
+
+    await projectorFor(state).queueDelegatedChildren(parent);
+
+    expect(state.jobs).toHaveLength(1);
+    expect(state.jobs?.[0]).toMatchObject({
+      job_type: "agent_run",
+      agent_id: "agent-worker",
+      payload_json: expect.objectContaining({
+        run_id: "run-child",
+        parent_run_id: "run-parent",
+        delegation_id: "delegation-1",
+      }),
+    });
+  });
+
   it("projects completed manager run output as a chat message once", async () => {
     const managerRun = childRun({
       id: "run-parent",

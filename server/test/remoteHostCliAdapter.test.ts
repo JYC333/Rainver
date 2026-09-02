@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import type { RuntimeSemanticEvent } from "@rainver/protocol";
-import { executeRemoteHostCliAdapter, remoteStallTimeoutSeconds } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { executeRemoteHostCliAdapter } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { stallTimeoutSeconds } from "../src/modules/runs/stallTimeout.js";
 import { loadConfig } from "../src/config.js";
 import { __setProvidersDbPortForTests } from "../src/modules/providers/dbReader.js";
 import {
@@ -50,6 +51,11 @@ class FakeSink implements HostFrameSink {
     this.sent.push(frame);
   }
   close(): void {}
+}
+
+/** The nonce the registry stamped on this run's launch frame; run frames must echo it. */
+function launchIdOf(sink: FakeSink, runId = "run-1"): string {
+  return String(sink.sent.find((f) => f.type === "launch" && f.run_id === runId)!.launch_id);
 }
 
 // Files share a worker: a fake clock left installed here would stall every
@@ -118,18 +124,18 @@ describe("executeRemoteHostCliAdapter", () => {
     // The controller must not write its `initialize` request until the
     // daemon confirms the run is registered.
     expect(sink.sent).toHaveLength(1);
-    registry.receiveLaunched("host-1", "run-1");
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(sink.sent).toHaveLength(2);
     expect(JSON.parse((sink.sent[1] as { value: string }).value)).toMatchObject({ method: "initialize" });
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(JSON.parse((sink.sent[2] as { value: string }).value)).toMatchObject({ method: "session/new" });
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(JSON.parse((sink.sent[3] as { value: string }).value)).toMatchObject({
@@ -144,17 +150,17 @@ describe("executeRemoteHostCliAdapter", () => {
         sessionId: "session-1",
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done\n" } },
       },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     // The controller closes stdin itself once its turn completes.
     expect(sink.sent.at(-1)).toEqual({ type: "stdin_close", run_id: "run-1" });
 
-    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
     const result = await executePromise;
     expect(result).toMatchObject({
@@ -195,11 +201,11 @@ describe("executeRemoteHostCliAdapter", () => {
     // Wait for the launch frame rather than counting microtask ticks: how many
     // awaits the adapter takes before dispatching is not part of its contract.
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveLaunched("host-1", "run-1");
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -215,7 +221,7 @@ describe("executeRemoteHostCliAdapter", () => {
           { optionId: "allow", kind: "allow_once" },
         ],
       },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -224,9 +230,9 @@ describe("executeRemoteHostCliAdapter", () => {
       text: "Permission pre-authorized (execute): allowed",
     });
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
     await executePromise;
   });
 
@@ -266,17 +272,16 @@ describe("executeRemoteHostCliAdapter", () => {
       type: "launch",
       run_id: "run-1",
       workspace_location_id: "folder-1",
-      project_folder_id: "folder-1",
     });
     const argv = launchFrame.argv as string[];
     expect(argv).toEqual(["claude-agent-acp"]);
 
-    registry.receiveLaunched("host-1", "run-1");
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(JSON.parse((sink.sent[1] as { value: string }).value)).toMatchObject({ method: "initialize" });
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(JSON.parse((sink.sent[2] as { value: string }).value)).toMatchObject({
@@ -284,7 +289,7 @@ describe("executeRemoteHostCliAdapter", () => {
       params: { sessionId: "vendor-session-abc", cwd: "rainver:remote-workspace-cwd" },
     });
 
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "vendor-session-abc" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "vendor-session-abc" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
     expect(JSON.parse((sink.sent[3] as { value: string }).value)).toMatchObject({
@@ -310,7 +315,7 @@ describe("executeRemoteHostCliAdapter", () => {
           },
         },
       },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -321,11 +326,11 @@ describe("executeRemoteHostCliAdapter", () => {
         sessionId: "vendor-session-abc",
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
       },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
     const result = await executePromise;
     expect(result).toMatchObject({
@@ -353,7 +358,7 @@ describe("executeRemoteHostCliAdapter", () => {
       { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
     );
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
     const result = await executePromise;
     expect(result).toMatchObject({ success: false, exit_code: 1, error_code: "runtime_nonzero_exit" });
   });
@@ -369,21 +374,21 @@ describe("executeRemoteHostCliAdapter", () => {
       { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
     );
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveLaunched("host-1", "run-1");
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       result: { protocolVersion: 1 },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
       error: { code: -32000, message: "Session not found" },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
     await expect(executePromise).resolves.toMatchObject({
       success: false,
@@ -404,21 +409,21 @@ describe("executeRemoteHostCliAdapter", () => {
       { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
     );
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveLaunched("host-1", "run-1");
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0", id: 2, result: { sessionId: "valid-session" },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0", id: 4, error: { code: -32000, message: "provider unavailable" },
-    })}\n`);
+    })}\n`, launchIdOf(sink, "run-1"));
     await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-    registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
     await expect(executePromise).resolves.toMatchObject({
       success: false,
@@ -452,7 +457,7 @@ describe("executeRemoteHostCliAdapter", () => {
     terminateCalls[0]!.terminate();
     expect(sink.sent).toContainEqual({ type: "terminate", run_id: "run-1", force: false });
 
-    registry.receiveComplete("host-1", "run-1", { exit_code: 130, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-1", { exit_code: 130, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
     await executePromise;
   });
 
@@ -494,7 +499,7 @@ describe("executeRemoteHostCliAdapter", () => {
     const sink1 = new FakeSink();
     registry.registerConnection("host-1", sink1);
     const completion = registry.dispatchLaunch("host-1", "run-x", { argv: ["opencode"] });
-    expect(sink1.sent).toEqual([{ type: "launch", run_id: "run-x", argv: ["opencode"] }]);
+    expect(sink1.sent).toEqual([{ type: "launch", run_id: "run-x", launch_id: expect.any(String), argv: ["opencode"] }]);
 
     registry.unregisterConnection("host-1", sink1);
     expect(registry.sendStdin("host-1", "run-x", "first")).toBe(false);
@@ -514,7 +519,7 @@ describe("executeRemoteHostCliAdapter", () => {
     registry.registerConnection("host-1", sink3);
     expect(sink3.sent).toEqual([]);
 
-    registry.receiveComplete("host-1", "run-x", { exit_code: 0, timed_out: false, error: null });
+    registry.receiveComplete("host-1", "run-x", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink1, "run-x"));
     await completion;
   });
 
@@ -575,7 +580,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         metadata_json: { reason: "host_default_binding_unusable" },
       }));
 
-      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
       // The run reaches the daemon and completes on its own terms; what
       // matters here is that it was not failed *for the binding*.
       const result = await execution;
@@ -646,7 +651,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       expect(binding.profile_env).toEqual({ HOME: ".", CLAUDE_CONFIG_DIR: ".claude" });
       expect(leases.size()).toBe(1);
 
-      connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+      connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
       await execution;
       // Whatever happened to the run, the token the host holds stops working.
       expect(leases.size()).toBe(0);
@@ -691,9 +696,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      connections.receiveLaunched("host-1", "run-1");
+      connections.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 2);
-      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 3);
       connections.receiveOutput("host-1", "run-1", `${JSON.stringify({
         jsonrpc: "2.0",
@@ -702,7 +707,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           sessionId: "session-1",
           configOptions: [{ id: "model", currentValue: "opencode/big-pickle", options: [{ value: "rainver_provider/MiniMax-M3" }] }],
         },
-      })}\n`);
+      })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 4);
 
       const setConfig = JSON.parse((sink.sent[3] as { value: string }).value) as Record<string, unknown>;
@@ -711,7 +716,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         params: { configId: "model", value: "rainver_provider/MiniMax-M3" },
       });
 
-      connections.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null });
+      connections.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
       await execution;
     } finally {
       __setProvidersDbPortForTests(null);
@@ -755,9 +760,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       // The model does reach the runtime — by the channel that decides it.
       expect((launch.provider_binding as { env: Record<string, string> }).env.ANTHROPIC_MODEL).toBe("MiniMax-M3");
 
-      connections.receiveLaunched("host-1", "run-1");
+      connections.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 2);
-      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 3);
       // A resumed Claude session reports the previous turn's model here.
       connections.receiveOutput("host-1", "run-1", `${JSON.stringify({
@@ -767,7 +772,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           sessionId: "session-1",
           configOptions: [{ id: "model", currentValue: "MiniMax-M2.7", options: [{ value: "default" }, { value: "sonnet" }, { value: "opus" }] }],
         },
-      })}\n`);
+      })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 4);
 
       // Straight to the prompt: no set_config_option, so nothing re-asserts
@@ -776,7 +781,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       expect(next.method).toBe("session/prompt");
       expect(sink.sent.some((f) => (f as { value?: string }).value?.includes("set_config_option"))).toBe(false);
 
-      connections.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null });
+      connections.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
       await execution;
     } finally {
       __setProvidersDbPortForTests(null);
@@ -814,9 +819,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      connections.receiveLaunched("host-1", "run-1");
+      connections.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 2);
-      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`);
+      connections.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 3);
       connections.receiveOutput("host-1", "run-1", `${JSON.stringify({
         jsonrpc: "2.0",
@@ -826,15 +831,15 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           // What a resumed session reports: the model the *previous* turn ran on.
           configOptions: [{ id: "model", currentValue: "MiniMax-M2.7", options: [{ value: "default" }] }],
         },
-      })}\n`);
+      })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 4);
       connections.receiveOutput("host-1", "run-1", `${JSON.stringify({
         jsonrpc: "2.0",
         id: 4,
         result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
-      })}\n`);
+      })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "stdin_close"));
-      connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+      connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
       const result = await execution;
       expect(result.model_usage).toEqual([
@@ -859,24 +864,30 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           model: null,
           resume_session_id: null,
           timeout_seconds: timeoutSeconds,
+          // The same dispatch setting the server-host path reads; the
+          // default is five minutes, which no test wants to wait for.
+          adapter_config: { stall_timeout_seconds: 5 },
         },
         "host-1",
         "folder-1",
         { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      registry.receiveLaunched("host-1", "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
       // Wrapped: returning the promise bare would let the caller's `await`
       // unwrap it and run the whole turn before the test sends anything.
       return { execution };
     }
 
-    it("scales the silence budget to the run's own deadline", () => {
-      expect(remoteStallTimeoutSeconds(900)).toBe(120);
-      expect(remoteStallTimeoutSeconds(300)).toBe(100);
+    it("uses the same silence budget as the server-host path", () => {
+      // A third of the run budget (100s by default) killed legitimate turns
+      // in the middle of a long tool call, which emits nothing until it
+      // returns; the rule is now the one the server-host path has had.
+      expect(stallTimeoutSeconds(undefined, 900)).toBe(300);
+      expect(stallTimeoutSeconds({ stall_timeout_seconds: 60 }, 900)).toBe(60);
       // Never larger than the deadline it lives inside.
-      expect(remoteStallTimeoutSeconds(30)).toBe(10);
-      expect(remoteStallTimeoutSeconds(3)).toBe(5);
+      expect(stallTimeoutSeconds(undefined, 30)).toBe(29);
+      expect(stallTimeoutSeconds({ stall_timeout_seconds: 5 }, 3)).toBe(2);
     });
 
     it("gives up on a silent run well before the run timeout, and says how long it was silent", async () => {
@@ -906,7 +917,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       // launch rather than from the last output would kill this run.
       const step = async (frame: Record<string, unknown>) => {
         await vi.advanceTimersByTimeAsync(3_000);
-        registry.receiveOutput("host-1", "run-1", `${JSON.stringify(frame)}\n`);
+        registry.receiveOutput("host-1", "run-1", `${JSON.stringify(frame)}\n`, launchIdOf(sink, "run-1"));
         await Promise.resolve();
         await Promise.resolve();
       };
@@ -921,7 +932,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         },
       });
       await step({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } });
-      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null });
+      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
 
       const result = await execution;
       expect(result.error_code).not.toBe("runtime_stall_timeout");

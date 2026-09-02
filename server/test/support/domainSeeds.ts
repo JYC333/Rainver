@@ -131,12 +131,15 @@ export async function seedRoomManager(
 ): Promise<{ memberId: string }> {
   const memberId = input.id ?? randomUUID();
   const now = input.now ?? new Date().toISOString();
-  await pool.query(
+  const result = await pool.query<{ id: string }>(
     `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'manager','active',$5,$5)`,
+     VALUES ($1,$2,$3,$4,'manager','active',$5,$5)
+     ON CONFLICT (room_id, agent_id) DO UPDATE
+       SET role = 'manager', status = 'active', updated_at = EXCLUDED.updated_at
+     RETURNING id`,
     [memberId, input.space, input.room, input.agent, now],
   );
-  return { memberId };
+  return { memberId: result.rows[0]!.id };
 }
 
 /** An active agent with one version bound as current, as research tests need. */
@@ -214,4 +217,3 @@ export async function seedSpaceMember(
     [randomUUID(), input.space, input.user, input.role ?? "member", now],
   );
 }
-

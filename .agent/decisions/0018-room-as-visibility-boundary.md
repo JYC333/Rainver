@@ -150,26 +150,26 @@ constraint; what was missing is that something guarantees it exists.
 absence, the chat panel's empty state is deleted, and a bug of the shape
 "put this in the mainline — there isn't one" cannot recur.
 
-**Assistant provisioning moves from Room creation to the first message.** A
-Room is a channel; a channel nobody has spoken in needs no manager agent.
-Keeping provisioning off the Project-creation path is what makes this decision
-safe: seeding an Assistant resolves a prompt asset and locks the Space row,
-and a Project that cannot be created because an Assistant could not be seeded
-would be a worse failure than the one this decision fixes.
+**Assistant provisioning remains lazy, but Conversation setup is explicit.** A
+Room is a channel; a channel nobody has opened does not need a manager Agent.
+The explicit Conversation-draft action is the point at which the Project
+manager may be provisioned and the execution preflight becomes visible. This
+keeps Project/Room creation independent of backend configuration while still
+letting the person review and confirm the Agent, Host, CLI, and workspace
+before any message or Run is created.
 
-### 5. Conversations are created by speaking
+### 5. Conversations are opened before speaking
 
-Creating a Room creates no conversation. The first message creates the first
-conversation, in the transaction that writes the message.
+Creating a Room creates no conversation. A visible, explicit draft action
+opens the first Conversation and its execution preflight. The first message
+is accepted only for an initialized Conversation, so it cannot implicitly
+choose a Host, CLI, or workspace.
 
-This is what makes an empty conversation impossible rather than merely
-discouraged. A rule of the form "you may not create another conversation while
-one is still empty" was considered and rejected: it is invisible at the moment
-it applies, it fails an action for a reason belonging to a different action,
-and it guards only the first empty conversation while doing nothing about the
-second. Where a constraint and a construction reach the same state, the
-construction is preferable — there is nothing to enforce, explain, or
-circumvent.
+An empty draft is intentional and user-visible: it carries the execution
+choices and can be abandoned without creating a message or Run. No background
+event may replace its Host, CLI, or Primary Workspace. Continuing in another
+Folder therefore means opening a new Conversation, while an existing draft or
+initialized Conversation remains pinned to its own execution context.
 
 ## Consequences
 
@@ -197,7 +197,7 @@ circumvent.
 
 - **2026-08-29** — proposed and accepted the same day.
 - **2026-08-29** — implemented: the Room boundary work (mainline created with
-  the Project, conversations created by speaking, the Room layer invisible
+  the Project, conversations created through an explicit draft/setup action, the Room layer invisible
   until a visibility decision is made) and, on top of it, thread references —
   content copied once between threads with a server-enforced disclosure
   confirmation. Current state: [`modules/rooms.md`](../modules/rooms.md).

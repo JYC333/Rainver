@@ -76,8 +76,8 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     const list = executors.get("inquiry.list_threads" as SystemActionId)!;
     const all = await list({}, { idempotency_key: "call-1" } as never) as ExecutorResult;
     expect((all.modelResult as { threads: unknown[] }).threads).toEqual(expect.arrayContaining([
-      { thread_id: question.id, kind: "question", statement: "How should agent memory be classified?", attention_state: expect.any(String) },
-      { thread_id: hypothesis.id, kind: "hypothesis", statement: "Episodic/semantic is the useful split", attention_state: expect.any(String) },
+      { thread_id: question.id, kind: "question", statement: "How should agent memory be classified?", attention_state: expect.any(String), next_step: null },
+      { thread_id: hypothesis.id, kind: "hypothesis", statement: "Episodic/semantic is the useful split", attention_state: expect.any(String), next_step: null },
     ]));
     expect(all.summary).toMatchObject({ tool_name: "inquiry.list_threads", ok: true, count: 2 });
 
@@ -103,6 +103,11 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     );
 
     const executors = await executorsFor(project.id as string);
+    // The read shows the step before it is adopted: without it the Agent
+    // asked "what next?" could only guess a thread_id and be told 404.
+    const listed = await executors.get("inquiry.list_threads" as SystemActionId)!({}, { idempotency_key: "call-6" } as never) as ExecutorResult;
+    expect((listed.modelResult as { threads: Array<{ next_step: unknown }> }).threads[0]?.next_step)
+      .toEqual({ focus: "clarify_or_decompose", rationale: "It bundles four axes." });
     const adopted = await executors.get("inquiry.adopt_next_step" as SystemActionId)!(
       { thread_id: thread.id }, { idempotency_key: "call-7" } as never,
     ) as ExecutorResult;

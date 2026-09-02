@@ -3,7 +3,11 @@ import type { FastifyInstance } from "fastify";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { sessionsModule } from "../src/modules/sessions/index.js";
 import { loadConfig } from "../src/config.js";
-import { __setSessionIdentityForTests, __setSessionServicesFactoryForTests } from "../src/modules/sessions/routes.js";
+import {
+  __setExecutionContextServiceFactoryForTests,
+  __setSessionIdentityForTests,
+  __setSessionServicesFactoryForTests,
+} from "../src/modules/sessions/routes.js";
 import type { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import type {
   MessageOut,
@@ -26,6 +30,7 @@ beforeEach(() => {
 afterEach(async () => {
   __setSessionIdentityForTests(null);
   __setSessionServicesFactoryForTests(null);
+  __setExecutionContextServiceFactoryForTests(null);
   __setContentCreationContextResolverForTests(null);
   await app?.close();
 });
@@ -270,5 +275,50 @@ describe("session write routes", () => {
 
     expect(noContent.statusCode).toBe(422);
     expect(forgedAssistant.statusCode).toBe(422);
+  });
+});
+
+describe("conversation execution-context routes", () => {
+  it("parses preflight and initialization through the execution-context service", async () => {
+    __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const summary = {
+      session_id: "session-1",
+      state: "draft",
+      host: null,
+      runtime: null,
+      primary: null,
+      attachments: [],
+      dispatch_locked: false,
+      queue_paused_at: null,
+      can_send: false,
+      blocked_reason: "Choose an execution Host",
+    };
+    const service = {
+      preflight: async (_identity: unknown, _sessionId: string, input: unknown) => ({
+        summary: { ...summary, input_seen: input },
+        available_hosts: [],
+        available_runtime_profiles: [],
+        available_primary_locations: [],
+      }),
+      initialize: async () => summary,
+      mutateAttachment: async () => ({ attachment: {}, effective_after_run_id: null }),
+    };
+    __setExecutionContextServiceFactoryForTests(() => service as never);
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
+
+    const preflight = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/session-1/execution-context/preflight",
+      payload: { selection: null, runtime: null },
+    });
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/session-1/execution-context/initialize",
+      payload: { selection: null, runtime: null },
+    });
+
+    expect(preflight.statusCode).toBe(200);
+    expect(preflight.json()).toMatchObject({ summary: { blocked_reason: "Choose an execution Host" } });
+    expect(invalid.statusCode).toBe(422);
   });
 });

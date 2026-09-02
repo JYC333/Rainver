@@ -10,6 +10,7 @@ import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { dbPool, sendRouteError } from "../routeUtils/common.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
+import { ConversationExecutionContextService } from "./executionContextService.js";
 
 interface SessionServices {
   repository: Pick<
@@ -24,18 +25,30 @@ interface SessionServices {
 }
 
 type SessionServicesFactory = (context: ModuleContext) => SessionServices;
+type ExecutionContextService = Pick<
+  ConversationExecutionContextService,
+  "preflight" | "initialize" | "mutateAttachment"
+>;
+type ExecutionContextServiceFactory = (context: ModuleContext) => ExecutionContextService;
 type SessionIdentity = { spaceId: string; userId: string };
 type SessionIdentityOverride =
   | SessionIdentity
   | ((request: FastifyRequest) => Promise<SessionIdentity | null> | SessionIdentity | null);
 
 let servicesFactoryOverride: SessionServicesFactory | null = null;
+let executionContextServiceFactoryOverride: ExecutionContextServiceFactory | null = null;
 let identityOverride: SessionIdentityOverride | null = null;
 
 export function __setSessionServicesFactoryForTests(
   factory: SessionServicesFactory | null,
 ): void {
   servicesFactoryOverride = factory;
+}
+
+export function __setExecutionContextServiceFactoryForTests(
+  factory: ExecutionContextServiceFactory | null,
+): void {
+  executionContextServiceFactoryOverride = factory;
 }
 
 export function __setSessionIdentityForTests(
@@ -47,6 +60,11 @@ export function __setSessionIdentityForTests(
 function sessionServices(context: ModuleContext): SessionServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
   return { repository: PgSessionRepository.fromConfig(context.config) };
+}
+
+function executionContextService(context: ModuleContext): ExecutionContextService {
+  if (executionContextServiceFactoryOverride) return executionContextServiceFactoryOverride(context);
+  return new ConversationExecutionContextService(dbPool(context.config));
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -97,6 +115,72 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(messages);
   });
 
+  app.get("/api/v1/sessions/:sessionId/execution-context", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const summary = await executionContextService(context).preflight(
+        identity,
+        params(request).sessionId ?? "",
+        { selection: null, runtime: null },
+      );
+      return reply.send(summary);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/sessions/:sessionId/execution-context/preflight", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const parsed = protocol.ConversationExecutionPreflightRequestSchema.safeParse(jsonBody(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "Invalid execution-context preflight selection" });
+    try {
+      const result = await executionContextService(context).preflight(
+        identity,
+        params(request).sessionId ?? "",
+        parsed.data,
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/sessions/:sessionId/execution-context/initialize", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const parsed = protocol.ConversationExecutionInitializeRequestSchema.safeParse(jsonBody(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "A complete Host, Primary Workspace, and CLI selection is required" });
+    try {
+      const result = await executionContextService(context).initialize(
+        identity,
+        params(request).sessionId ?? "",
+        parsed.data,
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/sessions/:sessionId/execution-context/attachments", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const parsed = protocol.ConversationAttachmentMutationSchema.safeParse(jsonBody(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "Invalid Conversation Folder access change" });
+    try {
+      const result = await executionContextService(context).mutateAttachment(
+        identity,
+        params(request).sessionId ?? "",
+        parsed.data,
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.delete("/api/v1/sessions/:sessionId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -127,12 +211,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
              JOIN host_threads thread
                ON thread.agent_id = binding.agent_id
               AND thread.container_kind = 'direct'
-              AND thread.container_user_id = binding.user_id
-              AND thread.room_id IS NULL
+              AND thread.container_user_id = binding.bound_by_user_id
               AND thread.status IN ('active', 'session_reset')
             WHERE binding.space_id = $1
               AND binding.session_id = $2
-              AND binding.user_id = $3
+              AND binding.bound_by_user_id = $3
             FOR UPDATE OF thread`,
           [identity.spaceId, sessionId, identity.userId],
         );

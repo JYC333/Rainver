@@ -351,29 +351,46 @@ Suspend envelopes terminate the current batch and later calls are represented
 as blocked tool results without being executed.
 
 Room dispatch reuses the canonical session -> queued Run -> orchestration
-pipeline. A Room is project-bound and may own multiple sessions. Every human
-message opens exactly one `agent_run_group` collaboration task; recipient Runs
-persist the Room session, Project, trigger message, task group, and the
-message sender as `instructed_by_user_id`. A Room has one nullable
-`project_folder_id`; when bound, it is validated as active,
-execution-enabled, Project-scoped, and readable, then propagated unchanged
-through the session, task group, and every recipient/delegated Run. Terminal top-level results are
-projected back into the Room session, while task trace and lifecycle evidence
-remain available on the canonical Run/group read surfaces.
+pipeline. A Room is project-bound and may own multiple Conversations. A
+Conversation draft is opened by an explicit user action; its execution-context
+service resolves and displays the Agent roster, Host, CLI installation, Primary
+Workspace, and attachments before initialization. The first message is
+accepted only for that initialized Conversation. Every human message then
+opens exactly one `agent_run_group` collaboration task; recipient Runs persist
+the Room session, Project, trigger message, task group, and the message sender
+as `instructed_by_user_id`. Terminal top-level results are projected back into
+the Room Conversation, while task trace and lifecycle evidence remain
+available on the canonical Run/group read surfaces.
 
-Each local CLI recipient resolves a durable Space × Room-recipient work scope ×
-user × Agent binding. A new or rotated binding reconstructs from the active
-Semantic Checkpoint and uncovered Context Event tail; a healthy binding resumes
-the opaque vendor session and receives only context after its acknowledged CLI
-cursor plus the current turn. Adapter acceptance advances that cursor;
-delivery failure does not. Hard runtime or authority changes rotate the binding
-with a persisted reason, while ordinary selected-reference changes remain
-deltas. A durable execution lease serializes parallel users of the same
-binding through session persistence, and context/current phases are distinct
-vendor turns. Vendor state remains a disposable cache rather than a replay authority.
-Folder-backed work keeps normal Project sandbox preparation. A Room without a
-Project Folder uses the persistent conversation cwd so cwd-partitioned vendors
-such as Claude can resume reliably without introducing a second execution path.
+Draft CLI choices come from the same canonical Host execution-target projection
+used by Project Settings: the daemon-reported installations are selectable for
+each visible Agent and compatible managed workspace or active Project Location.
+An Agent runtime profile is an optional reusable suggestion, not a prerequisite
+for displaying a Host installation. A matching enabled profile is reused; if
+none exists, initialization materializes one in the same transaction that pins
+the Conversation. The Agent's default profile is the first preference; a sole
+saved compatible profile is preferred over merely detected alternatives. The
+user must still confirm the Host/CLI/Primary draft before the first Run.
+
+Each Conversation × Agent has one pinned runtime binding and one host thread.
+Initialization snapshots the selected profile's model/provider and runtime
+configuration/policy onto the binding; later edits to the reusable profile do
+not silently alter an existing Conversation.
+The Conversation execution context owns the single Primary Workspace: a
+managed workspace is keyed by Conversation, while a Location Primary and any
+Attached Folder Locations are concrete same-Host bindings. Attachments carry
+grants that are evaluated for each later Run; they never change cwd. Trusted
+remote Hosts may honor explicit read/write grants directly. Server-host
+attachments are read-only because writable checkouts must go through the
+managed worktree/diff/proposal/apply boundary; the service rejects a server
+write grant instead of bind-mounting a real checkout writable. A Location that
+becomes stale remains usable by an initialized Conversation that already pins
+it as Primary or attachment. A healthy vendor session resumes only its own Conversation × Agent
+thread, and a Host/CLI/Primary change requires a new Conversation. Vendor
+state remains a disposable cache rather than a replay authority. One
+Conversation-wide dispatch lock serializes all Agents because they share the
+filesystem scope. There is no Room-owned runtime thread or Room Folder
+fallback.
 
 RunStep error/metadata is filtered by `server/src/modules/runs/evidenceRedaction.ts` before persisting. Raw credential values are never stored in RunStep rows.
 
@@ -438,7 +455,7 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   `ServerHostExecutionAdapter`, a verbatim wrapper around the existing
   `RunSandboxManagerPort`/`RunCodePatchCollectorPort`/`RunExchangePort`
   instances (zero behavior change from before this port existed). A run bound
-  to a Project Folder resolves its preferred server `workspace_location` and
+  to a Project Folder resolves its explicit active server `workspace_location` and
   rejects a remote Location before entering server filesystem code. A remote
   Task Run is admitted through the merged task-run control-plane path and is
   dispatched by `RemoteHostExecutionAdapter` over the daemon protocol; the

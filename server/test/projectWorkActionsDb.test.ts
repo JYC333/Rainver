@@ -75,6 +75,7 @@ async function agentContext() {
     agentId: AGENT,
     runId: randomUUID(),
     instructedByUserId: OWNER,
+    projectId: PROJECT,
     idempotencyKey: randomUUID(),
   };
 }
@@ -120,8 +121,8 @@ beforeEach(async () => {
   }
   for (const [id, name] of [[PROJECT, "Action Project"], [OTHER_PROJECT, "Elsewhere"]] as const) {
     await db.pool!.query(
-      `INSERT INTO projects (id, space_id, owner_user_id, name, status, primary_mode, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'active', 'delivery', now(), now())`,
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', now(), now())`,
       [id, SPACE, OWNER, name],
     );
     await seedMainlineRoomsForAllProjects(db.pool!);

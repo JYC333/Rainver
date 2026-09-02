@@ -28,7 +28,6 @@ export interface WorkspaceLocationRow {
   dirty: boolean | null;
   execution_ready: boolean;
   status: string;
-  preferred: boolean;
   last_seen_at: string | null;
   created_at: unknown;
   updated_at: unknown;
@@ -45,7 +44,6 @@ export interface WorkspaceLocationOut {
   git_head: string | null;
   dirty: boolean | null;
   status: string;
-  preferred: boolean;
   execution_ready: boolean;
   last_seen_at: string | null;
   created_at: string;
@@ -55,7 +53,7 @@ export interface WorkspaceLocationOut {
   host_owner_is_me: boolean;
 }
 
-export interface PreferredLocationWithHost extends WorkspaceLocationRow {
+export interface ActiveLocationWithHost extends WorkspaceLocationRow {
   host_name: string;
   host_owner_user_id: string | null;
   host_status: string;
@@ -80,7 +78,7 @@ export interface HostWorkspaceOut {
 }
 
 const COLUMNS = `id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-  display_path, root_path, branch, git_head, dirty, execution_ready, status, preferred, last_seen_at,
+  display_path, root_path, branch, git_head, dirty, execution_ready, status, last_seen_at,
   created_at, updated_at`;
 
 export class PgWorkspaceLocationRepository {
@@ -88,8 +86,8 @@ export class PgWorkspaceLocationRepository {
 
   /**
    * Creates a Location for a Folder that already exists. The first Location
-   * a Folder ever gets is created `preferred` automatically (there is
-   * nothing else to prefer); a later one is not, unless the caller asks.
+   * is the Folder's sole active execution checkout. Further checkouts are
+   * recorded as stale candidates until an explicit migration promotes one.
    */
   async create(input: {
     spaceId: string;
@@ -98,23 +96,26 @@ export class PgWorkspaceLocationRepository {
     executionHostKind: "server" | "remote";
     rootPath?: string | null;
     displayPath?: string | null;
-    preferred?: boolean;
+    status?: "active" | "archived" | "stale";
   }): Promise<WorkspaceLocationRow> {
     const id = randomUUID();
     const now = new Date().toISOString();
-    const existing = await this.db.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM workspace_locations WHERE project_folder_id = $1`,
+    const existing = await this.db.query<{ active_count: string }>(
+      `SELECT count(*) FILTER (WHERE status = 'active')::text AS active_count
+         FROM workspace_locations WHERE project_folder_id = $1`,
       [input.projectFolderId],
     );
-    const preferred = input.preferred ?? Number(existing.rows[0]?.count ?? "0") === 0;
-    if (preferred) await this.clearPreferred(input.projectFolderId);
+    const status = input.status ?? (Number(existing.rows[0]?.active_count ?? "0") === 0 ? "active" : "stale");
+    if (status === "active" && Number(existing.rows[0]?.active_count ?? "0") > 0) {
+      throw new HttpError(409, "Project Folder already has an active Workspace Location; migrate it explicitly first");
+    }
     const row = await this.db.query<WorkspaceLocationRow>(
       `INSERT INTO workspace_locations (
          id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-         root_path, display_path, execution_ready, status, preferred, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, false, 'active', $8, $9, $9)
+         root_path, display_path, execution_ready, status, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $9)
        RETURNING ${COLUMNS}`,
-      [id, input.spaceId, input.projectFolderId, input.executionHostId, input.executionHostKind, input.rootPath ?? null, input.displayPath ?? null, preferred, now],
+      [id, input.spaceId, input.projectFolderId, input.executionHostId, input.executionHostKind, input.rootPath ?? null, input.displayPath ?? null, status, now],
     );
     return row.rows[0]!;
   }
@@ -124,8 +125,9 @@ export class PgWorkspaceLocationRepository {
       `SELECT wl.*, h.status AS host_status, h.last_heartbeat_at, h.name AS host_name, h.owner_user_id AS host_owner_user_id
          FROM workspace_locations wl
          JOIN hosts h ON h.id = wl.execution_host_id
-        WHERE wl.project_folder_id = $1 AND wl.space_id = $2 AND wl.status = 'active'
-        ORDER BY wl.preferred DESC, wl.created_at ASC`,
+        WHERE wl.project_folder_id = $1 AND wl.space_id = $2
+        ORDER BY CASE wl.status WHEN 'active' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END,
+                 wl.created_at ASC`,
       [folderId, identity.spaceId],
     );
     return result.rows.map((row) => locationToOut(row, identity.userId));
@@ -143,6 +145,7 @@ export class PgWorkspaceLocationRepository {
       host_status: string;
       last_heartbeat_at: string | null;
       capabilities_json: unknown;
+      default_adapter_type: string | null;
       location_id: string | null;
       project_folder_id: string | null;
       folder_name: string | null;
@@ -150,7 +153,7 @@ export class PgWorkspaceLocationRepository {
       execution_ready: boolean | null;
     }>(
       `SELECT host.id AS host_id, host.name AS host_name, host.status AS host_status,
-              host.last_heartbeat_at, host.capabilities_json,
+              host.last_heartbeat_at, host.capabilities_json, host.default_adapter_type,
               location.id AS location_id, location.project_folder_id,
               folder.name AS folder_name, location.display_path,
               location.execution_ready
@@ -167,11 +170,10 @@ export class PgWorkspaceLocationRepository {
         WHERE host.owner_user_id = $1
           AND host.kind = 'remote'
           AND host.status <> 'revoked'
-          AND ($3::varchar IS NULL OR folder.id IS NOT NULL)
         ORDER BY host.name ASC, folder.name ASC NULLS LAST, location.created_at ASC NULLS LAST`,
       [userId, spaceId, projectId],
     );
-    const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown }>();
+    const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown; default_adapter_type: string | null }>();
     for (const row of result.rows) {
       let target = grouped.get(row.host_id);
       if (!target) {
@@ -183,6 +185,7 @@ export class PgWorkspaceLocationRepository {
           adapters: [],
           managed_workspace_available: true,
           capabilities_json: row.capabilities_json,
+          default_adapter_type: row.default_adapter_type,
         };
         grouped.set(row.host_id, created);
         target = created;
@@ -211,11 +214,13 @@ export class PgWorkspaceLocationRepository {
           display_name: spec.display_name,
           installations: installations.map(({ id, version, logged_in }) => ({ id, version, logged_in })),
         }];
-      });
+      // The host's configured default CLI leads the list, so pickers that take
+      // the first adapter follow the owner's choice.
+      }).sort((a, b) => Number(b.adapter_type === target.default_adapter_type) - Number(a.adapter_type === target.default_adapter_type));
     }
     return [...grouped.values()]
       .filter((target) => target.host_online)
-      .map(({ capabilities_json: _capabilities, ...target }) => target);
+      .map(({ capabilities_json: _capabilities, default_adapter_type: _defaultAdapter, ...target }) => target);
   }
 
   async get(identity: SpaceUserIdentity, folderId: string, locationId: string): Promise<WorkspaceLocationOut | null> {
@@ -237,33 +242,15 @@ export class PgWorkspaceLocationRepository {
     return result.rows[0] ?? null;
   }
 
-  async getPreferred(folderId: string): Promise<WorkspaceLocationRow | null> {
+  async getActive(folderId: string): Promise<WorkspaceLocationRow | null> {
     const result = await this.db.query<WorkspaceLocationRow>(
-      `SELECT ${COLUMNS} FROM workspace_locations WHERE project_folder_id = $1 AND status = 'active' AND preferred = true LIMIT 1`,
+      `SELECT ${COLUMNS} FROM workspace_locations WHERE project_folder_id = $1 AND status = 'active' LIMIT 1`,
       [folderId],
     );
     return result.rows[0] ?? null;
   }
 
-  async setPreferred(identity: SpaceUserIdentity, folderId: string, locationId: string): Promise<boolean> {
-    const target = await this.db.query<{ id: string }>(
-      `SELECT id FROM workspace_locations WHERE id = $1 AND project_folder_id = $2 AND space_id = $3 AND status = 'active'`,
-      [locationId, folderId, identity.spaceId],
-    );
-    if (!target.rows[0]) return false;
-    await this.clearPreferred(folderId);
-    await this.db.query(
-      `UPDATE workspace_locations SET preferred = true, updated_at = $2 WHERE id = $1`,
-      [locationId, new Date().toISOString()],
-    );
-    return true;
-  }
-
-  private async clearPreferred(folderId: string): Promise<void> {
-    await this.db.query(`UPDATE workspace_locations SET preferred = false WHERE project_folder_id = $1 AND preferred = true`, [folderId]);
-  }
-
-  /** `workspace list`: every active logical workspace registered under this host. */
+  /** `workspace list`: every non-archived checkout the host may still need to serve. */
   async listForHost(hostId: string): Promise<HostWorkspaceOut[]> {
     const result = await this.db.query<HostWorkspaceOut & { created_at: unknown }>(
       `SELECT wl.id, pf.project_id, pf.name, wl.display_path,
@@ -271,7 +258,7 @@ export class PgWorkspaceLocationRepository {
          FROM workspace_locations wl
          JOIN project_folders pf ON pf.id = wl.project_folder_id AND pf.space_id = wl.space_id
          JOIN hosts h ON h.id = wl.execution_host_id
-        WHERE wl.execution_host_id = $1 AND wl.status = 'active' AND pf.status = 'active'
+        WHERE wl.execution_host_id = $1 AND wl.status <> 'archived' AND pf.status = 'active'
         ORDER BY wl.created_at ASC`,
       [hostId],
     );
@@ -293,7 +280,7 @@ export class PgWorkspaceLocationRepository {
    * `hosts/repository.ts`'s folder-keyed `resolveDispatchTarget` — a Folder
    * no longer determines a single host, a Location does.
    */
-  async resolveDispatchTarget(locationId: string): Promise<{
+  async resolveDispatchTarget(locationId: string, options: { allowStale?: boolean } = {}): Promise<{
     location_id: string;
     project_folder_id: string;
     space_id: string;
@@ -325,9 +312,10 @@ export class PgWorkspaceLocationRepository {
          FROM workspace_locations wl
          JOIN project_folders pf ON pf.id = wl.project_folder_id
          JOIN hosts h ON h.id = wl.execution_host_id
-        WHERE wl.id = $1 AND wl.status = 'active'
+        WHERE wl.id = $1
+          AND (wl.status = 'active' OR ($2::boolean AND wl.status = 'stale'))
         LIMIT 1`,
-      [locationId],
+      [locationId, options.allowStale === true],
     );
     const row = result.rows[0];
     if (!row) return null;
@@ -371,7 +359,7 @@ export class PgWorkspaceLocationRepository {
     const result = await this.db.query<WorkspaceLocationRow>(
       `SELECT ${COLUMNS}
          FROM workspace_locations
-        WHERE execution_host_kind = 'server' AND status = 'active'
+        WHERE execution_host_kind = 'server' AND status <> 'archived'
         ORDER BY created_at ASC`,
     );
     for (const location of result.rows) {
@@ -396,7 +384,7 @@ export class PgWorkspaceLocationRepository {
       await this.db.query(
         `UPDATE workspace_locations
             SET ambient_session_counts_json = $3::jsonb, updated_at = now()
-          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status = 'active'`,
+          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status <> 'archived'`,
         [locationId, hostId, JSON.stringify(locationCounts)],
       );
     }
@@ -409,7 +397,7 @@ export class PgWorkspaceLocationRepository {
       await this.db.query(
         `UPDATE workspace_locations
             SET execution_ready = false, updated_at = now()
-          WHERE execution_host_id = $1 AND execution_host_kind = 'remote' AND status = 'active'`,
+          WHERE execution_host_id = $1 AND execution_host_kind = 'remote' AND status <> 'archived'`,
         [hostId],
       );
       return;
@@ -419,14 +407,14 @@ export class PgWorkspaceLocationRepository {
         `UPDATE workspace_locations
             SET branch = $3, git_head = $4, dirty = $5, execution_ready = $6,
                 last_seen_at = now(), updated_at = now()
-          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status = 'active'`,
+          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status <> 'archived'`,
         [report.location_id, hostId, report.branch ?? null, report.git_head ?? null, report.dirty ?? null, report.execution_ready],
       );
     }
     await this.db.query(
       `UPDATE workspace_locations
           SET execution_ready = false, updated_at = now()
-        WHERE execution_host_id = $1 AND execution_host_kind = 'remote' AND status = 'active'
+        WHERE execution_host_id = $1 AND execution_host_kind = 'remote' AND status <> 'archived'
           AND NOT (id = ANY($2::varchar[]))`,
       [hostId, seen],
     );
@@ -451,7 +439,6 @@ function locationToOut(
     git_head: row.git_head,
     dirty: row.dirty,
     status: row.status,
-    preferred: row.preferred,
     execution_ready: row.execution_ready,
     last_seen_at: row.last_seen_at,
     created_at: dateIso(row.created_at),
@@ -486,17 +473,16 @@ export function assertServerHostLocation(location: Pick<WorkspaceLocationRow, "e
  * Shared by the sandbox/code-patch/proposal-apply call sites that used to
  * fetch a Folder and call `assertServerHostFolder` +
  * `projectFolderAbsoluteRoot` directly — all three only ever resolved a
- * Folder's single implicit host-bound path, which is now its preferred
- * Location. `allow_external_root` and other logical-repo policy fields
+ * Folder's single active host-bound path. `allow_external_root` and other logical-repo policy fields
  * still come from the Folder row itself; this only replaces the physical
  * path half.
  */
-export async function resolvePreferredServerHostLocation(
+export async function resolveActiveServerHostLocation(
   db: Queryable,
   spaceId: string,
   projectFolderId: string,
 ): Promise<WorkspaceLocationRow> {
-  const location = await new PgWorkspaceLocationRepository(db).getPreferred(projectFolderId);
+  const location = await new PgWorkspaceLocationRepository(db).getActive(projectFolderId);
   if (!location || location.space_id !== spaceId) {
     throw new HttpError(404, "Project Folder not found");
   }
@@ -504,14 +490,14 @@ export async function resolvePreferredServerHostLocation(
   return location;
 }
 
-/** Resolves the Folder's preferred Location together with the host facts used
+/** Resolves the Folder's single active Location together with the host facts used
  * by live remote reads. Unlike the server-host helper this deliberately keeps
  * remote Locations, because the daemon is the path authority for them. */
-export async function resolvePreferredLocationWithHost(
+export async function resolveActiveLocationWithHost(
   db: Queryable,
   spaceId: string,
   projectFolderId: string,
-): Promise<PreferredLocationWithHost> {
+): Promise<ActiveLocationWithHost> {
   const result = await db.query<WorkspaceLocationRow & {
     host_name: string;
     host_owner_user_id: string | null;
@@ -523,7 +509,7 @@ export async function resolvePreferredLocationWithHost(
        FROM workspace_locations wl
        JOIN hosts h ON h.id = wl.execution_host_id
       WHERE wl.project_folder_id = $1 AND wl.space_id = $2
-        AND wl.status = 'active' AND wl.preferred = true
+        AND wl.status = 'active'
       LIMIT 1`,
     [projectFolderId, spaceId],
   );
@@ -536,15 +522,15 @@ export async function resolvePreferredLocationWithHost(
 }
 
 /** Resolve the physical server checkout selected by a Run. A Run may target
- * a non-preferred Location, so provisioning must honor its immutable binding
- * rather than falling back to the Folder's current preferred Location. */
+ * a non-primary Location, so provisioning must honor its immutable binding
+ * rather than falling back to the Folder's active Location. */
 export async function resolveServerHostLocationForRun(
   db: Queryable,
   run: Pick<WorkspaceLocationRow, "space_id" | "project_folder_id"> & { workspace_location_id?: string | null },
 ): Promise<WorkspaceLocationRow> {
   const location = run.workspace_location_id
     ? await new PgWorkspaceLocationRepository(db).getRow(run.workspace_location_id)
-    : await new PgWorkspaceLocationRepository(db).getPreferred(run.project_folder_id);
+    : await new PgWorkspaceLocationRepository(db).getActive(run.project_folder_id);
   if (
     !location
     || location.space_id !== run.space_id

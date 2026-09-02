@@ -52,6 +52,7 @@ export function registerProjectWorkSystemActionExecutors(
    */
   async function contextFor(db: Queryable, idempotencyKey: string | null): Promise<AgentActionContext> {
     if (!run.agent_id) throw new HttpError(422, "This action requires an Agent identity");
+    if (!run.project_id) throw new HttpError(422, "This Run is not scoped to a Project, so it has no Tasks to act on");
     const attempt = await new PgRunRepository(db).getLatestRunAttempt(run.space_id, run.id);
     return {
       spaceId: run.space_id,
@@ -59,6 +60,7 @@ export function registerProjectWorkSystemActionExecutors(
       agentId: run.agent_id,
       runId: run.id,
       instructedByUserId: run.instructed_by_user_id!,
+      projectId: run.project_id,
       idempotencyKey: `${run.id}:${attempt?.attempt_number ?? 1}:${idempotencyKey ?? "run"}`,
     };
   }
@@ -69,6 +71,7 @@ export function registerProjectWorkSystemActionExecutors(
       acceptance_criteria_json?: Record<string, unknown> | null;
       definition_of_done?: string | null; required_outputs?: string[];
       priority?: string; risk_level?: string;
+      due_at?: string | null; start_after?: string | null;
       links?: { entity_type: string; entity_id: string; role: string }[];
     };
     // The Project is the Run's own, not the model's. A `project_id` taken from
@@ -106,6 +109,8 @@ export function registerProjectWorkSystemActionExecutors(
           required_outputs_json: body.required_outputs ?? null,
           priority: body.priority,
           risk_level: body.risk_level,
+          due_at: body.due_at ?? null,
+          start_after: body.start_after ?? null,
           visibility: "space_shared",
         },
         tx,
@@ -120,14 +125,31 @@ export function registerProjectWorkSystemActionExecutors(
     };
   });
 
-  /** This Project's Tasks as an Agent may address them: id first. */
-  const listProjectTasks = async (status?: string): Promise<Array<{ task_id: string; title: string; status: string }>> => {
+  /**
+   * This Project's Tasks as an Agent may address them: id first, then the
+   * state a recommendation is grounded in. An id-only read left "what should
+   * I do next?" answerable only by restating titles.
+   */
+  const listProjectTasks = async (status?: string): Promise<Array<{
+    task_id: string; title: string; status: string; priority: string | null;
+    due_at: string | null; start_after: string | null; blocked_reason: string | null;
+  }>> => {
     const page = await new PgTaskRepository(pool).listTasks(identity, {
       boardId: null, projectFolderId: null, projectId: run.project_id!, status: status ?? null,
       assignedToMe: false, q: null, limit: MAX_LISTED_TASKS, offset: 0,
     });
-    return (page.items as Array<{ id: string; title: string; status: string }>)
-      .map((task) => ({ task_id: task.id, title: task.title, status: task.status }));
+    return (page.items as Array<{
+      id: string; title: string; status: string; priority?: string | null;
+      due_at?: string | null; start_after?: string | null; blocked_reason?: string | null;
+    }>).map((task) => ({
+      task_id: task.id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority ?? null,
+      due_at: task.due_at ?? null,
+      start_after: task.start_after ?? null,
+      blocked_reason: task.blocked_reason ?? null,
+    }));
   };
 
   /**
@@ -172,7 +194,7 @@ export function registerProjectWorkSystemActionExecutors(
     };
     const declaration = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) => {
       const context = await contextFor(tx, dispatch.idempotency_key ?? null);
-      const task = await requireProjectTask(tx, run.space_id, body.task_id, identity.userId);
+      const task = await requireProjectTask(tx, run.space_id, body.task_id, identity.userId, context.projectId);
       return declareRunArtifact(tx, context, task, body);
     }));
     return {

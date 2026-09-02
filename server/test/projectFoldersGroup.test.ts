@@ -53,6 +53,12 @@ describe("projectFoldersRoutes", () => {
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/diff", {
         diff: "", path: null, truncated: false, redacted: false,
       });
+      const activated = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project-1/folders/folder-1/locations/location-2/activate",
+      });
+      expect(activated.statusCode).toBe(200);
+      expect(activated.json()).toEqual({ id: "location-2", status: "active" });
     });
 
   });
@@ -73,6 +79,7 @@ describe("projectFoldersRoutes", () => {
     | "update"
     | "archive"
     | "unregister"
+    | "activateLocation"
     | "getTree"
     | "getFile"
     | "getGitStatus"
@@ -100,6 +107,9 @@ describe("projectFoldersRoutes", () => {
       async unregister() {
         return true;
       },
+      async activateLocation() {
+        return { id: "location-2", status: "active" };
+      },
       async getTree() {
         return { name: "folder", path: ".", type: "dir", children: [] };
       },
@@ -121,6 +131,7 @@ describe("projectFoldersRoutes", () => {
       | "update"
       | "archive"
       | "unregister"
+      | "activateLocation"
       | "getTree"
       | "getFile"
       | "getGitStatus"

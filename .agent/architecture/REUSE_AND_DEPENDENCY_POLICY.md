@@ -185,6 +185,7 @@ what is installed.
 | Route registration | `ServerModule` + route registry | `server/src/gateway/routeRegistry.ts` |
 | Route helpers (pool access, identity, pagination, parsing, errors) | `routeUtils` support package | `server/src/modules/routeUtils/` |
 | Request/response validation and shared DTOs | `zod` | `packages/protocol/src/`, module schemas |
+| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**; the dependency-free `sandbox/runner.mjs` is the one hand-written mapping and is pinned by `server/test/sandboxRunnerClient.test.ts` | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
 | Migration artifacts | `drizzle-kit` generate into the committed baseline | `server/migrations/0001_baseline.sql`, `pnpm run schema:generate` |

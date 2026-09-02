@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ROOM_CONVERSATION_TOOL_ALLOWANCE, conversationToolGrantInput } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import {
   PgRunRepository,
   type Queryable,
@@ -322,6 +323,30 @@ describe("PgRunRepository SQL shape", () => {
     });
     const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
     expect(runInsert?.params[35]).toBe('{"tool_grants":[]}');
+  });
+
+  it("carries the conversation's allowance onto a delegated child, like its parent", async () => {
+    // A Room's delegate acts in the same conversation it was spoken to in.
+    // Declaring nothing here (the case above) is how a delegated specialist
+    // ended up able to call no action at all, while its parent held the
+    // whole Project write surface.
+    const db = new RunCreateSqlShapeDb();
+    await new PgRunRepository(db).createDelegatedChildRun({
+      agent_id: "agent-1",
+      space_id: "space-1",
+      user_id: "user-1",
+      parent_run_id: "run-root",
+      root_run_id: "run-root",
+      run_group_id: "group-1",
+      delegation_id: "delegation-1",
+      instructed_by_agent_id: "manager-agent",
+      prompt: "Investigate",
+      ...conversationToolGrantInput({ room_id: "room-1" }),
+    });
+    const runInsert = db.calls.find((call) => call.sql.includes("INSERT INTO runs"));
+    const snapshot = JSON.parse(String(runInsert?.params[35])) as { tool_grants: Array<{ action_id: string }>; scenario_tool_allowance: string[] };
+    expect(snapshot.scenario_tool_allowance).toEqual([...ROOM_CONVERSATION_TOOL_ALLOWANCE]);
+    expect(snapshot.tool_grants.map((grant) => grant.action_id)).toContain("project.propose_definition");
   });
 
   it("keeps agent identity fields on the running run returned for execution", async () => {

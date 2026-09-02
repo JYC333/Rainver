@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { ThreadReferencePickSchema } from "./threadReferences.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import {
   AgentRunMessageRecipientSegmentSchema,
@@ -404,8 +403,8 @@ export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponse
 
 /**
  * Creating a Room creates a Room. No conversation comes back because none is
- * made: the first message creates the first conversation (ADR 0018 decision
- * 5), so an empty conversation is impossible rather than merely discouraged.
+ * made: the explicit draft action creates the first conversation, so its
+ * execution context can be reviewed before any message or Run exists.
  */
 export const CreateRoomResponseSchema = RoomDetailSchema;
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
@@ -439,16 +438,6 @@ export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
 
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().min(1).max(8000),
-  /**
-   * References to copy in with this message. Only meaningful on the
-   * session-less send, where they land in the conversation the message
-   * creates, in the same transaction — a thread does not exist until its
-   * first message (ADR 0018 decision 5), so a pick made "for a new thread"
-   * has to ride the message that starts it.
-   */
-  references: z.array(ThreadReferencePickSchema).max(20).optional(),
-  /** See `AttachThreadReferencesRequestSchema` — same meaning, same shape. */
-  confirm_disclosure: z.union([z.boolean(), z.array(IdSchema)]).optional(),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),

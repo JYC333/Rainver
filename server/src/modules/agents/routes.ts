@@ -40,6 +40,7 @@ import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import { prepareHostConversationDispatch } from "../agentGroups/service.js";
+import { assertProjectReadable } from "../projects/access.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import {
@@ -56,6 +57,7 @@ import {
   sendDomainError,
   stringValue,
 } from "./agentRouteInputs.js";
+import { conversationToolGrantInput } from "../systemActions/scenarioToolAllowance.js";
 
 const MAX_MESSAGE_CHARS = 8000;
 class ChatContextError extends Error {
@@ -64,8 +66,6 @@ class ChatContextError extends Error {
     this.name = "ChatContextError";
   }
 }
-const PROJECT_CHAT_ACTIONS=["source.connection.propose_create","project.source.propose_bind","source.backfill.propose_start"] as const;
-export function projectChatCapabilities(toolPermissions:Record<string,unknown>|undefined){const allowed=Array.isArray(toolPermissions?.allowed_tools)?new Set(toolPermissions.allowed_tools.filter((item):item is string=>typeof item==="string")):new Set<string>();return PROJECT_CHAT_ACTIONS.filter(action=>allowed.has(action));}
 
 interface AgentChatUnitOfWork {
   db?: Pool | PoolClient;
@@ -232,6 +232,33 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // The managed Assistant instance for a scope: the Space's own (`project_id`
+  // absent) or a Project's. A Project's instance exists once its first Room
+  // message provisioned it; null before that, which the UI states honestly.
+  app.get("/api/v1/agents/system-assistant", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const q = routeQuery(request);
+      if (q.project_id) {
+        await assertProjectReadable(
+          dbPool(context.config),
+          identity.spaceId,
+          q.project_id,
+          identity.userId,
+        );
+      }
+      const assistant = await agentRepository().getSystemAssistantInTransaction(
+        dbPool(context.config),
+        identity.spaceId,
+        q.project_id ?? null,
+      );
+      return reply.send({ assistant });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/agents", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -367,10 +394,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const profiles = await agentRepository().listRuntimeProfiles(
-        identity.spaceId,
-        params(request).agentId ?? "",
-      );
+      const repository = agentRepository();
+      const agentId = params(request).agentId ?? "";
+      // Runtime profiles include Host and workspace facts. Apply the owning
+      // Agent/Project read boundary before exposing them; knowing an Agent id
+      // must not be enough to enumerate its execution targets.
+      if (!await repository.canReadRuntimeProfiles(identity.spaceId, identity.userId, agentId)) {
+        return reply.code(404).send({ detail: "Agent not found" });
+      }
+      const profiles = await repository.listRuntimeProfiles(identity.spaceId, agentId);
       return reply.send(profiles);
     } catch (error) {
       return sendRouteError(reply, error);
@@ -383,9 +415,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const body = jsonBody(request);
       rejectRuntimeProfileCredential(body);
-      const profile = await agentRepository().createRuntimeProfile(
+      const repository = agentRepository();
+      const agentId = params(request).agentId ?? "";
+      if (!await repository.canWriteRuntimeProfiles(identity.spaceId, identity.userId, agentId)) {
+        return reply.code(404).send({ detail: "Agent not found" });
+      }
+      const profile = await repository.createRuntimeProfile(
         identity.spaceId,
-        params(request).agentId ?? "",
+        agentId,
         {
           name: requiredBodyString(body, "name"),
           adapterType: requiredBodyString(body, "adapter_type"),
@@ -408,16 +445,52 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.post("/api/v1/agents/:agentId/runtime-profiles/resolve-host-target", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const body = jsonBody(request);
+      const repository = agentRepository();
+      const agentId = params(request).agentId ?? "";
+      if (!await repository.canWriteRuntimeProfiles(identity.spaceId, identity.userId, agentId)) {
+        return reply.code(404).send({ detail: "Agent not found" });
+      }
+      const workspaceMode = requiredBodyString(body, "workspace_mode") as "location" | "managed";
+      if (workspaceMode !== "location" && workspaceMode !== "managed") {
+        return reply.code(422).send({ detail: "workspace_mode must be location or managed" });
+      }
+      const profile = await repository.ensureHostRuntimeProfile({
+        spaceId: identity.spaceId,
+        agentId,
+        actorUserId: identity.userId,
+        executionHostId: requiredBodyString(body, "execution_host_id"),
+        workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
+        workspaceMode,
+        adapterType: requiredBodyString(body, "adapter_type"),
+        runtimeInstallation: requiredBodyString(body, "runtime_installation"),
+      });
+      return reply.send(profile);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.patch("/api/v1/agents/:agentId/runtime-profiles/:profileId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
       rejectRuntimeProfileCredential(body);
-      const profile = await agentRepository().updateRuntimeProfile(
+      const repository = agentRepository();
+      const agentId = params(request).agentId ?? "";
+      const profileId = params(request).profileId ?? "";
+      if (!await repository.canWriteRuntimeProfiles(identity.spaceId, identity.userId, agentId)) {
+        return reply.code(404).send({ detail: "Agent not found" });
+      }
+      const profile = await repository.updateRuntimeProfile(
         identity.spaceId,
-        params(request).agentId ?? "",
-        params(request).profileId ?? "",
+        agentId,
+        profileId,
         {
           name: Object.hasOwn(body, "name") ? requiredBodyString(body, "name") : undefined,
           adapterType: Object.hasOwn(body, "adapter_type")
@@ -631,8 +704,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                   thread.dispatch_lock_id, host.owner_user_id AS host_owner_user_id
              FROM host_threads thread
              LEFT JOIN hosts host ON host.id = thread.execution_host_id
-            WHERE thread.room_id IS NULL
-              AND thread.agent_id = $1
+            WHERE thread.agent_id = $1
               AND thread.container_kind = 'direct'
               AND thread.container_user_id = $2
               AND thread.status IN ('active', 'session_reset')
@@ -740,6 +812,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               backend,
               container: { kind: "direct", user_id: identity.userId },
               sessionId: session.id,
+              spaceId: creation.spaceId,
               projectId: req.project_id ?? null,
               agentId: agent.id,
               userId: identity.userId,
@@ -804,9 +877,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           currentMessage: userMessage,
           projectId: req.project_id,
           visibility: creation.visibility,
-          projectActionCapabilities: projectChatCapabilities(
-            agent.tool_permissions_json,
-          ),
           backend,
           hostDispatch,
           hostPromptContext: hostDispatch ? renderDirectHostPrompt(history, userMessage.id) : null,
@@ -924,7 +994,6 @@ async function prepareChatRun(
     currentMessage: MessageOut;
     projectId?: string | null;
     visibility: "private" | "space_shared" | "selected_users";
-    projectActionCapabilities?: string[];
     backend: ResolvedConversationBackend;
     hostDispatch?: PreparedHostConversationDispatch | null;
     hostPromptContext?: string | null;
@@ -932,8 +1001,7 @@ async function prepareChatRun(
 ): Promise<PreparedChatRun> {
   const lightweightCliConversation =
     isLocalCliRuntimeAdapter(input.backend.adapter_type) &&
-    !input.projectId &&
-    (input.projectActionCapabilities?.length ?? 0) === 0;
+    !input.projectId;
   const created = await services.runs.createQueuedRun({
     agent_id: input.agentId,
     space_id: input.spaceId,
@@ -949,9 +1017,10 @@ async function prepareChatRun(
     host_task_thread_id: input.hostDispatch?.host_thread.id ?? null,
     project_id: input.projectId ?? null,
     visibility: input.visibility,
-    capabilities_json: input.projectId
-      ? input.projectActionCapabilities
-      : undefined,
+    // The same allowance a Room message or a delegation gets in this Project;
+    // this used to be a private three-action list from before scenario
+    // allowances existed, so a direct chat could not do what a Room could.
+    ...conversationToolGrantInput({ project_id: input.projectId ?? null }),
     prompt: input.hostPromptContext
       ? `${input.hostPromptContext}\n\n[Assigned direct-chat message]\n${input.message}`
       : input.message,

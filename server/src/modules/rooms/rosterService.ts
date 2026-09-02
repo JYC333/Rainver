@@ -72,7 +72,7 @@ export class RoomRosterService {
     restore_workspace?: boolean;
   }) {
     const transactionResult = await this.withRoomWriter(identity, roomId, async (client, room) => {
-      let restoreTarget: { hostId: string; agentId: string; roomId: string } | null = null;
+      let restoreTarget: ManagedConversationRestoreTarget | null = null;
       const repository = new PgRoomRosterRepository(client);
       const agent = await repository.getAgentForAdd({
         space_id: identity.spaceId,
@@ -157,8 +157,8 @@ export class RoomRosterService {
       "managed_workspace_restore",
       {
         agent_id: restoreTarget.agentId,
-        container_kind: "room",
-        container_id: restoreTarget.roomId,
+        container_kind: "conversation",
+        container_id: restoreTarget.conversationId,
       },
     );
     return { ...result, managed_workspace_restore: restored };
@@ -302,10 +302,10 @@ export class RoomRosterService {
       if (!member) throw new HttpError(404, "Room Agent member not found");
       if (member.role === "manager") throw managedRoomAgentImmutable();
       const threadRepository = new PgHostThreadRepository(client);
-      const thread = await threadRepository.getForRoomAgent(room.id, agentId);
-      const archiveTarget = thread?.workspace_mode === "managed" && thread.execution_host_id
-        ? { threadId: thread.id, hostId: thread.execution_host_id, agentId, roomId: room.id }
-        : null;
+      const closedThreads = await threadRepository.closeConversationAgentForRoom(identity.spaceId, room.id, agentId);
+      const archiveTargets = closedThreads
+        .filter((thread) => thread.pending_archive_at && thread.workspace_mode === "managed" && thread.execution_host_id && thread.session_id)
+        .map((thread) => ({ threadId: thread.id, hostId: thread.execution_host_id!, agentId, conversationId: thread.session_id! }));
       if (member.status === "active") {
         await client.query(
           `UPDATE room_agent_members
@@ -315,7 +315,6 @@ export class RoomRosterService {
         );
         await repository.incrementRosterRevision(identity.spaceId, room.id);
       }
-      await threadRepository.closeRoomAgent(room.id, agentId, Boolean(archiveTarget));
       const revokedGrantCount = await repository.revokeAgentGrants({
         space_id: identity.spaceId,
         room_id: room.id,
@@ -327,72 +326,71 @@ export class RoomRosterService {
           ...(await this.roomDetail(client, identity, room.id)),
           revoked_grant_count: revokedGrantCount,
         },
-        archiveTarget,
+        archiveTargets,
       };
     });
-    const { detail: result, archiveTarget } = transactionResult;
-    if (!archiveTarget) return result;
-    const archived = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-      archiveTarget.hostId,
-      "managed_workspace_archive",
-      {
-        agent_id: archiveTarget.agentId,
-        container_kind: "room",
-        container_id: archiveTarget.roomId,
-      },
-    );
-    if (archived.ok) {
-      await new PgHostThreadRepository(this.pool)
-        .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
-        .catch(() => undefined);
+    const { detail: result, archiveTargets } = transactionResult;
+    if (archiveTargets.length === 0) return result;
+    const archived = [];
+    for (const archiveTarget of archiveTargets) {
+      const response = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+        archiveTarget.hostId,
+        "managed_workspace_archive",
+        {
+          agent_id: archiveTarget.agentId,
+          container_kind: "conversation",
+          container_id: archiveTarget.conversationId,
+        },
+      );
+      archived.push(response);
+      if (response.ok) {
+        await new PgHostThreadRepository(this.pool)
+          .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
+          .catch(() => undefined);
+      }
     }
-    return { ...result, managed_workspace_archive: archived };
+    return { ...result, managed_workspace_archive: archived.length === 1 ? archived[0] : archived };
   }
 
   async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       const thread = await client.query<{
         id: string;
+        session_id: string;
         host_owner_user_id: string | null;
         agent_name: string;
         dispatch_lock_id: string | null;
       }>(
-        `SELECT thread.id, host.owner_user_id AS host_owner_user_id, agent.name AS agent_name,
+        `SELECT thread.id, thread.session_id, host.owner_user_id AS host_owner_user_id, agent.name AS agent_name,
                 thread.dispatch_lock_id
            FROM host_threads thread
-           JOIN workspace_locations location ON location.id = thread.workspace_location_id
-           JOIN hosts host ON host.id = location.execution_host_id
+           JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
+           JOIN hosts host ON host.id = thread.execution_host_id
            JOIN agents agent ON agent.id = thread.agent_id
-          WHERE thread.room_id = $1 AND thread.agent_id = $2
+          WHERE conversation.space_id = $3 AND conversation.room_id = $1 AND thread.agent_id = $2
+            AND thread.container_kind = 'conversation'
             AND thread.status IN ('active', 'session_reset')
+          ORDER BY conversation.updated_at DESC, conversation.created_at DESC, conversation.id DESC
           LIMIT 1
           FOR UPDATE`,
-        [room.id, agentId],
+        [room.id, agentId, identity.spaceId],
       );
       const current = thread.rows[0];
-      if (!current) throw new HttpError(404, "Host-bound Room Agent thread not found");
+      if (!current) throw new HttpError(404, "Host-bound Conversation Agent thread not found");
       if (current.host_owner_user_id !== identity.userId) {
         throw new HttpError(403, "Only the execution host owner can reset this Agent's context");
       }
       if (current.dispatch_lock_id) {
         throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; reset its context after it finishes");
       }
-      const reset = await new PgHostThreadRepository(client).resetRoomAgent(room.id, agentId);
+      const reset = await new PgHostThreadRepository(client).resetConversationAgent(current.id);
       if (!reset) throw new HttpError(409, "Host Agent context changed before it could be reset");
-      const session = await client.query<{ id: string }>(
-        `SELECT id
-           FROM sessions
-          WHERE space_id = $1 AND room_id = $2 AND status = 'active'
-          ORDER BY updated_at DESC, created_at DESC, id DESC
-          LIMIT 1`,
-        [identity.spaceId, room.id],
-      );
-      if (session.rows[0]) {
+      if (current.session_id) {
         await new PgSessionRepository(client).addRoomSystemNotice(
           identity.spaceId,
           identity.userId,
           room.id,
-          session.rows[0].id,
+          current.session_id,
           {
             content: `${current.agent_name}'s context was reset`,
             metadata: {
@@ -1015,38 +1013,45 @@ export class RoomRosterService {
   }
 }
 
+interface ManagedConversationRestoreTarget {
+  hostId: string;
+  agentId: string;
+  conversationId: string;
+}
+
 async function findManagedWorkspaceRestoreTarget(
   client: PoolClient,
   spaceId: string,
   agentId: string,
   roomId: string,
   userId: string,
-): Promise<{ hostId: string; agentId: string; roomId: string } | null> {
-  const profile = await client.query<{
-    host_id: string;
-    managed_workspaces_json: unknown;
-  }>(
-    `SELECT profile.execution_host_id AS host_id, host.managed_workspaces_json
-       FROM agent_runtime_profiles profile
-       JOIN hosts host ON host.id = profile.execution_host_id
-      WHERE profile.space_id = $1 AND profile.agent_id = $2
-        AND profile.enabled = true AND profile.workspace_mode = 'managed'
-        AND host.owner_user_id = $3 AND host.status <> 'revoked'
-      ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
+): Promise<ManagedConversationRestoreTarget | null> {
+  const profile = await client.query<ManagedConversationRestoreTarget>(
+    `SELECT thread.execution_host_id AS "hostId", thread.agent_id AS "agentId", thread.session_id AS "conversationId"
+       FROM host_threads thread
+       JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
+       JOIN hosts host ON host.id = thread.execution_host_id
+      WHERE thread.space_id = $1 AND thread.agent_id = $2
+        AND conversation.room_id = $3
+        AND thread.container_kind = 'conversation'
+        AND thread.workspace_mode = 'managed'
+        AND thread.status = 'closed'
+        AND host.owner_user_id = $4 AND host.status <> 'revoked'
+        AND EXISTS (
+          SELECT 1
+            FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) workspace
+           WHERE workspace->>'container_kind' = 'conversation'
+             AND workspace->>'container_id' = thread.session_id
+             AND workspace->>'archived_available' = 'true'
+        )
+      ORDER BY conversation.updated_at DESC, conversation.created_at DESC, conversation.id DESC
       LIMIT 1`,
-    [spaceId, agentId, userId],
+    [spaceId, agentId, roomId, userId],
   );
   const selected = profile.rows[0];
-  const archived = Array.isArray(selected?.managed_workspaces_json)
-    && selected.managed_workspaces_json.some((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-      const record = entry as Record<string, unknown>;
-      return record.agent_id === agentId
-        && record.container_kind === "room"
-        && record.container_id === roomId
-        && record.archived_available === true;
-    });
-  return selected && archived ? { hostId: selected.host_id, agentId, roomId } : null;
+  return selected
+    ? { hostId: selected.hostId, agentId: selected.agentId, conversationId: selected.conversationId }
+    : null;
 }
 
 function uniqueIds(values: readonly string[]): string[] {

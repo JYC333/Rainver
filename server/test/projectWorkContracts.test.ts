@@ -4,11 +4,14 @@ import { describe, expect, it } from "vitest";
 import {
   PERSON_ONLY_TASK_STATUSES,
   PROJECT_WORK_EVENT_KINDS,
+  TASK_STATUSES,
   WORK_LOOP_STAGE_KEYS,
   WORK_LOOP_STAGE_LABELS,
   stageTransitionKind,
   workLoopStageLabel,
 } from "@rainver/protocol";
+import { DEFAULT_COLUMNS } from "../src/modules/tasks/taskRepositoryRows.js";
+import { ARCHIVED_CARD_STATUSES, COLUMN_FOR_STATUS } from "../src/modules/projectWork/boardReadModel.js";
 import {
   hasWorkEventKindDeclaration,
   registeredWorkEventKinds,
@@ -83,14 +86,37 @@ describe("work loop stages", () => {
   // The five stages are a system constant; a Mode changes what they are
   // called and nothing else. A missing label would silently fall back to a
   // key, which reads as a bug in whichever Project happens to use that Mode.
-  it("labels every stage in every mode", () => {
-    for (const [mode, labels] of Object.entries(WORK_LOOP_STAGE_LABELS)) {
-      for (const stage of WORK_LOOP_STAGE_KEYS) {
-        expect(labels[stage], `${mode}/${stage}`).toBeTruthy();
-      }
+  // A status with no lane is a card that is counted and never drawn — the
+  // defect the Board shipped once. The list lives in the protocol; the two
+  // check constraints, the repository validator and the lanes derive from it.
+  it("draws every Task status on exactly one lane, or archives it", () => {
+    const lanes = new Set(DEFAULT_COLUMNS.map((column) => column.status_key));
+    for (const status of TASK_STATUSES) {
+      const drawnOn = COLUMN_FOR_STATUS[status] ?? status;
+      const archived = ARCHIVED_CARD_STATUSES.includes(status);
+      expect(lanes.has(drawnOn) || archived, `${status} → ${drawnOn}`).toBe(true);
+      expect(lanes.has(drawnOn) && archived, `${status} both drawn and archived`).toBe(false);
     }
-    expect(workLoopStageLabel("research", "verify")).toBe("Evaluate");
-    expect(workLoopStageLabel("delivery", "verify")).toBe("Verify");
+    for (const overlay of Object.keys(COLUMN_FOR_STATUS)) {
+      expect(TASK_STATUSES, `${overlay} is not a Task status`).toContain(overlay);
+    }
+    // The database constraints name the same set, in `tasks` and `board_columns`.
+    const schema = readFileSync(join(process.cwd(), "src", "db", "schema", "tasks.ts"), "utf8");
+    const lists = [...schema.matchAll(/status(?:_key)? IN \(([^)]*)\)/g)].map((m) =>
+      m[1]!.split(",").map((item) => item.trim().replace(/^'|'$/g, "")).sort(),
+    );
+    expect(lists).toHaveLength(2);
+    for (const list of lists) expect(list).toEqual([...TASK_STATUSES].sort());
+  });
+
+  it("labels every stage, with one wording for every Project", () => {
+    for (const stage of WORK_LOOP_STAGE_KEYS) {
+      expect(WORK_LOOP_STAGE_LABELS[stage], stage).toBeTruthy();
+    }
+    // The keys are the docs' vocabulary, so they are the labels too; there is
+    // no per-Project set to pick from any more (ADR 0019).
+    expect(workLoopStageLabel("verify")).toBe("Verify");
+    expect(workLoopStageLabel("frame")).toBe("Frame");
   });
 
   it("classifies a move without restricting it", () => {

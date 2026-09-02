@@ -1,3 +1,4 @@
+import { isProjectOwnerLevel } from "../projects/access.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
@@ -21,7 +22,7 @@ import {
   PgProposalRepository,
 } from "./repository.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
-import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
+import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
@@ -537,7 +538,7 @@ export class PgProposalApplyService {
       }
       let location;
       try {
-        location = await resolvePreferredServerHostLocation(client, identity.spaceId, p.project_folder_id);
+        location = await resolveActiveServerHostLocation(client, identity.spaceId, p.project_folder_id);
       } catch (error) {
         await client.query("ROLLBACK");
         throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
@@ -685,7 +686,16 @@ export class PgProposalApplyService {
     proposal: ApplyProposalRow,
     userId: string,
   ): Promise<void> {
-    const role = await getMembershipRole(client, userId, proposal.space_id);
+    const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
+    // `required_approver_role: "owner"` on a Project-scoped proposal means the
+    // Project's owner, which is what the applier's own authority check
+    // (`assertProjectOwnerLevel`) asks. Comparing the Space role alone let a
+    // Project owner who is a Space member be shown the Accept button and then
+    // refused by it.
+    const role = spaceRole !== "owner" && proposal.project_id
+      && await isProjectOwnerLevel(client, proposal.space_id, proposal.project_id, userId)
+      ? "owner"
+      : spaceRole;
     const result = await enforceProposalApply(
       this.config,
       {

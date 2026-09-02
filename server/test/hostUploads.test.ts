@@ -70,8 +70,8 @@ beforeEach(async () => {
   await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-       execution_ready, status, preferred, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'remote',true,'active',true,$5,$5)`,
+       execution_ready, status, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'remote',true,'active',$5,$5)`,
     ["location-a", SPACE, FOLDER_A, HOST_A, now],
   );
   await db.pool.query(

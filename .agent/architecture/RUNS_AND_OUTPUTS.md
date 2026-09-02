@@ -244,8 +244,9 @@ can answer, it calls `agent.wait_for_results`; the run moves to
 `waiting_for_dependency`, releases the worker, and is requeued as the same run
 after all declared dependency runs are terminal.
 
-Product UI room messages create one manager/root run on the first message, not
-at room creation. The room `goal` is optional, can be edited after creation, and
+Product UI room messages create one manager/root run for an initialized
+Conversation, not at Room creation. Conversation setup is an explicit draft
+action that pins execution before the first message. The room `goal` is optional, can be edited after creation, and
 is used as run instruction/background only when present; it is not inserted as a
 synthetic chat message. Structured `@agent` mention tokens from the Tiptap room
 composer are resolved by the product UI into a visible routing preview and

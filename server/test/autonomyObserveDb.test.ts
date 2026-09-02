@@ -74,9 +74,9 @@ describeWithPostgres("observe-only autonomy candidate lifecycle", () => {
   it("deduplicates one logical candidate across repeated and concurrent ticks without creating a Run", async () => {
     await db.pool.query(
       `INSERT INTO projects (
-         id, space_id, owner_user_id, name, status, primary_mode,
+         id, space_id, owner_user_id, name, status,
          created_at, updated_at
-       ) VALUES ($1, $2, $3, 'Digest Project', 'active', 'delivery', $4, $4)`,
+       ) VALUES ($1, $2, $3, 'Digest Project', 'active', $4, $4)`,
       [PROJECT, SPACE, USER, "2026-07-24T12:00:00.000Z"],
     );
     await seedMainlineRoomsForAllProjects(db.pool);

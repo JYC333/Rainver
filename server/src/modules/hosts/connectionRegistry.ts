@@ -1,5 +1,21 @@
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
+import type { HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf } from "@rainver/protocol";
+
+/** A request frame's payload: everything but the tag and the id the registry assigns. */
+export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostServerFrameOf<T>, "type" | "request_id">;
+/** A `list_dirs` / `workspace_register` / `workspace_forget` reply, whole. */
+type HostActionType = "list_dirs" | "workspace_register" | "workspace_forget";
+type HostActionResult<T extends HostActionType> = Omit<HostDaemonFrameOf<`${T}_result`>, "type" | "request_id">;
+type AnyHostActionResult = HostActionResult<"list_dirs"> | HostActionResult<"workspace_register"> | HostActionResult<"workspace_forget">;
+/** A transport failure, reported in the reply's own shape. */
+function failedHostAction(type: HostActionType, error: string): AnyHostActionResult {
+  return type === "list_dirs"
+    ? { ok: false, path: null, parent: null, dirs: [], truncated: false, error }
+    : type === "workspace_register"
+      ? { ok: false, workspace_id: null, display_path: null, error }
+      : { ok: false, changed: false, error };
+}
 /**
  * ADR 0016 P3: tracks which hosts currently hold a live WebSocket connection
  * and lets server code (the dispatch path, `RemoteWsCliCommandExecutor`)
@@ -27,7 +43,8 @@ import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-
  */
 
 export interface HostFrameSink {
-  send(frame: Record<string, unknown>): void;
+  /** Typed against the wire contract: a frame that is not on it cannot be sent. */
+  send(frame: HostServerFrame): void;
   close(code?: number, reason?: string): void;
 }
 
@@ -35,6 +52,8 @@ const RECONNECT_GRACE_MS = 60_000;
 
 interface PendingRun {
   hostId: string;
+  /** This dispatch's nonce; a run frame carrying a different one is a previous attempt's. */
+  launchId: string;
   onOutput?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   /**
@@ -108,6 +127,22 @@ export interface ManagedWorkspaceResult {
   error: string | null;
 }
 
+export interface HostDirectoryListing {
+  ok: boolean;
+  path: string | null;
+  parent: string | null;
+  dirs: string[];
+  truncated: boolean;
+  error: string | null;
+}
+
+export interface HostWorkspaceRegistration {
+  ok: boolean;
+  workspace_id: string | null;
+  display_path: string | null;
+  error: string | null;
+}
+
 /** What a daemon's login terminal sends back, frame by frame. */
 export type LoginSessionEvent =
   | { type: "output"; data: string }
@@ -128,7 +163,8 @@ const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 export const FOLDER_READ_TIMEOUT_MS = 15_000;
-export const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
+export const HOST_ACTION_TIMEOUT_MS = 15_000;
+const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
@@ -144,6 +180,13 @@ export class HostConnectionRegistry {
     hostId: string;
     kind: FolderReadKind;
     resolve: (result: FolderReadResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  /** Generic single-frame host requests (list_dirs, workspace_register, workspace_forget). */
+  private readonly pendingHostActions = new Map<string, {
+    hostId: string;
+    type: HostActionType;
+    resolve: (result: AnyHostActionResult) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
   private readonly pendingManagedWorkspaces = new Map<string, {
@@ -184,6 +227,12 @@ export class HostConnectionRegistry {
       this.pendingManagedWorkspaces.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, changed: false, error: "host_offline" });
+    }
+    for (const [requestId, pending] of this.pendingHostActions) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingHostActions.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve(failedHostAction(pending.type, "host_offline"));
     }
   }
   private readonly logins = new Map<string, PendingLogin>();
@@ -242,11 +291,17 @@ export class HostConnectionRegistry {
     this.connections.get(hostId)?.sink?.close(code, reason);
   }
 
-  /** Sends the launch frame and returns a promise that resolves on the matching `complete` frame. */
+  /**
+   * Sends the launch frame and returns a promise that resolves on the matching
+   * `complete` frame. The payload is typed against the shared wire contract
+   * (`HostLaunchFrameSchema`), which the daemon's parser is tested against:
+   * a field that is not on the contract cannot be sent, and one that is
+   * cannot be dropped on the other side unnoticed.
+   */
   dispatchLaunch(
     hostId: string,
     runId: string,
-    frame: Record<string, unknown>,
+    frame: HostLaunchPayload,
     onOutput?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
@@ -255,8 +310,10 @@ export class HostConnectionRegistry {
     if (!connection?.sink) return Promise.resolve({ exit_code: -1, timed_out: false, error: "host_offline" });
     const sink = connection.sink;
     return new Promise((resolve) => {
-      this.pending.set(runId, { hostId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [] });
-      sink.send({ ...frame, type: "launch", run_id: runId });
+      const launchId = randomUUID();
+      this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [] });
+      const launch: HostLaunchFrame = { ...frame, type: "launch", run_id: runId, launch_id: launchId };
+      sink.send(launch);
     });
   }
 
@@ -303,7 +360,7 @@ export class HostConnectionRegistry {
    * grace: a daemon that drops mid-install starts over on the next request,
    * and the operator sees the failure now rather than after a grace period.
    */
-  requestToolAction(hostId: string, type: "install_tool" | "uninstall_tool", frame: Record<string, unknown>): Promise<ToolInstallResult> {
+  requestToolAction<T extends "install_tool" | "uninstall_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
     const requestId = randomUUID();
@@ -314,7 +371,7 @@ export class HostConnectionRegistry {
       }, TOOL_INSTALL_TIMEOUT_MS);
       timer.unref?.();
       this.pendingInstalls.set(requestId, { hostId, resolve, timer });
-      connection.sink!.send({ ...frame, type, request_id: requestId });
+      connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrameOf<T>);
     });
   }
 
@@ -329,7 +386,7 @@ export class HostConnectionRegistry {
    */
   requestAmbientImport(
     hostId: string,
-    frame: Record<string, unknown>,
+    frame: HostRequestPayload<"ambient_import">,
     onSession: (session: unknown) => void,
   ): Promise<AmbientImportResult> {
     const connection = this.connections.get(hostId);
@@ -361,7 +418,7 @@ export class HostConnectionRegistry {
   }
 
   /** Asks a daemon for one bounded live tree/file/Git read. */
-  requestFolderRead<K extends FolderReadKind>(hostId: string, frame: { kind: K } & Record<string, unknown>): Promise<FolderReadResult<K>> {
+  requestFolderRead<K extends FolderReadKind>(hostId: string, frame: HostRequestPayload<"folder_read"> & { kind: K }): Promise<FolderReadResult<K>> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline" });
     const kind = frame.kind;
@@ -396,7 +453,7 @@ export class HostConnectionRegistry {
   requestManagedWorkspaceAction(
     hostId: string,
     type: "managed_workspace_archive" | "managed_workspace_restore",
-    frame: Record<string, unknown>,
+    frame: HostRequestPayload<"managed_workspace_archive">,
   ): Promise<ManagedWorkspaceResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, changed: false, error: "host_offline" });
@@ -410,6 +467,66 @@ export class HostConnectionRegistry {
       this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
       connection.sink!.send({ ...frame, type, request_id: requestId });
     });
+  }
+
+  /** One level of an owned host's directory tree, answered by its daemon. */
+  async listHostDirectories(hostId: string, path: string | null): Promise<HostDirectoryListing> {
+    return this.requestHostAction(hostId, "list_dirs", { path });
+  }
+
+  async registerHostWorkspace(hostId: string, input: { path: string; projectId: string; name: string }): Promise<HostWorkspaceRegistration> {
+    return this.requestHostAction(hostId, "workspace_register", {
+      path: input.path,
+      project_id: input.projectId,
+      name: input.name,
+    });
+  }
+
+  async forgetHostWorkspace(hostId: string, workspaceId: string): Promise<{ ok: boolean; error: string | null }> {
+    return this.requestHostAction(hostId, "workspace_forget", { workspace_id: workspaceId });
+  }
+
+  /**
+   * One request/reply pair over the socket, typed at both ends: the payload is
+   * the contract's request and the reply is the contract's result, so neither
+   * is rebuilt field by field here. A transport failure is reported in the
+   * reply's own shape.
+   */
+  private requestHostAction<T extends HostActionType>(
+    hostId: string,
+    type: T,
+    frame: HostRequestPayload<T>,
+  ): Promise<HostActionResult<T>> {
+    // The reply is correlated by request id, which is what ties its shape
+    // back to `type`; the map holds every action's reply under one union, so
+    // the generic is narrowed here once rather than at each caller.
+    const failed = (error: string) => failedHostAction(type, error) as unknown as HostActionResult<T>;
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve(failed("host_offline"));
+    const requestId = randomUUID();
+    return new Promise<HostActionResult<T>>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingHostActions.delete(requestId);
+        resolve(failed("host_timeout"));
+      }, HOST_ACTION_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingHostActions.set(requestId, { hostId, type, resolve: resolve as unknown as (result: AnyHostActionResult) => void, timer });
+      try {
+        connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrameOf<T>);
+      } catch {
+        clearTimeout(timer);
+        this.pendingHostActions.delete(requestId);
+        resolve(failed("host_offline"));
+      }
+    });
+  }
+
+  receiveHostActionResult(hostId: string, requestId: string, result: AnyHostActionResult): void {
+    const pending = this.pendingHostActions.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingHostActions.delete(requestId);
+    pending.resolve(result);
   }
 
   receiveManagedWorkspaceResult(hostId: string, requestId: string, result: ManagedWorkspaceResult): void {
@@ -426,7 +543,7 @@ export class HostConnectionRegistry {
    * command exits or the caller closes it. Returns the session id, or null
    * when the host is offline.
    */
-  openLoginSession(hostId: string, frame: Record<string, unknown>, onEvent: (event: LoginSessionEvent) => void): string | null {
+  openLoginSession(hostId: string, frame: Omit<HostServerFrameOf<"login_open">, "type" | "session_id">, onEvent: (event: LoginSessionEvent) => void): string | null {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return null;
     const sessionId = randomUUID();
@@ -467,27 +584,35 @@ export class HostConnectionRegistry {
   }
 
   /** Routes a daemon's `launched` frame to whatever dispatched that run, so it knows the child process is registered before sending any `stdin` frame. */
-  receiveLaunched(hostId: string, runId: string): void {
+  /**
+   * The dispatch a run frame belongs to, or none: a frame carrying another
+   * nonce is a previous attempt of the same run reporting late, and must not
+   * resolve this attempt.
+   */
+  private currentDispatch(hostId: string, runId: string, launchId: string): PendingRun | null {
     const pending = this.pending.get(runId);
-    if (pending?.hostId === hostId) pending.onLaunched?.();
+    if (!pending || pending.hostId !== hostId || pending.launchId !== launchId) return null;
+    return pending;
+  }
+
+  receiveLaunched(hostId: string, runId: string, launchId: string): void {
+    this.currentDispatch(hostId, runId, launchId)?.onLaunched?.();
   }
 
   /** Routes a daemon's `output` frame to whatever is awaiting that run's stream. */
-  receiveOutput(hostId: string, runId: string, chunk: string): void {
-    const pending = this.pending.get(runId);
-    if (pending?.hostId === hostId) pending.onOutput?.(chunk);
+  receiveOutput(hostId: string, runId: string, chunk: string, launchId: string): void {
+    this.currentDispatch(hostId, runId, launchId)?.onOutput?.(chunk);
   }
 
   /** Routes a daemon's `stderr` frame the same way `receiveOutput` routes `output` (C5: full live stream, not just a failure tail). */
-  receiveStderr(hostId: string, runId: string, chunk: string): void {
-    const pending = this.pending.get(runId);
-    if (pending?.hostId === hostId) pending.onStderr?.(chunk);
+  receiveStderr(hostId: string, runId: string, chunk: string, launchId: string): void {
+    this.currentDispatch(hostId, runId, launchId)?.onStderr?.(chunk);
   }
 
   /** Routes a daemon's `complete` frame and clears the pending entry. */
-  receiveComplete(hostId: string, runId: string, result: { exit_code: number; timed_out: boolean; error: string | null }): void {
-    const pending = this.pending.get(runId);
-    if (!pending || pending.hostId !== hostId) return;
+  receiveComplete(hostId: string, runId: string, result: { exit_code: number; timed_out: boolean; error: string | null }, launchId: string): void {
+    const pending = this.currentDispatch(hostId, runId, launchId);
+    if (!pending) return;
     if (pending.graceTimer) clearTimeout(pending.graceTimer);
     this.pending.delete(runId);
     pending.resolveComplete(result);

@@ -63,15 +63,16 @@ async function ensureRealDirectoryChain(
 async function stateRoots(input: {
   rainver_home: string;
   sandbox_root: string;
-}): Promise<{ homes: string; sandboxes: string }> {
-  const [homes, sandboxes] = await Promise.all([
+}): Promise<{ homes: string; sandboxes: string; conversationSandboxes: string }> {
+  const [homes, sandboxes, conversationSandboxes] = await Promise.all([
     ensureRealDirectoryChain(input.rainver_home, [
       "cache",
       "conversation-runtime-homes",
     ]),
+    ensureRealDirectoryChain(input.sandbox_root, ["conversation-runtime-state"]),
     ensureRealDirectoryChain(input.sandbox_root, ["conversation-sessions"]),
   ]);
-  return { homes, sandboxes };
+  return { homes, sandboxes, conversationSandboxes };
 }
 
 export async function prepareConversationRuntimeState(input: {
@@ -79,26 +80,35 @@ export async function prepareConversationRuntimeState(input: {
   sandbox_root: string;
   state_key: string;
   resume_requested: boolean;
+  conversation_id?: string | null;
 }): Promise<PreparedConversationRuntimeState> {
   const stateKey = validatedStateKey(input.state_key);
   const roots = await stateRoots(input);
   const homeDir = underRoot(roots.homes, stateKey);
   const sandboxStateDir = underRoot(roots.sandboxes, stateKey);
-  const cwd = underRoot(sandboxStateDir, "workspace");
+  const conversationId = input.conversation_id ? validatedStateKey(input.conversation_id) : null;
+  const cwd = conversationId
+    ? underRoot(roots.conversationSandboxes, conversationId, "workspace")
+    : underRoot(sandboxStateDir, "workspace");
   const resume = input.resume_requested
     && await realDirectory(homeDir)
-    && await realDirectory(sandboxStateDir)
     && await realDirectory(cwd);
   if (!resume) {
     await Promise.all([
       rm(homeDir, { recursive: true, force: true }),
       rm(sandboxStateDir, { recursive: true, force: true }),
+      ...(conversationId ? [] : [rm(cwd, { recursive: true, force: true })]),
     ]);
     await Promise.all([
       ensureRealDirectoryChain(roots.homes, [stateKey]),
-      ensureRealDirectoryChain(roots.sandboxes, [stateKey, "workspace"]),
+      ...(conversationId ? [ensureRealDirectoryChain(roots.sandboxes, [stateKey])] : []),
+      ensureRealDirectoryChain(
+        conversationId ? roots.conversationSandboxes : roots.sandboxes,
+        conversationId ? [conversationId, "workspace"] : [stateKey, "workspace"],
+      ),
     ]);
   }
+  await ensureRealDirectoryChain(roots.sandboxes, [stateKey]);
   const now = new Date();
   await Promise.all([
     utimes(homeDir, now, now),

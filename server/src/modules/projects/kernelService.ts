@@ -11,7 +11,6 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { assertProjectOwnerLevel, assertProjectOwnerLevelForMutation, assertProjectReadable, assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "./access.js";
-import { PRIMARY_MODES, isPrimaryMode, type ProjectPrimaryMode } from "./primaryMode.js";
 
 
 interface BriefVersionRow {
@@ -28,7 +27,6 @@ interface BriefVersionRow {
   project_status: string;
   current_focus: string | null;
   confirmed_decisions_json: unknown;
-  primary_mode: string;
   workspace_identity_json: unknown;
   workspace_boundary_json: unknown;
   source_refs_json: unknown;
@@ -48,18 +46,6 @@ interface InstructionVersionRow {
   created_by_user_id: string; created_at: unknown;
 }
 
-interface ModeTransitionRow {
-  id: string;
-  space_id: string;
-  project_id: string;
-  from_mode: string | null;
-  to_mode: string;
-  reason: string | null;
-  trigger_ref: string | null;
-  confirmed_by_user_id: string | null;
-  created_at: unknown;
-}
-
 function briefVersionToOut(row: BriefVersionRow): Record<string, unknown> {
   return {
     id: row.id,
@@ -75,7 +61,6 @@ function briefVersionToOut(row: BriefVersionRow): Record<string, unknown> {
     project_status: row.project_status,
     current_focus: row.current_focus,
     confirmed_decisions: row.confirmed_decisions_json,
-    primary_mode: row.primary_mode,
     workspace_identity: row.workspace_identity_json,
     workspace_boundary: row.workspace_boundary_json,
     source_refs: row.source_refs_json,
@@ -96,20 +81,6 @@ function instructionVersionToOut(row: InstructionVersionRow): Record<string, unk
     reviewed_by_user_id: row.reviewed_by_user_id, reviewed_at: dateIso(row.reviewed_at),
     published_by_user_id: row.published_by_user_id, published_at: dateIso(row.published_at),
     created_by_user_id: row.created_by_user_id,
-    created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
-  };
-}
-
-function modeTransitionToOut(row: ModeTransitionRow): Record<string, unknown> {
-  return {
-    id: row.id,
-    space_id: row.space_id,
-    project_id: row.project_id,
-    from_mode: row.from_mode,
-    to_mode: row.to_mode,
-    reason: row.reason,
-    trigger_ref: row.trigger_ref,
-    confirmed_by_user_id: row.confirmed_by_user_id,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
   };
 }
@@ -168,8 +139,8 @@ export class ProjectKernelService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await assertProjectWriterForMutation(db, identity.spaceId, projectId, identity.userId);
-      const project = await db.query<{ status: string; current_focus: string | null; primary_mode: string }>(
-        `SELECT status, current_focus, primary_mode FROM projects WHERE id=$1 AND space_id=$2`,
+      const project = await db.query<{ status: string; current_focus: string | null }>(
+        `SELECT status, current_focus FROM projects WHERE id=$1 AND space_id=$2`,
         [projectId, identity.spaceId],
       );
       if (!project.rows[0]) throw new HttpError(404, "Project not found");
@@ -183,10 +154,10 @@ export class ProjectKernelService {
         `INSERT INTO project_brief_versions (
            id, space_id, project_id, version, goal, scope_included, scope_excluded,
            success_definition, constraints, assumptions, project_status, current_focus,
-           confirmed_decisions_json, primary_mode, workspace_identity_json,
+           confirmed_decisions_json, workspace_identity_json,
            workspace_boundary_json, source_refs_json, status, created_by_user_id, created_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                   $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, 'draft', $18, $19)
+                   $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, 'draft', $17, $18)
          RETURNING *`,
         [
           briefId,
@@ -202,7 +173,6 @@ export class ProjectKernelService {
           project.rows[0].status,
           project.rows[0].current_focus,
           JSON.stringify(brief.confirmed_decisions ?? []),
-          project.rows[0].primary_mode,
           JSON.stringify(brief.workspace_identity ?? {}),
           JSON.stringify(brief.workspace_boundary ?? {}),
           JSON.stringify(brief.source_refs ?? []),
@@ -286,68 +256,6 @@ export class ProjectKernelService {
       return instructionVersionToOut(result.rows[0]);
     });
   }
-
-  async listModeTransitions(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
-    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const rows = await this.db.query<ModeTransitionRow>(
-      `SELECT id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at
-         FROM project_mode_transitions
-        WHERE space_id = $1 AND project_id = $2
-        ORDER BY created_at DESC, id DESC`,
-      [identity.spaceId, projectId],
-    );
-    return rows.rows.map(modeTransitionToOut);
-  }
-
-  // A Mode transition writes `projects.primary_mode` and appends its own
-  // log. All Project Areas remain reachable regardless of `primary_mode` —
-  // this call never hides, converts, or reclassifies domain records, and it
-  // intentionally touches no Area-owned business rows. See PROJECTS.md and
-  // the Project Model Clean-Cutover plan.
-  async transitionMode(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    const toMode = requiredMode(body.to_mode);
-    const now = new Date().toISOString();
-    return withQueryableTransaction(this.db, async (db) => {
-      await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const current = await db.query<{ primary_mode: string }>(
-        `SELECT primary_mode FROM projects WHERE id = $1 AND space_id = $2`,
-        [projectId, identity.spaceId],
-      );
-      if (!current.rows[0]) throw new HttpError(404, "Project not found");
-      const fromMode = current.rows[0].primary_mode;
-      const transitionId = randomUUID();
-      const inserted = await db.query<ModeTransitionRow>(
-        `INSERT INTO project_mode_transitions (
-           id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at`,
-        [
-          transitionId,
-          identity.spaceId,
-          projectId,
-          fromMode,
-          toMode,
-          optionalString(body.reason),
-          optionalString(body.trigger_ref),
-          identity.userId,
-          now,
-        ],
-      );
-      // All installed Project Areas are always reachable, independent of
-      // primary_mode — there is no per-Project enabled-Area list to update.
-      await db.query(
-        `UPDATE projects SET primary_mode = $1::varchar,
-           updated_at = $2 WHERE id = $3 AND space_id = $4`,
-        [toMode, now, projectId, identity.spaceId],
-      );
-      return modeTransitionToOut(inserted.rows[0]!);
-    });
-  }
 }
 
 async function assertNewerProjectContextVersion(
@@ -381,9 +289,3 @@ function versionOrdinal(value: string): number {
   return Number(match[1]);
 }
 
-function requiredMode(value: unknown): ProjectPrimaryMode {
-  if (!isPrimaryMode(value)) {
-    throw new HttpError(422, `to_mode must be one of: ${PRIMARY_MODES.join(", ")}`);
-  }
-  return value as ProjectPrimaryMode;
-}

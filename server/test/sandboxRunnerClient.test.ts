@@ -7,6 +7,7 @@ import { SandboxRunnerCliCommandExecutor, SandboxRunnerVerificationExecutor } fr
 import { LocalCliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
 import { SandboxRunnerPtyFactory } from "../src/modules/sandboxRunner/ptyFactory.js";
 import type { ServerConfig } from "../src/config.js";
+import type { SandboxRuntimeEnvironment } from "../src/modules/sandboxRunner/protocol.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -20,6 +21,67 @@ describe("SandboxRunnerCliCommandExecutor", () => {
   it("exposes the Node toolchain inside verification namespaces", async () => {
     const source = await readFile(join(process.cwd(), "..", "sandbox", "runner.mjs"), "utf8");
     expect(source).toContain('"--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin"');
+  });
+
+  // `sandbox/runner.mjs` runs in a container with no dependencies, so it
+  // cannot import `protocol.ts` and maps the request by hand. This pins that
+  // mapping to the declaration: `Required<...>` makes every field the type
+  // declares appear here, and the whole environment is compared, so a field
+  // added to `SandboxRuntimeEnvironment` fails until the runner maps it —
+  // the sandbox analogue of the host daemon's `work_surface`, which was
+  // dropped exactly this way.
+  it("maps every declared environment field the runner is sent", async () => {
+    const runner = await import(new URL("../../sandbox/runner.mjs", import.meta.url).href) as {
+      environmentMap: (env: SandboxRuntimeEnvironment) => Record<string, string>;
+    };
+    const environment: {
+      [K in keyof Required<SandboxRuntimeEnvironment>]-?: NonNullable<SandboxRuntimeEnvironment[K]> extends object
+        ? NonNullable<SandboxRuntimeEnvironment[K]> extends unknown[]
+          ? NonNullable<SandboxRuntimeEnvironment[K]>
+          : Required<NonNullable<SandboxRuntimeEnvironment[K]>>
+        : NonNullable<SandboxRuntimeEnvironment[K]>;
+    } = {
+      locale: "en_US.UTF-8",
+      term: "xterm",
+      codex_home: "/home/sandbox/.codex",
+      provider_channel: { kind: "managed_proxy" },
+      anthropic: {
+        base_url: "http://proxy/anthropic",
+        auth_token: "lease-token",
+        model: "m",
+        default_sonnet_model: "s",
+        default_opus_model: "o",
+        default_haiku_model: "h",
+      },
+      proxy: { http: "http://p", https: "https://p", all: "socks://p", no_proxy: "localhost" },
+      tool_channel: { url: "http://server/api", token: "tool-token", run_id: "run-1", cli_path: "/runner/rainver", skill_path: "/runner/SKILL.md" },
+      workspace_access: [{ workspace_location_id: "loc-1", access_mode: "write", target: "/attachments/0" }],
+      exchange: true,
+    };
+    expect(runner.environmentMap(environment)).toEqual({
+      LANG: "en_US.UTF-8",
+      TERM: "xterm",
+      CODEX_HOME: "/home/sandbox/.codex",
+      // `provider_channel` selects mounts and egress, never an environment variable.
+      ANTHROPIC_BASE_URL: "http://proxy/anthropic",
+      ANTHROPIC_AUTH_TOKEN: "lease-token",
+      ANTHROPIC_MODEL: "m",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "s",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "o",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "h",
+      HTTP_PROXY: "http://p", http_proxy: "http://p",
+      HTTPS_PROXY: "https://p", https_proxy: "https://p",
+      ALL_PROXY: "socks://p", all_proxy: "socks://p",
+      NO_PROXY: "localhost", no_proxy: "localhost",
+      RAINVER_API_URL: "http://server/api",
+      RAINVER_TOOL_TOKEN: "tool-token",
+      RAINVER_RUN_ID: "run-1",
+      RAINVER_CLI: "/runner/rainver",
+      RAINVER_SKILL_PATH: "/runner/SKILL.md",
+      RAINVER_EXCHANGE_INPUT: "/run-exchange/input/run_input.json",
+      RAINVER_EXCHANGE_OUTPUT: "/run-exchange/output",
+      RAINVER_WORKSPACE_ACCESS: JSON.stringify([{ workspace_location_id: "loc-1", access_mode: "write", path: "/attachments/0" }]),
+    });
   });
 
   it("sends verification through a no-egress workspace-only Runner request", async () => {
@@ -106,6 +168,46 @@ describe("SandboxRunnerCliCommandExecutor", () => {
     });
     expect(launch).not.toHaveProperty("command");
     expect(launch).not.toHaveProperty("env");
+    expect(JSON.stringify(launch)).not.toContain(root);
+  });
+
+  it("mounts authorized attached Locations with explicit access modes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-runner-attachments-"));
+    roots.push(root);
+    let launch: Record<string, unknown> | undefined;
+    const { server, port } = await runnerServer((frame, send) => {
+      if (frame.type !== "launch") return;
+      launch = frame.request as Record<string, unknown>;
+      send({ type: "ready" });
+      send({ type: "exit", returncode: 0, timed_out: false });
+    });
+    servers.push(server);
+    const config = testConfig(root, port);
+    const workspace = join(root, "sandboxes", "conversation-1");
+    const attachment = join(root, "workspaces", "location-attached");
+    const tool = join(root, "runtime-tools", "codex_cli", "versions", "1.2.3", "bin", "codex");
+    const result = await new SandboxRunnerCliCommandExecutor(config, "codex_cli").runCommand({
+      command: [tool, "exec", "hello"],
+      cwd: workspace,
+      timeout_seconds: 30,
+      env: {},
+      run_id: "run-attachments",
+      stdin: null,
+      workspace_access: [{
+        workspace_location_id: "location-attached",
+        access_mode: "read",
+        path: attachment,
+      }],
+    });
+    expect(result.returncode).toBe(0);
+    expect(launch).toMatchObject({
+      mounts: expect.arrayContaining([
+        { root: "workspaces", id: "location-attached", target: "/attachments/0", access: "read_only" },
+      ]),
+      environment: {
+        workspace_access: [{ workspace_location_id: "location-attached", access_mode: "read", target: "/attachments/0" }],
+      },
+    });
     expect(JSON.stringify(launch)).not.toContain(root);
   });
 

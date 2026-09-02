@@ -15,7 +15,7 @@ interface RemotenessInput {
  *
  * A remote *Location* is not a remote *run*: `resolveExecutionPort` is
  * adapter-agnostic, but only a `local_cli` adapter is dispatched to the daemon
- * — a `model_api` run on a remote-preferred Folder still executes on the server
+ * — a `model_api` run on a remote Folder still executes on the server
  * against the routed provider. Three places need this answer (the dispatch
  * itself, the execution-control preflight, and the Run read model), and when
  * they were three separate expressions they disagreed: the preflight was
@@ -43,10 +43,10 @@ function hasRecordedModel(run: RemotenessInput): boolean {
  * Which of these Runs execute somewhere other than the server host.
  *
  * Resolved from the Location the same way `resolveExecutionPort` picks its
- * adapter — Location first, else the Folder's active preferred Location —
+ * adapter — Location first, else the Folder's single active Location —
  * because `runs.trust_mode` answers a narrower question: only the
  * thread-dispatch path writes it, so an Automation, Room, Workflow or
- * evolution run on a remote-preferred Folder has it null and still runs
+ * evolution run on a remote Folder has it null and still runs
  * remotely.
  *
  * Two economies keep this affordable on list endpoints, which render up to a
@@ -77,7 +77,7 @@ export async function resolveRunRemoteness(
      SELECT NULL::varchar AS location_id, project_folder_id AS folder_id
        FROM workspace_locations
       WHERE project_folder_id = ANY($2::varchar[])
-        AND status = 'active' AND preferred = true AND execution_host_kind = 'remote'`,
+        AND status = 'active' AND execution_host_kind = 'remote'`,
     [locationIds, folderIds],
   );
   const remoteLocations = new Set(rows.rows.flatMap((row) => row.location_id ? [row.location_id] : []));

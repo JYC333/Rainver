@@ -19,8 +19,8 @@ export {
   PgWorkspaceLocationRepository,
   assertServerHostLocation,
   locationAbsoluteRoot,
-  resolvePreferredServerHostLocation,
-  resolvePreferredLocationWithHost,
+  resolveActiveServerHostLocation,
+  resolveActiveLocationWithHost,
   resolveServerHostLocationForRun,
 } from "./workspaceLocations.js";
-export type { WorkspaceLocationRow, WorkspaceLocationOut, PreferredLocationWithHost } from "./workspaceLocations.js";
+export type { WorkspaceLocationRow, WorkspaceLocationOut, ActiveLocationWithHost } from "./workspaceLocations.js";

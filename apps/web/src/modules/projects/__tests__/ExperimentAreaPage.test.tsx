@@ -34,7 +34,7 @@ vi.mock('../../../api/client', () => ({
 
 const PROJECT = {
   id: 'project-1', space_id: 'space-1', owner_user_id: 'user-1', name: 'Lab',
-  description: null, status: 'active' as const, current_focus: null, settings_json: null, primary_mode: 'research' as const, active_brief_version_id: null,
+  description: null, status: 'active' as const, current_focus: null, settings_json: null, active_brief_version_id: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z', archived_at: null,
 }

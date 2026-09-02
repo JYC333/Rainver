@@ -140,6 +140,7 @@ describe("Room contracts", () => {
       agent_id: "agent-2",
       share_private_with_member_ids: [],
       confirm_room_share: false,
+      restore_workspace: false,
     });
     expect(RoomAgentPresetRequestSchema.parse({ preset_id: "research-analyst" })).toEqual({
       preset_id: "research-analyst",

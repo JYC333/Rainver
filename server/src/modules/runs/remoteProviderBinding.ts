@@ -79,7 +79,7 @@ export async function recordRemoteRunBackend(
 ): Promise<void> {
   // Merge, never replace. `model_override_json` is the run's control blob, not
   // a model record: it also carries `execution_mode`, `chat_turn` and
-  // `conversation_runtime`, and a Room conversation turn on a remote-preferred
+  // `conversation_runtime`, and a Room conversation turn on a remote
   // Folder reaches this path. Overwriting the document would drop the keys
   // `finalizeChatTurn` reads after the run is re-read from the database, so
   // the agent's reply would never be written back and neither recovery sweep
@@ -157,15 +157,16 @@ export async function resolveRemoteRunBinding(
   hostId: string,
   adapterType: string,
 ): Promise<ResolvedRemoteBinding | null> {
-  // Room host-bound specialists deliberately use only the vendor runtime's
-  // own host login. Their rendered Room prompt is the only control-plane
-  // context allowed across the boundary; a Room thread must never inherit a
-  // Host × adapter ModelProvider default or mint a proxy lease.
-  const roomThread = await db.query<{ room_id: string | null }>(
-    `SELECT room_id FROM host_threads WHERE id = $1 AND room_id IS NOT NULL LIMIT 1`,
+  // Conversation host-bound Agents deliberately use only the vendor
+  // runtime's own host login. Their rendered Conversation prompt is the only
+  // control-plane context allowed across the boundary; a Conversation thread
+  // must never inherit a Host × adapter ModelProvider default or mint a proxy
+  // lease.
+  const conversationThread = await db.query<{ container_kind: string | null }>(
+    `SELECT container_kind FROM host_threads WHERE id = $1 AND container_kind = 'conversation' LIMIT 1`,
     [run.host_task_thread_id ?? null],
   );
-  if (roomThread.rows[0]?.room_id) return null;
+  if (conversationThread.rows[0]?.container_kind === "conversation") return null;
   const message = await db.query<{ model_provider_id: string | null; model: string | null }>(
     `SELECT model_provider_id, model FROM host_thread_messages WHERE run_id = $1 LIMIT 1`,
     [run.id],

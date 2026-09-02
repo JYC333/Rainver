@@ -42,26 +42,26 @@ export async function recordHostThreadOutcome(
   });
 
   if (resumeAttempted && !externalSessionId) {
-    const room = await pool.query<{
+    const conversation = await pool.query<{
       space_id: string;
       room_id: string;
       session_id: string | null;
       agent_name: string;
       created_by_user_id: string;
     }>(
-      `SELECT pf.space_id, thread.room_id, thread.last_session_id AS session_id,
+      `SELECT session_row.space_id, session_row.room_id, thread.last_session_id AS session_id,
               COALESCE(NULLIF(agent.name, ''), thread.agent_id) AS agent_name,
               thread.created_by_user_id
          FROM host_threads thread
-         JOIN workspace_locations location ON location.id = thread.workspace_location_id
-         JOIN project_folders pf ON pf.id = location.project_folder_id
-         JOIN agents agent ON agent.id = thread.agent_id AND agent.space_id = pf.space_id
-        WHERE thread.id = $1 AND thread.room_id IS NOT NULL AND thread.agent_id IS NOT NULL
+         JOIN sessions session_row ON session_row.id = thread.session_id AND session_row.space_id = thread.space_id
+         JOIN agents agent ON agent.id = thread.agent_id AND agent.space_id = thread.space_id
+        WHERE thread.id = $1 AND thread.container_kind = 'conversation'
+          AND session_row.room_id IS NOT NULL AND thread.agent_id IS NOT NULL
           AND thread.status <> 'closed'
         LIMIT 1`,
       [threadId],
     );
-    const owner = room.rows[0];
+    const owner = conversation.rows[0];
     if (owner?.session_id) {
       const existing = await pool.query(
         `SELECT 1 FROM messages

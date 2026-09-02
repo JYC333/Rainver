@@ -40,7 +40,7 @@ function card(overrides: Partial<ProjectBoardCard> & Pick<ProjectBoardCard, 'id'
 }
 
 const board: ProjectBoard = {
-  project: { id: 'project-1', name: 'Thin branch mapping', primary_mode: 'research' },
+  project: { id: 'project-1', name: 'Thin branch mapping' },
   columns: [
     { status_key: 'ready', label: 'Ready', wip_limit: null, count: 1 },
     { status_key: 'in_progress', label: 'In Progress', wip_limit: 2, count: 1 },
@@ -97,6 +97,31 @@ beforeEach(() => {
 })
 
 describe('Project Board', () => {
+  it('re-reads the Board on an interval and when the tab comes back, without a skeleton', async () => {
+    // Cards an Agent creates from the Room arrive while this page is open;
+    // it used to load once on arrival and show them only after leaving.
+    const intervals: Array<() => void> = []
+    const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
+      intervals.push(fn)
+      return 42 as unknown as ReturnType<typeof window.setInterval>
+    }) as typeof window.setInterval)
+    try {
+      renderBoard()
+      await waitFor(() => expect(screen.getByText('Run the depth repair')).toBeInTheDocument())
+      expect(projectsApi.getBoard).toHaveBeenCalledTimes(1)
+
+      intervals.forEach(fn => fn())
+      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
+      // Quiet: what was drawn stays drawn while the read is in flight.
+      expect(screen.getByText('Run the depth repair')).toBeInTheDocument()
+
+      document.dispatchEvent(new Event('visibilitychange'))
+      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(3))
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('renders one lane per column with its cards and Loop labels', async () => {
     renderBoard()
 

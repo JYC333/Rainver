@@ -79,8 +79,8 @@ beforeEach(async () => {
        VALUES ($1, $2, $3, $4, 'active', now(), now())`, [randomUUID(), SPACE, id, role]);
   }
   await db.pool.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, primary_mode, created_at, updated_at)
-     VALUES ($1, $2, $3, 'Updates Project', 'active', 'delivery', now(), now())`, [PROJECT, SPACE, OWNER]);
+    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'Updates Project', 'active', now(), now())`, [PROJECT, SPACE, OWNER]);
   // A Project viewer: may read the account, may not add to it.
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)

@@ -39,8 +39,11 @@ the physical topology:
   remote Hosts such as native Windows and WSL.
 - `workspace_locations` (in `projectFolders/workspaceLocations.ts`) binds a
   logical Project Folder to one Host. A Folder may have several Locations;
-  Location owns path/display metadata, preferred selection, git observations,
-  and persisted `execution_ready`.
+  Location owns path/display metadata, lifecycle status, git observations,
+  and persisted `execution_ready`. Exactly one Location may be `active` for
+  new work. Explicit activation demotes the former active checkout to `stale`:
+  initialized Conversations pinned there may continue, while drafts and new
+  attachments see only the new active Location. `archived` is non-executable.
 
 `server/src/db/schema/hosts.ts` — Host fields:
 
@@ -65,8 +68,8 @@ the physical topology:
   contains a filesystem path.
 
 Managed workspaces are daemon-owned directories, not Workspace Locations. A
-launch names an Agent and either a Room id or the direct owner's user id; the
-daemon derives the directory under its private config root. The server can
+launch names an Agent and either a Conversation id or the direct owner's user
+id; the daemon derives the directory under its private config root. The server can
 request archive/restore actions and records a pending archive when the daemon
 is offline, but it never receives or stores the derived path.
 
@@ -95,7 +98,10 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 - `GET /api/v1/hosts/execution-targets?project_id=` — the caller's online
   remote hosts and ACP installations. Without `project_id`, hosts have no
   registered Locations; with it, only Locations in that readable Project are
-  returned. Every target advertises the managed-workspace choice.
+  returned. Every target advertises the managed-workspace choice. This is the
+  canonical Host/CLI/Workspace candidate projection for both Project Settings
+  and Conversation first-Run setup; neither surface derives a separate list
+  from Agent runtime profiles.
 - `POST /api/v1/hosts/:hostId/revoke` — terminal; a revoked host's token stops
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
@@ -129,8 +135,8 @@ User-session authenticated dispatch is owned by the Tasks module, not this
 Host registry:
 
 - `POST /api/v1/tasks/:taskId/runs` dispatches an existing coding Task and
-  accepts `workspace_location_id`; without one it uses the Folder's preferred
-  Location.
+  accepts `workspace_location_id`; without one it uses the Folder's sole
+  active, execution-ready Location.
 - `POST /api/v1/tasks/runs` creates a lightweight coding Task and dispatches it
   in the same request.
 
@@ -227,8 +233,15 @@ snapshot names a concrete model, not "whatever the provider defaults to" — a
 thread that inherited a null model would follow the provider's `default_model`
 if that were later edited, which is the same drift one level down.
 
-`advanceThreadQueue` copies that snapshot onto the Run it creates. At
-execution, a Run with no message — an Automation, Room root run, Plan or
+`advanceThreadQueue` copies that snapshot onto the Run it creates, and writes
+the thread and the vendor session to resume into the Run's
+`model_override_json.host_thread` — the same shape the Room, delegation and
+direct-chat paths write. The `agent_run` job handler reads both from the Run
+(`hosts/threadDispatchInputs.ts`), never from the job payload: twenty places
+enqueue that job, and the ones that did not know they were re-dispatching a
+thread-bound Run (the supervisor retry, an authorization re-enqueue, the
+resume endpoint, direct chat) used to start a fresh vendor session every turn
+while the thread believed it was resuming one. At execution, a Run with no message — an Automation, Room root run, Plan or
 Workflow node, evolution run whose Folder prefers a remote Location — falls
 back to the Host × adapter default, so the per-host setting means what the
 Command Center says it means rather than applying only to dispatched threads.
@@ -242,8 +255,8 @@ column becomes authoritative in the other direction: the remote adapter writes
 back what it bound and marks it `source = "host_binding"`, so a reader can tell
 a chosen provider from a predicted one. The write-back merges into
 `model_override_json` rather than replacing it — that column also carries
-`execution_mode`, `chat_turn` and `conversation_runtime`, and a Room turn on a
-remote-preferred Folder reaches this path.
+`execution_mode`, `chat_turn` and Conversation/Host-thread continuity, and a
+Room turn pinned to a remote Location reaches this path.
 
 `route_decisions.selected_model_provider_id` is the router's own second copy of
 that value and means nothing for a thread-dispatched run: those runs are
@@ -256,8 +269,8 @@ evidence of a binding.
 when the column carries the `host_binding` marker — otherwise Run detail would
 present the router's prediction as a fact about what ran. Remoteness itself
 comes from the Run's Location, **not** from `trust_mode`: only the
-thread-dispatch path writes that column, so an Automation, Room, Workflow or
-evolution run on a remote-preferred Folder has it null and still runs remotely.
+thread-dispatch path writes that column, so an Automation, Workflow or
+evolution run on a remote Location can have it null and still run remotely.
 Every read path that renders a Run passes the answer in, resolved by
 `resolveRunRemoteness` (`runs/runRemoteness.ts`), which answers a whole page in
 one query and skips rows with nothing recorded to qualify. `trust_mode` is the
@@ -349,9 +362,15 @@ for a remote host.
 
 A remote run is given up on for two distinct reasons, and the failure says
 which: `runtime_timeout` when the whole run budget elapsed, and
-`runtime_stall_timeout` when the runtime produced no output for a third of that
-budget (capped at two minutes). Both carry how long the runtime had been silent.
-The server-host path has had this stall budget all along; the remote path
+`runtime_stall_timeout` when the runtime produced no output for the stall
+budget. Both carry how long the runtime had been silent. The stall budget is
+one rule for both execution paths (`runs/stallTimeout.ts`): five minutes by
+default, `adapter_config.stall_timeout_seconds` per dispatch, never longer
+than the run budget. The remote path briefly used a third of the run budget
+instead — 100s for the default — which killed legitimate turns in the middle
+of a long tool call, since a runtime busy inside one emits nothing until it
+returns; the Run then retried from scratch on the same run id. The server-host
+path has had this stall budget all along; the remote path originally
 accepted the option and never implemented it, so a runtime that went quiet —
 an OpenCode turn waiting on a free-tier model that never answered — burned the
 entire timeout and then reported only that it "timed out", which is equally
@@ -643,6 +662,45 @@ center work stream):
 
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
+**The wire is one contract, `packages/protocol/src/hostWire.ts`.**
+`HostServerFrameSchema` is every frame the control plane pushes to a daemon
+and `HostDaemonFrameSchema` every frame a daemon sends back, as Zod
+discriminated unions. Both ends parse inbound frames with them once
+(`parseServerFrame` in the daemon's `commands/run.ts`, `safeParse` in this
+route's socket handler) and type outbound frames against them
+(`HostFrameSink.send`, `ReconnectableFrameSink.send`, the daemon's
+`helloInfo()` return type), so no frame is rebuilt field by field on either
+side and a field exists in exactly one place. The daemon depends on
+`@rainver/protocol` at runtime for this — it is wire contracts only, which is
+what the daemon is allowed to know. Objects are deliberately not strict, so a
+newer peer's extra field is dropped rather than fatal; what guards against a
+field being *lost* is that nothing names fields by hand any more. This is the
+repair for a class of defect that shipped three times — `provider_binding`,
+`server_url`, and `work_surface` each vanished at a hand-written mapping
+while the sender believed it delivered them. A frame that fails to parse is
+answered with an `error` frame naming the path, never dropped silently; a
+`launch` that fails is answered with a `complete` so the run does not hang.
+
+Every `launch` carries a `launch_id` nonce the daemon echoes on that run's
+`launched`/`output`/`stderr`/`complete` frames, and the registry routes a run
+frame only to the dispatch whose nonce it carries. A supervisor retry reuses
+the run id within seconds of the first attempt's kill, before that attempt's
+child has finished uploading and reported: without the nonce the late
+`complete` resolved the second attempt's promise with the first attempt's
+exit code and revoked the second attempt's tool token under a live process.
+The daemon keeps the same distinction: a newer attempt takes over the run
+id's registration, and the older attempt's cleanup leaves the shared
+`<config>/runs/<run_id>/` in place when a newer attempt owns it.
+
+Two placeholders on the wire (`REMOTE_CWD_PLACEHOLDER`,
+`WORK_SKILL_PATH_PLACEHOLDER`, in the contract) stand for values only the
+executing machine knows; the daemon substitutes them in argv, the initial
+stdin, and every `stdin` frame, so a prompt can point at the Skill file by a
+path the server never had rather than an unexpanded `$RAINVER_SKILL_PATH`.
+The one hand-written mapping left is `sandbox/runner.mjs`, which runs with no
+dependencies; `server/test/sandboxRunnerClient.test.ts` pins it to
+`SandboxRuntimeEnvironment` field by field instead.
+
 `hello` (authenticates the bearer token, marks `online`, records
 capabilities, applies the daemon's complete workspace Location reports, and
 answers `hello_ack { host_id, runtime_probes }`)
@@ -686,12 +744,25 @@ C5: the daemon also sends a live `stderr` frame per chunk (not only the
 `complete` frame's existing failure-tail), routed the same way as `output`
 through a new `HostConnectionRegistry.receiveStderr`/`onStderr` pair.
 
+Workspace registration is reachable from the web UI through three owner-only
+frames the daemon answers: `list_dirs` (one level of subdirectory names for an
+absolute path — lazy, ≤500 entries, directories only), `workspace_register`
+(runs the daemon's own `workspace add` validation and registration, so
+terminal and UI produce identical state), and `workspace_forget` (drops the
+local path mapping after a server-side unregister; offline daemons keep it and
+`workspace list` shows the divergence). `hosts.default_adapter_type` is the
+owner's preferred CLI on this machine, set from the Command Center host card
+(`POST /hosts/:hostId/default-adapter`, validated against reported
+installations): auto-provisioned Assistant backends, execution-target adapter
+ordering, and dispatch-option defaults all read it, with the built-in
+OpenCode-first ordering as the null fallback.
+
 Files & Code uses a separate bounded pull on the same socket: `folder_read`
 (server → daemon, Location id + relative path + Folder protection flag) and
 `folder_read_result` (daemon → server, one `tree`, `file`, `git_status`, or
 `git_diff` result). The daemon resolves the registered root, applies
 `@rainver/folder-read` PathPolicy and size limits, and never sends an absolute
-path. The server authorizes the preferred Location for its registered owner,
+path. The server authorizes the requested active Location for its registered owner,
 records `force_record` audit metadata including `host_id`, and maps offline,
 timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
@@ -716,20 +787,20 @@ this for every adapter now) — not server-side Runtime Context continuity
 (remote runs get none of that; see "No server-brokered Runtime Context" below).
 `getForLocation` is scoped by `workspace_location_id` so a thread from one
 physical checkout can never be resumed against another. Managed rows have a
-null Location and `workspace_mode='managed'`; Room rows use
-`container_kind='room'`, while direct owner chats use `container_kind='direct'`
-plus `container_user_id`. A row is either a legacy/new Task-shaped thread
-(`task_id` with null Room/Agent ownership, although legacy rows may have a
-null task id) or an Agent conversation. The partial unique indexes permit one
-active/session-reset Room × Agent conversation and one active/session-reset
-Agent × direct-owner conversation, releasing each when the thread is closed.
+null Location and `workspace_mode='managed'`; Conversation rows use
+`container_kind='conversation'` with their `session_id`, while direct owner
+chats use `container_kind='direct'` plus `container_user_id`. A row is either
+a Task-shaped thread or an Agent conversation. The partial unique indexes
+permit one active/session-reset Conversation × Agent thread and one
+active/session-reset Agent × direct-owner conversation, releasing each when
+the thread is closed.
 `last_session_id` tracks the conversation that last established prompt
 continuity.
-`dispatch_lock_id` is the persistent atomic in-flight claim: a Room × Agent
-thread is claimed before its Run exists, bound to that Run before commit, and
-released only by the terminal outcome hook. This prevents two conversations
-from concurrently sharing or overwriting one vendor session; explicit context
-reset waits until that claim is released.
+`dispatch_lock_id` is the persistent atomic in-flight claim: a Conversation ×
+Agent thread is claimed before its Run exists, bound to that Run before commit,
+and released only by the terminal outcome hook. This prevents two turns from
+concurrently sharing or overwriting one vendor session; explicit context reset
+waits until that claim is released.
 
 `recordRunOutcome` clears `vendor_session_id` outright (not
 COALESCE) whenever a resume degrades (`session_reset`) — retrying an already-
@@ -915,13 +986,27 @@ variables, with no branch on which runtime is executing.
 
 The launch frame gains `work_surface` — `{ env, files, dir_env }`, the same
 shape `provider_binding` uses and for the same reason (the control plane names
-relative paths; only the machine knows absolute ones). The daemon materializes
+relative paths; only the machine knows absolute ones). The launch frame is
+`HostLaunchFrameSchema` on the shared wire contract (see the WebSocket
+section): the server's `dispatchLaunch` is typed against it and the daemon
+hands the parsed frame to execution by spread, tested against a
+fully-populated `Required<HostLaunchFrame>` so a field added to the contract
+fails the daemon's test until execution receives it. The daemon materializes
 it under `<config dir>/runs/<run_id>/`, exports the resulting environment over
 the binding's and the machine's, and removes the directory when the Run ends.
 `RAINVER_CLI` names a launcher the daemon generates there, pointing at the
 `rainver` command in `@rainver/agent-cli` through the same Node the daemon
 runs — the command is a script, not an executable, and nothing is installed
 onto `PATH` (ADR 0016 §6).
+
+Which Skill a Run gets is decided from the Run (`workSkillOptionsForRun`): a
+conversation turn — it has a Session — reads "your reply is the message the
+person reads; the commands record the Project alongside it" and names
+`project.propose_definition`, `task.create` and `proposal.decide`, while a
+dispatched Task keeps "nothing you write in your reply reaches Rainver"; the
+output-delivery section is rendered only when `artifact.submit` was actually
+granted. The dispatched default was rendered for every remote run, so a Room
+agent was told its reply reached nobody and sent to an action it did not have.
 
 The Run's identity is a `run_tool_identities` row, issued with the surface and
 revoked on every exit path from the adapter. It is durable rather than
@@ -1003,13 +1088,14 @@ real local path is ever written down.
   `SIGKILL` after a 5s grace window if the process ignores it.
 
 Managed Agent workspaces are derived only on the daemon: a launch frame names
-`workspace.kind = managed`, an Agent id, and either a Room or direct-chat
-container id; the daemon creates `agents/<agentId>/rooms/<roomId>` or
-`agents/<agentId>/direct/<userId>` under its config directory. The server never
-receives that path. `managed_workspace_archive` renames a live directory to a
-timestamped `.removed-…` sibling, `managed_workspace_restore` brings back the
-newest archive when no live directory exists, and heartbeat sweeps archives
-older than 30 days. Heartbeats report only Agent/container ids and the boolean
+`workspace.kind = managed`, an Agent id, and either a Conversation or
+direct-chat container id. Conversation workspaces are shared at
+`conversations/<conversationId>`; direct workspaces remain under
+`agents/<agentId>/direct/<userId>`. The server never receives those paths.
+`managed_workspace_archive` renames a live directory to a timestamped
+`.removed-…` sibling, `managed_workspace_restore` brings back the newest
+archive when no live directory exists, and heartbeat sweeps archives older
+than 30 days. Heartbeats report only Agent/container ids and the boolean
 `archived_available` flag.
 
 Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
@@ -1023,8 +1109,9 @@ machine already has).
 
 ## Known P1 gaps (not defects — explicitly deferred)
 
-- No scored multi-location routing or lease/scheduler: dispatch is explicit or
-  uses the Folder's preferred Location; richer routing remains P2.
+- No scored multi-location routing or lease/scheduler: Conversation dispatch
+  uses its pinned active Location, while any remaining Task selection is an
+  explicit control-center choice; richer routing remains P2.
 - No automated daemon-process-to-live-server integration test — the wire
   contract is verified from the server side (`server/test/hostsRoutes.test.ts`
   drives the real REST + WebSocket surface with the exact frame shapes the

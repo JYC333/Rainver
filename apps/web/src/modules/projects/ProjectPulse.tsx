@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, CircleAlert, CircleDot, Compass, Loader2, RefreshCw, User } from 'lucide-react'
 import { toast } from 'sonner'
 import { inquiryApi, projectsApi } from '../../api/client'
+import { usePeriodicRefresh } from '../../hooks/usePeriodicRefresh'
 import { errMsg } from '../../lib/utils'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import type { ProjectBoard, ProjectOverview, ProjectWorkUpdate } from '../../types/api'
@@ -47,15 +48,25 @@ const ATTENTION_CLASS_LABELS: Record<(typeof ATTENTION_CLASS_ORDER)[number], str
 const SETTLED_STATUSES = new Set(['done', 'cancelled'])
 
 
+/** Read refresh cadence; the same five seconds the Inquiry Area uses for a live Thread. */
+const PULSE_REFRESH_MS = 5_000
+
 export default function ProjectPulse({
   projectId,
   overview,
   onOverviewChanged,
+  onDefineGoal,
 }: {
   projectId: string
   overview: ProjectOverview | null
   /** Called when this surface changed something the overview reports. */
   onOverviewChanged?: () => void
+  /**
+   * Opens the owner's goal dialog. The goal is edited on this page (the
+   * header's "Edit goal"), so the prompt to define one opens the same dialog
+   * rather than sending the person to another Area to do it.
+   */
+  onDefineGoal: () => void
 }) {
   const [board, setBoard] = useState<ProjectBoard | null>(null)
   const [adopting, setAdopting] = useState<string | null>(null)
@@ -64,9 +75,9 @@ export default function ProjectPulse({
   const [failed, setFailed] = useState(false)
 
   const showingRef = useRef(projectId)
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     showingRef.current = projectId
-    setLoading(true)
+    if (!quiet) setLoading(true)
     setFailed(false)
     try {
       const [nextBoard, nextUpdates] = await Promise.all([
@@ -83,7 +94,7 @@ export default function ProjectPulse({
       // surface whose whole job is situational awareness, a confident all-clear
       // that is really an error is the worst answer available.
       setFailed(true)
-      toast.error(errMsg(error))
+      if (!quiet) toast.error(errMsg(error))
     } finally {
       setLoading(false)
     }
@@ -106,6 +117,14 @@ export default function ProjectPulse({
   }, [projectId, load, onOverviewChanged])
 
   useEffect(() => { void load() }, [load])
+  // What the Room's Agent records — a definition accepted, a question opened,
+  // a Task created — shows here without leaving the page. The overview
+  // (definition status, goal) is the parent's read, refreshed with it.
+  const refresh = useCallback(async () => {
+    await load(true)
+    onOverviewChanged?.()
+  }, [load, onOverviewChanged])
+  usePeriodicRefresh(refresh, PULSE_REFRESH_MS)
 
   if (loading) return <Skeleton className="h-40 w-full" />
 
@@ -141,25 +160,45 @@ export default function ProjectPulse({
   const nothingRunning = moving.length === 0 && running.length === 0
 
   const needsGoal = overview?.definition_status?.status === 'needs_definition'
+  const needsFolder = overview?.has_project_folder === false
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <>
+      {/* Setup, above the situation and spaced like the page's other blocks:
+          as grid cells these sat closer to each other than to the goal card
+          above them. */}
       {/* The one thing a Project has to decide about itself, said until it
           has: creation no longer asks for a goal, and the shell no longer
           carries a readiness checklist, so this is where it is asked. */}
       {needsGoal && (
-        <Card className="flex items-start justify-between gap-3 p-4 md:col-span-2" data-testid="pulse-needs-goal">
+        <Card className="flex items-start justify-between gap-3 p-4" data-testid="pulse-needs-goal">
           <div>
             <p className="text-sm font-medium">This Project has no goal yet.</p>
             <p className="text-xs text-muted-foreground">
               A sentence about the outcome is what the Assistant and the Loop orient on.
             </p>
           </div>
-          <Button size="sm" asChild>
-            <Link to={`/projects/${projectId}/inquiry?setup=goal`}>Define the goal</Link>
+          <Button size="sm" variant="outline" onClick={onDefineGoal}>Define the goal</Button>
+        </Card>
+      )}
+      {/* A Folder is optional, so this is a quiet line, not a warning: an
+          Agent on a Project with code and no Folder works in a managed
+          workspace on the Host rather than in that code, and the only place
+          to connect one is Files & Code. */}
+      {needsFolder && (
+        <Card className="flex items-start justify-between gap-3 p-4" data-testid="pulse-needs-folder">
+          <div>
+            <p className="text-sm font-medium">No working Folder connected.</p>
+            <p className="text-xs text-muted-foreground">
+              If this Project has code or files to work on, connect one; until then Agents work in a managed workspace.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" asChild>
+            <Link to={`/projects/${projectId}/files?setup=folder`}>Connect a Folder</Link>
           </Button>
         </Card>
       )}
+    <div className="grid gap-4 md:grid-cols-2">
       <section className="space-y-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Needs attention
@@ -317,5 +356,6 @@ export default function ProjectPulse({
         )}
       </section>
     </div>
+    </>
   )
 }

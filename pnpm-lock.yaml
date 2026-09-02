@@ -176,6 +176,9 @@ importers:
       '@rainver/folder-read':
         specifier: workspace:*
         version: link:../folder-read
+      '@rainver/protocol':
+        specifier: workspace:*
+        version: link:../protocol
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

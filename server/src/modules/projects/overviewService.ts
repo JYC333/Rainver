@@ -5,12 +5,10 @@ import { assertProjectReadable } from "./access.js";
 import { ProjectAttentionService } from "./attentionService.js";
 import { ProjectKernelService } from "./kernelService.js";
 import { listRunningProjectOperations } from "./runningOperations.js";
-import { PRIMARY_MODES } from "./primaryMode.js";
 
 interface ProjectSummaryRow {
   id: string;
   name: string;
-  primary_mode: string;
   status: string;
 }
 
@@ -31,7 +29,7 @@ export class ProjectOverviewService {
   async getOverview(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const projectRow = await this.db.query<ProjectSummaryRow>(
-      `SELECT id, name, primary_mode, status
+      `SELECT id, name, status
          FROM projects
         WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
       [projectId, identity.spaceId],
@@ -45,10 +43,14 @@ export class ProjectOverviewService {
     // pointed at Areas the sidebar lists) and a per-entity summary row set
     // (the Areas list again, with counts). Nothing consumed either once the
     // front page stopped duplicating the sidebar, so they are gone.
-    const [brief, attention, inProgress] = await Promise.all([
+    const [brief, attention, inProgress, folders] = await Promise.all([
       this.kernel.getActiveBriefVersion(identity, projectId),
       this.attention.listAttentionItems(identity, projectId),
       listRunningProjectOperations(this.db, identity.spaceId, projectId),
+      this.db.query(
+        `SELECT 1 FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' LIMIT 1`,
+        [identity.spaceId, projectId],
+      ),
     ]);
     // User-facing initialization means the Project has a formally published
     // goal/problem definition. Audit metadata and downstream work are separate.
@@ -74,12 +76,11 @@ export class ProjectOverviewService {
       project: {
         id: project.id,
         name: project.name,
-        primary_mode: project.primary_mode,
         status: project.status,
       },
       brief,
       definition_status: projectDefinition,
-      available_modes: PRIMARY_MODES,
+      has_project_folder: (folders.rowCount ?? 0) > 0,
       attention: attention.slice(0, 20),
       // Attention answers "what needs me". This answers "what is happening",
       // which the front page could not answer at all.

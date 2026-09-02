@@ -65,7 +65,7 @@ function ReadErrorState({ error, onRetry }: { error: ReadError; onRetry: () => v
 
 export default function ProjectFilesPage() {
   const { projectId = '' } = useParams<{ projectId: string }>()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const preselectedId = searchParams.get('folder')
 
   const [folders, setFolders] = useState<ProjectFolder[]>([])
@@ -73,6 +73,17 @@ export default function ProjectFilesPage() {
   const [locations, setLocations] = useState<WorkspaceLocation[]>([])
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
+
+  // `?setup=folder` opens the connect dialog on arrival — the way Pulse and
+  // the conversation preflight send someone here — and is consumed so a
+  // reload does not reopen it. Same shape as the Inquiry Area's `?setup=goal`.
+  useEffect(() => {
+    if (searchParams.get('setup') !== 'folder') return
+    setCreateFolderOpen(true)
+    const params = new URLSearchParams(searchParams)
+    params.delete('setup')
+    setSearchParams(params, { replace: true })
+  }, [searchParams, setSearchParams])
   const [folderToUnregister, setFolderToUnregister] = useState<ProjectFolder | null>(null)
 
   const [fileTree, setFileTree] = useState<FileNode | null>(null)
@@ -242,34 +253,42 @@ export default function ProjectFilesPage() {
     ;(gitGroups[f.status] ??= []).push(f)
   }
   const gitGroupOrder = ['modified', 'added', 'deleted', 'untracked', 'renamed'] as const
-  const selectedLocation = locations.find(location => location.preferred) ?? locations[0] ?? null
+  // Dispatch binds the Folder's sole active Location. Stale/archived copies
+  // remain visible in settings but are never implicit execution targets.
+  const selectedLocation = locations.find(location => location.status === 'active') ?? null
+
+  // One dialog instance, at the same tree position whichever branch renders:
+  // opened on arrival (`?setup=folder`) it is already showing while Folders
+  // load, and the switch to the empty state must not unmount it and mount a
+  // second one — that played the open animation twice.
+  const createFolderDialog = (
+    <CreateProjectFolderDialog
+      projectId={projectId}
+      open={createFolderOpen}
+      onOpenChange={setCreateFolderOpen}
+      onCreated={() => { void loadFolders() }}
+    />
+  )
 
   if (!foldersLoading && folders.length === 0) {
     return (
-      <div className="p-6">
-        <EmptyState
-          title="No Project Folders yet"
-          description="Create a managed Folder, clone a repository, or connect an allowed existing directory. Chat and non-file workflows remain available without a Folder."
-          action={<Button onClick={() => setCreateFolderOpen(true)}>Create or connect Folder</Button>}
-        />
-        <CreateProjectFolderDialog
-          projectId={projectId}
-          open={createFolderOpen}
-          onOpenChange={setCreateFolderOpen}
-          onCreated={() => { void loadFolders() }}
-        />
-      </div>
+      <>
+        {createFolderDialog}
+        <div className="p-6">
+          <EmptyState
+            title="No Project Folders yet"
+            description="Create a managed Folder, clone a repository, or connect an allowed existing directory. Chat and non-file workflows remain available without a Folder."
+            action={<Button onClick={() => setCreateFolderOpen(true)}>Create or connect Folder</Button>}
+          />
+        </div>
+      </>
     )
   }
 
   return (
+    <>
+    {createFolderDialog}
     <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 56px)' }}>
-      <CreateProjectFolderDialog
-        projectId={projectId}
-        open={createFolderOpen}
-        onOpenChange={setCreateFolderOpen}
-        onCreated={() => { void loadFolders() }}
-      />
       {/* This toolbar button acts on whichever Folder is selected rather than
           on one the user pointed at in a list, and unregistering removes the
           registration row outright, so name the target before doing it. */}
@@ -476,5 +495,6 @@ export default function ProjectFilesPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }

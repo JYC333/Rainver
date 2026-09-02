@@ -9,7 +9,6 @@ describe("Project Brief model-visible projection", () => {
       status: "published",
       goal: "Build a reliable personal memory MVP",
       success_definition: "Beat the vector-only baseline",
-      primary_mode: "research",
       created_at: "2026-08-17T19:00:00Z",
       reviewed_at: "2026-08-17T19:01:00Z",
       reviewed_by_user_id: "user-1",
@@ -23,7 +22,6 @@ describe("Project Brief model-visible projection", () => {
     expect(projected).toEqual({
       goal: "Build a reliable personal memory MVP",
       success_definition: "Beat the vector-only baseline",
-      primary_mode: "research",
     });
     expect(JSON.stringify(projected)).not.toMatch(/created_at|reviewed|published|brief-1|v3/);
   });

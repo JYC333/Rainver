@@ -17,6 +17,13 @@
  * Reconciliation, identity, and storage are the server's.
  */
 
+import type {
+  AmbientRecord as ProtocolAmbientRecord,
+  AmbientSessionImport as ProtocolAmbientSessionImport,
+  AmbientSessionSummary as ProtocolAmbientSessionSummary,
+  AmbientTrimLimits as ProtocolAmbientTrimLimits,
+  AmbientUsage as ProtocolAmbientUsage,
+} from "@rainver/protocol";
 import { spawn } from "node:child_process";
 import { buildAmbientRecords } from "./ambientRecords.js";
 import { redactAmbientText, sanitizeFailure } from "./ambientRedaction.js";
@@ -49,52 +56,15 @@ export const DEFAULT_LIMITS: AmbientTrimLimits = {
   raw_max_bytes: 2_048,
 };
 
-export interface AmbientTrimLimits {
-  text_max_bytes: number;
-  tool_input_max_bytes: number;
-  tool_output_max_bytes: number;
-  raw_max_bytes: number;
-}
+export type AmbientTrimLimits = ProtocolAmbientTrimLimits;
 
-export interface AmbientSessionSummary {
-  session_id: string;
-  cwd: string;
-  title: string | null;
-  updated_at: string | null;
-}
+export type AmbientSessionSummary = ProtocolAmbientSessionSummary;
 
-export interface AmbientRecord {
-  record_key: string;
-  kind: "user_message" | "agent_message" | "tool_call" | "plan" | "unknown";
-  sequence: number;
-  occurred_at: string | null;
-  text: string | null;
-  tool_name: string | null;
-  tool_status: string | null;
-  tool_input: string | null;
-  tool_output: string | null;
-  raw_json: string | null;
-  truncated: boolean;
-}
+export type AmbientRecord = ProtocolAmbientRecord;
 
-export interface AmbientUsage {
-  record_key: string;
-  model: string | null;
-  occurred_at: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_read_input_tokens: number | null;
-  cache_creation_input_tokens: number | null;
-  reasoning_tokens: number | null;
-}
+export type AmbientUsage = ProtocolAmbientUsage;
 
-export interface AmbientSessionImport {
-  session: AmbientSessionSummary;
-  load_state: "complete" | "partial";
-  records: AmbientRecord[];
-  usage: AmbientUsage[];
-  error: string | null;
-}
+export type AmbientSessionImport = ProtocolAmbientSessionImport;
 
 export interface AmbientRuntimeTarget {
   adapter_type: string;

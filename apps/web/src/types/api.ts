@@ -121,7 +121,6 @@ import type {
   ObjectSchemaSuggestionScanResponse,
   ProjectBriefVersion,
   ProjectInstructionVersion,
-  ProjectPrimaryMode,
   ProjectResearchQuestionAssessmentConfirmation,
   ProjectResearchQuestionAssessmentConfirmationResponse,
   ProjectResearchQuestionAssessmentMessage,
@@ -371,7 +370,6 @@ export type {
   ObjectSchemaSuggestionScanResponse,
   ProjectBriefVersion,
   ProjectInstructionVersion,
-  ProjectPrimaryMode,
   ProjectResearchQuestionAssessmentConfirmation,
   ProjectResearchQuestionAssessmentConfirmationResponse,
   ProjectResearchQuestionAssessmentMessage,
@@ -3412,7 +3410,6 @@ export interface WorkspaceLocation {
   git_head: string | null
   dirty: boolean | null
   status: 'active' | 'archived' | 'stale'
-  preferred: boolean
   execution_ready: boolean
   last_seen_at: string | null
   created_at: string
@@ -3468,7 +3465,37 @@ export interface ProjectFolderScanCandidate {
 /** One choice as the runtime describes it: its own name, and what it means. */
 // The host/dispatch contract is the protocol's; one shape for server and web.
 import type { HostCapabilities, ManagedWorkspaceHeartbeat } from '@rainver/protocol'
-export type { DispatchBackend, DispatchOptions, HostCapabilities, HostExecutionTarget, HostExecutionTargetAdapter, HostExecutionTargetLocation, HostExecutionTargetsResponse, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, ManagedWorkspaceHeartbeat } from '@rainver/protocol'
+export type {
+  ConversationAttachmentAccessMode,
+  ConversationAttachmentMutation,
+  ConversationAttachmentMutationResponse,
+  ConversationAttachmentStatus,
+  ConversationAttachmentSummary,
+  ConversationExecutionHostSummary,
+  ConversationExecutionInitializeRequest,
+  ConversationExecutionPreflightRequest,
+  ConversationExecutionPreflightResponse,
+  ConversationExecutionRuntimeProfile,
+  ConversationExecutionSelection,
+  ConversationExecutionState,
+  ConversationExecutionSummary,
+  ConversationPrimarySelection,
+  ConversationPrimarySummary,
+  ConversationRuntimeChoice,
+  ConversationRuntimeSelection,
+  ConversationWorkspaceMode,
+  DispatchBackend,
+  DispatchOptions,
+  HostCapabilities,
+  HostExecutionTarget,
+  HostExecutionTargetAdapter,
+  HostExecutionTargetLocation,
+  HostExecutionTargetsResponse,
+  RuntimeInstallation,
+  RuntimeOptionChoice,
+  RuntimeOptions,
+  ManagedWorkspaceHeartbeat,
+} from '@rainver/protocol'
 export type { AgentRuntimeProfileOut, AgentRuntimeProfileCreateBody, AgentRuntimeProfileUpdateBody } from '@rainver/protocol'
 
 export interface Host {
@@ -3484,6 +3511,7 @@ export interface Host {
   platform: string | null
   arch: string | null
   daemon_version: string | null
+  default_adapter_type?: string | null
   /** The control-plane address this daemon reports it reaches. */
   daemon_server_url?: string | null
   /** Explicit proxy address for this host; null means it is derived. */
@@ -3504,12 +3532,13 @@ export interface HostPairingCode {
 
 export interface HostThread {
   id: string
+  space_id?: string | null
+  session_id?: string | null
   workspace_location_id?: string | null
   workspace_mode?: 'location' | 'managed'
-  container_kind?: 'room' | 'direct' | null
+  container_kind?: 'direct' | 'conversation' | null
   container_user_id?: string | null
   task_id: string | null
-  room_id: string | null
   agent_id: string | null
   project_folder_id: string | null
   host_id: string
@@ -3640,14 +3669,15 @@ export type ProjectFolderExecutionConfigUpdate = Partial<Omit<ProjectFolderExecu
 >>
 
 export interface ProjectOverview {
-  project: Pick<Project, 'id' | 'name' | 'primary_mode' | 'status'>
+  project: Pick<Project, 'id' | 'name' | 'status'>
   brief: ProjectBriefVersion | null
   definition_status?: {
     status: 'initialized' | 'needs_definition'
     basis: 'published_brief_goal' | 'missing_published_brief_goal'
     goal_or_problem: string | null
   }
-  available_modes: ProjectPrimaryMode[]
+  /** False while no active Project Folder is connected; a Folder is optional. */
+  has_project_folder?: boolean
   attention: Array<{
     id: string
     title: string
@@ -4953,9 +4983,9 @@ export interface Project {
   status: ProjectStatus
   current_focus: string | null
   settings_json: Record<string, unknown> | null
-  primary_mode: ProjectPrimaryMode
   active_brief_version_id: string | null
   current_user_can_approve_context?: boolean
+  current_user_can_write?: boolean
   created_at: string
   updated_at: string
   archived_at: string | null
@@ -4966,8 +4996,6 @@ export interface ProjectCreate {
   description?: string | null
   current_focus?: string | null
   settings_json?: Record<string, unknown> | null
-  /** How the Project advances. Defaults to `research` when omitted. */
-  primary_mode?: ProjectPrimaryMode
   goal?: string | null
   scope_included?: string | null
   success_definition?: string | null

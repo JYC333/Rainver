@@ -127,8 +127,8 @@ export const HostExecutionTargetsResponseSchema = z.object({
 export type HostExecutionTargetsResponse = z.infer<typeof HostExecutionTargetsResponseSchema>;
 
 export const ManagedWorkspaceContainerSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("room"), room_id: IdSchema }),
-  z.object({ kind: z.literal("direct"), user_id: IdSchema }),
+  z.object({ kind: z.literal("direct"), user_id: IdSchema }).strict(),
+  z.object({ kind: z.literal("conversation"), conversation_id: IdSchema }).strict(),
 ]);
 export type ManagedWorkspaceContainer = z.infer<typeof ManagedWorkspaceContainerSchema>;
 
@@ -142,10 +142,20 @@ export const LaunchWorkspaceSchema = z.discriminatedUnion("kind", [
 ]);
 export type LaunchWorkspace = z.infer<typeof LaunchWorkspaceSchema>;
 
-export const ManagedWorkspaceHeartbeatSchema = z.object({
-  agent_id: IdSchema,
-  container_kind: z.enum(["room", "direct"]),
-  container_id: IdSchema,
-  archived_available: z.boolean(),
-}).strict();
+export const ManagedWorkspaceHeartbeatSchema = z.discriminatedUnion("container_kind", [
+  z.object({
+    agent_id: IdSchema,
+    container_kind: z.literal("direct"),
+    container_id: IdSchema,
+    archived_available: z.boolean(),
+  }).strict(),
+  // Conversation managed workspaces are shared by all Agents in a Session;
+  // there is intentionally no agent_id in this heartbeat identity.
+  z.object({
+    container_kind: z.literal("conversation"),
+    container_id: IdSchema,
+    archived_available: z.boolean(),
+  }).strict(),
+]);
 export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeatSchema>;
+

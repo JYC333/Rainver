@@ -9,6 +9,18 @@ import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules
 import type { CurrentUser } from "../src/modules/auth/identity.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
+/** A daemon's whole hello, as `helloInfo()` sends it; the wire requires all of it. */
+const HELLO_INFO = {
+  platform: "linux",
+  arch: "x64",
+  daemon_version: "0.1.0",
+  environment_kind: "linux_native",
+  capabilities_json: {},
+  workspace_reports: [],
+  managed_workspaces: [],
+  ambient_sessions: [],
+};
+
 // Real-Postgres coverage for the hosts HTTP surface (pairing-code issue ->
 // daemon register -> owner-scoped list -> revoke). Auth identity resolution
 // is stubbed (a fixed bearer-token -> user map), matching this route's own
@@ -125,7 +137,7 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode, platform: "linux", arch: "x64", daemon_version: "0.1.0" },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" },
     });
     expect(register.statusCode).toBe(201);
     expect(register.json()).toMatchObject({ host_id: hostId, name: "Desktop" });
@@ -133,7 +145,7 @@ describe("hosts routes", () => {
     const reuse = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO },
     });
     expect(reuse.statusCode).toBe(401);
 
@@ -176,7 +188,7 @@ describe("hosts routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: "bogus" },
+      payload: { pairing_code: "bogus", ...HELLO_INFO },
     });
     expect(response.statusCode).toBe(401);
   });
@@ -206,7 +218,7 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO },
     });
     const { token: hostToken } = register.json();
 
@@ -296,7 +308,7 @@ describe("hosts routes", () => {
       const register = await app!.inject({
         method: "POST",
         url: "/api/v1/hosts/register",
-        payload: { pairing_code: issue.json().pairing_code },
+        payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO },
       });
       return register.json().token as string;
     }
@@ -397,7 +409,7 @@ describe("hosts routes", () => {
       const register = await app!.inject({
         method: "POST",
         url: "/api/v1/hosts/register",
-        payload: { pairing_code: issue.json().pairing_code },
+        payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO },
       });
       const body = register.json();
       return { hostId: body.host_id as string, token: body.token as string };
@@ -470,7 +482,7 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode, platform: "linux", arch: "x64" },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
 
@@ -480,6 +492,7 @@ describe("hosts routes", () => {
         socket.send(JSON.stringify({
           type: "hello",
           token,
+          ...HELLO_INFO,
           platform: "linux",
           arch: "x64",
           daemon_version: "0.1.0",
@@ -512,14 +525,14 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode, platform: "linux", arch: "x64" },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
 
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const helloAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "hello", token, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
       });
       socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))));
       socket.addEventListener("error", (event) => reject(event));
@@ -541,7 +554,7 @@ describe("hosts routes", () => {
     // shape every reader uses: the PATH binary becomes the `own` copy, with
     // whatever that daemon knew about it.
     socket.send(JSON.stringify({
-      type: "heartbeat",
+      type: "heartbeat", ...HELLO_INFO,
       capabilities_json: {
         runtimes: ["claude", "git"],
         versions: { claude: "2.1.0", git: "git version 2.44" },
@@ -571,7 +584,7 @@ describe("hosts routes", () => {
 
     const heartbeatAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))), { once: true });
-      socket.send(JSON.stringify({ type: "heartbeat" }));
+      socket.send(JSON.stringify({ type: "heartbeat", ...HELLO_INFO }));
       setTimeout(() => reject(new Error("timed out waiting for heartbeat_ack")), 5000);
     });
     expect(heartbeatAck).toMatchObject({ type: "heartbeat_ack" });
@@ -612,14 +625,14 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode, platform: "linux", arch: "x64" },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
 
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "hello", token, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
       });
       socket.addEventListener("message", (event) => {
         const frame = JSON.parse(String(event.data));
@@ -649,7 +662,7 @@ describe("hosts routes", () => {
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: "not-a-real-token" })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: "not-a-real-token", ...HELLO_INFO })));
       socket.addEventListener("message", (event) => {
         frame = JSON.parse(String(event.data));
       });
@@ -662,7 +675,7 @@ describe("hosts routes", () => {
     const socket2 = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const beforeHello = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
-      socket2.addEventListener("open", () => socket2.send(JSON.stringify({ type: "heartbeat" })));
+      socket2.addEventListener("open", () => socket2.send(JSON.stringify({ type: "heartbeat", ...HELLO_INFO })));
       socket2.addEventListener("message", (event) => {
         frame = JSON.parse(String(event.data));
       });
@@ -685,19 +698,19 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: issue.json().pairing_code, platform: "linux", arch: "x64" },
+      payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
       let helloAcked = false;
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO })));
       socket.addEventListener("message", (event) => {
         const next = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (next.type === "hello_ack" && !helloAcked) {
           helloAcked = true;
-          socket.send(JSON.stringify({ type: "hello", token }));
+          socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO }));
           return;
         }
         frame = next;
@@ -724,7 +737,7 @@ describe("hosts routes", () => {
     const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
     const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: pairingCode })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: pairingCode, ...HELLO_INFO })));
       socket.addEventListener("message", (event) => {
         frame = JSON.parse(String(event.data));
       });

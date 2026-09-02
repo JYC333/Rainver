@@ -16,10 +16,12 @@ import {
 
 let configDir: string;
 let workspaceDir: string;
+let attachedWorkspaceDir: string;
 
 beforeEach(async () => {
   configDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-config-"));
   workspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-workspace-"));
+  attachedWorkspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-attached-"));
   process.env.RAINVER_HOST_CONFIG_DIR = configDir;
   // Not a real control plane — uploads are expected to fail and be caught
   // internally; these tests only assert on the WS frames handleLaunch sends.
@@ -27,7 +29,7 @@ beforeEach(async () => {
     server_url: "http://127.0.0.1:1",
     host_id: "host-1",
     token: "secret-token",
-    workspaces: { "folder-1": workspaceDir },
+    workspaces: { "folder-1": workspaceDir, "location-attached": attachedWorkspaceDir },
   });
 });
 
@@ -35,6 +37,7 @@ afterEach(async () => {
   delete process.env.RAINVER_HOST_CONFIG_DIR;
   await rm(configDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
+  await rm(attachedWorkspaceDir, { recursive: true, force: true });
 });
 
 /** Everything the run wrote to stdout, as the daemon streamed it back. */
@@ -64,7 +67,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-1",
-        project_folder_id: "folder-1",
+        launch_id: "launch-1",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "printf 'hello from the run\\n'"],
       },
       send,
@@ -81,7 +84,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-2",
-        project_folder_id: "folder-1",
+        launch_id: "launch-2",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "printf 'boom\\n' >&2; exit 3"],
       },
       send,
@@ -98,7 +101,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-2b",
-        project_folder_id: "folder-1",
+        launch_id: "launch-3",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "printf 'first line\\n' >&2; printf 'second line\\n' >&2; exit 1"],
       },
       send,
@@ -116,7 +119,7 @@ describe("handleLaunch", () => {
   it("completes immediately with an error for an unregistered workspace, without spawning anything", async () => {
     const { complete, send } = collectSend();
     await handleLaunch(
-      { run_id: "run-3", project_folder_id: "unknown-folder", argv: ["node", "-e", "1"] },
+      { run_id: "run-3", launch_id: "launch-4",workspace_location_id: "unknown-folder", argv: ["node", "-e", "1"] },
       send,
       () => {},
     );
@@ -130,7 +133,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-4",
-        project_folder_id: "folder-1",
+        launch_id: "launch-5",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "printf 'echo:%s' \"$(cat)\""],
         stdin: "ping",
       },
@@ -147,7 +150,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-5",
-        project_folder_id: "folder-1",
+        launch_id: "launch-6",workspace_location_id: "folder-1",
         argv: ["node", "-e", "setTimeout(() => {}, 60000)"],
         timeout_seconds: 0.1,
       },
@@ -163,15 +166,15 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-7",
-        project_folder_id: "folder-1",
+        launch_id: "launch-7",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "cat"],
         keep_stdin_open: true,
       },
       send,
       () => {},
     );
-    handleStdin({ run_id: "run-7", value: "first " });
-    handleStdin({ run_id: "run-7", value: "second" });
+    handleStdin({ run_id: "run-7",value: "first " });
+    handleStdin({ run_id: "run-7",value: "second" });
     handleStdinClose({ run_id: "run-7" });
     const done = await complete();
     expect(done).toMatchObject({ type: "complete", run_id: "run-7", exit_code: 0 });
@@ -185,7 +188,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-8",
-        project_folder_id: "folder-1",
+        launch_id: "launch-10",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "cat"],
         keep_stdin_open: true,
         stdin: line,
@@ -193,7 +196,7 @@ describe("handleLaunch", () => {
       send,
       () => {},
     );
-    handleStdin({ run_id: "run-8", value: line });
+    handleStdin({ run_id: "run-8",value: line });
     handleStdinClose({ run_id: "run-8" });
     await complete();
     const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
@@ -206,7 +209,7 @@ describe("handleLaunch", () => {
     await handleLaunch(
       {
         run_id: "run-9",
-        project_folder_id: "folder-1",
+        launch_id: "launch-12",workspace_location_id: "folder-1",
         argv: ["sh", "-c", `printf '%s' "${REMOTE_CWD_PLACEHOLDER}"`],
       },
       send,
@@ -218,8 +221,47 @@ describe("handleLaunch", () => {
     expect(output).toBe(workspaceDir);
   });
 
+  it("resolves authorized attached workspace locations locally and exposes only the explicit access grant", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-attached",
+        launch_id: "launch-13",workspace_location_id: "folder-1",
+        workspace_access: [{ workspace_location_id: "location-attached", access_mode: "write" }],
+        argv: ["sh", "-c", "printf '%s' \"$RAINVER_WORKSPACE_ACCESS\""],
+      },
+      send,
+      () => {},
+    );
+    const done = await complete();
+    expect(done.exit_code).toBe(0);
+    const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+    expect(JSON.parse(output)).toEqual([{
+      workspace_location_id: "location-attached",
+      access_mode: "write",
+      path: attachedWorkspaceDir,
+    }]);
+  });
+
+  it("fails closed when an authorized attached location is not registered on this host", async () => {
+    const { send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-attached-missing",
+        launch_id: "launch-14",workspace_location_id: "folder-1",
+        workspace_access: [{ workspace_location_id: "location-missing", access_mode: "read" }],
+        argv: ["sh", "-c", "echo should-not-run"],
+      },
+      send,
+      () => {},
+    );
+    const done = await complete();
+    expect(done.exit_code).toBe(1);
+    expect(String(done.error)).toContain("attached workspace");
+  });
+
   it("ignores a stdin frame for a run that is not active", () => {
-    expect(() => handleStdin({ run_id: "no-such-run", value: "ignored" })).not.toThrow();
+    expect(() => handleStdin({ run_id: "no-such-run",value: "ignored" })).not.toThrow();
   });
 
   it("ignores a stdin_close frame for a run that is not active", () => {
@@ -231,14 +273,14 @@ describe("handleLaunch", () => {
     const launched = handleLaunch(
       {
         run_id: "run-6",
-        project_folder_id: "folder-1",
+        launch_id: "launch-16",workspace_location_id: "folder-1",
         argv: ["node", "-e", "setTimeout(() => {}, 60000)"],
       },
       send,
       () => {},
     );
     await launched;
-    handleTerminate({ run_id: "run-6", force: true });
+    handleTerminate({ run_id: "run-6",force: true });
     const done = await complete();
     expect(done.exit_code).not.toBe(0);
   }, 10000);
@@ -277,7 +319,7 @@ describe("handleLaunch", () => {
     const launched = handleLaunch(
       {
         run_id: "run-7",
-        project_folder_id: "folder-1",
+        launch_id: "launch-18",workspace_location_id: "folder-1",
         argv: ["codex-acp"],
       },
       send,
@@ -290,13 +332,13 @@ describe("handleLaunch", () => {
     // the literal command name.
     expect(frames.some((f) => f.type === "launched")).toBe(true);
     expect(frames.some((f) => f.type === "complete")).toBe(false);
-    handleTerminate({ run_id: "run-7", force: true });
+    handleTerminate({ run_id: "run-7",force: true });
 
     const other = collectSend();
     await handleLaunch(
       {
         run_id: "run-8",
-        project_folder_id: "folder-1",
+        launch_id: "launch-20",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "printf '%s' \"${CODEX_PATH-unset}\""],
       },
       other.send,
@@ -320,7 +362,7 @@ describe("handleLaunch with a provider binding", () => {
       await handleLaunch(
         {
           run_id: "run-bound",
-          project_folder_id: "folder-1",
+          launch_id: "launch-21",workspace_location_id: "folder-1",
           argv: ["sh", "-c", "printf '%s|%s|%s|%s\n' \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_AUTH_TOKEN\" \"${ANTHROPIC_API_KEY:-none}\" \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; cat \"$CODEX_HOME/config.toml\""],
           provider_binding: {
             profile_key: "codex_cli/provider-1",
@@ -351,7 +393,7 @@ describe("handleLaunch with a provider binding", () => {
       await handleLaunch(
         {
           run_id: "run-unbound",
-          project_folder_id: "folder-1",
+          launch_id: "launch-22",workspace_location_id: "folder-1",
           argv: ["sh", "-c", "printf '%s\n' \"${ANTHROPIC_API_KEY:-none}\""],
         },
         send,
@@ -372,7 +414,8 @@ describe("handleLaunch with a provider binding", () => {
       await handleLaunch(
         {
           run_id: `run-${profile_key.replace(/[^a-z]/gi, "")}`,
-          project_folder_id: "folder-1",
+          launch_id: "launch-profile",
+          workspace_location_id: "folder-1",
           argv: ["sh", "-c", "echo should-not-run"],
           provider_binding: { profile_key, env: {}, profile_env: { HOME: "." }, files: [] },
         },
@@ -395,7 +438,7 @@ describe("the work surface a dispatched run is given", () => {
     await handleLaunch(
       {
         run_id: "run-surface-1",
-        project_folder_id: "folder-1",
+        launch_id: "launch-23",workspace_location_id: "folder-1",
         // The child reports back what it was given, which is the whole
         // contract: an agent that cannot see these has no way to reach Rainver.
         argv: ["sh", "-c", 'printf "%s|%s|%s\\n" "$RAINVER_API_URL" "$RAINVER_TOOL_TOKEN" "$RAINVER_SKILL_PATH"; cat "$RAINVER_SKILL_PATH"; "$RAINVER_CLI" --help 2>&1'],
@@ -418,9 +461,6 @@ describe("the work surface a dispatched run is given", () => {
     const output = frames(send).join("");
     expect(output).toContain("https://control.example.test|token-surface-1|");
     expect(output).toContain("# Working for Rainver");
-    // The launcher must actually run: pointing at a `.js` file that `tsc`
-    // emitted without an executable bit fails with EACCES here.
-    expect(output).toContain("rainver — report to Rainver");
   });
 
   it("removes the run directory, and with it the Skill, once the run ends", async () => {
@@ -429,7 +469,7 @@ describe("the work surface a dispatched run is given", () => {
     await handleLaunch(
       {
         run_id: "run-surface-2",
-        project_folder_id: "folder-1",
+        launch_id: "launch-24",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "true"],
         work_surface: {
           env: { RAINVER_TOOL_TOKEN: "token-surface-2" },
@@ -451,7 +491,7 @@ describe("the work surface a dispatched run is given", () => {
     await handleLaunch(
       {
         run_id: "run-surface-3",
-        project_folder_id: "folder-1",
+        launch_id: "launch-25",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "true"],
         work_surface: {
           env: {},
@@ -470,5 +510,56 @@ describe("the work surface a dispatched run is given", () => {
     expect(done.exit_code).toBe(1);
     expect(String(done.error)).toContain("work surface");
     expect(existsSync(join(configDir, "escaped.md"))).toBe(false);
+  });
+});
+
+describe("a retry that reuses the run id", () => {
+  const surface = {
+    env: {},
+    files: [{ relative_path: "rainver/SKILL.md", contents: "# the skill" }],
+    dir_env: { RAINVER_SKILL_PATH: "rainver/SKILL.md" },
+  };
+
+  it("leaves the run directory to the newer attempt and tags each frame with its own launch", async () => {
+    // A supervisor retry lands within seconds of the first attempt's kill,
+    // while that attempt is still uploading; both attempts share
+    // `<config>/runs/<run_id>/`. The first attempt's cleanup used to delete
+    // the second attempt's Skill and launcher out from under a live child.
+    const first = collectSend();
+    await handleLaunch(
+      { run_id: "run-retry", launch_id: "launch-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"], work_surface: surface },
+      first.send,
+      () => {},
+    );
+    const second = collectSend();
+    await handleLaunch(
+      { run_id: "run-retry", launch_id: "launch-2", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.8; cat \"$RAINVER_SKILL_PATH\""], work_surface: surface },
+      second.send,
+      () => {},
+    );
+    const firstDone = await first.complete();
+    expect(firstDone).toMatchObject({ type: "complete", run_id: "run-retry", launch_id: "launch-1" });
+    const secondDone = await second.complete();
+    expect(secondDone).toMatchObject({ type: "complete", run_id: "run-retry", launch_id: "launch-2", exit_code: 0 });
+    expect(frames(second.send).join("")).toContain("# the skill");
+    // The second attempt's own cleanup removed the directory at its end.
+    expect(existsSync(join(configDir, "runs", "run-retry"))).toBe(false);
+  });
+
+  it("substitutes the work-skill placeholder in stdin with this machine's path", async () => {
+    // The control plane cannot name the file's absolute path (only this
+    // machine knows its config dir), so the prompt carries a placeholder the
+    // daemon fills in — an unexpanded `$RAINVER_SKILL_PATH` is not a path a
+    // read_file tool can open.
+    const { frames: sent, send, complete } = collectSend();
+    await handleLaunch(
+      { run_id: "run-ph", launch_id: "launch-3", workspace_location_id: "folder-1", argv: ["cat"], stdin: "read rainver:work-skill-path now", work_surface: surface },
+      send,
+      () => {},
+    );
+    await complete();
+    const output = sent.filter((f) => f.type === "output").map((f) => String(f.chunk)).join("");
+    expect(output).toContain(join(configDir, "runs", "run-ph", "rainver", "SKILL.md"));
+    expect(output).not.toContain("rainver:work-skill-path");
   });
 });

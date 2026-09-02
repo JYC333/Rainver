@@ -346,20 +346,31 @@ async function createAndQueueRun(db: Queryable, params: {
       // host default it resolved to, not from a routing decision. Without it
       // the Run read model normalizes to "none" and shows a chosen model with
       // no provenance.
-      // Null when there is nothing to say: an unbound run on the machine's
-      // own install carries no override, and the Run read model relies on that.
-      params.model || params.reasoningEffort || params.installation !== "own"
-        ? JSON.stringify({
-            ...(params.model ? { model: params.model } : {}),
-            // Beside the model, never inside it: a model id can carry brackets
-            // of its own, so the pair cannot be recovered from one string.
-            ...(params.reasoningEffort ? { reasoning_effort: params.reasoningEffort } : {}),
-            // Which copy of the runtime on the host, from the thread's pin —
-            // only when it is not the machine's own.
-            ...(params.installation !== "own" ? { installation: params.installation } : {}),
-            source: "request",
-          })
-        : null,
+      // The model fields are written only when there is something to say: an
+      // unbound run on the machine's own install records no model and no
+      // source, and the Run read model relies on that.
+      JSON.stringify({
+        ...(params.model || params.reasoningEffort || params.installation !== "own"
+          ? {
+              ...(params.model ? { model: params.model } : {}),
+              // Beside the model, never inside it: a model id can carry brackets
+              // of its own, so the pair cannot be recovered from one string.
+              ...(params.reasoningEffort ? { reasoning_effort: params.reasoningEffort } : {}),
+              // Which copy of the runtime on the host, from the thread's pin —
+              // only when it is not the machine's own.
+              ...(params.installation !== "own" ? { installation: params.installation } : {}),
+              source: "request",
+            }
+          : {}),
+        // The same shape the Room, delegation and direct-chat paths write:
+        // the Run is the one place the job handler reads its thread and the
+        // vendor session to resume from (`hostThreadDispatchInputs`).
+        host_thread: {
+          schema_version: "host_thread.v1",
+          thread_id: params.threadId,
+          runtime_session_id: params.resumeSessionId ?? null,
+        },
+      }),
       JSON.stringify([...allowance]),
       // The allowance is snapshotted beside the grants, not just applied to
       // them: `bindRunToWorkContext` recomputes grants when a Run acquires a
@@ -389,13 +400,9 @@ async function createAndQueueRun(db: Queryable, params: {
     user_id: params.userId,
     project_folder_id: params.projectFolderId,
     agent_id: params.agent.id,
-    payload: {
-      run_id: runId,
-      adapter_config: params.resumeSessionId ? { remote_resume_session_id: params.resumeSessionId } : {},
-      host_task_thread_id: params.threadId,
-      host_thread_resume_attempted: Boolean(params.resumeSessionId),
-      timeout_ms: params.timeoutMs,
-    },
+    // Thread id and resume session are not on the payload: the handler reads
+    // them from the Run row, so a retry or re-enqueue of this Run cannot lose them.
+    payload: { run_id: runId, timeout_ms: params.timeoutMs },
   });
   return { runId };
 }

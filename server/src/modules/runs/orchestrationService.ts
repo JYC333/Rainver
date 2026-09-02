@@ -1,3 +1,4 @@
+import { resolve, sep } from "node:path";
 import type {
   InvocationDelivery,
   RunAdapterResultEnvelope,
@@ -47,6 +48,7 @@ import {
   removeConversationRuntimeState,
 } from "./conversationRuntimeState.js";
 import type { RunSandboxManagerPort } from "../projectFolders/index.js";
+import { locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import {
   getRuntimeAdapterSpec,
   isVendorCliAdapter,
@@ -118,6 +120,8 @@ import {
 } from "../usage/service.js";
 import type { UsageObservation } from "../usage/types.js";
 import { PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository.js";
+import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
+import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -264,8 +268,8 @@ export interface RunExecutionAdapterDeps {
    * (D3): resolves a Run's execution site for `HostExecutionPort` selection.
    * `workspaceLocationId` is authoritative when present (every Run dispatched
    * through the merged endpoint carries one); `projectFolderId` is the
-   * fallback for a Run that predates it, resolved via that Folder's
-   * `preferred` Location.
+   * fallback for a Run that has no concrete Location, resolved via that
+   * Folder's single active Location.
    */
   hostKindResolver?: (input: { executionHostId: string | null; workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string | null }>;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
@@ -293,6 +297,7 @@ export interface RunDelegationLifecycleProjectorPort {
   markDelegatedRunRunning(run: RunRecord): Promise<void>;
   markDelegatedRunTerminal(run: RunRecord): Promise<void>;
   reconcileWaitingRun?(run: RunRecord): Promise<void>;
+  queueDelegatedChildren?(run: RunRecord): Promise<void>;
 }
 
 export type RunPolicyEnforcer = (
@@ -333,6 +338,8 @@ export interface HostExecutionPort {
   /** Set only for a remote port — which WorkspaceLocation this Run executes in (D3). */
   readonly workspaceLocationId?: string | null;
   readonly workspace?: LaunchWorkspace;
+  readonly workspaceAccess?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  readonly workspaceMounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
   readonly workspaceManager?: RunSandboxManagerPort;
   readonly codePatchCollector?: RunCodePatchCollectorPort;
   readonly runExchange: RunExchangePort;
@@ -344,6 +351,7 @@ export class ServerHostExecutionAdapter implements HostExecutionPort {
     readonly workspaceManager: RunSandboxManagerPort | undefined,
     readonly codePatchCollector: RunCodePatchCollectorPort | undefined,
     readonly runExchange: RunExchangePort,
+    readonly workspaceMounts: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }> = [],
   ) {}
 }
 
@@ -371,6 +379,7 @@ export class RemoteHostExecutionAdapter implements HostExecutionPort {
     readonly hostId: string,
     readonly workspaceLocationId: string | null,
     readonly workspace?: LaunchWorkspace,
+    readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
   ) {}
 }
 
@@ -399,6 +408,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
+  /** Canonical server-resolved attachment mounts for a server Host launch. */
+  workspace_mounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
   /** ADR 0016 P3: set by `executeRun` from `preparedRuntime.execution_port`; read by `invokeAdapterUnbounded` to route a `local_cli` run to the remote-host adapter instead of `executeVendorCliAdapter`. */
   execution_port?: HostExecutionPort | null;
 }
@@ -453,6 +464,7 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
         text_delta_sink: input.text_delta_sink,
         invocation_delivery: input.invocation_delivery,
         invocation_attempts: input.invocation_attempts,
+        workspace_mounts: input.workspace_mounts,
       },
       deps.vendorCli,
     ),
@@ -564,7 +576,7 @@ export class RunOrchestrationService {
                   )
                 : projectFolderId
                 ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND preferred = true AND status = 'active' LIMIT 1`,
+                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND status = 'active' LIMIT 1`,
                     [projectFolderId, spaceId],
                   )
                 : { rows: [] as Array<{ id: string; execution_host_kind: string; execution_host_id: string }> };
@@ -958,6 +970,9 @@ export class RunOrchestrationService {
         ...input,
         adapter_config: resolved.adapter_config,
         risk_level: resolved.risk_level,
+        ...(executionPort.workspaceMounts && executionPort.workspaceMounts.length > 0
+          ? { workspace_mounts: executionPort.workspaceMounts }
+          : {}),
         runtime_event_sink: serializedRuntimeEventSink,
         ...(isChatTurnRun(effectiveRun)
           ? { text_delta_sink: (delta: string) => publishChatTextDelta(effectiveRun.id, delta) }
@@ -1210,6 +1225,7 @@ export class RunOrchestrationService {
           );
         }
         await releaseExecutionAuthority();
+        await this.delegationProjector?.queueDelegatedChildren?.(waitingRun);
         await this.delegationProjector?.reconcileWaitingRun?.(waitingRun);
         return {
           run_id: waitingRun.id,
@@ -1760,6 +1776,15 @@ export class RunOrchestrationService {
         skip_reason: "run_already_terminal",
       };
     }
+    const cancelledHostThread = hostThreadDispatchInputs(updated);
+    if (cancelledHostThread.thread_id) {
+      await recordHostThreadOutcome(
+        this.config,
+        cancelledHostThread.thread_id,
+        updated,
+        cancelledHostThread.resume_attempted,
+      ).catch(() => undefined);
+    }
     const finalization = await this.finalizeTerminalRunBestEffort(
       updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() },
     );
@@ -2042,15 +2067,89 @@ export class RunOrchestrationService {
     const profile = recordValue(run.runtime_profile_snapshot_json);
     const executionHostId = stringConfigValue(profile.execution_host_id);
     const workspace = launchWorkspaceFromSnapshot(profile.workspace);
-    if ((!run.project_folder_id && !run.workspace_location_id && !executionHostId) || !this.hostKindResolver) return this.serverExecutionPort;
+    const workspaceAccess = workspaceAccessFromSnapshot(profile.workspace_access);
+    if ((!run.project_folder_id && !run.workspace_location_id && !executionHostId) || !this.hostKindResolver) {
+      if (workspaceAccess.length > 0) {
+        throw new RunPreparationError(
+          "conversation_workspace_access_unavailable",
+          "Conversation attachments require a configured execution context.",
+        );
+      }
+      return this.serverExecutionPort;
+    }
+    if (!this.config.databaseUrl && workspaceAccess.length > 0) {
+      throw new RunPreparationError(
+        "conversation_workspace_access_unavailable",
+        "Conversation attachments require database-backed execution context.",
+      );
+    }
     const resolved = await this.hostKindResolver({
       executionHostId,
       workspaceLocationId: run.workspace_location_id ?? null,
       projectFolderId: run.project_folder_id ?? null,
       spaceId: run.space_id,
     });
-    if (resolved.hostKind === "server") return this.serverExecutionPort;
-    return new RemoteHostExecutionAdapter(resolved.hostId, resolved.workspaceLocationId, workspace);
+    if (resolved.hostKind === "server") {
+      const workspaceMounts = await this.resolveServerWorkspaceMounts(
+        run.space_id,
+        resolved.hostId,
+        workspaceAccess,
+      );
+      return new ServerHostExecutionAdapter(
+        this.adapters.workspaceManager,
+        this.adapters.codePatchCollector,
+        this.runExchange,
+        workspaceMounts,
+      );
+    }
+    return new RemoteHostExecutionAdapter(resolved.hostId, resolved.workspaceLocationId, workspace, workspaceAccess);
+  }
+
+  private async resolveServerWorkspaceMounts(
+    spaceId: string,
+    hostId: string,
+    access: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>,
+  ): Promise<Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>> {
+    if (access.length === 0) return [];
+    const result = await getDbPool(this.config.databaseUrl!).query<{
+      id: string;
+      root_path: string | null;
+      execution_host_id: string;
+      status: string;
+      execution_ready: boolean;
+    }>(
+      `SELECT id, root_path, execution_host_id, status, execution_ready
+         FROM workspace_locations
+        WHERE space_id = $1 AND id = ANY($2::varchar[])`,
+      [spaceId, access.map((item) => item.workspace_location_id)],
+    );
+    const locations = new Map(result.rows.map((row) => [row.id, row]));
+    return access.map((item) => {
+      const location = locations.get(item.workspace_location_id);
+      if (!location || location.execution_host_id !== hostId
+        || !["active", "stale"].includes(location.status)
+        || location.execution_ready !== true) {
+        throw new RunPreparationError(
+          "conversation_workspace_access_unavailable",
+          "A Conversation attachment is no longer available on the execution Host.",
+        );
+      }
+      const path = locationAbsoluteRoot(location, this.config.workspaceRoot);
+      const root = resolve(this.config.workspaceRoot);
+      if (path !== root && !path.startsWith(`${root}${sep}`)) {
+        throw new RunPreparationError(
+          "conversation_workspace_access_unsupported",
+          "This server Host cannot safely mount an attached Folder outside its managed workspace root.",
+        );
+      }
+      if (item.access_mode === "write") {
+        throw new RunPreparationError(
+          "conversation_workspace_access_unsupported",
+          "Server-host Folder attachments are read-only; use a trusted remote Host for direct attached-Folder writes.",
+        );
+      }
+      return { ...item, path };
+    });
   }
 
   private async prepareRuntimeContext(
@@ -2060,6 +2159,9 @@ export class RunOrchestrationService {
     executionPort: HostExecutionPort,
     effectiveBindings?: EffectiveRunContextBindings,
   ): Promise<PreparedRuntimeContext> {
+    const workspace = launchWorkspaceFromSnapshot(
+      recordValue(run.runtime_profile_snapshot_json).workspace,
+    );
     const prepared: PreparedRuntimeContext = {
       prompt: input.prompt ?? run.prompt ?? null,
       sandbox_cwd: input.sandbox_cwd ?? null,
@@ -2129,6 +2231,9 @@ export class RunOrchestrationService {
           sandbox_root: this.config.sandboxRoot,
           state_key: cliBinding.runtime_state_key,
           resume_requested: Boolean(cliBinding.vendor_session_id),
+          conversation_id: workspace?.kind === "managed" && workspace.container.kind === "conversation"
+            ? workspace.container.conversation_id
+            : null,
         });
         if (cliBinding.vendor_session_id && !state.resume) {
           cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id);
@@ -2138,6 +2243,9 @@ export class RunOrchestrationService {
             sandbox_root: this.config.sandboxRoot,
             state_key: cliBinding.runtime_state_key,
             resume_requested: false,
+            conversation_id: workspace?.kind === "managed" && workspace.container.kind === "conversation"
+              ? workspace.container.conversation_id
+              : null,
           });
         }
         if (workingDirScopeForLevel(run.required_sandbox_level) === "ephemeral") {
@@ -2449,6 +2557,7 @@ export class RunOrchestrationService {
           prompt: input.prompt ?? null,
           model: input.model ?? null,
           resume_session_id: stringConfigValue(input.adapter_config?.remote_resume_session_id),
+          adapter_config: input.adapter_config,
           timeout_seconds: input.timeout_ms && input.timeout_ms > 0 ? Math.ceil(input.timeout_ms / 1000) : null,
           runtime_event_sink: input.runtime_event_sink,
           // control-center-phase2-plan.md P1 (C2): persisted as frames
@@ -2461,6 +2570,7 @@ export class RunOrchestrationService {
             : undefined,
           process_registry: this.adapters.processRegistry,
           workspace: input.execution_port.workspace,
+          workspace_access: input.execution_port.workspaceAccess,
         },
         input.execution_port.hostId!,
         input.execution_port.workspaceLocationId ?? null,
@@ -3110,13 +3220,48 @@ function launchWorkspaceFromSnapshot(value: unknown): LaunchWorkspace | undefine
   const container = record.container;
   if (record.kind !== "managed" || typeof record.agent_id !== "string" || !container || typeof container !== "object" || Array.isArray(container)) return undefined;
   const c = container as Record<string, unknown>;
-  if (c.kind === "room" && typeof c.room_id === "string") {
-    return { kind: "managed", agent_id: record.agent_id, container: { kind: "room", room_id: c.room_id } };
-  }
   if (c.kind === "direct" && typeof c.user_id === "string") {
     return { kind: "managed", agent_id: record.agent_id, container: { kind: "direct", user_id: c.user_id } };
   }
+  if (c.kind === "conversation" && typeof c.conversation_id === "string") {
+    return { kind: "managed", agent_id: record.agent_id, container: { kind: "conversation", conversation_id: c.conversation_id } };
+  }
   return undefined;
+}
+
+function workspaceAccessFromSnapshot(
+  value: unknown,
+): Array<{ workspace_location_id: string; access_mode: "read" | "write" }> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new RunPreparationError(
+      "conversation_workspace_access_invalid",
+      "The Conversation workspace access snapshot is invalid; refusing to dispatch.",
+    );
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RunPreparationError(
+        "conversation_workspace_access_invalid",
+        `The Conversation workspace access entry ${index} is invalid; refusing to dispatch.`,
+      );
+    }
+    const candidate = entry as Record<string, unknown>;
+    const workspaceLocationId = stringConfigValue(candidate.workspace_location_id);
+    const accessMode = candidate.access_mode;
+    if (!workspaceLocationId || (accessMode !== "read" && accessMode !== "write") || seen.has(workspaceLocationId)) {
+      throw new RunPreparationError(
+        "conversation_workspace_access_invalid",
+        `The Conversation workspace access entry ${index} is invalid; refusing to dispatch.`,
+      );
+    }
+    seen.add(workspaceLocationId);
+    return {
+      workspace_location_id: workspaceLocationId,
+      access_mode: accessMode,
+    };
+  });
 }
 
 function positiveNumber(value: unknown): number | null {

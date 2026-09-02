@@ -5,19 +5,25 @@ import { configDir } from "./config.js";
 const ARCHIVE_MARKER = ".removed-";
 export const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-export type ManagedWorkspaceContainerKind = "room" | "direct";
+export type ManagedWorkspaceContainerKind = "direct" | "conversation";
 
 export interface ManagedWorkspaceContainer {
   kind: ManagedWorkspaceContainerKind;
   id: string;
 }
 
-export interface ManagedWorkspaceHeartbeat {
-  agent_id: string;
-  container_kind: ManagedWorkspaceContainerKind;
-  container_id: string;
-  archived_available: boolean;
-}
+export type ManagedWorkspaceHeartbeat =
+  | {
+      agent_id: string;
+      container_kind: "direct";
+      container_id: string;
+      archived_available: boolean;
+    }
+  | {
+      container_kind: "conversation";
+      container_id: string;
+      archived_available: boolean;
+    };
 
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -25,13 +31,14 @@ export function assertManagedWorkspaceId(value: string, label: string): void {
   if (!UUID_LIKE.test(value)) throw new Error(`${label} must be a UUID-like identifier`);
 }
 
-function kindDirectory(kind: ManagedWorkspaceContainerKind): "rooms" | "direct" {
-  return kind === "room" ? "rooms" : "direct";
+function kindDirectory(kind: ManagedWorkspaceContainerKind): "direct" | "conversations" {
+  return kind === "direct" ? "direct" : "conversations";
 }
 
 function root(agentId: string, container: ManagedWorkspaceContainer): string {
   assertManagedWorkspaceId(agentId, "agent_id");
   assertManagedWorkspaceId(container.id, "container_id");
+  if (container.kind === "conversation") return join(configDir(), "conversations");
   return join(configDir(), "agents", agentId, kindDirectory(container.kind));
 }
 
@@ -81,7 +88,7 @@ export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<n
   let removed = 0;
   for (const agent of agents) {
     if (!agent.isDirectory() || !UUID_LIKE.test(agent.name)) continue;
-    for (const kind of ["rooms", "direct"] as const) {
+    for (const kind of ["direct"] as const) {
       const base = join(agentsRoot, agent.name, kind);
       const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
@@ -95,6 +102,17 @@ export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<n
       }
     }
   }
+  const conversationsRoot = join(configDir(), "conversations");
+  const conversationEntries = await readdir(conversationsRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of conversationEntries) {
+    if (!entry.isDirectory() || !entry.name.includes(ARCHIVE_MARKER)) continue;
+    const path = join(conversationsRoot, entry.name);
+    const info = await stat(path).catch(() => null);
+    if (info && now.getTime() - info.mtimeMs > MANAGED_WORKSPACE_RETENTION_MS) {
+      await rm(path, { recursive: true, force: true });
+      removed += 1;
+    }
+  }
   return removed;
 }
 
@@ -104,7 +122,7 @@ export async function listManagedWorkspaces(): Promise<ManagedWorkspaceHeartbeat
   const result: ManagedWorkspaceHeartbeat[] = [];
   for (const agent of agents) {
     if (!agent.isDirectory() || !UUID_LIKE.test(agent.name)) continue;
-    for (const [kind, wireKind] of [["rooms", "room"], ["direct", "direct"]] as const) {
+    for (const [kind, wireKind] of [["direct", "direct"]] as const) {
       const base = join(agentsRoot, agent.name, kind);
       const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
       const liveIds = entries
@@ -125,6 +143,24 @@ export async function listManagedWorkspaces(): Promise<ManagedWorkspaceHeartbeat
         });
       }
     }
+  }
+  const conversationsRoot = join(configDir(), "conversations");
+  const conversationEntries = await readdir(conversationsRoot, { withFileTypes: true }).catch(() => []);
+  const liveConversationIds = conversationEntries
+    .filter((entry) => entry.isDirectory() && UUID_LIKE.test(entry.name))
+    .map((entry) => entry.name);
+  const archivedConversationIds = new Set(
+    conversationEntries
+      .filter((entry) => entry.isDirectory() && entry.name.includes(ARCHIVE_MARKER))
+      .map((entry) => entry.name.split(ARCHIVE_MARKER, 1)[0])
+      .filter((id) => UUID_LIKE.test(id)),
+  );
+  for (const id of new Set([...liveConversationIds, ...archivedConversationIds])) {
+    result.push({
+      container_kind: "conversation",
+      container_id: id,
+      archived_available: archivedConversationIds.has(id),
+    });
   }
   return result;
 }

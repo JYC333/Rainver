@@ -24,7 +24,6 @@ import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PgRoomRepository } from "../rooms/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
-import { requiredPrimaryMode } from "./primaryMode.js";
 
 export interface ProjectRow {
   id: string;
@@ -35,7 +34,6 @@ export interface ProjectRow {
   status: string;
   current_focus: string | null;
   settings_json: unknown;
-  primary_mode: string;
   active_brief_version_id: string | null;
   created_at: unknown;
   updated_at: unknown;
@@ -72,7 +70,7 @@ export interface ProjectPublicSummaryRow {
 
 const PROJECT_COLUMNS = `
   id, space_id, owner_user_id, name, description, status, current_focus,
-  settings_json, primary_mode, active_brief_version_id,
+  settings_json, active_brief_version_id,
   created_at, updated_at, archived_at
 `;
 
@@ -130,27 +128,21 @@ export class PgProjectRepository {
     return page(items, countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
-  // Creation asks one thing about shape: how the Project advances
-  // (`primary_mode`, defaulting to `research`). The initial Mode Transition
-  // (from=null) is appended in the same transaction. Sources are bound from
-  // the Project's Sources Area afterwards, never here.
+  // Creation presets nothing about shape: a Project has no type field (ADR
+  // 0019) — what kind of work it is shows in its goal and in what it comes to
+  // hold. Sources are bound from the Project's Sources Area afterwards, never
+  // here.
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const name = requiredString(body.name, "name");
-    // Deliberately not gated on a registered Overview adapter the way a Mode
-    // *transition* is. That gate belongs to the request path; putting it here
-    // would make creating a Project depend on module registration order, and
-    // this repository is used headlessly. Every built-in Mode registers an
-    // adapter, so the placeholder projection is unreachable in practice.
-    const primaryMode = requiredPrimaryMode(body.primary_mode);
     const now = new Date().toISOString();
     const projectId = randomUUID();
     return withQueryableTransaction(this.db, async (db) => {
       const result = await db.query<ProjectRow>(
         `INSERT INTO projects (
            id, space_id, owner_user_id, name, description, status, current_focus,
-           settings_json, primary_mode,
+           settings_json,
            created_at, updated_at, archived_at, deleted_at
-         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $9, $9, NULL, NULL)
+         ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7::jsonb, $8, $8, NULL, NULL)
          RETURNING ${PROJECT_COLUMNS}`,
         [
           projectId,
@@ -160,24 +152,17 @@ export class PgProjectRepository {
           optionalString(body.description),
           optionalString(body.current_focus),
           JSON.stringify(optionalObject(body.settings_json) ?? {}),
-          primaryMode,
           now,
         ],
-      );
-      await db.query(
-        `INSERT INTO project_mode_transitions (
-           id, space_id, project_id, from_mode, to_mode, reason, trigger_ref, confirmed_by_user_id, created_at
-         ) VALUES ($1, $2, $3, NULL, $4, 'project_created', NULL, $5, $6)`,
-        [randomUUID(), identity.spaceId, projectId, primaryMode, identity.userId, now],
       );
       const briefId = randomUUID();
       await db.query(
         `INSERT INTO project_brief_versions
           (id,space_id,project_id,version,goal,scope_included,scope_excluded,success_definition,constraints,assumptions,
-           project_status,current_focus,confirmed_decisions_json,primary_mode,workspace_identity_json,workspace_boundary_json,
+           project_status,current_focus,confirmed_decisions_json,workspace_identity_json,workspace_boundary_json,
            source_refs_json,status,reviewed_by_user_id,reviewed_at,published_by_user_id,published_at,created_by_user_id,created_at)
-         VALUES ($1,$2,$3,'v1',$4,$5,$6,$7,$8,$9,'active',$10,'[]'::jsonb,$11,'{}'::jsonb,'{}'::jsonb,
-                 '[]'::jsonb,'published',$12,$13,$12,$13,$12,$13)`,
+         VALUES ($1,$2,$3,'v1',$4,$5,$6,$7,$8,$9,'active',$10,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,
+                 '[]'::jsonb,'published',$11,$12,$11,$12,$11,$12)`,
         [
           briefId,
           identity.spaceId,
@@ -189,7 +174,6 @@ export class PgProjectRepository {
           optionalString(body.constraints),
           optionalString(body.assumptions),
           optionalString(body.current_focus),
-          primaryMode,
           identity.userId,
           now,
         ],
@@ -207,7 +191,7 @@ export class PgProjectRepository {
       //
       // Nothing that can fail is done here. No Assistant is provisioned (that
       // moves to the Room's first message) and no conversation is created
-      // (conversations are created by speaking, decision 5), so a Project
+      // (conversations are created through explicit draft setup, decision 5), so a Project
       // cannot fail to be created because of its Room.
       const roomRepository = new PgRoomRepository(db);
       const room = await roomRepository.createRoom({
@@ -840,9 +824,9 @@ function projectToOut(
     settings_json: includeSettings
       ? (row.settings_json === null ? null : objectValue(row.settings_json))
       : null,
-    primary_mode: row.primary_mode,
     active_brief_version_id: row.active_brief_version_id,
     current_user_can_approve_context: currentUserCanApproveContext,
+    current_user_can_write: includeSettings,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
     archived_at: dateIso(row.archived_at),

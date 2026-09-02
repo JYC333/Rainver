@@ -13,6 +13,7 @@ import {
 } from "../src/modules/hosts/runtimeProviderBindingResolution.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { advanceThreadQueue } from "../src/modules/hosts/queueAdvance.js";
+import { hostThreadDispatchInputs } from "../src/modules/hosts/threadDispatchInputs.js";
 import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { runToOut } from "../src/modules/runs/runReadModel.js";
@@ -466,8 +467,8 @@ async function seedDispatchableThread(): Promise<void> {
   );
   await db.pool.query(
     `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-       display_path, preferred, execution_ready, status, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'remote','/home/u/repo',true,true,'active',$5,$5)`,
+       display_path, execution_ready, status, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'remote','/home/u/repo',true,'active',$5,$5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
   await db.pool.query(
@@ -477,14 +478,19 @@ async function seedDispatchableThread(): Promise<void> {
     [TASK, SPACE, PROJECT, FOLDER, OWNER, now],
   );
   await db.pool.query(
-      `INSERT INTO host_threads (id, workspace_location_id, adapter_type, status, created_by_user_id, created_at, updated_at)
-     VALUES ($1,$2,'claude_code','active',$3,$4,$4)`,
-    [THREAD, LOCATION, OWNER, now],
+    `INSERT INTO host_threads (
+       id, execution_host_id, workspace_location_id, workspace_mode, task_id,
+       adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+     ) VALUES ($1,$2,$3,'location',$4,'claude_code','own','active',$5,$6,$6)`,
+    [THREAD, HOST, LOCATION, TASK, OWNER, now],
   );
   // The capability probe is rechecked when the queue advances, not only at
   // dispatch, so the host has to still report the runtime here.
   await db.pool.query(
-    `UPDATE hosts SET capabilities_json = '{"runtimes":["claude"]}'::jsonb, last_heartbeat_at = now() WHERE id = $1`,
+    `UPDATE hosts
+        SET capabilities_json = '{"installations":{"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
+            last_heartbeat_at = now()
+      WHERE id = $1`,
     [HOST],
   );
 }
@@ -509,7 +515,11 @@ describe("binding carried onto the Run", () => {
     expect(run.rows[0]?.model_provider_id).toBe(CLAUDE_PROVIDER);
     // `source` matters: without it the Run read model normalizes to "none" and
     // shows a chosen model with no provenance.
-    expect(run.rows[0]?.model_override_json).toEqual({ model: "MiniMax-M2", source: "request" });
+    expect(run.rows[0]?.model_override_json).toEqual({
+      model: "MiniMax-M2",
+      source: "request",
+      host_thread: { schema_version: "host_thread.v1", thread_id: THREAD, runtime_session_id: null },
+    });
 
     // The control plane records the binding, but nothing on the trusted-host
     // path injects it yet, so the read model must not tell a reader the
@@ -526,12 +536,36 @@ describe("binding carried onto the Run", () => {
     expect(view.disclosure_note).toContain("remote execution host");
   });
 
+  it("carries the thread and the session to resume on the Run, not on the job", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-sess-1' WHERE id = $1`, [THREAD]);
+    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
+    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
+
+    // The job handler reads both from the Run row (`hostThreadDispatchInputs`),
+    // so the twenty places that enqueue an `agent_run` job — the supervisor
+    // retry and the resume endpoint among them — cannot re-dispatch this Run
+    // without its thread or without the session it was told to resume.
+    const run = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
+    expect(hostThreadDispatchInputs(run.rows[0]!)).toEqual({
+      thread_id: THREAD,
+      resume_session_id: "vendor-sess-1",
+      resume_attempted: true,
+    });
+    const job = await db.pool.query<{ payload_json: Record<string, unknown> }>(
+      `SELECT payload_json FROM jobs WHERE payload_json->>'run_id' = $1`, [run.rows[0]!.id],
+    );
+    expect(job.rows).toHaveLength(1);
+    expect(Object.keys(job.rows[0]!.payload_json).sort()).toEqual(["run_id", "timeout_ms"]);
+  });
+
   it("qualifies a remote run whose trust_mode was never set", async () => {
     if (!db.available) return;
     await seedDispatchableThread();
     // The failure this guards: only the thread-dispatch path writes
     // `trust_mode`, so an Automation, Room, Workflow or evolution run on a
-    // remote-preferred Folder has it null and still executes remotely, with a
+    // remote Location has it null and still executes remotely, with a
     // provider the router stamped and nothing ever injected. Remoteness must
     // come from the Location.
     const runId = randomUUID();
@@ -575,7 +609,11 @@ describe("binding carried onto the Run", () => {
       [THREAD],
     );
     expect(run.rows[0]?.model_provider_id).toBeNull();
-    expect(run.rows[0]?.model_override_json).toBeNull();
+    // No model and no `source` for an unbound run — the read model relies on
+    // that. The thread itself is always named, for the job handler.
+    expect(run.rows[0]?.model_override_json).toEqual({
+      host_thread: { schema_version: "host_thread.v1", thread_id: THREAD, runtime_session_id: null },
+    });
   });
 
   it("uses the snapshot, not the host default as it stands when the queue advances", async () => {
@@ -660,7 +698,7 @@ describe("carrying the binding to the executing host", () => {
 
   it("falls back to the host default for a run that never went through dispatch", async () => {
     if (!db.available) return;
-    // An Automation, Room, Workflow or evolution run on a remote-preferred
+    // An Automation, Room, Workflow or evolution run on a remote Location
     // Folder has no message. Ignoring the host default there would make the
     // Command Center's per-host setting a lie for every run but one kind.
     await repo().upsert({
@@ -915,7 +953,7 @@ describe("recording what a remote run actually executed against", () => {
   it("never destroys the rest of the run's control blob", async () => {
     if (!db.available) return;
     // `model_override_json` also carries `execution_mode`, `chat_turn` and
-    // `conversation_runtime`. A Room turn on a remote-preferred Folder reaches
+    // `conversation_runtime`. A Room turn on a remote Location reaches
     // this path, and `finalizeChatTurn` re-reads the run from the database
     // afterwards — losing those keys drops the agent's reply silently, and
     // both recovery sweeps filter on `chat_turn`, so nothing could find it.

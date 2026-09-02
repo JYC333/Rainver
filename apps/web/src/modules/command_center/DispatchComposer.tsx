@@ -148,7 +148,6 @@ export default function DispatchComposer({
     const preferred =
       workspaces.find(w => w.location.id === remembered && (!hostId || w.host?.id === hostId)) ??
       workspaces.find(w => w.folder.id === (fixedFolderId ?? initialFolderId) && (!hostId || w.host?.id === hostId)) ??
-      workspaces.find(w => w.location.preferred && (!hostId || w.host?.id === hostId)) ??
       workspaces.find(w => !hostId || w.host?.id === hostId) ??
       null
     if (preferred) setLocationId(preferred.location.id)
@@ -253,7 +252,7 @@ export default function DispatchComposer({
     { value: '', label: workspacesLoading ? 'Loading workspaces…' : (projectId ? 'No workspace registered for this project yet' : 'Select a project first') },
     ...workspacesForHost.map(w => ({
       value: w.location.id,
-      label: `${w.host?.name ?? 'Unknown host'} · ${w.folder.name}${w.location.preferred ? ' (preferred)' : ''}${w.location.branch ? ` · ${w.location.branch}` : ''}${w.location.dirty ? ' · dirty' : ''}`,
+      label: `${w.host?.name ?? 'Unknown host'} · ${w.folder.name}${w.location.branch ? ` · ${w.location.branch}` : ''}${w.location.dirty ? ' · dirty' : ''}`,
     })),
   ]
 

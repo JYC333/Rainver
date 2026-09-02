@@ -3,7 +3,9 @@ import {
   WORK_SKILL_RELATIVE_PATH,
   renderWorkSkill,
   workSkillContentHash,
+  type WorkSkillOptions,
 } from "../capabilities/workSkill.js";
+import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import type { RunRecord } from "./repository.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 
@@ -31,6 +33,23 @@ export interface RunWorkSurface {
   frame: RunWorkSurfaceFrame;
   /** Which Skill text this run received, for its execution record. */
   skill_content_hash: string;
+  /** The options the Skill was rendered with; the prompt pointer must use the same. */
+  options: WorkSkillOptions;
+}
+
+/**
+ * Which Skill a Run gets, decided from the Run itself: a conversation turn
+ * (it has a Session) reads differently from a dispatched Task, and the
+ * output-delivery section is offered only when `artifact.submit` was
+ * actually granted. Rendering the dispatched default for every remote run
+ * sent a Room agent to `artifact.submit` it was never granted and told it
+ * its reply reached nobody.
+ */
+export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
+  return {
+    conversation: Boolean(run.session_id),
+    deliverOutputs: assembleRunInputEnvelope(run).tool_grants.some((grant) => grant.action_id === "artifact.submit"),
+  };
 }
 
 export const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
@@ -79,7 +98,8 @@ export async function buildRunWorkSurface(input: {
 }): Promise<RunWorkSurface | null> {
   const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.hostId);
   if (!apiBaseUrl) return null;
-  const skill = renderWorkSkill();
+  const options = workSkillOptionsForRun(input.run);
+  const skill = renderWorkSkill(options);
   const skillContentHash = workSkillContentHash(skill);
   // The hash is written with the identity rather than reported at the end: a
   // Run that crashes still has to be explainable, and the fact being recorded
@@ -97,5 +117,6 @@ export async function buildRunWorkSurface(input: {
       dir_env: { [WORK_SURFACE_SKILL_PATH_ENV]: WORK_SKILL_RELATIVE_PATH },
     },
     skill_content_hash: skillContentHash,
+    options,
   };
 }

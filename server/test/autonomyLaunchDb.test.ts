@@ -114,9 +114,9 @@ beforeEach(async () => {
 async function seedProject(id: string, name: string, updatedAt: string): Promise<void> {
   await db.pool.query(
     `INSERT INTO projects (
-       id, space_id, owner_user_id, name, status, primary_mode,
+       id, space_id, owner_user_id, name, status,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, 'active', 'delivery', $5, $5)`,
+     ) VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
     [id, SPACE, USER, name, updatedAt],
   );
   await seedMainlineRoomsForAllProjects(db.pool);

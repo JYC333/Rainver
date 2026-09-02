@@ -46,6 +46,19 @@ export interface SemanticCheckpointProviderPort {
  * The sole writer for ordered Runtime Context continuity.  All sequence and
  * checkpoint mutations run under the same per-scope transaction lock.
  */
+/**
+ * The invocation never acquired a Runtime Context authority — normal for a
+ * Run that died before execution (routing failure, admission refusal).
+ * Callers that finalize such Runs skip context finalization on this type
+ * instead of matching error text.
+ */
+export class InvocationAuthorityNotFoundError extends HttpError {
+  constructor() {
+    super(404, "Runtime Context invocation authority not found");
+    this.name = "InvocationAuthorityNotFoundError";
+  }
+}
+
 export class RuntimeContextContinuityService {
   constructor(
     private readonly db: Queryable,
@@ -503,7 +516,7 @@ export class RuntimeContextContinuityService {
       [invocationId, spaceId ?? null],
     );
     const row = result.rows[0];
-    if (!row?.work_context_scope_id) throw new HttpError(404, "Runtime Context invocation authority not found");
+    if (!row?.work_context_scope_id) throw new InvocationAuthorityNotFoundError();
     return row;
   }
 

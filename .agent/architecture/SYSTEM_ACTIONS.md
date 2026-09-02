@@ -346,8 +346,11 @@ Project for Space-level Knowledge), `project.propose_definition` (direction),
 
 `task.create` takes its Project from the Run, not the input, and re-checks
 Project writer authority under the aggregate lock. The other four resolve their
-Task through the content read predicate for the instructing user, so an Agent's
-reach is that person's and never wider. See
+Task through the content read predicate for the instructing user *and* the
+Run's own Project: an Agent's reach is that person's and never wider, and a
+Room is one Project's conversation (ADR 0018, 0019), so a Task from a sibling
+Project the person can read answers as not found — with the ids this Project
+actually has, the same reply an invented id gets. See
 [`PROJECT_WORK.md`](PROJECT_WORK.md) §8.
 
 `inquiry.create_thread` and `inquiry.record_conclusion` let a Room-dispatched
@@ -575,8 +578,8 @@ read that returned it in the same turn. Every such action is paired with one:
 
 | Read | Returns | Feeds |
 | --- | --- | --- |
-| `inquiry.list_threads` | `{thread_id, kind, statement, attention_state}` | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge` |
-| `task.list` | `{task_id, title, status}` (optional `status` filter) | `task.report`, `task.handoff`, `task.advance_stage`, `task.request_review`, `task.plan.propose` |
+| `inquiry.list_threads` | `{thread_id, kind, statement, attention_state, next_step}` — `next_step` is the Thread's open, current advice (`{focus, rationale}`) or null | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge`, `inquiry.adopt_next_step` (only when `next_step` is set) |
+| `task.list` | `{task_id, title, status, priority, due_at, start_after, blocked_reason}` (optional `status` filter) — the state a "what next?" recommendation is grounded in, not only ids | `task.report`, `task.handoff`, `task.advance_stage`, `task.request_review`, `task.plan.propose` |
 | `proposal.list_pending` | `{proposal_id, proposal_type, title}` for *this conversation* | `proposal.decide` |
 | `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
 

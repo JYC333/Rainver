@@ -120,15 +120,15 @@ async function seedTopology(): Promise<void> {
   await db.pool.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind, display_path,
-       execution_ready, status, preferred, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',true,$5,$5)`,
+       execution_ready, status, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'remote','/home/me/project',true,'active',$5,$5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
   const briefId = randomUUID();
   await db.pool.query(
     `INSERT INTO project_brief_versions (
-       id, space_id, project_id, version, goal, project_status, primary_mode, status, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'Ship the importer', 'active', 'delivery', 'published', now())`,
+       id, space_id, project_id, version, goal, project_status, status, created_at
+     ) VALUES ($1, $2, $3, 'v1', 'Ship the importer', 'active', 'published', now())`,
     [briefId, SPACE, PROJECT],
   );
   await db.pool.query(

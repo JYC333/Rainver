@@ -93,6 +93,16 @@ export default function HostsPanel() {
     }
   }
 
+  async function setDefaultAdapter(hostId: string, adapterType: string | null) {
+    try {
+      await hostsApi.setDefaultAdapter(hostId, adapterType)
+      toast.success(adapterType ? `Default CLI set to ${adapterType}` : 'Default CLI cleared')
+      await load()
+    } catch (e) {
+      toast.error(errMsg(e))
+    }
+  }
+
   async function revoke(hostId: string) {
     try {
       await hostsApi.revoke(hostId)
@@ -189,6 +199,22 @@ export default function HostsPanel() {
                 <p className="w-full border-t pt-2 text-xs text-muted-foreground">
                   CLI runs here use the server machine's own logins. A model backend is chosen per paired remote host.
                 </p>
+              )}
+              {host.kind === 'remote' && host.status !== 'revoked' && (
+                <div className="w-full flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground shrink-0">Default CLI</span>
+                  <select
+                    aria-label={`Default CLI on ${host.name}`}
+                    value={host.default_adapter_type ?? ''}
+                    onChange={e => { void setDefaultAdapter(host.id, e.target.value || null) }}
+                    className="h-8 rounded-md border border-border bg-input px-2 text-xs"
+                  >
+                    <option value="">Automatic (OpenCode preferred)</option>
+                    {runtimeAdapters.filter(adapter => adapter.remote_eligible).map(adapter => (
+                      <option key={adapter.adapter_type} value={adapter.adapter_type}>{adapter.display_name}</option>
+                    ))}
+                  </select>
+                </div>
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <>

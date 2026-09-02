@@ -42,7 +42,6 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	dirty: boolean(),
 	executionReady: boolean("execution_ready").default(false).notNull(),
 	status: varchar({ length: 32 }).default('active').notNull(),
-	preferred: boolean().default(false).notNull(),
 	lastSeenAt: timestamp("last_seen_at", { withTimezone: true, mode: 'string' }),
 	/**
 	 * Standing consent to import this folder's ambient CLI history, per
@@ -67,6 +66,7 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	index("ix_workspace_locations_execution_host_id").using("btree", table.executionHostId.asc().nullsLast()),
 	index("ix_workspace_locations_status").using("btree", table.status.asc().nullsLast()),
 	unique("uq_workspace_locations_id_folder").on(table.id, table.projectFolderId),
+	unique("uq_workspace_locations_id_host").on(table.id, table.executionHostId),
 	foreignKey({
 			columns: [table.spaceId],
 			foreignColumns: [spaces.id],
@@ -82,9 +82,9 @@ export const workspaceLocations = pgTable("workspace_locations", {
 			foreignColumns: [hosts.id, hosts.kind],
 			name: "workspace_locations_execution_host_id_fkey"
 		}),
-	// At most one preferred Location per Folder — the default dispatch target
-	// when a caller doesn't name one explicitly (D2/D5).
-	uniqueIndex("uq_workspace_locations_one_preferred_per_folder").using("btree", table.projectFolderId.asc().nullsLast()).where(sql`preferred`),
+	// A Folder has one and only one dispatchable checkout. Historical and newly
+	// discovered copies remain archived/stale until an explicit promotion.
+	uniqueIndex("uq_workspace_locations_one_active_per_folder").using("btree", table.projectFolderId.asc().nullsLast()).where(sql`status = 'active'`),
 	// Carries forward `project_folders`' pre-P1 invariant (`uq_project_folders_space_root_path`):
 	// two Locations in the same Space must not claim the same server-host path.
 	uniqueIndex("uq_workspace_locations_space_root_path").using(

@@ -285,6 +285,8 @@ export interface DelegatedChildRunCreateInput {
   runtime_profile_selection_source?: RuntimeProfileSelectionSource;
   capability_id?: string | null;
   capabilities_json?: unknown[] | null;
+  /** The conversation's allowance, the same one its parent Run carries. */
+  scenario_tool_allowance?: readonly string[] | null;
   model_override_json?: Record<string, unknown> | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;

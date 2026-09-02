@@ -50,6 +50,13 @@ Profiles are mutable and may be changed without creating a new version. An agent
 may have multiple profiles (e.g. dev vs prod) controlled by `enabled` and
 `is_default`.
 
+For Project Conversations, a profile is only a candidate during the explicit
+preflight. `session_conversation_backends` and the conversation-shaped
+`host_threads` snapshot the selected Agent profile, Host, CLI installation, and
+Primary Workspace when the Conversation is initialized. Later profile edits,
+`is_default` changes, Folder Location changes, and Host heartbeat updates may
+block a later Run, but they cannot rebind that initialized Conversation.
+
 Project Research uses this same authority boundary without requiring manual
 Agent setup. Its execution-profile service provisions or reuses a space-scoped
 `system_research` Agent and a `model_api` runtime profile from the selected

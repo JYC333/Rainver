@@ -772,28 +772,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   }
 
-  app.get("/api/v1/projects/:projectId/mode-transitions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.send(await kernel().listModeTransitions(identity, projectId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/mode-transitions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await kernel().transitionMode(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/projects/:projectId/attention", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;

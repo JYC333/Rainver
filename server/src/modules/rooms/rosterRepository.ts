@@ -106,11 +106,25 @@ export class PgRoomRosterRepository {
               ,binding.workspace_mode,
               COALESCE(EXISTS (
                 SELECT 1
-                  FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) report
-                 WHERE report->>'agent_id' = a.id::text
-                   AND report->>'container_kind' = 'room'
-                   AND report->>'container_id' = $3
-                   AND report->>'archived_available' = 'true'
+                  FROM host_threads archived_thread
+                  JOIN sessions archived_conversation
+                    ON archived_conversation.id = archived_thread.session_id
+                   AND archived_conversation.space_id = archived_thread.space_id
+                 WHERE archived_thread.space_id = a.space_id
+                   AND archived_thread.agent_id = a.id
+                   AND archived_thread.execution_host_id = binding.execution_host_id
+                   AND archived_thread.container_kind = 'conversation'
+                   AND archived_thread.workspace_mode = 'managed'
+                   AND archived_thread.status = 'closed'
+                   AND archived_conversation.room_id = $3
+                   AND EXISTS (
+                     SELECT 1
+                       FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) report
+                      WHERE report->>'agent_id' = a.id::text
+                        AND report->>'container_kind' = 'conversation'
+                        AND report->>'container_id' = archived_thread.session_id
+                        AND report->>'archived_available' = 'true'
+                   )
               ), false) AS workspace_archive_available
          FROM agents a
          JOIN rooms room ON room.space_id = a.space_id AND room.id = $3

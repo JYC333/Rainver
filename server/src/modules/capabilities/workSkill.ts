@@ -48,6 +48,14 @@ export interface WorkSkillOptions {
    * the Skill is.
    */
   deliverOutputs: boolean;
+  /**
+   * Whether this Run is a turn in a conversation with a person. Then the
+   * reply *is* the message they read, and the commands record durable
+   * objects alongside it; a dispatched Task has no reader for its reply at
+   * all. The dispatched text told a Room agent its reply reached nobody,
+   * and it answered "what should I do next?" with tool calls and a blank.
+   */
+  conversation?: boolean;
 }
 
 /**
@@ -88,10 +96,15 @@ description: How to read the work you were given and report back to Rainver.
 
 # Working for Rainver
 
-You were dispatched by Rainver to advance a piece of work it is tracking.
+${options.conversation
+  ? `You are talking with a person inside a Rainver Project.
+Your reply is the message they read. Rainver also holds the Project's record
+— its goal, Tasks, questions and proposals — and only the commands below write
+to it: a goal or a plan that exists only in your reply is not recorded.`
+  : `You were dispatched by Rainver to advance a piece of work it is tracking.
 Rainver holds the Task, its context and its record; you do the work and tell
 Rainver what happened. Nothing you write in your reply reaches it — only the
-commands below do.
+commands below do.`}
 
 ## The command
 
@@ -113,7 +126,19 @@ not available to you in this run, whatever this document mentions. Run
 \`describe\` before the first call of any action rather than guessing its
 fields.
 
-## What to do, in order
+${options.conversation
+  ? `## What to do
+
+1. \`list\` first. Read the Project's state before recommending anything:
+   \`call task.list '{}'\` (status, priority, due dates, blockers) and
+   \`call inquiry.list_threads '{}'\` (each Thread's recorded next step).
+2. When the person states the Project's goal, \`call project.propose_definition\`;
+   when they ask for a plan or next steps, create each step with
+   \`task.create\` (timing goes in \`due_at\` / \`start_after\`); when they
+   accept or reject a proposal, \`proposal.list_pending\` then \`proposal.decide\`.
+3. Answer them in your reply: what you recorded, what awaits their decision,
+   and what you recommend. Never claim a write you did not make.`
+  : `## What to do, in order
 
 1. \`list\`, then \`call task.list '{}'\` to see the Tasks and their ids.
 2. Do the work.
@@ -121,7 +146,7 @@ fields.
    and on any meaningful intermediate result. This is the only account a
    person will read.
 4. If you need a person to decide something, \`task.request_review\` and stop.
-   Do not guess and continue.
+   Do not guess and continue.`}
 ${options.deliverOutputs ? OUTPUT_DELIVERY_SECTION : ""}
 ## Rules
 
@@ -159,13 +184,23 @@ export function workSkillPromptPointer(
     `Read \`${skillPath}\` before you start — it is the contract for this run.`,
     "In short: `$RAINVER_CLI list` shows the actions you may call,",
     "`$RAINVER_CLI describe <action>` gives one its input schema, and",
-    "`$RAINVER_CLI call <action> '<json>'` invokes it. Use `task.list` for Task ids,",
-    "`task.report` to say what happened,",
-    ...(options.deliverOutputs
-      ? ["`artifact.submit` to declare a deliverable you wrote into `$RAINVER_OUTPUT_DIR`,"]
-      : []),
-    "and `task.request_review` to hand a decision back.",
-    "Your reply text reaches nobody; only these calls do.",
+    "`$RAINVER_CLI call <action> '<json>'` invokes it.",
+    ...(options.conversation
+      ? [
+          "Use `task.list` and `inquiry.list_threads` to read the Project before recommending,",
+          "`project.propose_definition` when the person states the goal, `task.create` for each",
+          "step of a plan, and `proposal.decide` when they accept or reject a proposal.",
+          "Your reply is the message they read; only these calls change the Project's record.",
+        ]
+      : [
+          "Use `task.list` for Task ids,",
+          "`task.report` to say what happened,",
+          ...(options.deliverOutputs
+            ? ["`artifact.submit` to declare a deliverable you wrote into `$RAINVER_OUTPUT_DIR`,"]
+            : []),
+          "and `task.request_review` to hand a decision back.",
+          "Your reply text reaches nobody; only these calls do.",
+        ]),
   ].join("\n");
 }
 

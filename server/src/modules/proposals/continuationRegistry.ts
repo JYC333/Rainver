@@ -63,8 +63,8 @@ export type EventContinuationHandler = (input: {
  * Maps a resolved (accepted/rejected) Proposal, or a domain-completion
  * event, to what a Room should tell the continuation run to do next — the
  * typed replacement for the per-`proposal_type` prose that used to be
- * hardcoded in `rooms/service.ts` (plan:
- * `.agent/plans/room-advancement-reliability-plan.md`, Phases 2 and 3).
+ * hardcoded in `rooms/service.ts` (the retired room-advancement-reliability
+ * plan, Phases 2 and 3; current state in `.agent/modules/rooms.md`).
  * Rooms consumes this registry and holds no domain knowledge of its own;
  * each domain registers its own handler here, mirroring how
  * `ProposalApplierRegistry` lets domains own their apply logic.

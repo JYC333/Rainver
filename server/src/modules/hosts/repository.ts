@@ -37,6 +37,7 @@ export interface HostRow {
   daemon_server_url?: string | null;
   provider_proxy_base_url?: string | null;
   capabilities_json: Record<string, unknown> | null;
+  default_adapter_type: string | null;
   managed_workspaces_json: ManagedWorkspaceHeartbeat[] | null;
   created_at: string;
   updated_at: string;
@@ -60,6 +61,7 @@ export interface HostOut {
   /** Explicit per-host proxy address; null means it is derived. */
   provider_proxy_base_url: string | null;
   capabilities_json: Record<string, unknown> | null;
+  default_adapter_type: string | null;
   managed_workspaces_json: ManagedWorkspaceHeartbeat[] | null;
   created_at: string;
   updated_at: string;
@@ -136,6 +138,7 @@ function hostOut(row: HostRow): HostOut {
     name: row.name,
     kind: row.kind,
     status,
+    default_adapter_type: row.default_adapter_type ?? null,
     last_heartbeat_at: row.last_heartbeat_at,
     platform: row.platform,
     arch: row.arch,
@@ -154,7 +157,7 @@ function hostOut(row: HostRow): HostOut {
 
 const HOST_COLUMNS = `id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at,
   last_heartbeat_at, platform, arch, daemon_version, daemon_server_url, provider_proxy_base_url,
-  capabilities_json, managed_workspaces_json, created_at, updated_at`;
+  capabilities_json, managed_workspaces_json, default_adapter_type, created_at, updated_at`;
 
 export class PgHostRepository {
   constructor(private readonly pool: Queryable) {}
@@ -344,6 +347,15 @@ export class PgHostRepository {
     );
     const row = result.rows[0];
     return row ? hostOut(row) : null;
+  }
+
+  /** The owner's preferred CLI on this machine; null restores the built-in ordering. */
+  async setDefaultAdapter(hostId: string, adapterType: string | null): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE hosts SET default_adapter_type = $2, updated_at = now() WHERE id = $1 AND status <> 'revoked'`,
+      [hostId, adapterType],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async revoke(ownerUserId: string, hostId: string): Promise<boolean> {

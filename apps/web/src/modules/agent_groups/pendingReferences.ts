@@ -3,11 +3,9 @@ import type { ThreadReferencePick } from '../../types/api'
 /**
  * Picks held for a thread that does not exist yet.
  *
- * A conversation comes into being when somebody speaks in it (ADR 0018
- * decision 5), so a pick made *for* a new thread has nowhere to live until
- * the first message. It rides the browser for the one navigation between
- * where it was picked and the composer that will send it — keyed by the Room
- * it is for, taken once, and gone if the draft is abandoned.
+ * A Conversation draft is opened explicitly before its first message, so a
+ * pick made for a new thread is held only across that setup navigation. It is
+ * keyed by the Room it is for, taken once, and gone if the draft is abandoned.
  *
  * One module owns both halves so the key and the shape are a single contract
  * rather than a string agreed on across two pages.

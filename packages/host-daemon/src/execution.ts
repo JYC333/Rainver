@@ -1,3 +1,4 @@
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostLaunchFrame, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
@@ -17,112 +18,29 @@ export interface LaunchWorkspace {
   container?: ManagedWorkspaceContainer;
 }
 
-export interface LaunchFrame {
-  run_id: string;
-  workspace_location_id?: string;
-  workspace?: LaunchWorkspace;
-  /** @deprecated pre-P1 wire/test alias; new frames use workspace_location_id. */
-  project_folder_id?: string;
-  argv: string[];
-  stdin?: string | null;
-  timeout_seconds?: number | null;
-  /**
-   * ACP runtime replatform P2: a bidirectional-protocol run (opencode's ACP
-   * controller) drives the child's stdin across many `stdin` frames sent
-   * over the run's lifetime, not just once at launch — the daemon must not
-   * close stdin after the initial write the way it does for a one-shot
-   * `argv_template` run.
-   */
-  keep_stdin_open?: boolean;
-  /** Which copy of the runtime: `own` (PATH / bundled adapter) or `managed:<version>`. */
-  installation?: string;
-  /** The adapter the copy belongs to; a managed copy is keyed by it, not by the command. */
-  adapter_type?: string;
-  /**
-   * Backend selection for this run, when the control plane chose one. Absent
-   * means the run uses whatever this machine is logged into, which is the
-   * default and the pre-existing behavior.
-   *
-   * The daemon never sees a provider API key: `lease_token` authorizes one
-   * short-lived lease at `lease_url`, and the server swaps in the real key
-   * inside its own process.
-   */
-  provider_binding?: ProviderBindingFrame;
-  /**
-   * How this run calls back into Rainver: its identity, the control-plane
-   * address to use it at, and the Skill that says how. Materialized under
-   * this run's own directory and removed with it.
-   *
-   * Runtime-agnostic on purpose — environment and one file, with no branch on
-   * which agent is running. It is what replaced per-vendor tool configuration,
-   * so a newly registered ACP agent needs nothing added here.
-   */
-  work_surface?: WorkSurfaceFrame;
-}
-
-export interface WorkSurfaceFrame {
-  /** Literal values: the API base URL, the run id, and the run's tool token. */
-  env: Record<string, string>;
-  files: Array<{ relative_path: string; contents: string }>;
-  /**
-   * Variables whose value is a path inside this run's directory. The control
-   * plane names the relative path; only this machine knows the absolute one.
-   */
-  dir_env: Record<string, string>;
-}
-
-export interface ProviderBindingFrame {
-  /**
-   * Which profile directory this run's runtime uses, as
-   * `<adapter_type>/<provider_id>`. Chosen by the control plane, validated
-   * here before it becomes a path.
-   *
-   * Not per-run: a CLI keeps its conversation state inside the profile, so a
-   * profile deleted with the run takes the session the next turn resumes with
-   * it. Shared per adapter and provider, a conversation survives for as long
-   * as its backend does not change.
-   */
-  profile_key: string;
-  /**
-   * Literal environment the runtime needs: the lease URL reachable from *this*
-   * machine, its token, model names. No provider API key is ever among them —
-   * the server swaps the real key in behind the proxy.
-   */
-  env: Record<string, string>;
-  /**
-   * Environment whose value is a path inside this run's profile directory,
-   * which only this machine knows. Key → path relative to the profile root;
-   * `"."` means the profile root itself.
-   */
-  profile_env: Record<string, string>;
-  /**
-   * Files to write under the profile root, paths relative to it. `contents`
-   * may contain the profile-root placeholder; `escape` says how to encode the
-   * substituted absolute path for that file's syntax.
-   */
-  files: Array<{ relative_path: string; contents: string; escape?: "toml_basic_string" }>;
-}
-
-export interface StdinFrame {
-  run_id: string;
-  value: string;
-}
-
-export interface StdinCloseFrame {
-  run_id: string;
-}
-
-export interface TerminateFrame {
-  run_id: string;
-  force?: boolean;
-}
+/**
+ * The wire's `launch` frame (`HostLaunchFrameSchema` in `@rainver/protocol`)
+ * as this daemon executes it. Every field is the contract's own — nothing is
+ * declared here that the server does not send — and the only difference is
+ * the managed-workspace container, renamed to this daemon's `{ kind, id }`
+ * form by `commands/run.ts`. See the contract for what each field means.
+ */
+export type LaunchFrame = Omit<HostLaunchFrame, "type" | "workspace"> & { workspace?: LaunchWorkspace };
+export type WorkSurfaceFrame = HostLaunchWorkSurface;
+export type ProviderBindingFrame = HostLaunchProviderBinding;
+export type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
+export type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
+export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & { force?: boolean };
 
 interface ActiveRun {
   child: ChildProcess;
   cwd: string;
+  /** The control plane's nonce for this dispatch, echoed on every frame this run sends. */
+  launchId: string;
+  /** What the control plane wrote where a value only this machine knows belongs. */
+  placeholders: Record<string, string>;
   timedOut: boolean;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
-  /** Removes this run's control-plane-provided profile, if it had one. */
 }
 
 /**
@@ -149,10 +67,19 @@ interface ActiveRun {
  * substituted value with `JSON.stringify` and splice it in as a JSON string
  * literal rather than a raw text swap.
  */
-export const REMOTE_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
+export { REMOTE_CWD_PLACEHOLDER };
 
 export function substituteCwd(value: string, cwd: string): string {
-  return value.split(REMOTE_CWD_PLACEHOLDER).join(cwd);
+  return substitutePlaceholders(value, { [REMOTE_CWD_PLACEHOLDER]: cwd });
+}
+
+/** Every placeholder the control plane may have written, in argv, stdin, or a prompt. */
+export function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
+  let result = value;
+  for (const [placeholder, replacement] of Object.entries(placeholders)) {
+    result = result.split(placeholder).join(replacement);
+  }
+  return result;
 }
 
 /**
@@ -399,7 +326,7 @@ function providerProfileDir(profileKey: string): string {
  */
 export async function handleLaunch(
   frame: LaunchFrame,
-  send: (frame: Record<string, unknown>) => void,
+  send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
 ): Promise<void> {
   launchingRuns.add(frame.run_id);
@@ -412,7 +339,7 @@ export async function handleLaunch(
 
 async function launchRun(
   frame: LaunchFrame,
-  send: (frame: Record<string, unknown>) => void,
+  send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
 ): Promise<void> {
   const config = await requireConfig();
@@ -426,7 +353,6 @@ async function launchRun(
     } else {
       const workspaceId = frame.workspace?.workspace_location_id
         ?? frame.workspace_location_id
-        ?? frame.project_folder_id
         ?? "";
       cwd = config.workspaces[workspaceId];
     }
@@ -434,6 +360,7 @@ async function launchRun(
     send({
       type: "complete",
       run_id: frame.run_id,
+      launch_id: frame.launch_id,
       exit_code: 1,
       timed_out: false,
       error: error instanceof Error ? error.message : String(error),
@@ -444,15 +371,39 @@ async function launchRun(
     send({
       type: "complete",
       run_id: frame.run_id,
+      launch_id: frame.launch_id,
       exit_code: 1,
       timed_out: false,
       error: "This daemon has no local path registered for that workspace.",
     });
     return;
   }
+  let attachedWorkspaceEnv: Record<string, string> = {};
+  if (frame.workspace_access && frame.workspace_access.length > 0) {
+    const attached = [] as Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
+    for (const attachment of frame.workspace_access) {
+      const path = config.workspaces[attachment.workspace_location_id];
+      if (!path) {
+        send({
+          type: "complete",
+          run_id: frame.run_id,
+          launch_id: frame.launch_id,
+          exit_code: 1,
+          timed_out: false,
+          error: `This daemon has no local path registered for attached workspace ${attachment.workspace_location_id}.`,
+        });
+        return;
+      }
+      attached.push({ ...attachment, path });
+    }
+    // The daemon is the only component that can resolve physical paths. Keep
+    // the control-plane authorization explicit for the child without ever
+    // accepting an arbitrary path from the launch frame.
+    attachedWorkspaceEnv.RAINVER_WORKSPACE_ACCESS = JSON.stringify(attached);
+  }
   const [rawCommand, ...args] = frame.argv.map((arg) => substituteCwd(arg, cwd));
   if (!rawCommand) {
-    send({ type: "complete", run_id: frame.run_id, exit_code: 1, timed_out: false, error: "Empty command." });
+    send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "Empty command." });
     return;
   }
 
@@ -463,6 +414,7 @@ async function launchRun(
     send({
       type: "complete",
       run_id: frame.run_id,
+      launch_id: frame.launch_id,
       exit_code: 1,
       timed_out: false,
       error: error instanceof Error ? error.message : String(error),
@@ -492,6 +444,7 @@ async function launchRun(
       send({
         type: "complete",
         run_id: frame.run_id,
+        launch_id: frame.launch_id,
         exit_code: 1,
         timed_out: false,
         error: `Could not prepare this run's Rainver work surface: ${error instanceof Error ? error.message : String(error)}`,
@@ -510,6 +463,7 @@ async function launchRun(
       send({
         type: "complete",
         run_id: frame.run_id,
+        launch_id: frame.launch_id,
         exit_code: 1,
         timed_out: false,
         error: `Could not prepare the selected model backend: ${error instanceof Error ? error.message : String(error)}`,
@@ -524,11 +478,23 @@ async function launchRun(
     // binding is applied after the ambient environment: it is control-plane
     // authority, and this machine does not get to override which Rainver a run
     // reports to.
-    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv },
+    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv },
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });
-  const active: ActiveRun = { child, cwd, timedOut: false, timeoutTimer: null };
+  const active: ActiveRun = {
+    child,
+    cwd,
+    launchId: frame.launch_id,
+    placeholders: {
+      [REMOTE_CWD_PLACEHOLDER]: cwd,
+      ...(workSurfaceEnv.RAINVER_SKILL_PATH ? { [WORK_SKILL_PATH_PLACEHOLDER]: workSurfaceEnv.RAINVER_SKILL_PATH } : {}),
+    },
+    timedOut: false,
+    timeoutTimer: null,
+  };
+  // A retry of the same run id may arrive while the previous attempt's child
+  // is still being torn down; the newest dispatch owns the id from here.
   activeRuns.set(frame.run_id, active);
   // ACP runtime replatform P2: the server must not write a `stdin` frame
   // (e.g. a controller's `initialize` request) until it knows this run is
@@ -536,13 +502,13 @@ async function launchRun(
   // `stdin` frame are two separate WS messages, and this handler reaches
   // this point only after two `await`s, so a same-tick follow-up `stdin`
   // frame's handler could otherwise run first and find no active run.
-  send({ type: "launched", run_id: frame.run_id });
+  send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
-  if (frame.stdin) child.stdin?.write(substituteCwd(frame.stdin, cwd));
+  if (frame.stdin) child.stdin?.write(substitutePlaceholders(frame.stdin, active.placeholders));
   if (!frame.keep_stdin_open) child.stdin?.end();
 
   child.stdout?.on("data", (chunk: Buffer) => {
-    send({ type: "output", run_id: frame.run_id, chunk: chunk.toString("utf8") });
+    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk: chunk.toString("utf8") });
   });
   let stderrTail = "";
   child.stderr?.on("data", (chunk: Buffer) => {
@@ -551,7 +517,7 @@ async function launchRun(
     // control-center-phase2-plan.md P1 (C5): the full live stream, not just
     // the failure tail the `complete` frame still carries below — normalized
     // into diagnostic conversation events server-side.
-    send({ type: "stderr", run_id: frame.run_id, chunk: text });
+    send({ type: "stderr", run_id: frame.run_id, launch_id: frame.launch_id, chunk: text });
   });
 
   if (frame.timeout_seconds && frame.timeout_seconds > 0) {
@@ -565,7 +531,9 @@ async function launchRun(
   child.on("close", (code) => {
     void (async () => {
       if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
-      activeRuns.delete(frame.run_id);
+      // Only this attempt's own entry: a retry that took the run id over
+      // while this child was dying must keep its registration.
+      if (activeRuns.get(frame.run_id) === active) activeRuns.delete(frame.run_id);
       // Held until the directory is gone, so a reconnect mid-upload cannot
       // sweep the outputs this block is still reading.
       finishingRuns.add(frame.run_id);
@@ -584,19 +552,26 @@ async function launchRun(
       } catch (error) {
         log(`run ${frame.run_id}: output upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      // The whole directory: its work surface carried this run's Skill, and
-      // the run id never comes back to reclaim it. A failure here must not
-      // swallow the `complete` frame or pin the run id in `finishingRuns` for
-      // this daemon's lifetime — a directory the sweep may never touch again
-      // is worse than one removed a reconnect later.
-      await rm(runDir(frame.run_id), { recursive: true, force: true }).catch((error: unknown) => {
-        log(`run ${frame.run_id}: run directory cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      // The whole directory: its work surface carried this run's Skill. The
+      // run id does come back — a supervisor retry reuses it within seconds —
+      // and when a newer attempt already owns it, its work surface is in this
+      // same directory, so this attempt leaves the cleanup to that one. A
+      // failure here must not swallow the `complete` frame or pin the run id
+      // in `finishingRuns` for this daemon's lifetime.
+      const superseded = activeRuns.has(frame.run_id) || launchingRuns.has(frame.run_id);
+      if (superseded) {
+        log(`run ${frame.run_id}: a newer attempt owns the run directory; leaving it in place`);
+      } else {
+        await rm(runDir(frame.run_id), { recursive: true, force: true }).catch((error: unknown) => {
+          log(`run ${frame.run_id}: run directory cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       finishingRuns.delete(frame.run_id);
 
       send({
         type: "complete",
         run_id: frame.run_id,
+        launch_id: frame.launch_id,
         exit_code: code ?? 1,
         timed_out: active.timedOut,
         error: code !== 0 && !active.timedOut ? (stderrTail || null) : null,
@@ -615,7 +590,7 @@ export function handleTerminate(frame: TerminateFrame, log: (line: string) => vo
 export function handleStdin(frame: StdinFrame): void {
   const active = activeRuns.get(frame.run_id);
   if (!active) return;
-  active.child.stdin?.write(substituteCwd(frame.value, active.cwd));
+  active.child.stdin?.write(substitutePlaceholders(frame.value, active.placeholders));
 }
 
 /** Ends the run's child process stdin, mirroring the default (non-`keep_stdin_open`) behavior in `handleLaunch`. */

@@ -3,7 +3,6 @@ import {
   WORK_LOOP_STAGE_KEYS,
   type ProjectBoardCard,
   type ProjectBoardResponse,
-  type ProjectPrimaryMode,
   type TaskWorkViewResponse,
   type WorkLoopStageKey,
 } from "@rainver/protocol";
@@ -47,7 +46,7 @@ interface BoardCardRow {
 }
 
 /** Statuses whose cards the Board does not show. */
-const ARCHIVED_CARD_STATUSES = ["cancelled"];
+export const ARCHIVED_CARD_STATUSES = ["cancelled"];
 
 /**
  * Where a card is drawn when its status is not itself a column.
@@ -57,7 +56,7 @@ const ARCHIVED_CARD_STATUSES = ["cancelled"];
  * invisible and unreachable by drag, which is the opposite of what a Board is
  * for. It is drawn where the work sits, wearing its red edge.
  */
-const COLUMN_FOR_STATUS: Record<string, string> = { blocked: "in_progress" };
+export const COLUMN_FOR_STATUS: Record<string, string> = { blocked: "in_progress" };
 
 const CARD_SELECT = `
   SELECT t.id, t.title, t.status, t.priority, t.risk_level, t.due_at, t.updated_at,
@@ -113,8 +112,8 @@ export async function getProjectBoard(
   projectId: string,
 ): Promise<ProjectBoardResponse> {
   await assertProjectReadable(db, identity.spaceId, projectId, identity.userId);
-  const project = await db.query<{ id: string; name: string; primary_mode: ProjectPrimaryMode }>(
-    `SELECT id, name, primary_mode FROM projects WHERE id = $1 AND space_id = $2`,
+  const project = await db.query<{ id: string; name: string }>(
+    `SELECT id, name FROM projects WHERE id = $1 AND space_id = $2`,
     [projectId, identity.spaceId],
   );
   const projectRow = project.rows[0];
@@ -147,7 +146,7 @@ export async function getProjectBoard(
       updated_at: dateIso(row.updated_at)!,
       loop_stage: row.loop_stage,
       loop_stage_label: row.loop_stage
-        ? workLoopStageLabel(projectRow.primary_mode, row.loop_stage)
+        ? workLoopStageLabel(row.loop_stage)
         : null,
       responsible: responsibleActorOf(row),
       active_run_count: Number(row.active_run_count) || 0,
@@ -164,7 +163,7 @@ export async function getProjectBoard(
 
   const columns = await boardColumns(db, identity, projectId, cards);
   return {
-    project: { id: projectRow.id, name: projectRow.name, primary_mode: projectRow.primary_mode },
+    project: { id: projectRow.id, name: projectRow.name },
     columns,
     cards,
     viewer_user_id: identity.userId,
@@ -240,14 +239,13 @@ export async function getTaskWorkView(
     definition_of_done: string | null;
     required_outputs_json: unknown;
     completed_at: string | null;
-    primary_mode: ProjectPrimaryMode | null;
     responsible_user_id: string | null;
     responsible_agent_id: string | null;
     responsible_user_name: string | null;
     responsible_agent_name: string | null;
   }>(
     `SELECT t.id, t.project_id, t.title, t.status, t.definition_of_done,
-            t.required_outputs_json, t.completed_at, p.primary_mode,
+            t.required_outputs_json, t.completed_at,
             ${responsibleUserSql("t", "p")} AS responsible_user_id,
             ${responsibleAgentSql("t")} AS responsible_agent_id,
             ru.display_name AS responsible_user_name,
@@ -263,10 +261,6 @@ export async function getTaskWorkView(
   const task = taskResult.rows[0];
   if (!task) throw new HttpError(404, "Task not found");
 
-  // A Task outside any Project has no Mode to label its stages with, and no
-  // event stream to read. Delivery mode is the neutral wording rather than a
-  // claim about how the work advances.
-  const mode: ProjectPrimaryMode = task.primary_mode ?? "delivery";
   const declared = declaredRequiredOutputs(task.required_outputs_json);
 
   const [loop, evaluation, events, runs, presentOutputs, completion, links, visited] = await Promise.all([
@@ -377,7 +371,7 @@ export async function getTaskWorkView(
       }
       : null,
     visited_stage_keys: visitedStages,
-    stages: WORK_LOOP_STAGE_KEYS.map((key) => ({ key, label: workLoopStageLabel(mode, key) })),
+    stages: WORK_LOOP_STAGE_KEYS.map((key) => ({ key, label: workLoopStageLabel(key) })),
     responsible: responsibleActorOf(task),
     completion,
     evaluation: evaluationRow

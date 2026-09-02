@@ -471,6 +471,9 @@ describe("agents asynchronous chat-turn route", () => {
         project_id: null,
       },
     });
+    // Outside a Project a chat is still a conversation with a person: it may
+    // remember, and touches nothing of a Project.
+    expect(observed.queuedRun?.scenario_tool_allowance).toEqual(["memory.remember", "memory.revise"]);
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("messages");
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("conversation_runtime");
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("chat_context_preamble");

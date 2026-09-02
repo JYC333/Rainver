@@ -69,13 +69,10 @@ describe("Project Kernel (real Postgres)", () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
-    // How the Project advances is the only thing creation presets.
-    expect(project.primary_mode).toBe("research");
+    // Creation presets nothing about the Project's shape (ADR 0019); it
+    // only opens the first Brief version.
+    expect(project).not.toHaveProperty("primary_mode");
     expect(project.active_brief_version_id).toBeTruthy();
-
-    const transitions = await new ProjectKernelService(db.pool).listModeTransitions(ownerIdentity, project.id as string);
-    expect(transitions).toHaveLength(1);
-    expect(transitions[0]).toMatchObject({ from_mode: null, to_mode: "research", reason: "project_created" });
   });
 
   it("loads a newly created Project summary when it has no Project Folders", async () => {
@@ -156,7 +153,6 @@ describe("Project Kernel (real Postgres)", () => {
       project_status: "active",
       current_focus: "Ship the context cutover",
       confirmed_decisions: [],
-      primary_mode: "research",
       workspace_identity: {},
       workspace_boundary: {},
       source_refs: [],
@@ -179,7 +175,6 @@ describe("Project Kernel (real Postgres)", () => {
       project_status: "active",
       current_focus: "Ship the context cutover",
       confirmed_decisions: ["Use one runtime gateway"],
-      primary_mode: "research",
       workspace_identity: { project_folder_id: "folder-1" },
       workspace_boundary: { mode: "read_write_worktree" },
       source_refs: [{ type: "decision", id: "adr-14" }],
@@ -308,9 +303,9 @@ describe("Project Kernel (real Postgres)", () => {
     await db.pool.query(
       `INSERT INTO workspace_locations (
          id,space_id,project_folder_id,execution_host_id,execution_host_kind,
-         execution_ready,status,preferred,created_at,updated_at
-       ) VALUES (gen_random_uuid()::varchar,$1,$2,$4,'server',true,'active',true,now(),now()),
-                (gen_random_uuid()::varchar,$1,$3,$4,'server',true,'active',true,now(),now())`,
+         execution_ready,status,created_at,updated_at
+       ) VALUES (gen_random_uuid()::varchar,$1,$2,$4,'server',true,'active',now(),now()),
+                (gen_random_uuid()::varchar,$1,$3,$4,'server',true,'active',now(),now())`,
       [SPACE, boundFolderId, otherFolderId, HOST],
     );
     const otherPrivateAgentId = randomUUID();
@@ -449,7 +444,6 @@ describe("Project Kernel (real Postgres)", () => {
       goal: "Replacement goal",
       project_status: "active",
       confirmed_decisions: ["Use the canonical Context Engine"],
-      primary_mode: replacementBrief.primary_mode,
       workspace_identity: { repository: "rainver" },
       workspace_boundary: { writable_roots: ["/workspace"] },
       source_refs: [{ type: "decision", id: "decision-1" }],
@@ -752,47 +746,6 @@ describe("Project Kernel (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("a Mode transition changes presentation metadata and its append-only log while Workspace-owned data is untouched", async () => {
-    if (!db.available) return;
-    const repo = new PgProjectRepository(db.pool);
-    const kernel = new ProjectKernelService(db.pool);
-    const project = await repo.create(ownerIdentity, { name: "Mode Project" });
-    const now = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, progress_json, created_at, updated_at)
-       VALUES ($1, $2, $3, 'custom', 'Untouched op', 'active', '{}'::jsonb, $4, $4)`,
-      [randomUUID(), SPACE, project.id, now],
-    );
-
-    const transition = await kernel.transitionMode(ownerIdentity, project.id as string, {
-      to_mode: "delivery",
-      reason: "switching focus to a commitment",
-    });
-    expect(transition).toMatchObject({ from_mode: "research", to_mode: "delivery" });
-
-    const updated = await repo.get(ownerIdentity, project.id as string);
-    expect(updated?.primary_mode).toBe("delivery");
-
-    const opStatus = await db.pool.query<{ status: string }>(
-      `SELECT status FROM project_operations WHERE space_id = $1 AND project_id = $2`,
-      [SPACE, project.id],
-    );
-    expect(opStatus.rows[0]?.status).toBe("active");
-
-    const transitions = await kernel.listModeTransitions(ownerIdentity, project.id as string);
-    expect(transitions.map((t) => t.to_mode)).toEqual(["delivery", "research"]);
-  });
-
-  it("rejects an invalid to_mode", async () => {
-    if (!db.available) return;
-    const repo = new PgProjectRepository(db.pool);
-    const kernel = new ProjectKernelService(db.pool);
-    const project = await repo.create(ownerIdentity, { name: "Mode Project" });
-    await expect(
-      kernel.transitionMode(ownerIdentity, project.id as string, { to_mode: "not_a_mode" }),
-    ).rejects.toMatchObject({ statusCode: 422 });
-  });
-
   it("aggregates Attention items from registered adapters and respects snooze", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
@@ -861,16 +814,17 @@ describe("Project Kernel (real Postgres)", () => {
     await kernel.publishBrief(ownerIdentity, project.id as string, brief.id as string);
 
     const result = await overview.getOverview(ownerIdentity, project.id as string);
-    expect(result.project).toMatchObject({ id: project.id, primary_mode: "research" });
+    expect(result.project).toMatchObject({ id: project.id });
     expect(result.brief).toMatchObject({ goal: "Ship the Project Kernel", version: "v2" });
     expect(result.definition_status).toEqual({
       status: "initialized",
       basis: "published_brief_goal",
       goal_or_problem: "Ship the Project Kernel",
     });
-    // Every Mode is available: it only changes the Loop's wording, so there is
-    // no adapter to wait for. There is no per-Mode projection any more.
-    expect(result.available_modes).toEqual(["research", "delivery", "operations", "learning"]);
+    // No Project type field, no mode list (ADR 0019).
+    expect(result).not.toHaveProperty("available_modes");
+    // A fresh Project has no Folder; the front page says so until one is connected.
+    expect(result.has_project_folder).toBe(false);
     expect(result).not.toHaveProperty("mode_projection");
     expect(result).not.toHaveProperty("entity_summaries");
     expect(result.attention).toEqual([]);
@@ -976,11 +930,11 @@ describe("Project Kernel (real Postgres)", () => {
       .toMatchObject({ total_items: 873, classified_items: 848 });
   });
 
-  it("says a Project without a published goal still needs definition, whatever its Mode", async () => {
+  it("says a Project without a published goal still needs definition", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const overview = new ProjectOverviewService(db.pool);
-    const project = await repo.create(ownerIdentity, { name: "Delivery Project", primary_mode: "delivery" });
+    const project = await repo.create(ownerIdentity, { name: "Delivery Project" });
 
     const result = await overview.getOverview(ownerIdentity, project.id as string);
     expect(result.definition_status).toEqual({
@@ -1000,11 +954,11 @@ describe("Project Kernel (real Postgres)", () => {
     // avoids leaking existence); write is an authorization failure against a
     // project known to exist in this space (403), matching `assertProjectWriter`
     // elsewhere in this module.
-    await expect(kernel.listModeTransitions(viewerIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
-    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "delivery" })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(kernel.listBriefVersions(viewerIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(kernel.createBriefVersion(viewerIdentity, project.id as string, { goal: "x" })).rejects.toMatchObject({ statusCode: 403 });
 
     // Not even a space member: not readable.
-    await expect(kernel.listModeTransitions(outsiderIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(kernel.listBriefVersions(outsiderIdentity, project.id as string)).rejects.toMatchObject({ statusCode: 404 });
 
     // Add as an active viewer-role project member: readable, still not a writer.
     await db.pool.query(
@@ -1012,7 +966,7 @@ describe("Project Kernel (real Postgres)", () => {
        VALUES ($1, $2, $3, $4, 'viewer', 'active', now(), now())`,
       [randomUUID(), SPACE, project.id, VIEWER],
     );
-    expect(await kernel.listModeTransitions(viewerIdentity, project.id as string)).toHaveLength(1);
-    await expect(kernel.transitionMode(viewerIdentity, project.id as string, { to_mode: "delivery" })).rejects.toMatchObject({ statusCode: 403 });
+    expect(await kernel.listBriefVersions(viewerIdentity, project.id as string)).toHaveLength(1);
+    await expect(kernel.createBriefVersion(viewerIdentity, project.id as string, { goal: "x" })).rejects.toMatchObject({ statusCode: 403 });
   });
 });

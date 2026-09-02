@@ -1,18 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import type { HostDaemonFrame } from "@rainver/protocol";
 import { ReconnectableFrameSink } from "../src/reconnectableFrameSink.js";
 
 describe("ReconnectableFrameSink", () => {
   it("drops a frame sent before any connection has bound", () => {
     const sink = new ReconnectableFrameSink();
-    expect(() => sink.send({ type: "complete", run_id: "run-1" })).not.toThrow();
+    expect(() => sink.send({ type: "complete", run_id: "run-1", launch_id: "launch-1", exit_code: 0, timed_out: false, error: null })).not.toThrow();
   });
 
   it("routes a frame to whichever connection is currently bound", () => {
     const sink = new ReconnectableFrameSink();
     const connectionA = vi.fn();
     sink.bind(connectionA);
-    sink.send({ type: "output", run_id: "run-1", chunk: "hello" });
-    expect(connectionA).toHaveBeenCalledWith({ type: "output", run_id: "run-1", chunk: "hello" });
+    sink.send({ type: "output", run_id: "run-1", launch_id: "launch-1", chunk: "hello" });
+    expect(connectionA).toHaveBeenCalledWith({ type: "output", run_id: "run-1", launch_id: "launch-1", chunk: "hello" });
   });
 
   it("delivers a run's complete frame on a later connection after a reconnect mid-run", () => {
@@ -27,7 +28,7 @@ describe("ReconnectableFrameSink", () => {
     sink.bind(connectionA);
     // A launch captures `(frame) => sink.send(frame)`, not `connectionA`
     // directly — simulate that indirection here.
-    const runFrameSink = (frame: Record<string, unknown>) => sink.send(frame);
+    const runFrameSink = (frame: HostDaemonFrame) => sink.send(frame);
 
     // Connection A drops mid-run.
     sink.unbindIfCurrent(connectionA);
@@ -36,10 +37,10 @@ describe("ReconnectableFrameSink", () => {
 
     // The still-running process now finishes and sends its complete frame
     // through the indirection captured back at launch time.
-    runFrameSink({ type: "complete", run_id: "run-1", exit_code: 0, timed_out: false, error: null });
+    runFrameSink({ type: "complete", run_id: "run-1", launch_id: "launch-1", exit_code: 0, timed_out: false, error: null });
 
     expect(connectionA).not.toHaveBeenCalled();
-    expect(connectionB).toHaveBeenCalledWith({ type: "complete", run_id: "run-1", exit_code: 0, timed_out: false, error: null });
+    expect(connectionB).toHaveBeenCalledWith({ type: "complete", run_id: "run-1", launch_id: "launch-1", exit_code: 0, timed_out: false, error: null });
   });
 
   it("does not clobber a newer connection's binding if an older connection's close arrives late", () => {
@@ -53,8 +54,8 @@ describe("ReconnectableFrameSink", () => {
     // stale reference must not be allowed to unbind B.
     sink.unbindIfCurrent(connectionA);
 
-    sink.send({ type: "heartbeat" });
-    expect(connectionB).toHaveBeenCalledWith({ type: "heartbeat" });
+    sink.send({ type: "launched", run_id: "run-1", launch_id: "launch-1" });
+    expect(connectionB).toHaveBeenCalledWith({ type: "launched", run_id: "run-1", launch_id: "launch-1" });
     expect(connectionA).not.toHaveBeenCalled();
   });
 
@@ -64,7 +65,7 @@ describe("ReconnectableFrameSink", () => {
     sink.bind(connectionA);
     sink.unbindIfCurrent(connectionA);
 
-    expect(() => sink.send({ type: "output", run_id: "run-1", chunk: "x" })).not.toThrow();
+    expect(() => sink.send({ type: "output", run_id: "run-1", launch_id: "launch-1", chunk: "x" })).not.toThrow();
     expect(connectionA).not.toHaveBeenCalled();
   });
 });

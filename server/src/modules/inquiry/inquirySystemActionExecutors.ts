@@ -37,7 +37,7 @@ export function registerInquirySystemActionExecutors(
   executors.set("inquiry.list_threads" as SystemActionId, async (input) => {
     if (!run.project_id) throw new Error("inquiry.list_threads requires a project-scoped run");
     const kind = (input as { kind?: "question" | "hypothesis" }).kind;
-    const threads = await listActiveThreadRefs(new InquiryThreadService(db), identity, run.project_id, kind);
+    const threads = await listActiveThreadRefs(new InquiryThreadService(db), identity, run.project_id, kind, InquiryAdviceService.fromConfig(config));
     return {
       modelResult: { ok: true, tool: "inquiry.list_threads", threads },
       summary: { tool_name: "inquiry.list_threads", ok: true, count: threads.length },
@@ -135,6 +135,12 @@ export interface ActiveThreadRef {
   kind: string;
   statement: string;
   attention_state: string | null;
+  /**
+   * The Thread's recorded next step, when one is open and current. This is
+   * what `inquiry.adopt_next_step` adopts; without it in the read, an Agent
+   * asked "what next?" could only guess a thread_id and be told 404.
+   */
+  next_step: { focus: string; rationale: string } | null;
 }
 
 /** The active Threads of a Project as an Agent may address them: id first. */
@@ -143,14 +149,20 @@ export async function listActiveThreadRefs(
   identity: { spaceId: string; userId: string },
   projectId: string,
   kind?: "question" | "hypothesis",
+  advice?: InquiryAdviceService,
 ): Promise<ActiveThreadRef[]> {
   const rows = await threads.listThreads(identity, projectId);
-  return rows
-    .filter((row) => row.lifecycle_status === "active" && (!kind || row.kind === kind))
-    .map((row) => ({
+  const active = rows.filter((row) => row.lifecycle_status === "active" && (!kind || row.kind === kind));
+  return Promise.all(active.map(async (row) => {
+    const current = advice ? await advice.getAdvice(identity, projectId, String(row.id)) : null;
+    return {
       thread_id: String(row.id),
       kind: String(row.kind),
       statement: String(row.statement),
       attention_state: typeof row.attention_state === "string" ? row.attention_state : null,
-    }));
+      next_step: current && current.status === "open" && !current.stale
+        ? { focus: current.recommended_focus_kind, rationale: current.rationale }
+        : null,
+    };
+  }));
 }

@@ -14,6 +14,18 @@ import { acpRuntimeProbe } from "../src/modules/hosts/runtimeProbes.js";
 import { getDbPool } from "../src/db/pool.js";
 import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
 
+/** A daemon's whole hello, as `helloInfo()` sends it; the wire requires all of it. */
+const HELLO_INFO = {
+  platform: "linux",
+  arch: "x64",
+  daemon_version: "0.1.0",
+  environment_kind: "linux_native",
+  capabilities_json: {},
+  workspace_reports: [],
+  managed_workspaces: [],
+  ambient_sessions: [],
+};
+
 // Real-Postgres coverage for enabling an ACP-registry agent and installing a
 // managed copy of it on a paired host. The registry itself is stubbed (no
 // network in tests); the daemon is a real WebSocket client answering the
@@ -159,7 +171,7 @@ describe("ACP registry agents", () => {
     // Still installed somewhere: refused, naming the host, until removed there.
     const issued = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `session_id=${ADMIN_TOKEN}` }, payload: { name: "Desk" } });
     const { host_id: deskId, pairing_code: deskCode } = issued.json();
-    await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: deskCode, platform: "linux", arch: "x64" } });
+    await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: deskCode, ...HELLO_INFO, platform: "linux", arch: "x64" } });
     await db.pool.query(
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [deskId, JSON.stringify({ installations: { acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", logged_in: false }] } })],
@@ -182,7 +194,7 @@ describe("ACP registry agents", () => {
 
     const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `session_id=${ADMIN_TOKEN}` }, payload: { name: "Box" } });
     const { host_id: hostId, pairing_code: pairingCode } = issue.json();
-    const register = await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: pairingCode, platform: "linux", arch: "x64" } });
+    const register = await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" } });
     const { token } = register.json();
 
     const offline = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
@@ -193,7 +205,7 @@ describe("ACP registry agents", () => {
     let resolveInstallFrame: (frame: Record<string, unknown>) => void = () => {};
     const installFrame = new Promise<Record<string, unknown>>((resolve) => { resolveInstallFrame = resolve; });
     const helloAck = new Promise<Record<string, unknown>>((resolve, reject) => {
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token, platform: "linux", arch: "x64", daemon_version: "0.1.0" })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" })));
       socket.addEventListener("message", (event) => {
         const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (frame.type === "hello_ack") resolve(frame);

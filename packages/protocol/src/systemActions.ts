@@ -208,6 +208,9 @@ const proposalInputs:Record<string,z.ZodType>={
     required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
     priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
     risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
+    /** The scheduling fields; timing the person gave belongs here, not in the description. */
+    due_at: z.string().trim().min(1).max(64).nullable().optional().describe("When the Task is due, as an ISO 8601 date or datetime."),
+    start_after: z.string().trim().min(1).max(64).nullable().optional().describe("The earliest the Task should start, as an ISO 8601 date or datetime."),
     links: z.array(z.object({
       entity_type: z.string().trim().min(1).max(32),
       entity_id: z.string().min(1),

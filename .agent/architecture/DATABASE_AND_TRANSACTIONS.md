@@ -158,6 +158,27 @@ unique owner index is cleared before a transfer or suspended-owner claim
 promotes the new owner, so concurrent ownership changes cannot leave two
 active owners.
 
+## Conversation execution-context boundary
+
+`conversation_execution_contexts` is the sole authority for a Project
+Conversation's execution Host, Primary Workspace, initialization state, and
+Conversation-wide dispatch lock. The draft route creates the row only after an
+explicit user action; initialization locks the Conversation and visible Room
+session, validates Project/Space membership and same-Host Location placement,
+then writes all participating Agent bindings and conversation-shaped
+`host_threads` in one transaction. Host, CLI installation, and Primary kind/
+Location become immutable once initialized.
+
+`conversation_folder_access_grants` binds each attachment to a concrete
+Location and carries its `read`/`write` mode and lifecycle. Attach/revoke/
+permission changes take the same Conversation advisory lock used by dispatch,
+so no Run can snapshot a half-committed grant. The mutation ID is the durable
+event idempotency key; the access row and immutable system event commit or
+roll back together. Attachment state is read again for every later Run,
+whereas the Folder's active Location and Agent runtime-profile defaults are
+candidate inputs only before initialization and never dispatch fallbacks for
+an initialized Conversation.
+
 ## Room conversation summary boundary
 
 Room summaries use two tables: `room_conversation_summary_versions` is

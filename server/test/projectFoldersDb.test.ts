@@ -74,16 +74,12 @@ async function insertFolder(
       input.primary ?? false,
     ],
   );
-  // Every folder this helper creates gets exactly one Location, so that
-  // Location is always `preferred` — distinct from `is_primary` above,
-  // which is a Folder/Project-level concept (a folder's primary-ness has
-  // no bearing on whether its own single Location is the one Runs resolve
-  // to; see workspaceLocations.ts's doc comment).
+  // Every folder this helper creates gets exactly one active Location.
   return db.query(
     `INSERT INTO workspace_locations (
        id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-       root_path, execution_ready, status, preferred, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'server',$5,true,'active',true,now(),now())`,
+       root_path, execution_ready, status, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'server',$5,true,'active',now(),now())`,
     [randomUUID(), input.spaceId ?? SPACE, input.id, HOST, input.rootPath],
   );
 }
@@ -136,6 +132,79 @@ describe("Project Folder database invariants", () => {
         rootPath,
       }),
     ).rejects.toMatchObject({ code: "23505" });
+  });
+
+  it("atomically activates one stale Location for new work", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "12121212-1212-4212-8212-121212121212";
+    await insertFolder(db.pool, {
+      id: folderId,
+      rootPath: "/managed/original-checkout",
+    });
+    const activeId = (await db.pool.query<{ id: string }>(
+      `SELECT id FROM workspace_locations WHERE project_folder_id = $1 AND status = 'active'`,
+      [folderId],
+    )).rows[0]!.id;
+    const candidateId = "13131313-1313-4313-8313-131313131313";
+    await db.pool.query(
+      `INSERT INTO workspace_locations (
+         id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+         root_path, execution_ready, status, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'server','/managed/replacement-checkout',true,'stale',now(),now())`,
+      [candidateId, SPACE, folderId, HOST],
+    );
+    const repo = new PgProjectFolderRepository(
+      db.pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
+    );
+
+    await expect(repo.activateLocation(
+      { spaceId: SPACE, userId: USER },
+      PROJECT,
+      folderId,
+      candidateId,
+    )).resolves.toMatchObject({ id: candidateId, status: "active" });
+    await expect(db.pool.query<{ id: string; status: string; execution_ready: boolean }>(
+      `SELECT id, status, execution_ready FROM workspace_locations
+        WHERE project_folder_id = $1 ORDER BY id`,
+      [folderId],
+    )).resolves.toMatchObject({
+      rows: expect.arrayContaining([
+        { id: activeId, status: "stale", execution_ready: true },
+        { id: candidateId, status: "active", execution_ready: true },
+      ]),
+    });
+  });
+
+  it("rechecks writer authority after a concurrent Project ownership change", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "14141414-1414-4414-8414-141414141414";
+    await insertFolder(db.pool, { id: folderId, rootPath: "/managed/race-original" });
+    const candidateId = "15151515-1515-4515-8515-151515151515";
+    await db.pool.query(
+      `INSERT INTO workspace_locations (
+         id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+         root_path, execution_ready, status, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'server','/managed/race-replacement',true,'stale',now(),now())`,
+      [candidateId, SPACE, folderId, HOST],
+    );
+    const authorityChange = await db.pool.connect();
+    await authorityChange.query("BEGIN");
+    await authorityChange.query(`UPDATE projects SET owner_user_id = NULL WHERE id = $1`, [PROJECT]);
+    const repo = new PgProjectFolderRepository(
+      db.pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
+    );
+    const activation = repo.activateLocation({ spaceId: SPACE, userId: USER }, PROJECT, folderId, candidateId);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await authorityChange.query("COMMIT");
+    authorityChange.release();
+
+    await expect(activation).rejects.toMatchObject({ statusCode: 403 });
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM workspace_locations WHERE id = $1`,
+      [candidateId],
+    )).resolves.toMatchObject({ rows: [{ status: "stale" }] });
   });
 
   it("allows at most one primary Folder under concurrent inserts", async (ctx) => {
@@ -245,8 +314,8 @@ describe("Project Folder database invariants", () => {
     await db.pool.query(
       `INSERT INTO workspace_locations (
          id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-         root_path, execution_ready, status, preferred, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',true,now(),now())`,
+         root_path, execution_ready, status, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',now(),now())`,
       [randomUUID(), SPACE, remoteFolderId, issued.host_id],
     );
     const repo = new PgProjectFolderRepository(
@@ -288,8 +357,8 @@ describe("Project Folder database invariants", () => {
       db.pool.query(
         `INSERT INTO workspace_locations (
            id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-           root_path, execution_ready, status, preferred, created_at, updated_at
-         ) VALUES ($1,$2,$3,$4,'remote','/should/not/exist',false,'active',true,now(),now())`,
+           root_path, execution_ready, status, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,'remote','/should/not/exist',false,'active',now(),now())`,
         [randomUUID(), SPACE, folderId, HOST],
       ),
     ).rejects.toMatchObject({ code: "23514" });
@@ -309,8 +378,8 @@ describe("Project Folder database invariants", () => {
       [folderId, SPACE, PROJECT, USER],
     );
     await db.pool.query(
-      `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind, root_path, execution_ready, status, preferred, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',true,now(),now())`,
+      `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind, root_path, execution_ready, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',now(),now())`,
       [locationId, SPACE, folderId, issued.host_id],
     );
     const remoteResults: Record<string, unknown> = {

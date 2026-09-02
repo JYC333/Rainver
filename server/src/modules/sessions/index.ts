@@ -7,6 +7,7 @@ export const sessionsModule: ServerModule = {
 };
 
 export {
+  __setExecutionContextServiceFactoryForTests,
   __setSessionIdentityForTests,
   __setSessionServicesFactoryForTests,
 } from "./routes.js";

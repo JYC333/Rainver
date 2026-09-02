@@ -4,18 +4,34 @@ import { createServer } from "node:net";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 
-const PORT = boundedPort(process.env.SANDBOX_RUNNER_PORT ?? "8020");
-const RUNNER_TOKEN = process.env.SANDBOX_RUNNER_TOKEN ?? process.env.SERVER_INTERNAL_TOKEN;
-if (!RUNNER_TOKEN) throw new Error("Sandbox Runner service token is required.");
-const ROOTS = Object.freeze({
-  workspaces: requiredRoot("SANDBOX_RUNNER_WORKSPACES_ROOT", "/runner/workspaces"),
-  sandboxes: requiredRoot("SANDBOX_RUNNER_SANDBOXES_ROOT", "/runner/sandboxes"),
-  runtime_tools: requiredRoot("SANDBOX_RUNNER_TOOLS_ROOT", "/runner/runtime-tools"),
-  run_homes: requiredRoot("SANDBOX_RUNNER_RUN_HOMES_ROOT", "/runner/run-homes"),
-  conversation_homes: requiredRoot("SANDBOX_RUNNER_CONVERSATION_HOMES_ROOT", "/runner/conversation-homes"),
-  login_homes: requiredRoot("SANDBOX_RUNNER_LOGIN_HOMES_ROOT", "/runner/login-homes"),
-});
+// This file runs inside the sandbox-runner container with no dependencies,
+// so it cannot share `server/src/modules/sandboxRunner/protocol.ts` the way
+// the host daemon shares `@rainver/protocol`. The request mapping below is
+// therefore hand-written — and pinned: `server/test/sandboxRunnerClient.test.ts`
+// imports `environmentMap` and feeds it every field the protocol declares,
+// so a field added there fails that test until it is mapped here.
+let RUNNER_TOKEN;
+let ROOTS;
+
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+
+function main() {
+  const PORT = boundedPort(process.env.SANDBOX_RUNNER_PORT ?? "8020");
+  RUNNER_TOKEN = process.env.SANDBOX_RUNNER_TOKEN ?? process.env.SERVER_INTERNAL_TOKEN;
+  if (!RUNNER_TOKEN) throw new Error("Sandbox Runner service token is required.");
+  ROOTS = Object.freeze({
+    workspaces: requiredRoot("SANDBOX_RUNNER_WORKSPACES_ROOT", "/runner/workspaces"),
+    sandboxes: requiredRoot("SANDBOX_RUNNER_SANDBOXES_ROOT", "/runner/sandboxes"),
+    runtime_tools: requiredRoot("SANDBOX_RUNNER_TOOLS_ROOT", "/runner/runtime-tools"),
+    run_homes: requiredRoot("SANDBOX_RUNNER_RUN_HOMES_ROOT", "/runner/run-homes"),
+    conversation_homes: requiredRoot("SANDBOX_RUNNER_CONVERSATION_HOMES_ROOT", "/runner/conversation-homes"),
+    login_homes: requiredRoot("SANDBOX_RUNNER_LOGIN_HOMES_ROOT", "/runner/login-homes"),
+  });
+  serve(PORT);
+}
+
 const RUNTIME_EXECUTABLES = Object.freeze({
   claude_code: "node_modules/.bin/claude",
   codex_cli: "node_modules/.bin/codex",
@@ -23,6 +39,7 @@ const RUNTIME_EXECUTABLES = Object.freeze({
 });
 const ETC = ["/etc/alternatives", "/etc/ca-certificates.conf", "/etc/gai.conf", "/etc/group", "/etc/host.conf", "/etc/hostname", "/etc/hosts", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/localtime", "/etc/nsswitch.conf", "/etc/passwd", "/etc/resolv.conf", "/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/timezone"];
 
+function serve(PORT) {
 createServer((socket) => {
   let buffer = "";
   const socketDecoder = new StringDecoder("utf8");
@@ -93,8 +110,9 @@ createServer((socket) => {
   socket.on("close", () => { clearTimers(); terminate(true); });
   socket.on("error", () => { clearTimers(); terminate(true); });
 }).listen(PORT, "0.0.0.0");
+}
 
-function validateRequest(value) {
+export function validateRequest(value) {
   if (!value || value.protocol_version !== 2) throw new Error("Unsupported Sandbox Runner protocol.");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value.run_id) || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(value.scope_id)) throw new Error("Invalid run or scope id.");
   if (!["claude_code", "codex_cli", "opencode", "verification"].includes(value.runtime)) throw new Error("Unknown runtime adapter.");
@@ -136,7 +154,9 @@ function assertMountContract(request) {
     if (mount.target === "/workspace" && request.sandbox_mode === "read_write" && mount.access !== "read_write") {
       throw new Error("Read-write mode requires a read-write workspace mount.");
     }
-    const allowed = mount.target === "/runtime-tool" ? mount.root === "runtime_tools" && mount.access === "read_only"
+    const attachmentTarget = typeof mount.target === "string" && /^\/attachments\/\d+$/.test(mount.target);
+    const allowed = attachmentTarget ? mount.root === "workspaces" && (mount.access === "read_only" || mount.access === "read_write")
+      : mount.target === "/runtime-tool" ? mount.root === "runtime_tools" && mount.access === "read_only"
       : mount.target === "/home/sandbox" ? (mount.root === "run_homes" || mount.root === "conversation_homes" || mount.root === "login_homes") && mount.access === "read_write"
       : mount.target === "/workspace" ? (mount.root === "workspaces" || mount.root === "sandboxes")
       : mount.target === "/delivery" ? mount.root === "sandboxes" && mount.access === "read_only"
@@ -184,11 +204,15 @@ function buildNamespaceCommand(request) {
     const mount = mounts.get(target); if (!mount) continue;
     args.push(mount.access === "read_only" ? "--ro-bind" : "--bind", mount.source, target);
   }
+  for (const [target, mount] of mounts) {
+    if (!/^\/attachments\/\d+$/.test(target)) continue;
+    args.push("--dir", target, mount.access === "read_only" ? "--ro-bind" : "--bind", mount.source, target);
+  }
   args.push("--setenv", "HOME", "/home/sandbox");
   if (verification) args.push("--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin");
   for (const [key, value] of Object.entries(environmentMap(request.environment))) args.push("--setenv", key, value);
   const runtimeArgv = request.terminal_mode === "pty"
-    ? ["/usr/bin/script", "-qefc", [executable, ...request.arguments].map(shellQuote).join(" "), "/dev/null"]
+    ? ["/usr/bin/script", "-qefc", [executable, ...runtimeArguments].map(shellQuote).join(" "), "/dev/null"]
     : [executable, ...runtimeArguments];
   args.push("--chdir", "/workspace", "--", "/bin/sh", "-c", "printf 'ready\\n' >&3; exec \"$@\"", "sandbox-launch", ...runtimeArgv);
   return args;
@@ -212,7 +236,7 @@ function addReadOnlyWorkspace(args, workspace, delivery) {
   args.push("--remount-ro", "/workspace");
 }
 
-function environmentMap(env = {}) {
+export function environmentMap(env = {}) {
   const result = { LANG: env.locale ?? "C.UTF-8", TERM: env.term ?? "dumb" };
   if (env.codex_home) result.CODEX_HOME = env.codex_home;
   const anthropic = env.anthropic ?? {};
@@ -228,6 +252,13 @@ function environmentMap(env = {}) {
     if (typeof tools.skill_path === "string") result.RAINVER_SKILL_PATH = tools.skill_path;
   }
   if (env.exchange) { result.RAINVER_EXCHANGE_INPUT = "/run-exchange/input/run_input.json"; result.RAINVER_EXCHANGE_OUTPUT = "/run-exchange/output"; }
+  if (Array.isArray(env.workspace_access)) {
+    result.RAINVER_WORKSPACE_ACCESS = JSON.stringify(env.workspace_access.map((item) => ({
+      workspace_location_id: item.workspace_location_id,
+      access_mode: item.access_mode,
+      path: item.target,
+    })));
+  }
   return result;
 }
 

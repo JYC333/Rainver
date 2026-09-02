@@ -103,6 +103,7 @@ describe("finalizeChatTurn", () => {
             };
           },
         },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(() => calls.push("continuity")),
       },
     );
@@ -195,7 +196,8 @@ describe("finalizeChatTurn", () => {
           };
         },
       },
-      continuity: continuity(() => { checkpoints += 1; }),
+      resolveAgentActorId: async (_space: string, agentId: string) => agentId,
+        continuity: continuity(() => { checkpoints += 1; }),
       async loadActionPreviews() {
         return [];
       },
@@ -289,6 +291,7 @@ describe("finalizeChatTurn", () => {
             };
           },
         },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(),
         async loadActionPreviews() {
           return [];
@@ -443,6 +446,7 @@ describe("finalizeChatTurn", () => {
             };
           },
         },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(),
         async loadActionPreviews() {
           return [];
@@ -489,6 +493,7 @@ describe("finalizeChatTurn", () => {
             return null;
           },
         },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(),
       },
     );
@@ -555,6 +560,7 @@ describe("finalizeChatTurn", () => {
             return null;
           },
         },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(() => { sideEffects += 1; }),
       },
     );

@@ -281,7 +281,7 @@ function buildResolvedModel(
   // second is evidence the adapter used it, which is what this field claims.
   //
   // Remoteness means a remote Location **and** a `local_cli` adapter — only
-  // those are dispatched to a daemon; a `model_api` run on a remote-preferred
+  // those are dispatched to a daemon; a `model_api` run on a remote
   // Folder executes on the server against the provider it recorded. It is
   // decided there rather than from `trust_mode`, which only the
   // thread-dispatch path writes, so an Automation, Room, Workflow or evolution

@@ -6,6 +6,8 @@ import type { HostExecutionTarget, HostRuntimeAdapterOption } from '../../types/
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
+import { Input } from '../../components/ui/input'
+import HostDirectoryBrowser from './HostDirectoryBrowser'
 import { errMsg } from '../../lib/utils'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 
@@ -27,11 +29,14 @@ export default function HostExecutionTargetPicker({
   value,
   onChange,
   disabled = false,
+  managedOnly = false,
 }: {
   projectId?: string | null
   value: HostExecutionSelection | null
   onChange: (value: HostExecutionSelection | null) => void
   disabled?: boolean
+  /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
+  managedOnly?: boolean
 }) {
   const [targets, setTargets] = useState<HostExecutionTarget[]>([])
   const [adapterCatalog, setAdapterCatalog] = useState<HostRuntimeAdapterOption[]>([])
@@ -39,6 +44,10 @@ export default function HostExecutionTargetPicker({
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
   const [login, setLogin] = useState<{ hostId: string; adapterType: string; installation: string } | null>(null)
+  const [registerOpen, setRegisterOpen] = useState(false)
+  const [registerPath, setRegisterPath] = useState<string | null>(null)
+  const [registerName, setRegisterName] = useState('')
+  const [registering, setRegistering] = useState(false)
   const [draftHostId, setDraftHostId] = useState(value?.host_id ?? '')
   const [draftLocationId, setDraftLocationId] = useState(value?.workspace_location_id ?? '')
   const [draftAdapterType, setDraftAdapterType] = useState(value?.adapter_type ?? '')
@@ -75,7 +84,7 @@ export default function HostExecutionTargetPicker({
   const locationId = value?.workspace_location_id ?? draftLocationId
   const workspaceMode = value?.workspace_mode ?? draftMode
   const adapterType = value?.adapter_type ?? draftAdapterType
-  const locations = target?.locations ?? []
+  const locations = managedOnly ? [] : target?.locations ?? []
   const adapters = useMemo(() => {
     const fromTarget = target?.adapters ?? []
     const byType = new Map(fromTarget.map(adapter => [adapter.adapter_type, adapter]))
@@ -167,6 +176,22 @@ export default function HostExecutionTargetPicker({
     emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, adapterType, nextInstallationId)
   }
 
+  async function registerDirectory() {
+    if (!hostId || !projectId || !registerPath || !registerName.trim()) return
+    setRegistering(true)
+    try {
+      await hostsApi.registerWorkspace(hostId, { path: registerPath, project_id: projectId, name: registerName.trim() })
+      toast.success('Directory registered on the host')
+      setRegisterOpen(false)
+      setRegisterName('')
+      await reload()
+    } catch (caught) {
+      toast.error(errMsg(caught))
+    } finally {
+      setRegistering(false)
+    }
+  }
+
   async function install() {
     if (!hostId || !adapterType) return
     setInstalling(adapterType)
@@ -229,7 +254,7 @@ export default function HostExecutionTargetPicker({
             ]}
             disabled={disabled}
           />
-          <Select
+          {workspaceMode === 'location' && <Select
             ariaLabel="Execution Location"
             value={locationId}
             onChange={selectLocation}
@@ -238,8 +263,33 @@ export default function HostExecutionTargetPicker({
               label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}${location.execution_ready ? '' : ' · not ready'}`,
               disabled: !location.execution_ready,
             }))}
-            disabled={disabled || workspaceMode === 'managed' || locations.length === 0}
-          />
+            disabled={disabled || locations.length === 0}
+          />}
+          {projectId && !managedOnly && (
+            <div className="space-y-2">
+              <Button type="button" size="sm" variant="ghost" className="px-1 text-xs" disabled={disabled} onClick={() => setRegisterOpen(open => !open)}>
+                {registerOpen ? 'Hide directory registration' : 'Register a directory on this host…'}
+              </Button>
+              {registerOpen && hostId && (
+                <div className="space-y-2">
+                  <HostDirectoryBrowser hostId={hostId} value={registerPath} onChange={setRegisterPath} disabled={disabled || registering} />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      aria-label="Folder name"
+                      placeholder="Folder name"
+                      value={registerName}
+                      onChange={event => setRegisterName(event.target.value)}
+                      className="h-8 text-xs"
+                      disabled={disabled || registering}
+                    />
+                    <Button type="button" size="sm" disabled={disabled || registering || !registerPath || !registerName.trim()} onClick={() => void registerDirectory()}>
+                      {registering ? 'Registering…' : 'Register'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <Select
             ariaLabel="Execution adapter"
             value={adapterType}

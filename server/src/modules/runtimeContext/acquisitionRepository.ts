@@ -347,7 +347,6 @@ export class PgRuntimeContextAcquisitionRepository {
           'assumptions', bv.assumptions, 'project_status', bv.project_status,
           'current_focus', bv.current_focus,
           'confirmed_decisions', bv.confirmed_decisions_json,
-          'primary_mode', bv.primary_mode,
           'workspace_identity', bv.workspace_identity_json,
           'workspace_boundary', bv.workspace_boundary_json,
           'source_refs', bv.source_refs_json, 'status', bv.status,

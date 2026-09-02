@@ -319,6 +319,7 @@ export class PgRunRepository {
         runtime_profile_selection_source: input.runtime_profile_selection_source ?? "default",
         capability_id: input.capability_id ?? null,
         capabilities_json: input.capabilities_json ?? null,
+        scenario_tool_allowance: input.scenario_tool_allowance ?? null,
         model_override_json: input.model_override_json ?? null,
         contract_snapshot: input.contract_snapshot,
         visibility: input.visibility,

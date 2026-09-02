@@ -4,7 +4,9 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
+import { loadConfig } from "../src/config.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
+import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
 
@@ -18,7 +20,7 @@ const HOST = "33333333-3333-4333-8333-333333333333";
 const TASK = "44444444-4444-4444-8444-444444444444";
 const AGENT = "55555555-5555-4555-8555-555555555555";
 const VERSION = "66666666-6666-4666-8666-666666666666";
-const MIXED_THREAD = "77777777-7777-4777-8777-777777777777";
+const CONVERSATION = "88888888-8888-4888-8888-888888888888";
 
 const db = useTestDatabase(import.meta.filename);
 let roomId = "";
@@ -29,6 +31,7 @@ beforeEach(async () => {
     db.pool,
     [
       "host_threads",
+      "sessions",
       "workspace_locations",
       "project_folders",
       "tasks",
@@ -56,6 +59,11 @@ beforeEach(async () => {
   );
   roomId = room.rows[0]!.id;
   await db.pool.query(
+    `INSERT INTO sessions (id, space_id, project_id, room_id, status, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
+    [CONVERSATION, SPACE, PROJECT, roomId, now],
+  );
+  await db.pool.query(
     `INSERT INTO project_folders (id, space_id, project_id, name, kind, status, protected, system_managed, created_at, updated_at)
      VALUES ($1, $2, $3, 'repo', 'code', 'active', false, false, $4, $4)`,
     [FOLDER, SPACE, PROJECT, now],
@@ -72,8 +80,8 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,
-       display_path, execution_ready, status, preferred, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'remote', '/workspace/repo', true, 'active', true, $5, $5)`,
+       display_path, execution_ready, status, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 'remote', '/workspace/repo', true, 'active', $5, $5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
   await db.pool.query(
@@ -90,66 +98,9 @@ beforeEach(async () => {
   });
 });
 
-function threadInsert(input: {
-  id: string;
-  taskId?: string | null;
-  roomId?: string | null;
-  agentId?: string | null;
-  status?: string;
-}) {
-  return db.pool.query(
-    `INSERT INTO host_threads (
-       id, workspace_location_id, task_id, room_id, agent_id, adapter_type,
-       runtime_installation, status, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, 'opencode', 'own', $6, $7, now(), now())`,
-    [input.id, LOCATION, input.taskId ?? null, input.roomId ?? null, input.agentId ?? null, input.status ?? "active", OWNER],
-  );
-}
-
 describe("host_threads owner constraints", () => {
-  it("accepts Task and Room owners but rejects a mixed owner", async (ctx) => {
+  it("creates and reads a Task thread through the repository", async (ctx) => {
     if (!db.available) return ctx.skip();
-
-    await threadInsert({ id: randomUUID(), taskId: TASK });
-    await threadInsert({ id: randomUUID(), roomId, agentId: AGENT });
-    await expect(threadInsert({ id: MIXED_THREAD, taskId: TASK, roomId, agentId: AGENT }))
-      .rejects.toMatchObject({ code: "23514" });
-  });
-
-  it("allows only one live Room × Agent thread and releases the slot when closed", async (ctx) => {
-    if (!db.available) return ctx.skip();
-
-    const first = randomUUID();
-    await threadInsert({ id: first, roomId, agentId: AGENT });
-    await expect(threadInsert({ id: randomUUID(), roomId, agentId: AGENT }))
-      .rejects.toMatchObject({ code: "23505" });
-
-    await db.pool.query(`UPDATE host_threads SET status = 'closed' WHERE id = $1`, [first]);
-    await threadInsert({ id: randomUUID(), roomId, agentId: AGENT });
-  });
-
-  it("creates and reads a Room × Agent thread through the repository", async (ctx) => {
-    if (!db.available) return ctx.skip();
-
-    const thread = await new PgHostThreadRepository(db.pool).createForRoomAgent({
-      workspaceLocationId: LOCATION,
-      roomId,
-      agentId: AGENT,
-      adapterType: "claude_code",
-      runtimeInstallation: "own",
-      createdByUserId: OWNER,
-    });
-    expect(thread).toMatchObject({
-      room_id: roomId,
-      agent_id: AGENT,
-      task_id: null,
-      last_session_id: null,
-      status: "active",
-    });
-    await expect(new PgHostThreadRepository(db.pool).getForRoomAgent(roomId, AGENT))
-      .resolves.toMatchObject({ id: thread.id, workspace_location_id: LOCATION });
-    await expect(new PgHostThreadRepository(db.pool).getForLocation(thread.id, LOCATION)).resolves.toBeNull();
-
     const taskThread = await new PgHostThreadRepository(db.pool).create({
       workspaceLocationId: LOCATION,
       taskId: TASK,
@@ -171,39 +122,57 @@ describe("host_threads owner constraints", () => {
     )).resolves.toMatchObject({ rows: [{ status: "closed", vendor_session_id: null }] });
   });
 
-  it("atomically permits one Room dispatch and releases the claim at terminal outcome", async (ctx) => {
+  it("keys Conversation host continuity by Session × Agent", async (ctx) => {
     if (!db.available) return ctx.skip();
 
     const repository = new PgHostThreadRepository(db.pool);
-    const thread = await repository.getOrCreateForRoomAgent({
-      workspaceLocationId: LOCATION,
-      roomId,
+    const first = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
       agentId: AGENT,
       adapterType: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });
-    const firstLock = randomUUID();
-    const secondLock = randomUUID();
-    const claims = await Promise.all([
-      repository.claimRoomDispatch(thread.id, firstLock),
-      repository.claimRoomDispatch(thread.id, secondLock),
-    ]);
-    expect(claims.filter(Boolean)).toHaveLength(1);
-
-    const winningLock = claims[0] ? firstLock : secondLock;
+    expect(first).toMatchObject({
+      session_id: CONVERSATION,
+      container_kind: "conversation",
+      workspace_mode: "managed",
+      workspace_location_id: null,
+    });
+    const dispatchLockId = randomUUID();
+    expect(await repository.claimConversationDispatch(first.id, dispatchLockId)).toBe(true);
     const runId = randomUUID();
-    await repository.recordDispatch(thread.id, {
+    await repository.recordConversationDispatch(first.id, {
       lastRunId: runId,
-      sessionId: randomUUID(),
-      dispatchLockId: winningLock,
+      sessionId: CONVERSATION,
+      dispatchLockId,
     });
-    await repository.recordRunOutcome(thread.id, {
-      lastRunId: runId,
-      vendorSessionId: "vendor-session",
-      sessionReset: false,
-    });
-    expect(await repository.claimRoomDispatch(thread.id, randomUUID())).toBe(true);
+    await expect(repository.getForConversationAgent(SPACE, CONVERSATION, AGENT))
+      .resolves.toMatchObject({ id: first.id, last_run_id: runId, last_session_id: CONVERSATION });
+    await expect(repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      adapterType: "claude_code",
+      createdByUserId: OWNER,
+    })).resolves.toMatchObject({ id: first.id });
+    await expect(db.pool.query(
+      `INSERT INTO host_threads (
+         id, space_id, execution_host_id, workspace_mode, session_id, agent_id, container_kind,
+         adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'managed', $4, $5, 'conversation', 'claude_code', 'own', 'active', $6, now(), now())`,
+      [randomUUID(), SPACE, HOST, CONVERSATION, AGENT, OWNER],
+    )).rejects.toMatchObject({ code: "23505" });
+
+    const closed = await repository.closeConversationAgentForRoom(SPACE, roomId, AGENT);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toMatchObject({ id: first.id, status: "closed" });
+    expect(closed[0]?.pending_archive_at).toEqual(expect.any(String));
   });
 
   it("persists the owner-only member policy and permits a host-bound profile without a provider", async (ctx) => {
@@ -270,6 +239,62 @@ describe("host_threads owner constraints", () => {
     await expect(repository.listHostExecutionTargets(SPACE, PROJECT, "not-the-owner")).resolves.toEqual([]);
     await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() - interval '2 minutes' WHERE id = $1`, [HOST]);
     await expect(repository.listHostExecutionTargets(SPACE, PROJECT, OWNER)).resolves.toEqual([]);
+  });
+
+  it("counts an online paired host with a logged-in CLI as an eligible Assistant backend", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { SpaceAssistantService } = await import("../src/modules/agents/spaceAssistantService.js");
+    const identity = { spaceId: SPACE, userId: OWNER };
+    await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() WHERE id = $1`, [HOST]);
+    const fresh = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
+    expect(fresh.hostBackends).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hostId: HOST, adapterType: "claude_code", installation: "own" }),
+    ]));
+    // A stale heartbeat means the host cannot answer a first message; it must
+    // not admit the Room only to strand it.
+    await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() - interval '1 hour' WHERE id = $1`, [HOST]);
+    const stale = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
+    expect(stale.hostBackends.find((backend) => backend.hostId === HOST)).toBeUndefined();
+
+    // The host's configured default CLI leads the auto-provisioned backends;
+    // the built-in preference ordering is only the no-choice tiebreak.
+    await db.pool.query(
+      `UPDATE hosts
+          SET last_heartbeat_at = now(),
+              default_adapter_type = 'claude_code',
+              capabilities_json = '{"installations":{"opencode":[{"id":"own","version":"1.0.0","logged_in":true}],"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb
+        WHERE id = $1`,
+      [HOST],
+    );
+    const chosen = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
+    expect(chosen.hostBackends[0]).toMatchObject({ hostId: HOST, adapterType: "claude_code" });
+  });
+
+  it("records thread events for a managed direct thread that has no Project", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threads = new PgHostThreadRepository(db.pool);
+    const thread = await threads.getOrCreateForDirect({
+      executionHostId: HOST,
+      workspaceLocationId: null,
+      workspaceMode: "managed",
+      agentId: AGENT,
+      userId: OWNER,
+      adapterType: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    const runId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+         adapter_type, required_sandbox_level, model_override_json, owner_user_id, created_at, updated_at)
+       VALUES ($1,$2,$3::varchar,(SELECT current_version_id FROM agents WHERE id=$3::varchar),'agent','manual','queued','live',
+         'claude_code','none','{}'::jsonb,$4,now(),now())`,
+      [runId, SPACE, AGENT, OWNER],
+    );
+    const events = await new PgHostThreadEventRepository(db.pool).append(thread.id, runId, [
+      { event_type: "status", status: "run_started" },
+    ]);
+    expect(events[0]).toMatchObject({ project_id: null, event_type: "status", status: "run_started" });
   });
 
   it("rejects a host binding when the caller or installation is not authorized", async (ctx) => {

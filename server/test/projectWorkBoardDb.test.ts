@@ -132,8 +132,8 @@ beforeEach(async () => {
     );
   }
   await db.pool!.query(
-    `INSERT INTO projects (id, space_id, owner_user_id, name, status, primary_mode, created_at, updated_at)
-     VALUES ($1, $2, $3, 'Board Project', 'active', 'research', now(), now())`,
+    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'Board Project', 'active', now(), now())`,
     [PROJECT, SPACE, OWNER],
   );
   await seedMainlineRoomsForAllProjects(db.pool!);
@@ -162,7 +162,7 @@ beforeEach(async () => {
 });
 
 describe("project board read model", () => {
-  it("labels the Loop stage in the Project's own Mode", async (ctx) => {
+  it("labels the Loop stage with the one wording every Project shares", async (ctx) => {
     if (!db.available) return ctx.skip();
     const task = randomUUID();
     await makeTask({ id: task });
@@ -176,10 +176,10 @@ describe("project board read model", () => {
 
     const board = await getProjectBoard(db.pool!, owner, PROJECT);
     const card = board.cards.find((item) => item.id === task);
-    // A research Project reads `verify` as Evaluate; a delivery one as Verify.
-    // The label is presentation, so it must not come from the client.
+    // The label is presentation, so it must not come from the client; and it
+    // is the same in every Project — there is no per-Project mode (ADR 0019).
     expect(card?.loop_stage).toBe("verify");
-    expect(card?.loop_stage_label).toBe("Evaluate");
+    expect(card?.loop_stage_label).toBe("Verify");
   });
 
   it("says why each Task cannot close", async (ctx) => {
@@ -358,7 +358,7 @@ describe("manual close gate", () => {
 });
 
 describe("task work view", () => {
-  it("returns every stage with its Mode label, and the current one", async (ctx) => {
+  it("returns every stage with its label, and the current one", async (ctx) => {
     if (!db.available) return ctx.skip();
     const task = randomUUID();
     await makeTask({ id: task });
@@ -372,7 +372,7 @@ describe("task work view", () => {
 
     const view = await getTaskWorkView(db.pool!, owner, task);
     expect(view.stages.map((stage) => stage.label))
-      .toEqual(["Question", "Method", "Investigate", "Evaluate", "Conclude"]);
+      .toEqual(["Frame", "Plan", "Act", "Verify", "Conclude"]);
     expect(view.loop?.current_stage_key).toBe("act");
   });
 

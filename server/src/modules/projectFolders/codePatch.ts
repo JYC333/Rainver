@@ -18,7 +18,7 @@ import type {
   ProposalApplierRegistry,
 } from "../proposals/applierRegistry.js";
 import { gitOutput, runGit, validatePath } from "@rainver/folder-read";
-import { resolvePreferredServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
+import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 
@@ -327,7 +327,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
   const folder = await new PgProjectFolderRepository(context.db, context.config)
     .getFolder(proposal.space_id, proposal.project_folder_id, true);
   if (!folder) throw new HttpError(404, "Project Folder not found");
-  const location = await resolvePreferredServerHostLocation(context.db, proposal.space_id, proposal.project_folder_id);
+  const location = await resolveActiveServerHostLocation(context.db, proposal.space_id, proposal.project_folder_id);
   const root = locationAbsoluteRoot(location, context.config.workspaceRoot);
   const payload = recordValue(proposal.payload_json);
   const patch = recordValue(payload.patch);

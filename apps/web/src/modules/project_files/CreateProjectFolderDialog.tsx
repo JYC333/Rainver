@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { projectFoldersApi } from '../../api/client'
+import { hostsApi, projectFoldersApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -9,7 +9,8 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
-import type { ProjectFolder, ProjectFolderScanCandidate } from '../../types/api'
+import type { HostExecutionTarget, ProjectFolder, ProjectFolderScanCandidate } from '../../types/api'
+import HostDirectoryBrowser from '../command_center/HostDirectoryBrowser'
 
 const FOLDER_KINDS = [
   { value: 'code', label: 'Code' },
@@ -17,7 +18,7 @@ const FOLDER_KINDS = [
   { value: 'docs', label: 'Docs' },
 ]
 
-type FolderCreateSource = 'managed' | 'clone' | 'connect'
+type FolderCreateSource = 'managed' | 'clone' | 'connect' | 'host'
 
 /** Creating a Folder belongs to Files & Code, which is where a Folder is used.
  *  It used to live on the Project Overview, so the Files Area's own empty
@@ -41,6 +42,9 @@ export function CreateProjectFolderDialog({
   const [selectedCandidatePath, setSelectedCandidatePath] = useState('')
   const [scanning, setScanning] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [hostTargets, setHostTargets] = useState<HostExecutionTarget[]>([])
+  const [selectedHostId, setSelectedHostId] = useState('')
+  const [hostPath, setHostPath] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -50,7 +54,12 @@ export function CreateProjectFolderDialog({
     setRepoUrl('')
     setCandidates([])
     setSelectedCandidatePath('')
-  }, [open])
+    setSelectedHostId('')
+    setHostPath(null)
+    hostsApi.executionTargets(projectId)
+      .then(response => setHostTargets(response.targets))
+      .catch(() => setHostTargets([]))
+  }, [open, projectId])
 
   useEffect(() => {
     if (!open || source !== 'connect') return
@@ -68,6 +77,26 @@ export function CreateProjectFolderDialog({
     }
     if (source === 'connect' && !selectedCandidatePath) {
       toast.error('Select a directory to connect')
+      return
+    }
+    if (source === 'host') {
+      if (!selectedHostId || !hostPath) {
+        toast.error('Choose a host and open the directory to register')
+        return
+      }
+      setCreating(true)
+      try {
+        // The daemon validates and registers the path exactly as the CLI's
+        // `workspace add` would; the Folder and Location rows come from that.
+        await hostsApi.registerWorkspace(selectedHostId, { path: hostPath, project_id: projectId, name: name.trim() })
+        toast.success('Directory registered on the host')
+        onCreated()
+        onOpenChange(false)
+      } catch (error) {
+        toast.error(errMsg(error))
+      } finally {
+        setCreating(false)
+      }
       return
     }
     setCreating(true)
@@ -111,6 +140,7 @@ export function CreateProjectFolderDialog({
                 { value: 'managed', label: 'Create managed Folder' },
                 { value: 'clone', label: 'Clone repository' },
                 { value: 'connect', label: 'Connect existing Folder' },
+                ...(hostTargets.length > 0 ? [{ value: 'host', label: 'Connect a directory on a paired host' }] : []),
               ]}
               onChange={value => setSource(value as FolderCreateSource)}
             />
@@ -127,6 +157,19 @@ export function CreateProjectFolderDialog({
             <div className="space-y-1.5">
               <Label>Repository URL</Label>
               <Input value={repoUrl} onChange={event => setRepoUrl(event.target.value)} placeholder="https://…" />
+            </div>
+          )}
+          {source === 'host' && (
+            <div className="space-y-1.5">
+              <Label>Host</Label>
+              <Select
+                value={selectedHostId}
+                options={[{ value: '', label: 'Choose an online host…' }, ...hostTargets.map(target => ({ value: target.host_id, label: `${target.host_name} · online` }))]}
+                onChange={value => { setSelectedHostId(value); setHostPath(null) }}
+              />
+              {selectedHostId && (
+                <HostDirectoryBrowser hostId={selectedHostId} value={hostPath} onChange={setHostPath} />
+              )}
             </div>
           )}
           {source === 'connect' && (

@@ -1,7 +1,7 @@
 import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@rainver/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadProjectChatActionPreviews } from "../src/modules/agents/projectChatActionPreviews.js";
-import { projectChatCapabilities } from "../src/modules/agents/routes.js";
+import { CONVERSATION_TOOL_ALLOWANCE, ROOM_CONVERSATION_TOOL_ALLOWANCE, conversationToolGrantInput } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("projectChatActionPreviews", () => {
@@ -62,12 +62,20 @@ describe("projectChatActionPreviews", () => {
 
 describe("projectChatToolPermissions", () => {
   describe("Project Chat tool permissions",()=>{
-    it("does not expose proposal tools without AgentVersion permission",()=>{
-      expect(projectChatCapabilities({})).toEqual([]);
+    // One allowance for every way a person talks to an Agent in a Project — a
+    // Room message, a delegation, a direct chat. Direct chat used to keep its
+    // own three-action list, so it could propose a Source and nothing else.
+    it("gives a direct chat in a Project the same allowance a Room message gets",()=>{
+      expect(conversationToolGrantInput({ project_id: "project-1" })).toEqual({
+        capabilities_json: [...ROOM_CONVERSATION_TOOL_ALLOWANCE],
+        scenario_tool_allowance: ROOM_CONVERSATION_TOOL_ALLOWANCE,
+      });
+      expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("project.source.propose_bind");
+      expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("source.backfill.propose_start");
     });
-    it("declares only explicitly allowed tools for run grant provisioning",()=>{
-      const permissions={allowed_tools:["project.source.propose_bind"]};
-      expect(projectChatCapabilities(permissions)).toEqual(["project.source.propose_bind"]);
+    it("gives a chat outside any Project only what talking to someone allows",()=>{
+      expect(conversationToolGrantInput({ project_id: null }).scenario_tool_allowance).toBe(CONVERSATION_TOOL_ALLOWANCE);
+      expect(conversationToolGrantInput({ room_id: "room-1" }).scenario_tool_allowance).toBe(ROOM_CONVERSATION_TOOL_ALLOWANCE);
     });
     it("publishes required model fields for proposal tools, derived from the Zod that validates them",async ()=>{
       const definitionFor=(id:string)=>{

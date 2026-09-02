@@ -73,7 +73,7 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     }
     // ADR 0016 P1: sandbox provisioning (worktree/read-only/managed dir) is
     // server-host-only. Resolve the Run-bound Location, not the Folder's
-    // mutable preferred Location; remote-host Runs are rejected before any
+    // mutable active Location; remote-host Runs are rejected before any
     // local filesystem path is resolved.
     const location = await resolveServerHostLocationForRun(this.db, {
       space_id: run.space_id,

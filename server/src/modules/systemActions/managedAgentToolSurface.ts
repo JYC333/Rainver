@@ -23,6 +23,7 @@ export interface ManagedAgentToolSurfaceDeps extends SystemActionDispatcherDeps 
   abortSignal?: AbortSignal;
 }
 
+const CONVERSATION_MAX_MODEL_TURNS = 8;
 const MANAGED_ACTION_RESPONSE_POLICY = [
   "System action schemas and tool results are internal execution details.",
   "Do not print raw action arguments, JSON schemas, placeholder payloads, or tool-result objects unless the user explicitly asks for JSON.",
@@ -77,7 +78,10 @@ export class ManagedAgentToolSurface {
           .join("\n\n"),
       },
       execute,
-      mergeManagedToolContributions(contributions, dispatch),
+      // A conversation turn chains reads and writes the policies require —
+      // list, decide, list again, create several, then answer — so it gets
+      // twice the default budget a single dispatched task does.
+      mergeManagedToolContributions(contributions, dispatch, run.session_id ? CONVERSATION_MAX_MODEL_TURNS : undefined),
       { signal: deps.abortSignal },
     );
   }

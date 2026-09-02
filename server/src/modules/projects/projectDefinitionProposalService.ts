@@ -96,7 +96,7 @@ export class ProjectDefinitionProposalService {
           "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
           [`project-definition-propose:${identity.spaceId}:${projectId}`],
         );
-        const existing = await db.query<Record<string, unknown> & { id: string }>(
+        const existing = await db.query<Record<string, unknown> & { id: string; payload_json: Record<string, unknown> | null }>(
           `SELECT id, space_id, created_by_user_id, project_folder_id,
                   created_by_run_id, proposal_type, status, risk_level, urgency,
                   preview, title, payload_json, rationale, visibility,
@@ -106,7 +106,25 @@ export class ProjectDefinitionProposalService {
               AND status='pending' AND created_by_agent_id=$3`,
           [identity.spaceId, projectId, actor.agentId],
         );
-        if (existing.rows[0]) return existing.rows[0];
+        const pending = existing.rows[0];
+        if (pending) {
+          // The same run re-proposing is a retry or a re-plan and reuses the
+          // draft whatever its wording. A *later* turn saying "actually, make
+          // it Y" before anyone decided must not be handed the draft for X —
+          // the agent would report success and Accept would publish X — so a
+          // different definition from a different run supersedes the earlier
+          // draft rather than leaving two pending cards.
+          const pendingPayload = pending.payload_json ?? {};
+          const sameRun = Boolean(actor.runId) && pending.created_by_run_id === actor.runId;
+          const sameDefinition = [...TEXT_FIELDS, "goal"].every(
+            (field) => (optionalString(pendingPayload[field]) ?? null) === (optionalString(definition[field]) ?? null),
+          );
+          if (sameRun || sameDefinition) return pending;
+          await db.query(
+            `UPDATE proposals SET status='superseded', updated_at=$3 WHERE space_id=$1 AND id=$2 AND status='pending'`,
+            [identity.spaceId, pending.id, new Date().toISOString()],
+          );
+        }
       }
       const inserted = await insertProposalRow(db, {
         spaceId: identity.spaceId,

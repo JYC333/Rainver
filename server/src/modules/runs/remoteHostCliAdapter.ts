@@ -1,7 +1,8 @@
-import type { LaunchWorkspace, RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
-import { WORK_SURFACE_SKILL_PATH_ENV, buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
+import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
+import { stallTimeoutSeconds } from "./stallTimeout.js";
 import { workSkillPromptPointer } from "../capabilities/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
@@ -65,7 +66,7 @@ import {
  * which must stay textually identical to this literal — the two packages
  * share no dependency to enforce that at the type level).
  */
-export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
+export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
 export interface RemoteHostCliAdapterInput {
   run: RunRecord;
@@ -73,6 +74,8 @@ export interface RemoteHostCliAdapterInput {
   model: string | null;
   resume_session_id: string | null;
   timeout_seconds?: number | null;
+  /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it, as on the server-host path. */
+  adapter_config?: Record<string, unknown>;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   /**
    * control-center-phase2-plan.md P1 (C2): the normalized conversation event
@@ -83,6 +86,7 @@ export interface RemoteHostCliAdapterInput {
   thread_event_sink?: (drafts: ThreadEventDraft[]) => Promise<void> | void;
   process_registry?: CliProcessRegistry;
   workspace?: LaunchWorkspace;
+  workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
 }
 
 /** A setting a dispatch asked for, as `advanceThreadQueue` stamped it. */
@@ -92,23 +96,6 @@ function runOverrideField(value: unknown, key: string): string | null {
   return typeof field === "string" && field.trim() ? field.trim() : null;
 }
 
-/**
- * How long a remote runtime may say nothing before the run is given up on.
- *
- * The server-host path has had this budget all along (`stallTimeoutSeconds`);
- * the remote path accepted the same option and never implemented it, so a
- * runtime that went quiet burned the entire run timeout before anyone found
- * out.
- *
- * A third of the run budget, so a slow-but-working turn is never cut off and
- * a run that configured a short timeout gets a proportionally short stall
- * budget rather than one that can exceed its own deadline. Capped at two
- * minutes: past that the wait costs more than the answer is worth, and a
- * retry is cheap.
- */
-export function remoteStallTimeoutSeconds(timeoutSeconds: number): number {
-  return Math.min(120, Math.max(5, Math.floor(timeoutSeconds / 3)));
-}
 
 function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds: number, maxSeconds: number): number {
   const requested = input.timeout_seconds && input.timeout_seconds > 0 ? Math.trunc(input.timeout_seconds) : defaultSeconds;
@@ -418,7 +405,10 @@ async function runRemoteHostCliAdapter(
   if (workSurface) {
     // An empty prompt stays empty: a pointer on its own would start a turn
     // nobody asked for, the same guard the server-host path makes.
-    if (prompt) prompt = `${prompt}\n\n${workSkillPromptPointer(`$${WORK_SURFACE_SKILL_PATH_ENV}`)}`;
+    // The daemon substitutes the placeholder with the file's absolute path on
+    // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
+    // is a path a read_file tool cannot open.
+    if (prompt) prompt = `${prompt}\n\n${workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options)}`;
   } else if (assembleRunInputEnvelope(input.run).tool_grants.length > 0) {
     // Granted tools with no way to reach them. It is not worth failing the Run
     // — the work may still be worth doing — but it must not be silent: the
@@ -434,13 +424,13 @@ async function runRemoteHostCliAdapter(
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
-    input.run.project_folder_id,
     registry,
     providerBinding?.frame ?? null,
     runOverrideField(input.run.model_override_json, "installation") ?? "own",
     spec.adapter_type,
     workSurface?.frame ?? null,
     input.workspace,
+    input.workspace_access ?? [],
   );
   let stdoutText = "";
   // A caller sends the pair the way both CLIs write it, in the one field a
@@ -519,7 +509,10 @@ async function runRemoteHostCliAdapter(
     command: argv,
     cwd: null,
     timeout_seconds: timeoutSeconds,
-    stall_timeout_seconds: remoteStallTimeoutSeconds(timeoutSeconds),
+    // The same rule as the server-host path: a runtime running a long tool
+    // call emits nothing for its duration, and a third of the run budget
+    // (100s for the default) was killing legitimate turns mid-call.
+    stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config, timeoutSeconds),
     env: {},
     run_id: input.run.id,
     stdin: rendered.stdin,
@@ -685,7 +678,6 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     // A remote Run is pinned to this physical checkout, not merely to its
     // logical Folder.
     private readonly workspaceLocationId: string | null,
-    private readonly projectFolderId: string | null,
     private readonly registry: HostConnectionRegistry,
     /** Null when this run uses the machine's own login state. */
     private readonly providerBinding: RemoteProviderBindingFrame | null = null,
@@ -693,9 +685,10 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly installation: string = "own",
     /** The adapter the copy belongs to — managed copies are keyed by it, not by the command name. */
     private readonly adapterType: string | null = null,
-    /** Null when this Run was granted no tool and needs no way to call back. */
-    private readonly workSurface: RunWorkSurfaceFrame | null = null,
-    private readonly workspace?: LaunchWorkspace,
+  /** Null when this Run was granted no tool and needs no way to call back. */
+  private readonly workSurface: RunWorkSurfaceFrame | null = null,
+  private readonly workspace?: LaunchWorkspace,
+  private readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -761,10 +754,6 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       input.run_id,
       {
         ...(this.workspaceLocationId ? { workspace_location_id: this.workspaceLocationId } : {}),
-        // Dual-write the pre-P1 field during rolling upgrades. New daemons
-        // prefer the physical Location id; older paired daemons only know the
-        // logical Folder key and must still resolve their local checkout.
-        project_folder_id: this.projectFolderId ?? undefined,
         argv: input.command,
         stdin: controller ? null : input.stdin,
         timeout_seconds: input.timeout_seconds,
@@ -774,6 +763,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         adapter_type: this.adapterType ?? undefined,
         work_surface: this.workSurface ?? undefined,
         workspace: this.workspace,
+        workspace_access: this.workspaceAccess,
       },
       onOutput,
       input.on_stderr_chunk,

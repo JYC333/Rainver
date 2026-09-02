@@ -1,10 +1,10 @@
 import { pgTable, index, uniqueIndex, check, foreignKey, varchar, timestamp, jsonb, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaceLocations } from "./workspaceLocations.js";
-import { rooms } from "./rooms.js";
 import { agents } from "./agents.js";
 import { tasks } from "./tasks.js";
 import { hosts } from "./hosts.js";
+import { sessions } from "./sessions.js";
 
 /**
  * ADR 0016 D14: a host thread pins a run-file-lifecycle conversation to one
@@ -21,19 +21,21 @@ import { hosts } from "./hosts.js";
  * D9 generalises the former task-only table without creating a second session
  * authority. Legacy task rows may have a null task_id because the old thread
  * row did not store its Task owner; their messages remain the authoritative
- * recoverable link. A new Task-shaped row may still carry task_id, while a
- * Room-shaped row must carry both room_id and agent_id.
+ * recoverable link. A Task-shaped row may carry task_id, while direct and
+ * Conversation-shaped rows carry their own explicit container identity.
  * The existing host_task_thread_id columns on messages, events, and runs are
- * intentionally retained for API/database compatibility; their foreign-key
- * targets now point at this canonical host_threads table.
+ * intentionally retained as the run-side thread reference. Conversation
+ * rows in this table are keyed by `(session_id, agent_id)` and never by Room.
+ * Room membership is derived through `sessions`.
  */
 export const hostThreads = pgTable("host_threads", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }),
 	executionHostId: varchar("execution_host_id", { length: 36 }),
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
 	workspaceMode: varchar("workspace_mode", { length: 16 }).notNull().default('location'),
 	taskId: varchar("task_id", { length: 36 }),
-	roomId: varchar("room_id", { length: 36 }),
+	sessionId: varchar("session_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
 	containerKind: varchar("container_kind", { length: 16 }),
 	containerUserId: varchar("container_user_id", { length: 36 }),
@@ -46,9 +48,8 @@ export const hostThreads = pgTable("host_threads", {
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }),
 	lastRunId: varchar("last_run_id", { length: 36 }),
 	lastSessionId: varchar("last_session_id", { length: 36 }),
-	// A Room × Agent thread can be shared by several Room conversations. This
-	// token is claimed before a Run exists and replaced with that Run's id
-	// before commit, so two conversations cannot concurrently use one vendor
+	// This token is claimed before a Run exists and replaced with that Run's id
+	// before commit, so two dispatches cannot concurrently use one vendor
 	// session or overwrite its continuity state.
 	dispatchLockId: varchar("dispatch_lock_id", { length: 36 }),
 	// Every vendor session this thread has moved on from (reset, close, or a
@@ -73,9 +74,10 @@ export const hostThreads = pgTable("host_threads", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_host_threads_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
 	index("ix_host_threads_workspace_mode").using("btree", table.workspaceMode.asc().nullsLast()),
-	uniqueIndex("uq_host_threads_room_agent_active")
-		.on(table.roomId, table.agentId)
-		.where(sql`status IN ('active', 'session_reset')`),
+	index("ix_host_threads_session_id").on(table.spaceId, table.sessionId),
+	uniqueIndex("uq_host_threads_conversation_agent_active")
+		.on(table.sessionId, table.agentId)
+		.where(sql`container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL`),
 	uniqueIndex("uq_host_threads_direct_agent_user_active")
 		.on(table.agentId, table.containerUserId)
 		.where(sql`status IN ('active', 'session_reset')`),
@@ -90,14 +92,24 @@ export const hostThreads = pgTable("host_threads", {
 			name: "host_threads_workspace_location_id_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
+			columns: [table.workspaceLocationId, table.executionHostId],
+			foreignColumns: [workspaceLocations.id, workspaceLocations.executionHostId],
+			name: "host_threads_workspace_location_host_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
 			columns: [table.taskId],
 			foreignColumns: [tasks.id],
 			name: "host_threads_task_id_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
-			columns: [table.roomId],
-			foreignColumns: [rooms.id],
-			name: "host_threads_room_id_fkey"
+			columns: [table.sessionId, table.spaceId],
+			foreignColumns: [sessions.id, sessions.spaceId],
+			name: "host_threads_session_space_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.agentId, table.spaceId],
+			foreignColumns: [agents.id, agents.spaceId],
+			name: "host_threads_agent_space_fkey"
 		}).onDelete("cascade"),
 	foreignKey({
 			columns: [table.agentId],
@@ -106,11 +118,11 @@ export const hostThreads = pgTable("host_threads", {
 		}),
 	check("ck_host_threads_workspace_mode", sql`workspace_mode IN ('location', 'managed') AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL) AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)`),
 	check("ck_host_threads_owner", sql`
-		(workspace_location_id IS NOT NULL AND room_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)
-		OR (task_id IS NULL AND room_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'room' AND container_user_id IS NULL)
-		OR (task_id IS NULL AND room_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)
+		(workspace_location_id IS NOT NULL AND session_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)
+		OR (task_id IS NULL AND session_id IS NULL AND agent_id IS NOT NULL AND container_kind = 'direct' AND container_user_id IS NOT NULL)
+		OR (task_id IS NULL AND session_id IS NOT NULL AND space_id IS NOT NULL AND execution_host_id IS NOT NULL AND agent_id IS NOT NULL AND container_kind = 'conversation' AND container_user_id IS NULL)
 	`),
-	check("ck_host_threads_container_kind", sql`container_kind IS NULL OR container_kind IN ('room', 'direct')`),
+	check("ck_host_threads_container_kind", sql`container_kind IS NULL OR container_kind IN ('direct', 'conversation')`),
 	check("ck_host_threads_status", sql`status IN ('active', 'session_reset', 'closed')`),
 	check("ck_host_threads_retired_sessions_array", sql`jsonb_typeof(retired_vendor_session_ids) = 'array'`),
 ]);

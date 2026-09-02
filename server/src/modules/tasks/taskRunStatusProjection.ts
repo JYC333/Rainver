@@ -24,7 +24,7 @@ export async function lockTaskQueueForTerminalMutation(
         JOIN project_folders pf ON pf.id = wl.project_folder_id
       WHERE m.task_id = ANY($2::varchar[])
         AND pf.space_id = $1
-        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.task_id IS NOT NULL AND t.session_id IS NULL AND t.agent_id IS NULL
         AND t.status IN ('active', 'session_reset')
         AND m.status = 'queued'`,
     [spaceId, taskIds],
@@ -49,7 +49,7 @@ export async function withdrawQueuedTaskMessages(
       WHERE m.host_task_thread_id = t.id
         AND m.task_id = ANY($2::varchar[])
         AND pf.space_id = $1
-        AND t.room_id IS NULL AND t.agent_id IS NULL
+        AND t.task_id IS NOT NULL AND t.session_id IS NULL AND t.agent_id IS NULL
         AND t.status IN ('active', 'session_reset')
         AND m.status = 'queued'`,
     [spaceId, taskIds],
@@ -121,7 +121,7 @@ export async function settleTaskAfterQueuedMessageWithdrawal(
          FROM host_thread_messages m
          JOIN host_threads t ON t.id = m.host_task_thread_id
         WHERE m.id = $2 AND m.host_task_thread_id = $3 AND m.status = 'withdrawn'
-          AND t.room_id IS NULL AND t.agent_id IS NULL
+          AND t.task_id IS NOT NULL AND t.session_id IS NULL AND t.agent_id IS NULL
           AND t.status IN ('active', 'session_reset')
      ), active_work AS (
        SELECT 1

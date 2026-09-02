@@ -45,10 +45,21 @@ export class AgentGroupRunLifecycleProjector {
     });
   }
 
+  /** Enqueue children only after their parent yields or reaches a terminal state. */
+  async queueDelegatedChildren(run: RunRecord): Promise<void> {
+    if (!run.run_group_id) return;
+    await withDbTransaction(this.pool, async (client) => {
+      const groups = new PgAgentGroupRepository(client);
+      const runs = new PgRunRepository(client);
+      await this.queueDelegatedChildrenInTransaction({ client, groups, runs, parent: run });
+    });
+  }
+
   async markDelegatedRunTerminal(run: RunRecord): Promise<void> {
     const ids = delegationIds(run);
     if (!ids) {
       await this.projectGroupedRunTerminalMessage(run);
+      await this.queueDelegatedChildren(run);
       return;
     }
     await withDbTransaction(this.pool, async (client) => {
@@ -110,6 +121,7 @@ export class AgentGroupRunLifecycleProjector {
         jobs: new PgJobQueueRepository(client),
         completedRun: currentRun,
       });
+      await this.queueDelegatedChildrenInTransaction({ client, groups, runs, parent: currentRun });
       if (waitingBeforeResume.length === 0) {
         await this.notifyRoomOfDelegationCompletion({
           client,
@@ -195,6 +207,57 @@ export class AgentGroupRunLifecycleProjector {
         completedRun: run,
         waitingRun: run,
       });
+    });
+  }
+
+  private async queueDelegatedChildrenInTransaction(input: {
+    client: PoolClient;
+    groups: PgAgentGroupRepository;
+    runs: PgRunRepository;
+    parent: RunRecord;
+  }): Promise<void> {
+    const jobs = new PgJobQueueRepository(input.client);
+    const delegations = await input.groups.listDelegationsForParent({
+      space_id: input.parent.space_id,
+      parent_run_id: input.parent.id,
+    });
+    const children = (await Promise.all(delegations
+      .filter((delegation) => Boolean(delegation.child_run_id))
+      .map(async (delegation) => input.runs.getRun(input.parent.space_id, delegation.child_run_id!))))
+      .filter((child): child is RunRecord => Boolean(child));
+    // Delegated children share the Conversation's cwd. Keep at most one
+    // child admitted at a time; the terminal projector calls this method
+    // again after that child completes, which advances the durable FIFO.
+    if (children.some((child) => ["running", "cancelling", "waiting_for_review", "waiting_for_dependency"]
+      .includes(child.status))) return;
+    const child = children.find((candidate) => candidate.status === "queued");
+    if (!child) {
+      // A completed delegated child may have no descendants of its own. In
+      // that case advance the sibling FIFO owned by its parent; descendants
+      // take precedence because they still share the same Conversation cwd.
+      if (input.parent.parent_run_id) {
+        const owner = await input.runs.getRun(input.parent.space_id, input.parent.parent_run_id);
+        if (owner) await this.queueDelegatedChildrenInTransaction({ ...input, parent: owner });
+      }
+      return;
+    }
+    await jobs.ensureAgentRunJob({
+      job_type: "agent_run",
+      space_id: child.space_id,
+      user_id: child.owner_user_id ?? input.parent.owner_user_id ?? null,
+      agent_id: child.agent_id,
+      project_folder_id: child.project_folder_id,
+      payload: {
+        run_id: child.id,
+        run_group_id: child.run_group_id,
+        delegation_id: child.delegation_id,
+        parent_run_id: child.parent_run_id,
+        root_run_id: child.root_run_id,
+        instructed_by_agent_id: child.instructed_by_agent_id,
+        trigger_origin: "delegation",
+        // Host thread and resume session come from the child's own
+        // `host_thread` override at execution time, not from this payload.
+      },
     });
   }
 

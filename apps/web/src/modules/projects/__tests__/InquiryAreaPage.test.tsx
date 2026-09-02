@@ -7,16 +7,6 @@ import { toast } from 'sonner'
 import InquiryAreaPage from '../InquiryAreaPage'
 import { inquiryApi, notesApi, projectsApi, projectResearchApi, spacesApi } from '../../../api/client'
 
-const BRIEF_AGGREGATE = {
-  project_status: 'active',
-  current_focus: null,
-  confirmed_decisions: [] as string[],
-  primary_mode: 'research' as const,
-  workspace_identity: {},
-  workspace_boundary: {},
-  source_refs: [] as Array<Record<string, unknown>>,
-}
-
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
@@ -102,7 +92,6 @@ const PROJECT = {
   status: 'active' as const,
   current_focus: null,
   settings_json: null,
-  primary_mode: 'research' as const,
   active_brief_version_id: null,
   created_at: '2026-07-23T00:00:00.000Z',
   updated_at: '2026-07-23T00:00:00.000Z',
@@ -632,95 +621,6 @@ describe('InquiryAreaPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /^create$/i }))
 
     await waitFor(() => expect(inquiryApi.createThread).toHaveBeenCalledWith('project-1', { kind: 'question', statement: 'New question' }))
-  })
-
-  it('keeps the Setup checklist goal deep link working without giving the goal a permanent card', async () => {
-    vi.mocked(projectsApi.getActiveBriefVersion).mockResolvedValue({
-      id: 'brief-1', space_id: 'space-1', project_id: 'project-1', version: 'v1',
-      goal: 'Ship a reliable coding agent', scope_included: 'Coding tasks', scope_excluded: null,
-      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
-      ...BRIEF_AGGREGATE,
-      status: 'published', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:00:00.000Z',
-      published_by_user_id: 'user-1', published_at: '2026-07-23T00:00:00.000Z',
-      created_by_user_id: 'user-1', created_at: '2026-07-23T00:00:00.000Z',
-    })
-    vi.mocked(projectsApi.createBriefVersion).mockResolvedValue({
-      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
-      goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
-      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
-      ...BRIEF_AGGREGATE,
-      status: 'draft', reviewed_by_user_id: null, reviewed_at: null,
-      published_by_user_id: null, published_at: null,
-      created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
-    })
-    vi.mocked(projectsApi.submitBriefForReview).mockResolvedValue({
-      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
-      goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
-      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
-      ...BRIEF_AGGREGATE,
-      status: 'in_review', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:06:00.000Z',
-      published_by_user_id: null, published_at: null, created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
-    })
-    vi.mocked(projectsApi.publishBrief).mockResolvedValue({
-      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
-      goal: 'Ship a reliable, fast coding agent', scope_included: 'Coding tasks', scope_excluded: null,
-      success_definition: 'Agent completes tasks unattended', constraints: null, assumptions: null,
-      ...BRIEF_AGGREGATE,
-      status: 'published', reviewed_by_user_id: 'user-1', reviewed_at: '2026-07-23T00:06:00.000Z',
-      published_by_user_id: 'user-1', published_at: '2026-07-23T00:07:00.000Z', created_by_user_id: 'user-1', created_at: '2026-07-23T00:05:00.000Z',
-    })
-    renderPage('/spaces/space-1/projects/project-1/inquiry?setup=goal')
-
-    const textarea = await screen.findByPlaceholderText('What is this project ultimately trying to achieve?')
-    fireEvent.change(textarea, { target: { value: 'Ship a reliable, fast coding agent' } })
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
-
-    // Editing the goal alone must not blank out the rest of the immutable Brief.
-    await waitFor(() => expect(projectsApi.createBriefVersion).toHaveBeenCalledWith('project-1', {
-      goal: 'Ship a reliable, fast coding agent',
-      scope_included: 'Coding tasks',
-      scope_excluded: null,
-      success_definition: 'Agent completes tasks unattended',
-      constraints: null,
-      assumptions: null,
-      confirmed_decisions: [],
-      workspace_identity: {},
-      workspace_boundary: {},
-      source_refs: [],
-    }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Submit for review' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }))
-    await waitFor(() => expect(projectsApi.publishBrief).toHaveBeenCalledWith('project-1', 'brief-2'))
-  })
-
-  it('lets an active Project co-owner publish a submitted Brief from Setup', async () => {
-    const submitted = {
-      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
-      goal: 'Ready for co-owner review', scope_included: null, scope_excluded: null,
-      success_definition: null, constraints: null, assumptions: null,
-      ...BRIEF_AGGREGATE,
-      status: 'in_review' as const, reviewed_by_user_id: 'user-2',
-      reviewed_at: '2026-07-23T00:05:00.000Z', published_by_user_id: null,
-      published_at: null, created_by_user_id: 'user-2', created_at: '2026-07-23T00:00:00.000Z',
-    }
-    vi.mocked(projectsApi.get).mockResolvedValue({
-      ...PROJECT,
-      owner_user_id: 'user-2',
-      current_user_can_approve_context: true,
-    })
-    vi.mocked(projectsApi.listBriefVersions).mockResolvedValueOnce([submitted])
-    vi.mocked(projectsApi.publishBrief).mockResolvedValueOnce({
-      ...submitted,
-      status: 'published',
-      published_by_user_id: 'user-1',
-      published_at: '2026-07-23T00:06:00.000Z',
-    })
-    renderPage('/spaces/space-1/projects/project-1/inquiry?setup=goal')
-
-    expect(await screen.findByDisplayValue('Ready for co-owner review')).toBeDisabled()
-    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }))
-
-    await waitFor(() => expect(projectsApi.publishBrief).toHaveBeenCalledWith('project-1', 'brief-2'))
   })
 
   it('can relate a root Thread to its own descendants, which the parent picker excludes', async () => {

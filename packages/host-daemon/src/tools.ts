@@ -1,3 +1,4 @@
+import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec } from "@rainver/protocol";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -24,14 +25,8 @@ export const MANAGED_PREFIX = "managed:";
 export const OWN_INSTALLATION = "own";
 
 /** How a runtime is logged into and how a login is recognised (the spec's `credentials.login`). */
-export interface ToolLoginSpec {
-  command: string[];
-  managed_command?: string[];
-  home_subdir: string;
-  credential_file: string;
-  hint?: string;
-}
-
+/** The wire contract's login spec; the server's adapter spec is the source. */
+export type ToolLoginSpec = RuntimeLoginSpec;
 export interface ToolManifest {
   adapter_type: string;
   version: string;
@@ -47,24 +42,10 @@ export interface ToolManifest {
   installed_at: string;
 }
 
-export type ToolDistribution =
-  | { kind: "npx" | "uvx"; package: string; args: string[]; env: Record<string, string> }
-  | { kind: "binary"; platforms: Record<string, { archive: string; cmd: string; args: string[]; sha256: string | null; env: Record<string, string> }> };
-
-export interface InstallToolFrame {
-  request_id: string;
-  adapter_type: string;
-  version: string;
-  distribution: ToolDistribution;
-  login: ToolLoginSpec | null;
-}
-
-export interface UninstallToolFrame {
-  request_id: string;
-  adapter_type: string;
-  version: string;
-}
-
+export type ToolDistribution = RuntimeDistribution;
+/** The wire's `install_tool` frame, minus its type tag; nothing is rebuilt from it. */
+export type InstallToolFrame = Omit<HostServerFrameOf<"install_tool">, "type">;
+export type UninstallToolFrame = Omit<HostServerFrameOf<"uninstall_tool">, "type">;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function toolsDir(): string {
@@ -141,40 +122,6 @@ export function renderManagedLoginCommand(tree: string, login: ToolLoginSpec | n
 export function loggedIn(home: string, login: ToolLoginSpec | null): boolean | null {
   if (!login) return null;
   return existsSync(join(home, login.home_subdir, login.credential_file));
-}
-
-function parseLogin(value: unknown): ToolLoginSpec | null {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record || !Array.isArray(record.command) || typeof record.home_subdir !== "string" || typeof record.credential_file !== "string") return null;
-  return {
-    command: record.command.map(String),
-    ...(Array.isArray(record.managed_command) ? { managed_command: record.managed_command.map(String) } : {}),
-    home_subdir: record.home_subdir,
-    credential_file: record.credential_file,
-    ...(typeof record.hint === "string" ? { hint: record.hint } : {}),
-  };
-}
-
-function parseIdentity(frame: Record<string, unknown>, type: string): { request_id: string; adapter_type: string; version: string } {
-  const requestId = frame.request_id;
-  const adapterType = frame.adapter_type;
-  const version = frame.version;
-  if (typeof requestId !== "string" || typeof adapterType !== "string" || typeof version !== "string") {
-    throw new Error(`${type} frame is missing request_id, adapter_type, or version`);
-  }
-  if (!SAFE_SEGMENT.test(adapterType) || !SAFE_SEGMENT.test(version)) throw new Error(`Unusable adapter or version: ${adapterType}@${version}`);
-  return { request_id: requestId, adapter_type: adapterType, version };
-}
-
-export function parseInstallToolFrame(frame: Record<string, unknown>): InstallToolFrame {
-  const identity = parseIdentity(frame, "install_tool");
-  const distribution = frame.distribution as ToolDistribution | undefined;
-  if (!distribution || typeof distribution !== "object" || !("kind" in distribution)) throw new Error("install_tool frame has no distribution");
-  return { ...identity, distribution, login: parseLogin(frame.login) };
-}
-
-export function parseUninstallToolFrame(frame: Record<string, unknown>): UninstallToolFrame {
-  return parseIdentity(frame, "uninstall_tool");
 }
 
 export async function uninstallTool(frame: UninstallToolFrame): Promise<boolean> {

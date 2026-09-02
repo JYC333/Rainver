@@ -39,6 +39,8 @@ export * from "./credentials.js";
 // Network profile contracts
 export * from "./networkProfiles.js";
 export * from "./hosts.js";
+export * from "./hostWire.js";
+export * from "./conversationExecution.js";
 
 // Agent runtime profile contracts
 export * from "./agents.js";

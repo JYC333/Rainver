@@ -26,8 +26,6 @@ import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
 import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
-import { isStale } from "../hosts/repository.js";
-import { hostInstallationIds } from "../hosts/capabilities.js";
 
 export interface RoomIdentity {
   spaceId: string;
@@ -64,9 +62,8 @@ export class RoomService {
    * It creates a Room and nothing else. No Assistant is provisioned — a
    * channel nobody has spoken in needs no manager, and seeding one resolves a
    * prompt asset and locks the Space row, which is failure this action should
-   * not carry. No conversation is created either; the first message creates
-   * the first conversation (decision 5), which is what makes an empty
-   * conversation impossible rather than merely discouraged.
+   * not carry. A Conversation is opened separately by the explicit draft
+   * action, so abandoning a Room still leaves no conversation behind.
    */
   async createRoom(identity: RoomIdentity, input: {
     project_id: string;
@@ -490,6 +487,58 @@ export class RoomService {
     return { ...result, limit: input.limit, offset: input.offset };
   }
 
+  /**
+   * Open a visible Conversation draft for preflight configuration. A draft is
+   * created only after the user presses the setup action; it is never created
+   * while merely opening a Project or switching Rooms. The execution context
+   * service owns the subsequent Host/CLI/Primary initialization.
+   */
+  async createConversationDraft(identity: RoomIdentity, roomId: string) {
+    // Provisioning the Room manager remains lazy, but this explicit setup
+    // action is the point at which the Project Agent becomes visible to the
+    // preflight. Keep the expensive preparation outside the transaction, just
+    // as the send path does, and enforce membership again under the Room lock.
+    let preparation: ManagedAssistantPreparation | null = null;
+    try {
+      preparation = await this.prepareManagerIfMissing(identity, roomId);
+    } catch (error) {
+      // A missing provider/CLI must not prevent the user from opening the
+      // visible draft. The preflight can then explain the missing setup and
+      // the same explicit action can retry manager provisioning after config.
+      if (!(error instanceof HttpError)
+        || error.responseBody === undefined
+        || typeof error.responseBody !== "object"
+        || error.responseBody === null
+        || (error.responseBody as { code?: unknown }).code !== "conversation_backend_required") {
+        throw error;
+      }
+    }
+    return withDbTransaction(this.pool, async (client) => {
+      const rooms = new PgRoomRepository(client);
+      const room = await requireRoom(rooms, identity, roomId, true);
+      if (preparation) {
+        try {
+          await this.ensureRoomManager(client, rooms, room, identity, preparation);
+        } catch (error) {
+          if (!isConversationBackendRequired(error)) throw error;
+        }
+      }
+      const sessions = new PgSessionRepository(client);
+      const existing = await sessions.findOpenRoomDraft({ space_id: identity.spaceId, room_id: room.id });
+      if (existing) return existing;
+      return sessions.createRoomConversation({
+        space_id: identity.spaceId,
+        room_id: room.id,
+        project_id: room.project_id,
+        // The Room's Folder is not a Conversation Primary. A managed Primary
+        // must never inherit it and silently change the execution directory.
+        project_folder_id: null,
+        title: "New conversation",
+        metadata: { execution_setup_started: true },
+      });
+    });
+  }
+
   async listMessages(
     identity: RoomIdentity,
     roomId: string,
@@ -530,20 +579,8 @@ export class RoomService {
     });
   }
 
-  /**
-   * Speak in a Room.
-   *
-   * `sessionId` may be null, and that is how a conversation comes into
-   * existence: the first message creates it in the transaction that writes the
-   * message (ADR 0018 decision 5). Nothing creates an empty conversation, so
-   * there is no rule to enforce about not leaving one behind.
-   *
-   * The Room's manager Agent is provisioned here too, for the same reason —
-   * a channel nobody has spoken in needs no manager, and provisioning can fail
-   * on a Space with no eligible backend, which should fail a message rather
-   * than the creation of the Room or its Project.
-   */
-  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string | null, input: {
+  /** Speak in an explicitly-created, initialized Conversation in a Room. */
+  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
     content: string;
     focus_refs?: Array<{ type: "task"; id: string }> | null;
     routing_mode?: "direct" | "agent_coordination";
@@ -553,95 +590,19 @@ export class RoomService {
       runtime_profile_id: string;
       credential_profile_id?: string | null;
     }>;
-    references?: ThreadReferencePick[];
-    confirm_disclosure?: boolean | readonly string[];
-    idempotency_key?: string | null;
   }) {
-    // Preparing an Assistant loads the seed and discovers CLI adapters, which
-    // is filesystem work that does not belong inside a transaction. Only a
-    // Room nobody has spoken in needs it, so the common send pays one query.
-    const assistantPreparation = await this.prepareManagerIfMissing(identity, roomId);
-    // Only the session-less send carries references; an addressed one is
-    // refused below. Done before the transaction so the model call this may
-    // make happens outside the Room row lock.
-    if (!sessionId) await this.references.prepareSummaries(identity, roomId, input.references);
     return withDbTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
-      // The Room row lock is unconditional, as it has always been. Every
-      // roster mutation holds it for its whole transaction, so it is what
-      // stops a member removed mid-send from being granted the Run this send
-      // is about to create.
       const room = await requireRoom(rooms, identity, roomId, true);
-      if (assistantPreparation) {
-        await this.ensureRoomManager(client, rooms, room, identity, assistantPreparation);
-      }
-      // A retried send that already created its conversation returns that
-      // conversation's transcript rather than starting a second one. Only the
-      // session-less send needs this: an addressed send is already guarded by
-      // `claimTurn` on the conversation it names.
-      const idempotencyKey = sessionId ? null : normalizeIdempotencyKey(input.idempotency_key);
-      const fingerprint = idempotencyKey
-        ? firstMessageFingerprint(roomId, input.content, input.references ?? [], {
-            routing_mode: input.routing_mode ?? null,
-            recipient_segments: input.recipient_segments ?? null,
-            focus_refs: input.focus_refs ?? null,
-            backends: input.backends ?? [],
-          })
-        : null;
-      if (idempotencyKey && fingerprint) {
-        const replay = await this.replayFirstMessage(client, identity, roomId, idempotencyKey, fingerprint);
-        if (replay) return replay;
-      }
-      const conversationId = sessionId
-        ? (await requireConversation(rooms, identity, roomId, sessionId)).id
-        : (await this.createConversationForSend(client, room, identity)).id;
-      if (idempotencyKey && fingerprint) {
-        await client.query(
-          `INSERT INTO room_first_message_idempotencies (
-             id, space_id, user_id, idempotency_key, request_fingerprint,
-             room_id, session_id, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
-          [cryptoRandomId(), identity.spaceId, identity.userId, idempotencyKey, fingerprint, roomId, conversationId],
-        );
-      }
-      // Before the message, in the same transaction: a reference is what the
-      // thread opens with, and a send that fails must not leave one behind.
-      // An addressed send names a thread that already exists, and that
-      // thread's own endpoint is where references go. Refused rather than
-      // ignored: answering 201 with nothing attached is the silent success
-      // this path exists to avoid.
-      if (sessionId && input.references?.length) {
-        throw new HttpError(422, "Attach references to an existing conversation through its own endpoint");
-      }
-      let messageCreatedAt: string | undefined;
-      if (!sessionId && input.references?.length) {
-        const after = await this.references.attach(client, room, identity, conversationId, {
-          references: input.references,
-          confirm_disclosure: input.confirm_disclosure,
-        });
-        // Strictly after the references it arrived with, so the thread reads
-        // in the order it was assembled.
-        messageCreatedAt = new Date(after).toISOString();
-      }
-      const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversationId, {
+      const conversation = await requireConversation(rooms, identity, roomId, sessionId);
+      const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
         content: requiredText(input.content, "content"),
-        created_at: messageCreatedAt,
         focus_refs: input.focus_refs ?? null,
         routing_mode: input.routing_mode ?? "direct",
         recipient_segments: input.recipient_segments ?? null,
         backends: input.backends ?? [],
         kind: "user",
       });
-      if (idempotencyKey) {
-        // Recorded now that the message exists, so a replay can answer with
-        // this exact turn.
-        await client.query(
-          `UPDATE room_first_message_idempotencies
-              SET message_id = $4, updated_at = now()
-            WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3`,
-          [identity.spaceId, identity.userId, idempotencyKey, dispatched.message.id],
-        );
-      }
       return dispatched;
     });
   }
@@ -678,64 +639,7 @@ export class RoomService {
     return SpaceAssistantService.prepareForRoomCreator(this.pool, this.config, identity);
   }
 
-  /**
-   * The result of a send this key already performed, or null for a first use.
-   *
-   * `FOR UPDATE` locks the key row when one exists. It is *not* what
-   * serialises two first deliveries — there is no row yet to lock. That comes
-   * from the unconditional `FOR UPDATE OF room` the send already takes, which
-   * is why narrowing that lock would let both deliveries create a
-   * conversation and leave the loser failing on the unique index.
-   */
-  private async replayFirstMessage(
-    client: PoolClient,
-    identity: RoomIdentity,
-    roomId: string,
-    idempotencyKey: string,
-    fingerprint: string,
-  ) {
-    const prior = await client.query<{ request_fingerprint: string; session_id: string; message_id: string | null }>(
-      `SELECT request_fingerprint, session_id, message_id
-         FROM room_first_message_idempotencies
-        WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3
-        FOR UPDATE`,
-      [identity.spaceId, identity.userId, idempotencyKey],
-    );
-    const existing = prior.rows[0];
-    if (!existing) return null;
-    if (existing.request_fingerprint !== fingerprint) {
-      throw new HttpError(409, "Idempotency-Key was already used with a different message");
-    }
-    const rooms = new PgRoomRepository(client);
-    const conversation = await rooms.getConversation(identity.spaceId, roomId, existing.session_id);
-    if (!conversation) throw new HttpError(409, "The idempotent send result is no longer available");
-    // The message this key wrote, fetched by id. Taking the newest user
-    // message instead would return somebody else's turn once the thread had
-    // moved on — and looking for it in a page of recent ones fails by
-    // construction, because the message a key names is the thread's *first*
-    // and drops out of any window as soon as the thread grows past it.
-    const last = existing.message_id
-      ? await new PgSessionRepository(client).roomMessageById(
-        identity.spaceId, identity.userId, roomId, existing.session_id, existing.message_id,
-      )
-      : null;
-    if (!last) throw new HttpError(409, "The idempotent send result is no longer available");
-    const metadata = record(last.metadata_json);
-    const groupId = typeof metadata.task_group_id === "string" ? metadata.task_group_id : null;
-    return {
-      message: last,
-      conversation,
-      task_group_ids: groupId ? [groupId] : [],
-      run_ids: stringArray(metadata.run_ids),
-    };
-  }
-
-
-
-  /**
-   * Attach references to a conversation that already exists. The other entry
-   * point is the session-less send, where they ride the first message.
-   */
+  /** Attach references to a Conversation after explicit draft setup. */
   async attachConversationReferences(
     identity: RoomIdentity,
     roomId: string,
@@ -765,32 +669,6 @@ export class RoomService {
     });
   }
 
-  /**
-   * The conversation a send with no session id speaks in: a new one, always.
-   *
-   * Always a new one: decision 5 says the message creates the conversation,
-   * and the surface that speaks without a conversation id is also the one
-   * behind "start a separate thread". What protects against a double submit
-   * is what protects every other send — the composer is disabled while one is
-   * in flight — and the session-less send carries an `Idempotency-Key` for a
-   * retry after a lost response. Two genuinely concurrent first messages make
-   * two conversations, which is a truthful description of two people each
-   * starting one.
-   */
-  private async createConversationForSend(
-    client: PoolClient,
-    room: RoomRecord,
-    identity: RoomIdentity,
-  ) {
-    return new PgSessionRepository(client).createRoomConversation({
-      space_id: identity.spaceId,
-      room_id: room.id,
-      project_id: room.project_id,
-      project_folder_id: room.project_folder_id,
-      title: "New conversation",
-      metadata: { conversation_kind: "room" },
-    });
-  }
 
   private async ensureRoomManager(
     client: PoolClient,
@@ -799,7 +677,7 @@ export class RoomService {
     identity: RoomIdentity,
     preparation: ManagedAssistantPreparation,
   ): Promise<void> {
-    // Re-read under the Room lock: another first message may have provisioned
+    // Re-read under the Room lock: another draft action may have provisioned
     // one between the pre-transaction check and here.
     const members = await rooms.listAgentMembers(identity.spaceId, room.id, identity.userId);
     if (members.some((member) => member.role === "manager")) return;
@@ -1095,39 +973,20 @@ export class RoomService {
           })
         : null;
 
-      const hostDispatch = await filterHostBoundRoomRecipients({
-        client,
-        spaceId: identity.spaceId,
-        roomId,
-        projectId: room.project_id,
-        userId: identity.userId,
-        sessionId,
-        segments: segments ?? [{ recipient_agent_ids: [manager.agent_id], content }],
-        requestedBackends: input.backends,
-        agentMembers,
-        sessions,
-      });
+      // Runtime and Host readiness are resolved by the Conversation execution
+      // context authority inside AgentGroupRunService. It runs in this same
+      // transaction, after the message insert but before any Run commits, so
+      // a failed/offline/missing configuration rolls the message back too.
+      // Client backends are whitelisted field-by-field; there is no silent
+      // manager fallback for an initialized Conversation.
+      const clientBackends = (input.backends ?? []).map((backend) => ({
+        agent_id: backend.agent_id,
+        runtime_profile_id: backend.runtime_profile_id,
+        credential_profile_id: backend.credential_profile_id ?? null,
+      }));
       const effectiveSegments = input.recipient_segments?.length
-        ? hostDispatch.segments
+        ? segments ? [...segments] : null
         : null;
-      if (hostDispatch.recipientAgentIds.length === 0) {
-        await client.query(
-          `UPDATE messages
-              SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
-                || $4::jsonb
-            WHERE space_id = $1 AND session_id = $2 AND id = $3`,
-          [identity.spaceId, sessionId, roomMessage.id, JSON.stringify({ host_dispatch_skipped: true })],
-        );
-        return {
-          message: {
-            ...roomMessage,
-            metadata_json: { ...(roomMessage.metadata_json ?? {}), host_dispatch_skipped: true },
-          },
-          task_group_ids: [],
-          run_ids: [],
-          conversation: renamedConversation ?? await requireConversation(rooms, identity, roomId, sessionId),
-        };
-      }
 
       const groups = new AgentGroupRunService(this.config, this.pool);
       const created = await groups.createGroupInTransaction(client, identity, {
@@ -1140,7 +999,10 @@ export class RoomService {
         session_id: sessionId,
         trigger_message_id: roomMessage.id,
         project_id: room.project_id,
-        project_folder_id: room.project_folder_id,
+        // Conversation execution context, not the Room's optional Folder,
+        // owns the Primary and attached roots. Keeping this null prevents a
+        // managed Primary from inheriting a Room Folder in Run creation.
+        project_folder_id: null,
         budget_json: {
           max_depth: 1,
           max_fanout: 2,
@@ -1168,7 +1030,7 @@ export class RoomService {
             ? { project_context_failures: projectState.failures }
             : {}),
         },
-        backends: input.backends,
+        backends: clientBackends,
         project_state_context: projectStateContext,
       });
       const metadata = record(dispatched.message.metadata_json);
@@ -1205,116 +1067,11 @@ export class RoomService {
   }
 }
 
-type HostRoomRecipientSegment = AgentGroupMessageRecipientSegment;
-
-async function filterHostBoundRoomRecipients(input: {
-  client: PoolClient;
-  spaceId: string;
-  roomId: string;
-  projectId: string;
-  userId: string;
-  sessionId: string;
-  segments: readonly HostRoomRecipientSegment[];
-  requestedBackends: readonly { agent_id: string; runtime_profile_id: string }[];
-  agentMembers: RoomDetail["agent_members"];
-  sessions: PgSessionRepository;
-}): Promise<{ segments: HostRoomRecipientSegment[]; recipientAgentIds: string[] }> {
-  const requested = new Map(input.requestedBackends.map((backend) => [backend.agent_id, backend.runtime_profile_id]));
-  const blocked = new Set<string>();
-  const memberName = (agentId: string) =>
-    input.agentMembers.find((member) => member.agent_id === agentId)?.agent_name ?? agentId;
-
-  for (const agentId of [...new Set(input.segments.flatMap((segment) => segment.recipient_agent_ids))]) {
-    const profile = await input.client.query<{
-      execution_host_id: string | null;
-      workspace_location_id: string | null;
-      adapter_type: string;
-      runtime_installation: string | null;
-      host_name: string | null;
-      host_owner_user_id: string | null;
-      host_status: string | null;
-      last_heartbeat_at: string | null;
-      location_status: string | null;
-      folder_project_id: string | null;
-      execution_ready: boolean | null;
-      capabilities_json: unknown;
-    }>(
-      `SELECT profile.execution_host_id, profile.workspace_location_id,
-              profile.adapter_type,
-              profile.runtime_installation, host.name AS host_name,
-              host.owner_user_id AS host_owner_user_id, host.status AS host_status,
-              host.last_heartbeat_at, location.status AS location_status,
-              folder.project_id AS folder_project_id,
-              location.execution_ready, host.capabilities_json
-         FROM agent_runtime_profiles profile
-         LEFT JOIN hosts host ON host.id = profile.execution_host_id
-         LEFT JOIN workspace_locations location ON location.id = profile.workspace_location_id
-         LEFT JOIN project_folders folder ON folder.id = location.project_folder_id
-        WHERE profile.space_id = $1 AND profile.agent_id = $2
-          AND profile.enabled = true
-          AND ($3::varchar IS NULL OR profile.id = $3)
-        ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
-        LIMIT 1`,
-      [input.spaceId, agentId, requested.get(agentId) ?? null],
-    );
-    const binding = profile.rows[0];
-    if (!binding?.execution_host_id) continue;
-    const label = memberName(agentId);
-    const hostLabel = binding.host_name ?? binding.execution_host_id;
-    const owner = binding.host_owner_user_id === input.userId;
-    const online = binding.host_status === "online"
-      && !isStale(binding.last_heartbeat_at)
-      && binding.location_status === "active"
-      && binding.folder_project_id === input.projectId
-      && binding.execution_ready === true
-      && hostInstallationIds(binding.capabilities_json, binding.adapter_type).includes(binding.runtime_installation!);
-    if (!owner) {
-      blocked.add(agentId);
-      await input.sessions.addRoomSystemNotice(
-        input.spaceId,
-        input.userId,
-        input.roomId,
-        input.sessionId,
-        {
-          content: `${label} runs on ${hostLabel} and answers only its owner.`,
-          metadata: {
-            room_id: input.roomId,
-            agent_id: agentId,
-            host_dispatch_event: "owner_only_denied",
-            policy_denial: true,
-          },
-        },
-      );
-    } else if (!online) {
-      blocked.add(agentId);
-      await input.sessions.addRoomSystemNotice(
-        input.spaceId,
-        input.userId,
-        input.roomId,
-        input.sessionId,
-        {
-          content: `${label} is on ${hostLabel}, which is offline, and did not respond.`,
-          metadata: {
-            room_id: input.roomId,
-            agent_id: agentId,
-            host_dispatch_event: "host_offline",
-            policy_denial: true,
-          },
-        },
-      );
-    }
-  }
-
-  const filteredSegments = input.segments
-    .map((segment) => ({
-      ...segment,
-      recipient_agent_ids: segment.recipient_agent_ids.filter((agentId) => !blocked.has(agentId)),
-    }))
-    .filter((segment) => segment.recipient_agent_ids.length > 0);
-  return {
-    segments: filteredSegments,
-    recipientAgentIds: [...new Set(filteredSegments.flatMap((segment) => segment.recipient_agent_ids))],
-  };
+function isConversationBackendRequired(error: unknown): boolean {
+  return error instanceof HttpError
+    && typeof error.responseBody === "object"
+    && error.responseBody !== null
+    && (error.responseBody as { code?: unknown }).code === "conversation_backend_required";
 }
 
 function normalizeIdempotencyKey(value: string | null | undefined): string | null {
@@ -1323,32 +1080,6 @@ function normalizeIdempotencyKey(value: string | null | undefined): string | nul
   if (!normalized) return null;
   if (normalized.length > 128) throw new HttpError(422, "Idempotency-Key must be at most 128 characters");
   return normalized;
-}
-
-/**
- * What makes two deliveries the same request.
- *
- * The references are in it because they are what the key was added to
- * protect: the same key with the same text but a different pick is a
- * different request, and swallowing it as a retry would discard the pick in
- * silence.
- */
-function firstMessageFingerprint(
-  roomId: string,
-  content: string,
-  references: readonly { kind: string; id: string; item_ids?: string[] }[],
-  dispatch: Record<string, unknown>,
-): string {
-  return createHash("sha256")
-    .update(JSON.stringify([
-      roomId,
-      content.trim(),
-      references.map((reference) => [reference.kind, reference.id, [...(reference.item_ids ?? [])].sort()]),
-      // Everything else that decides what the turn does. A retry that changed
-      // recipients or backends is a different request, not the same one.
-      dispatch,
-    ]))
-    .digest("hex");
 }
 
 function createRoomFingerprint(input: {
@@ -1446,9 +1177,15 @@ async function buildRoomProjectStateContext(
     lines.push(`Reply in the user's language and conversational style. ${PLAIN_STATUS_RESPONSE_POLICY}`);
     if (attention.length) {
       lines.push("Items needing attention for internal reasoning:");
-      for (const item of attention.slice(0, MAX_ROOM_CONTEXT_ITEMS)) {
+      // A pending decision is never crowded out by a busy board: gates first,
+      // then the rest. The summary is the reasoning behind a recommendation
+      // (an Inquiry next step's rationale); the title alone reads as a label.
+      const gates = attention.filter((item) => record(item).attention_class === "gate");
+      const others = attention.filter((item) => record(item).attention_class !== "gate");
+      for (const item of [...gates, ...others].slice(0, MAX_ROOM_CONTEXT_ITEMS)) {
         const title = record(item).title;
-        if (typeof title === "string") lines.push(`- ${title}`);
+        const summary = record(item).summary;
+        if (typeof title === "string") lines.push(typeof summary === "string" && summary ? `- ${title} — ${summary}` : `- ${title}`);
       }
     }
     if (focus) lines.push(focus.sentence);

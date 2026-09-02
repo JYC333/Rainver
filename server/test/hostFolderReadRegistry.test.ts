@@ -29,6 +29,26 @@ describe("HostConnectionRegistry folder reads", () => {
     await expect(second).resolves.toMatchObject({ ok: true, kind: "git_status" });
   });
 
+  it("round-trips a generic host action and fails it on disconnect or offline", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    const connection = sink(frames);
+    registry.registerConnection("host-1", connection);
+    const listing = registry.listHostDirectories("host-1", "/home");
+    expect(frames.at(-1)).toMatchObject({ type: "list_dirs", path: "/home" });
+    // The reply is the contract's `list_dirs_result`, used whole — nothing is
+    // filled in or rebuilt on this side.
+    registry.receiveHostActionResult("host-1", String(frames.at(-1)!.request_id), { ok: true, path: "/home", parent: "/", dirs: ["a"], truncated: false, error: null });
+    await expect(listing).resolves.toMatchObject({ ok: true, dirs: ["a"], error: null });
+
+    const dropped = registry.forgetHostWorkspace("host-1", "loc-1");
+    registry.unregisterConnection("host-1", connection);
+    // Reported in the reply's own shape, the contract's `workspace_forget_result`.
+    await expect(dropped).resolves.toEqual({ ok: false, changed: false, error: "host_offline" });
+    await expect(registry.listHostDirectories("host-2", "/"))
+      .resolves.toMatchObject({ ok: false, error: "host_offline" });
+  });
+
   it("fails a pending read when the host disconnects", async () => {
     const registry = new HostConnectionRegistry();
     const frames: Record<string, unknown>[] = [];

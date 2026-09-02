@@ -71,6 +71,12 @@ import type {
   ContextReviewCycleResponse,
   ConversationBackendBinding,
   ConversationBackendCatalog,
+  ConversationAttachmentMutation,
+  ConversationAttachmentMutationResponse,
+  ConversationExecutionPreflightRequest,
+  ConversationExecutionPreflightResponse,
+  ConversationExecutionInitializeRequest,
+  ConversationExecutionSummary,
   CreateAgentFromTemplateBody,
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
@@ -1027,6 +1033,13 @@ export const sessionsApi = {
   addMessage: (id: string, data: { content: string }) =>
     post<Message>(`/sessions/${id}/messages`, data),
   reflect:    (id: string)                          => post<ReflectResult>(`/sessions/${id}/reflect`),
+  executionContext: (id: string) => get<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context`),
+  preflightExecution: (id: string, body: ConversationExecutionPreflightRequest) =>
+    post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body),
+  initializeExecution: (id: string, body: ConversationExecutionInitializeRequest) =>
+    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body),
+  mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation) =>
+    post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body),
   remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
 }
 
@@ -1345,12 +1358,7 @@ export const roomsApi = {
   create: (body: CreateRoomRequest, idempotencyKey?: string) =>
     post<CreateRoomResponse>('/rooms', body, { idempotencyKey }),
   get: (roomId: string) => get<RoomDetail>(`/rooms/${roomId}`),
-  /**
-   * Copy picked content into a conversation that already exists.
-   *
-   * The other way in is the session-less send, which carries `references` so
-   * the first message and what it opens with are written together.
-   */
+  /** Copy picked content into a conversation that already exists. */
   attachReferences: (
     roomId: string,
     sessionId: string,
@@ -1398,6 +1406,8 @@ export const roomsApi = {
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`)
   },
+  createConversation: (roomId: string) =>
+    post<RoomConversation>(`/rooms/${roomId}/conversations`, {}),
   summary: (roomId: string, sessionId: string) =>
     get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`),
   messages: (
@@ -1418,31 +1428,17 @@ export const roomsApi = {
     }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`)
     )
   },
-  /**
-   * `sessionId` may be null: a Room that has not been spoken in has no
-   * conversation, and the first message creates one. The response carries it
-   * either way, so the caller binds to what the send produced rather than
-   * creating a conversation first and risking an empty one.
-   *
-   * `idempotencyKey` applies to the session-less send only, which is the one
-   * that creates a conversation. A retry after a lost response would otherwise
-   * make a second thread — and, since that send carries `references`, copy and
-   * disclose their content a second time.
-   */
   sendMessage: (
     roomId: string,
-    sessionId: string | null,
+    sessionId: string,
     body: SendRoomMessageRequest,
-    idempotencyKey?: string,
   ) =>
     post<{
       message: RoomMessage
       conversation: RoomConversation
       task_group_ids: string[]
       run_ids: string[]
-    }>(sessionId
-      ? `/rooms/${roomId}/conversations/${sessionId}/messages`
-      : `/rooms/${roomId}/messages`, body, sessionId ? {} : { idempotencyKey }),
+    }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
   continueAfterProposal: (
     roomId: string,
     sessionId: string,
@@ -1779,6 +1775,9 @@ export const agentsApi = {
   list: (params: Record<string, string> = {}) =>
     get<AgentOut[]>('/agents?' + new URLSearchParams(params)),
   get: (agentId: string) => get<AgentOut>(`/agents/${agentId}`),
+  /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
+  getSystemAssistant: (projectId?: string | null) =>
+    get<{ assistant: AgentOut | null }>(`/agents/system-assistant${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   create: (data: AgentCreateBody) => post<AgentOut>('/agents', data),
   update: (agentId: string, data: AgentUpdateBody) => patch<AgentOut>(`/agents/${agentId}`, data),
   // Config edit: appends a new immutable AgentVersion and repoints current_version_id.
@@ -1788,6 +1787,13 @@ export const agentsApi = {
     get<AgentRuntimeProfileOut[]>(`/agents/${agentId}/runtime-profiles`),
   createRuntimeProfile: (agentId: string, data: AgentRuntimeProfileCreateBody) =>
     post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles`, data),
+  resolveHostRuntimeProfile: (agentId: string, data: {
+    execution_host_id: string
+    workspace_location_id: string | null
+    workspace_mode: 'location' | 'managed'
+    adapter_type: string
+    runtime_installation: string
+  }) => post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/resolve-host-target`, data),
   updateRuntimeProfile: (agentId: string, profileId: string, data: AgentRuntimeProfileUpdateBody) =>
     patch<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/${profileId}`, data),
   currentVersion: (agentId: string) => get<AgentVersionOut>(`/agents/${agentId}/current-version`),
@@ -1880,7 +1886,7 @@ export const projectFoldersApi = {
     const page = await get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params))
     const ready = (await Promise.all(page.items.map(async folder => {
       const locations = await get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folder.id}/locations`)
-      return locations.some(location => location.execution_ready) ? folder : null
+      return locations.some(location => location.status === 'active' && location.execution_ready) ? folder : null
     }))).filter((folder): folder is ProjectFolder => folder !== null)
     return { ...page, items: ready, total: ready.length }
   },
@@ -1892,6 +1898,8 @@ export const projectFoldersApi = {
     get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
   locations: (projectId: string, folderId: string) =>
     get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folderId}/locations`),
+  activateLocation: (projectId: string, folderId: string, locationId: string) =>
+    post<WorkspaceLocation>(`/projects/${projectId}/folders/${folderId}/locations/${locationId}/activate`),
   update:  (projectId: string, folderId: string, data: ProjectFolderUpdateBody) =>
     patch<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`, data),
   archive: (projectId: string, folderId: string) =>
@@ -1952,6 +1960,9 @@ export const hostsApi = {
     get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
   revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
+  /** The owner's preferred CLI on this machine; null restores the built-in ordering. */
+  setDefaultAdapter: (hostId: string, adapterType: string | null) =>
+    post<{ host_id: string; default_adapter_type: string | null }>(`/hosts/${encodeURIComponent(hostId)}/default-adapter`, { adapter_type: adapterType }),
   listThreads: (projectId: string) =>
     get<{ items: HostThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
   /** Cross-project landing read (C10) — Project is a filter the caller applies via `listThreads`, not a precondition. */
@@ -1965,6 +1976,14 @@ export const hostsApi = {
     const suffix = query.toString() ? `?${query}` : ''
     return get<DispatchOptions>(`/hosts/${encodeURIComponent(hostId)}/dispatch-options${suffix}`)
   },
+  /** One level of subdirectory names on an owned host — the daemon answers; lazy and bounded. */
+  browseDirectories: (hostId: string, path?: string | null) =>
+    post<{ path: string | null; parent: string | null; dirs: string[]; truncated: boolean }>(
+      `/hosts/${encodeURIComponent(hostId)}/browse-directories`, { path: path ?? null }),
+  /** Registers a directory on an owned host as a Project Location, exactly as the CLI's `workspace add` would. */
+  registerWorkspace: (hostId: string, body: { path: string; project_id: string; name: string }) =>
+    post<{ workspace_id: string | null; display_path: string | null }>(
+      `/hosts/${encodeURIComponent(hostId)}/workspaces`, body),
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
   installRuntime: (hostId: string, adapterType: string) =>
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}`),
@@ -2817,8 +2836,6 @@ export const projectsApi = {
     )),
   postUpdate: (id: string, body: { summary: string }) =>
     post<{ id: string }>(`/projects/${id}/updates`, body),
-  transitionMode: (id: string, toMode: string, reason?: string) =>
-    post(`/projects/${id}/mode-transitions`, { to_mode: toMode, reason }),
   operations: (id: string) => get<ProjectOperation[]>(`/projects/${id}/operations`),
   undoUpdate: (projectId: string, eventId: string) =>
     post<{ undone_event_id: string; action: string }>(`/projects/${encodeURIComponent(projectId)}/updates/${encodeURIComponent(eventId)}/undo`, {}),

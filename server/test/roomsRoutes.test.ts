@@ -86,42 +86,22 @@ describe("Room routes", () => {
     });
   });
 
-  it("speaks in a Room that has no conversation yet, and returns the one that made", async () => {
+  it("opens a Conversation draft through an explicit user action", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     let seen: unknown;
     __setRoomServiceFactoryForTests(() => service({
-      sendMessage: async (
-        identity: unknown,
-        roomId: string,
-        sessionId: string | null,
-        input: unknown,
-      ) => {
-        seen = { identity, roomId, sessionId, input };
+      createConversationDraft: async (identity: unknown, roomId: string) => {
+        seen = { identity, roomId };
         return {
-          message: {
-            id: "message-1",
-            space_id: "space-1",
-            session_id: "session-new",
-            user_id: "user-1",
-            sender_agent_id: null,
-            role: "user",
-            content: "Start here",
-            metadata_json: { task_group_id: "group-1", run_ids: ["run-1"] },
-            created_at: "2026-07-26T00:00:00.000Z",
-          },
-          conversation: {
-            id: "session-new",
-            space_id: "space-1",
-            room_id: "room-1",
-            project_id: "project-1",
-            project_folder_id: null,
-            title: "Start here",
-            status: "active",
-            created_at: "2026-07-26T00:00:00.000Z",
-            updated_at: "2026-07-26T00:00:00.000Z",
-          },
-          task_group_ids: ["group-1"],
-          run_ids: ["run-1"],
+          id: "session-draft",
+          space_id: "space-1",
+          room_id: roomId,
+          project_id: "project-1",
+          project_folder_id: null,
+          title: "New conversation",
+          status: "active",
+          created_at: "2026-07-26T00:00:00.000Z",
+          updated_at: "2026-07-26T00:00:00.000Z",
         };
       },
     }));
@@ -129,17 +109,19 @@ describe("Room routes", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/rooms/room-1/messages",
-      payload: { content: "Start here" },
+      url: "/api/v1/rooms/room-1/conversations",
     });
 
     expect(response.statusCode).toBe(201);
-    // The conversation this message created comes back on the response, so
-    // the caller never has to create one first (ADR 0018 decision 5).
-    expect(response.json()).toMatchObject({ conversation: { id: "session-new" } });
-    // The absent session id reaches the service as null, not as the string
-    // "messages" from a mis-parsed path.
-    expect(seen).toMatchObject({ roomId: "room-1", sessionId: null });
+    expect(response.json()).toMatchObject({
+      id: "session-draft",
+      room_id: "room-1",
+      title: "New conversation",
+    });
+    expect(seen).toEqual({
+      identity: { spaceId: "space-1", userId: "user-1" },
+      roomId: "room-1",
+    });
   });
 
   it("dispatches a Room message with the signed-in user's backend selection", async () => {

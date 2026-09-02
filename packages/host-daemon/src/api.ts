@@ -1,11 +1,12 @@
+import type { HostHelloInfo, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectCapabilities, type AskRuntimeOptions, type DaemonCapabilities, type RuntimeLookup } from "./capabilities.js";
-import { ambientSessionCounts, type AmbientSessionCount } from "./ambientCounts.js";
+import { detectCapabilities, type AskRuntimeOptions } from "./capabilities.js";
+import { ambientSessionCounts } from "./ambientCounts.js";
 import { probeAcpOptions } from "./acpProbe.js";
 import { resolveAcpLaunch, substituteCwd } from "./execution.js";
-import { collectWorkspaceStatus, type WorkspaceStatusReport } from "./workspaceStatus.js";
+import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 
 const DAEMON_VERSION = "0.1.0";
@@ -44,41 +45,9 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
  * Everything the control plane knows about one runtime adapter, as sent in
  * `hello_ack.runtime_probes`. The daemon holds no copy of this: a runtime
  * the server can dispatch to is one it can look for, ask, install, and log
- * into.
+ * into. The shape is the wire contract's.
  */
-export interface RuntimeProbe extends RuntimeLookup {
-  argv: string[];
-  distribution: unknown;
-  version: string | null;
-  remote_host_only: boolean;
-}
-
-export function parseRuntimeProbes(value: unknown): RuntimeProbe[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    const record = entry as Record<string, unknown> | null;
-    if (typeof record?.adapter_type !== "string" || !Array.isArray(record.argv)) return [];
-    if (!record.argv.every((arg): arg is string => typeof arg === "string") || record.argv.length === 0) return [];
-    const login = record.login as Record<string, unknown> | null;
-    return [{
-      adapter_type: record.adapter_type,
-      runtime: typeof record.runtime === "string" ? record.runtime : null,
-      argv: record.argv,
-      distribution: record.distribution ?? null,
-      version: typeof record.version === "string" ? record.version : null,
-      remote_host_only: record.remote_host_only === true,
-      login: login && Array.isArray(login.command) && typeof login.home_subdir === "string" && typeof login.credential_file === "string"
-        ? {
-            command: login.command.map(String),
-            ...(Array.isArray(login.managed_command) ? { managed_command: login.managed_command.map(String) } : {}),
-            home_subdir: login.home_subdir,
-            credential_file: login.credential_file,
-            ...(typeof login.hint === "string" ? { hint: login.hint } : {}),
-          }
-        : null,
-    }];
-  });
-}
+export type { RuntimeProbe } from "@rainver/protocol";
 
 /**
  * Asks one copy of a runtime what it can be set to, over ACP, launched
@@ -118,29 +87,7 @@ async function helloInfo(
   workspaces: Record<string, string> = {},
   serverUrl?: string,
   probes?: RuntimeProbe[],
-): Promise<{
-  platform: string;
-  arch: string;
-  daemon_version: string;
-  environment_kind: string;
-  capabilities_json: DaemonCapabilities;
-  workspace_reports: WorkspaceStatusReport[];
-  managed_workspaces: Awaited<ReturnType<typeof listManagedWorkspaces>>;
-  /**
-   * How much ambient CLI history each registered workspace holds, from the
-   * slow-refresh cache. Counts only, never content: the server uses them to
-   * decide whether to offer an import at all.
-   */
-  ambient_sessions: AmbientSessionCount[];
-  /**
-   * The address this daemon actually reaches the control plane at. Reported so
-   * the server can work out an address for its provider proxy that this
-   * machine can resolve — a Compose service name cannot be guessed from the
-   * server side, and asking an operator to write one into a file is the wrong
-   * shape for something the daemon already knows.
-   */
-  server_url?: string;
-}> {
+): Promise<HostHelloInfo> {
   const capabilities = await detectCapabilities(probes ? askRuntimeOptions(probes) : undefined, probes ?? []);
   const currentPlatform = platform();
   const environment_kind = currentPlatform === "win32"
@@ -151,7 +98,7 @@ async function helloInfo(
     arch: arch(),
     daemon_version: DAEMON_VERSION,
     environment_kind,
-    capabilities_json: capabilities,
+    capabilities_json: { ...capabilities },
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),

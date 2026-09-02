@@ -283,7 +283,7 @@ export default function ChatPanel({
   const selectedHost = selectedBackendOption?.host_id ? hosts.find(host => host.id === selectedBackendOption.host_id) : null
   const archivedManagedWorkspace = selectedBackendOption?.workspace_mode === 'managed'
     && selectedHost?.managed_workspaces_json?.some(workspace =>
-      workspace.agent_id === agent.id && workspace.container_kind === 'direct' && workspace.container_id === userId && workspace.archived_available)
+      workspace.container_kind === 'direct' && workspace.agent_id === agent.id && workspace.container_id === userId && workspace.archived_available)
   const hostBlocked = Boolean(selectedBackendOption?.host_bound && selectedBackendOption.usable === false)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   async function resetContext() {

@@ -60,7 +60,7 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - File browsing is always read-only for the UI; writes go through the agent + proposal flow
   (`code_patch` proposals).
 - Files & Code tree/file/status/diff reads enforce `project_folder.read` before data is returned.
-- A preferred remote Location is authorized on the server (including an audit
+- The active remote Location is authorized on the server (including an audit
   record with `host_id`) and served live over the `folder_read` channel by the
   owning daemon; the daemon applies the shared `@rainver/folder-read`
   containment, forbidden-path, and size limits.

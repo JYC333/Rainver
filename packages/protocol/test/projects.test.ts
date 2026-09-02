@@ -9,7 +9,6 @@ const overview = {
   project: {
     id: "project-1",
     name: "Project One",
-    primary_mode: "research",
     status: "active",
   },
   brief: {
@@ -26,7 +25,6 @@ const overview = {
     project_status: "active",
     current_focus: "Trace the evidence",
     confirmed_decisions: [],
-    primary_mode: "research",
     workspace_identity: {},
     workspace_boundary: {},
     source_refs: [],
@@ -43,6 +41,7 @@ const overview = {
     basis: "published_brief_goal",
     goal_or_problem: "Trace the evidence",
   },
+  has_project_folder: false,
   mode_projection: {
     mode: "research",
     current_state_summary: "No research under way.",
@@ -50,7 +49,6 @@ const overview = {
     focus_set: [],
     next_actions: [],
   },
-  available_modes: ["research", "delivery", "operations", "learning"],
   attention: [],
   in_progress: [{
     id: "11111111-1111-4111-8111-111111111111",

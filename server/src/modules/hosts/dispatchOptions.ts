@@ -83,6 +83,8 @@ export async function dispatchOptions(input: {
   adapterType: string | null;
   installation: string | null;
   threadId: string | null;
+  /** `hosts.default_adapter_type`: the owner's preferred CLI on this machine. */
+  defaultAdapterType?: string | null;
 }): Promise<DispatchOptions> {
   const capabilities = normalizeHostCapabilities(input.capabilities);
   const adapters = listRuntimeAdapterSpecs()
@@ -99,7 +101,11 @@ export async function dispatchOptions(input: {
   // A thread pins its runtime and copy; a new dispatch chooses, defaulting to
   // the machine's own copy where there is one.
   const thread = input.threadId ? await new PgHostThreadRepository(input.db).getTaskById(input.threadId) : null;
-  const adapterType = thread?.adapter_type ?? input.adapterType ?? (adapters.length === 1 ? adapters[0]!.adapter_type : null);
+  const hostDefaultAdapter = input.defaultAdapterType && adapters.some((adapter) => adapter.adapter_type === input.defaultAdapterType)
+    ? input.defaultAdapterType
+    : null;
+  const adapterType = thread?.adapter_type ?? input.adapterType ?? hostDefaultAdapter
+    ?? (adapters.length === 1 ? adapters[0]!.adapter_type : null);
   const copies = adapters.find((adapter) => adapter.adapter_type === adapterType)?.installations ?? [];
   const installation = thread?.runtime_installation
     ?? (input.installation && copies.some((copy) => copy.id === input.installation) ? input.installation : null)

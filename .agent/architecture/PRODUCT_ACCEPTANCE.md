@@ -42,15 +42,15 @@ collapsed technical details are diagnostic evidence only.
 
 ### 1. Create and prepare a Project
 
-Create a Project with Name, Primary Mode, and an initial Brief containing Goal
-and Scope. Confirm creation binds no Sources, creates no Workflow, and installs
-no starter content. The Project Shell must show the selected Mode's Overview
-placeholders and every installed Area must remain reachable. In Project Sources,
+Create a Project with Name and an initial Brief containing Goal and Scope.
+Confirm creation binds no Sources, creates no Workflow, installs no starter
+content, and records no Project type (ADR 0019). Every installed Area must
+remain reachable. In Project Sources,
 bind the real Source and select its extraction profile explicitly; configure the
 required Provider, Agent, and policy choices in their owning surfaces, then
 explicitly start work.
 
-Evidence: Project, initial Brief, Primary Mode and any Mode Transition, explicit
+Evidence: Project, initial Brief, explicit
 Source binding plus extraction profile, and the started Workflow/Run only after
 the explicit action. Visit every grouped Area; each route must remain reachable
 and have content or an actionable empty state.

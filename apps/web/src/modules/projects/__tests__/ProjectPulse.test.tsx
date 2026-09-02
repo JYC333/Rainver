@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectPulse from '../ProjectPulse'
@@ -15,7 +15,7 @@ vi.mock('../../../api/client', () => ({
 }))
 
 const board = {
-  project: { id: 'project-1', name: 'Thin branch mapping', primary_mode: 'research' },
+  project: { id: 'project-1', name: 'Thin branch mapping' },
   columns: [],
   cards: [
     {
@@ -50,6 +50,7 @@ const overview = {
 } as unknown as ProjectOverview
 
 const overviewChanged = vi.fn()
+const defineGoal = vi.fn()
 
 function renderPulse(over: ProjectOverview | null = overview) {
   return render(
@@ -57,7 +58,7 @@ function renderPulse(over: ProjectOverview | null = overview) {
       <Routes>
         <Route
           path="/spaces/:spaceId/projects/:projectId"
-          element={<ProjectPulse projectId="project-1" overview={over} onOverviewChanged={overviewChanged} />}
+          element={<ProjectPulse projectId="project-1" overview={over} onOverviewChanged={overviewChanged} onDefineGoal={defineGoal} />}
         />
       </Routes>
     </MemoryRouter>,
@@ -80,13 +81,49 @@ beforeEach(() => {
 })
 
 describe('Project Pulse', () => {
+  it('re-reads the situation on an interval and asks the parent to refresh the overview', async () => {
+    // A definition accepted or a question opened from the Room shows here
+    // without leaving the page; the overview is the parent's read.
+    const intervals: Array<() => void> = []
+    const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
+      intervals.push(fn)
+      return 42 as unknown as ReturnType<typeof window.setInterval>
+    }) as typeof window.setInterval)
+    try {
+      renderPulse()
+      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(1))
+      expect(overviewChanged).not.toHaveBeenCalled()
+      intervals.forEach(fn => fn())
+      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(overviewChanged).toHaveBeenCalledTimes(1))
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('asks for a goal until the Project has one, and then stops', async () => {
     // Creation no longer asks for a goal and the shell no longer carries a
     // readiness checklist; this is the one place the question is put.
     renderPulse({ ...overview, definition_status: { status: 'needs_definition', basis: 'missing_published_brief_goal', goal_or_problem: null } } as unknown as ProjectOverview)
     expect(await screen.findByTestId('pulse-needs-goal')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Define the goal' }))
-      .toHaveAttribute('href', '/projects/project-1/inquiry?setup=goal')
+    // The goal is edited on this page; the prompt opens that dialog rather
+    // than sending the person to the Inquiry Area to do the same thing.
+    fireEvent.click(screen.getByRole('button', { name: 'Define the goal' }))
+    expect(defineGoal).toHaveBeenCalledTimes(1)
+  })
+
+  it('points at Files & Code while no Folder is connected, and stops once one is', async () => {
+    // The only place a Folder is connected is Files & Code, two clicks away;
+    // without this an Agent quietly works in a managed workspace instead of
+    // the Project's code. A Folder is optional, so it is a quiet line.
+    renderPulse({ ...overview, has_project_folder: false } as unknown as ProjectOverview)
+    expect(await screen.findByTestId('pulse-needs-folder')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Connect a Folder' }))
+      .toHaveAttribute('href', '/projects/project-1/files?setup=folder')
+    cleanup()
+    renderPulse({ ...overview, has_project_folder: true } as unknown as ProjectOverview)
+    await screen.findByText('Health check failed')
+    expect(screen.queryByTestId('pulse-needs-folder')).not.toBeInTheDocument()
   })
 
   it('says nothing about a goal once one is defined', async () => {

@@ -5,13 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { detectCapabilities } from "../src/capabilities.js";
 import { resolveAcpLaunch } from "../src/execution.js";
 import {
+  installTool,
   installedTools,
   loggedIn,
   managedInstallationId,
   managedVersion,
   packageName,
-  parseInstallToolFrame,
-  parseUninstallToolFrame,
   readToolManifestSync,
   toolsDir,
   uninstallTool,
@@ -89,14 +88,13 @@ describe("managed installations", () => {
     expect(capabilities.installations.acp_other).toBeUndefined();
   });
 
-  it("parses install and uninstall frames strictly, and removes what it installed", async () => {
-    expect(parseInstallToolFrame({
-      request_id: "r1", adapter_type: "acp_goose", version: "1.2.3",
-      distribution: { kind: "npx", package: "goose@1.2.3", args: [], env: {} }, login: LOGIN,
-    })).toMatchObject({ request_id: "r1", adapter_type: "acp_goose", login: LOGIN });
-    expect(() => parseInstallToolFrame({ request_id: "r1", adapter_type: "../x", version: "1", distribution: { kind: "npx" } })).toThrow();
-    expect(() => parseInstallToolFrame({ request_id: "r1", adapter_type: "acp_goose", version: "1" })).toThrow(/distribution/);
-    expect(parseUninstallToolFrame({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toEqual({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" });
+  it("refuses an adapter or version that could escape the tools directory, and removes what it installed", async () => {
+    // The wire shape is the contract's (`HostServerFrameSchema`); what stays
+    // here is the path policy, which no schema can know.
+    await expect(installTool({
+      request_id: "r1", adapter_type: "../x", version: "1",
+      distribution: { kind: "npx", package: "goose@1", args: [], env: {} }, login: LOGIN,
+    }, () => {})).rejects.toThrow(/Unusable adapter or version/);
 
     await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
     expect(await uninstallTool({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toBe(true);

@@ -31,6 +31,8 @@ import { LimitedRoomDialog } from './LimitedRoomDialog'
 import { RoomRosterPanel } from './RoomRosterPanel'
 import { audienceLabel } from './audience'
 import { RoomConversation, type RoomBackendSelection, type RoutingMode } from './conversation/RoomConversation'
+import { ConversationBackendSetupCard } from './conversation/ConversationBackendSetupCard'
+import { ConversationExecutionPreflight } from './conversation/ConversationExecutionPreflight'
 
 type BackendSelection = {
   runtime_profile_id: string
@@ -44,12 +46,12 @@ export default function AgentGroupsPage() {
   const [search, setSearch] = useSearchParams()
   /**
    * References handed over by another page — an imported session's "Continue
-   * in Rainver" — for the conversation the next message will create.
+   * in Rainver" — for the Conversation draft the user will explicitly open.
    *
    * Passed through session storage rather than the URL because it is a list,
    * not an id, and read once so a reload does not resurrect a pick the person
-   * abandoned. Keyed by **Room** because the conversation it is meant for does
-   * not exist yet (ADR 0018 decision 5); keying it at all is what stops this
+   * abandoned. Keyed by **Room** until the user explicitly opens a draft;
+   * keying it at all is what stops this
    * state — which outlives every conversation switch on the page — from
    * attaching to the next Room someone opens.
    */
@@ -89,6 +91,9 @@ export default function AgentGroupsPage() {
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [boundFolderName, setBoundFolderName] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
+  const [draftConversationId, setDraftConversationId] = useState<string | null>(null)
+  const locallyCommittedConversations = useRef(new Map<string, RoomConversationRecord>())
+  const [executionReady, setExecutionReady] = useState(false)
   const locallyCommittedRooms = useRef(new Map<string, Room>())
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
@@ -162,8 +167,11 @@ export default function AgentGroupsPage() {
     if (!roomId) {
       setDetail(null)
       setConversations([])
+      locallyCommittedConversations.current.clear()
       setBoundFolderName(null)
       setOverview(null)
+      setExecutionReady(false)
+      setDraftConversationId(null)
       return
     }
     const conversationsRequest = loadAllPages((limit, offset) =>
@@ -172,7 +180,11 @@ export default function AgentGroupsPage() {
     const allConversations = await conversationsRequest
     if (requestSequence !== roomRequestSequence.current) return
     setDetail(nextDetail)
-    setConversations(current => sortConversationsNewestFirst(allConversations.map(conversation => {
+    const observedConversationIds = new Set(allConversations.map(conversation => conversation.id))
+    for (const conversationId of observedConversationIds) locallyCommittedConversations.current.delete(conversationId)
+    const pendingConversations = [...locallyCommittedConversations.current.values()].filter(conversation => conversation.room_id === roomId)
+    const mergedConversations = [...allConversations, ...pendingConversations.filter(conversation => !observedConversationIds.has(conversation.id))]
+    setConversations(current => sortConversationsNewestFirst(mergedConversations.map(conversation => {
       const locallyUpdated = current.find(item => item.id === conversation.id)
       return locallyUpdated
         && Date.parse(locallyUpdated.updated_at) > Date.parse(conversation.updated_at)
@@ -235,6 +247,8 @@ export default function AgentGroupsPage() {
     setConversations([])
     setBoundFolderName(null)
     setOverview(null)
+    setExecutionReady(false)
+    setDraftConversationId(null)
     loadRoom()
       .catch(error => {
         if (cancelled) return
@@ -276,10 +290,9 @@ export default function AgentGroupsPage() {
       .map(async member => ({
         agentId: member.agent_id,
         // Without a session id the server returns the options with no stored
-        // binding, which is exactly right for a conversation that does not
-        // exist yet: since the first message creates it (ADR 0018 decision 5),
-        // requiring one here left the picker empty and disabled until the
-        // second message.
+        // binding, which is exactly right while the user is reviewing a new
+        // Conversation draft. Once opened, the draft's pinned selection is
+        // fetched by the execution preflight.
         catalog: await agentsApi.conversationBackends(member.agent_id, {
           ...(conversationId ? { sessionId: conversationId } : {}),
         }),
@@ -326,9 +339,9 @@ export default function AgentGroupsPage() {
   /**
    * Start a thread, optionally carrying picked content into it.
    *
-   * Deselect, rather than create: a conversation comes into existence when
-   * something is said in it (ADR 0018 decision 5), so this only clears the
-   * composer; `upsertConversation` binds to whatever the first message makes.
+   * Deselect, rather than create: the explicit preflight opens a draft only
+   * after the user asks for it, so this only clears the composer and setup
+   * state; `upsertConversation` still binds any server-created conversation.
    *
    * Starting one *without* picks drops any that were held — they were made
    * for a thread the person then abandoned, and re-arming them later would
@@ -338,10 +351,12 @@ export default function AgentGroupsPage() {
    */
   function startConversation(picks?: ThreadReferencePick[]) {
     if (!roomId) return
+    setDraftConversationId(null)
     const alreadyOnTheirThread = !currentConversation && pendingReferences?.roomId === roomId
     if (picks?.length) setPendingReferences({ roomId, picks })
     else if (!alreadyOnTheirThread) setPendingReferences(null)
     setSearch({ room: roomId, new: '1' })
+    setExecutionReady(false)
   }
 
   const roomAgents = useMemo(() => {
@@ -361,16 +376,18 @@ export default function AgentGroupsPage() {
    * condition, because the send handler has to know whether this render was
    * the one that used them before it may clear them.
    */
-  const referencesForThisThread = !currentConversation && detail && pendingReferences
+  const referencesForThisThread = detail && pendingReferences
     && pendingReferences.roomId === detail.room.id
+    && (!currentConversation || draftConversationId === currentConversation.id)
     ? pendingReferences.picks
     : undefined
   const upsertConversation = useCallback((conversation: RoomConversationRecord) => {
+    locallyCommittedConversations.current.set(conversation.id, conversation)
     setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
       ? current.map(item => item.id === conversation.id ? conversation : item)
       : [...current, conversation]))
-    // A send with no conversation created one. Bind to it, so the next message
-    // continues the thread that just began rather than starting another.
+    // Bind the server-returned Conversation so subsequent sends continue the
+    // selected thread rather than changing the URL on every refresh.
     //
     // Guarded outside the updater: `setSearchParams` navigates unconditionally,
     // so returning `current` unchanged would still re-render every consumer of
@@ -389,10 +406,11 @@ export default function AgentGroupsPage() {
     ? audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count })
     : ''
   const backendsFor = useCallback((recipientAgentIds: string[]): RoomBackendSelection[] =>
+    conversationId ? [] :
     recipientAgentIds.flatMap(agent_id => {
       const selection = backendSelections[agent_id]
       return selection ? [{ agent_id, ...selection }] : []
-    }), [backendSelections])
+    }), [backendSelections, conversationId])
 
   if (loading) {
     return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Rooms…</div>
@@ -434,13 +452,7 @@ export default function AgentGroupsPage() {
       </header>
 
       {roomSetupTargets.length > 0 && (
-        <Card className="border-amber-500/40 bg-amber-500/5 p-4">
-          <p className="text-sm font-medium">Set up a conversation backend to start this Room.</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {roomSetupTargets.includes('model_providers') && <Link to="/providers" className="text-sm underline">Configure an API provider</Link>}
-            {roomSetupTargets.includes('cli_credentials') && <Link to="/cli-profiles" className="text-sm underline">Grant a CLI credential</Link>}
-          </div>
-        </Card>
+        <ConversationBackendSetupCard setupTargets={roomSetupTargets} />
       )}
 
       {pendingApprovals.length > 0 && (
@@ -568,7 +580,11 @@ export default function AgentGroupsPage() {
                   <button
                     key={conversation.id}
                     className={`w-full rounded-md px-2.5 py-2 text-left text-sm leading-snug ${conversation.id === conversationId ? 'bg-primary/10 font-medium text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
-                    onClick={() => setSearch({ room: detail.room.id, conversation: conversation.id })}
+                    onClick={() => {
+                      setExecutionReady(false)
+                      setDraftConversationId(null)
+                      setSearch({ room: detail.room.id, conversation: conversation.id })
+                    }}
                   >
                     {conversation.title || 'Conversation'}
                   </button>
@@ -639,13 +655,27 @@ export default function AgentGroupsPage() {
                       chat panel also renders; this page adds only what is the
                       page's — routing and per-agent backends. */}
                   <RoomConversation
-                    key={`${detail.room.id}:${currentConversation?.id ?? 'new'}`}
                     roomId={detail.room.id}
-                    // Null for a Room nobody has spoken in — which is every
-                    // Room the moment it is opened, since creating one creates
-                    // no conversation (ADR 0018 decision 5). Sending is what
-                    // makes the conversation, and it comes back on the send.
+                    // Null while the user is choosing the execution context
+                    // for a new Conversation. The explicit setup action binds
+                    // the draft before the first message is allowed to run.
                     conversationId={currentConversation?.id ?? null}
+                    executionReady={executionReady}
+                    executionPreflight={(
+                      <ConversationExecutionPreflight
+                        projectId={detail.room.project_id}
+                        roomId={detail.room.id}
+                        sessionId={currentConversation?.id ?? null}
+                        detail={detail}
+                        onConversationCreated={conversation => {
+                          setDraftConversationId(conversation.id)
+                          upsertConversation(conversation)
+                          setExecutionReady(false)
+                        }}
+                        onNewConversation={() => startConversation()}
+                        onReadyChange={setExecutionReady}
+                      />
+                    )}
                     detail={detail}
                     variant="full"
                     agents={agents}
@@ -659,9 +689,9 @@ export default function AgentGroupsPage() {
                     onBackendRequired={setRoomSetupTargets}
                     siblingConversations={conversations}
                     // The same handoff import continuation uses: the picks
-                    // ride the composer and are written with the message that
-                    // creates the conversation. Nothing is created here, so
-                    // abandoning the draft leaves nothing.
+                    // remain in the Room-keyed draft until the user sends or
+                    // discards them. Abandoning an unstarted draft leaves no
+                    // message or execution run behind.
                     onUseInNewThread={startConversation}
                     onSent={() => {
                       setRoomSetupTargets([])
@@ -670,6 +700,7 @@ export default function AgentGroupsPage() {
                       // back to null and the same reference silently attaches
                       // to a second thread nobody picked it for.
                       if (referencesForThisThread) setPendingReferences(null)
+                      if (referencesForThisThread) setDraftConversationId(null)
                     }}
                     onBeforeContinue={async () => {
                       const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
@@ -694,7 +725,7 @@ export default function AgentGroupsPage() {
                             <Badge variant="secondary">own backend</Badge>
                           </div>
                           <div className="grid gap-2 sm:grid-cols-2">
-                            {roomAgents.filter(agent => agent.kind !== 'system_assistant').map(agent => {
+                            {!currentConversation && roomAgents.filter(agent => agent.kind !== 'system_assistant').map(agent => {
                               const catalog = backendCatalogs[agent.id]
                               const choices = backendChoices(catalog)
                               const selection = backendSelections[agent.id]
@@ -708,11 +739,17 @@ export default function AgentGroupsPage() {
                                       [agent.id]: parseBackendSelection(value),
                                     }))}
                                     options={choices}
-                                    disabled={choices.length === 0}
+                                    disabled={choices.length === 0 || Boolean(currentConversation)}
                                   />
+                                  {currentConversation && <p className="text-[11px] text-muted-foreground">Pinned by this Conversation; start a new Conversation to change it.</p>}
                                 </div>
                               )
                             })}
+                            {currentConversation && (
+                              <p className="text-[11px] text-muted-foreground sm:col-span-2">
+                                Runtime pins are fixed for this Conversation and are shown in the execution context above.
+                              </p>
+                            )}
                           </div>
                         </div>
                       </details>

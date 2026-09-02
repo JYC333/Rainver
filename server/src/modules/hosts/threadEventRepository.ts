@@ -25,7 +25,7 @@ export interface HostThreadEvent {
   id: string;
   host_task_thread_id: string;
   run_id: string;
-  project_id: string;
+  project_id: string | null;
   event_index: number;
   event_type: HostThreadEventType;
   text: string | null;

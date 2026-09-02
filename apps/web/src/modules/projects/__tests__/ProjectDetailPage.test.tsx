@@ -30,7 +30,6 @@ vi.mock('../../../api/client', () => ({
     get: vi.fn(),
     getOverview: vi.fn(),
     operations: vi.fn(),
-    transitionMode: vi.fn(),
     update: vi.fn(),
     createBriefVersion: vi.fn(),
     listBriefVersions: vi.fn(),
@@ -55,7 +54,6 @@ const project: Awaited<ReturnType<typeof projectsApi.get>> = {
   status: 'active',
   current_focus: null as string | null,
   settings_json: null,
-  primary_mode: 'research',
   active_brief_version_id: null,
   created_at: '2026-06-30T00:00:00.000Z',
   updated_at: '2026-06-30T00:00:00.000Z',
@@ -66,7 +64,6 @@ const BRIEF_AGGREGATE = {
   project_status: 'active',
   current_focus: null,
   confirmed_decisions: [] as string[],
-  primary_mode: 'research' as const,
   workspace_identity: {},
   workspace_boundary: {},
   source_refs: [] as Array<Record<string, unknown>>,
@@ -78,14 +75,13 @@ function setup(overrides: {
 } = {}) {
   vi.mocked(projectsApi.get).mockResolvedValue({ ...project, ...overrides.project } as never)
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
-    project: { id: 'project-1', name: 'Project One', primary_mode: 'research', status: 'active' },
+    project: { id: 'project-1', name: 'Project One', status: 'active' },
     brief: { version: '1', goal: 'Understand agent evidence use', scope_included: null, success_definition: null },
-    available_modes: ['research'],
     attention: [{ id: 'attention-1', attention_class: 'gate', title: 'Screening gate waiting', summary: null, href: '/projects/project-1/research?tab=runs&open=op-1' }],
     ...overrides.overview,
   } as never)
   vi.mocked(projectsApi.getBoard).mockResolvedValue({
-    project: { id: 'project-1', name: 'Project One', primary_mode: 'research' },
+    project: { id: 'project-1', name: 'Project One' },
     columns: [], cards: [], viewer_user_id: 'user-1', viewer_can_write: true,
     filters: { all: 0, mine: 0, agent_held: 0, needs_me: 0 },
   } as never)
@@ -146,13 +142,14 @@ describe('ProjectDetailPage (Pulse)', () => {
     expect(screen.queryByRole('link', { name: 'Rooms' })).toBeNull()
   })
 
-  it('keeps how the Project advances in Settings, not on the front page', async () => {
+  it('offers no Project type to set, anywhere', async () => {
+    // A Project has no type field (ADR 0019): what kind of work it is shows
+    // in its goal and in what it comes to hold, not in a Settings dropdown.
     setup()
     renderPage()
     expect(await screen.findByText('Project One')).toBeInTheDocument()
-    expect(screen.queryByLabelText('How this Project advances')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
-    expect(await screen.findByLabelText('How this Project advances')).toBeInTheDocument()
+    expect(screen.queryByLabelText('How this Project advances')).toBeNull()
   })
 
   /**

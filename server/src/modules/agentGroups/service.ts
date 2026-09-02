@@ -11,6 +11,7 @@ import {
   PgConversationBackendRepository,
   type ResolvedConversationBackend,
 } from "../sessions/conversationBackendRepository.js";
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import {
   PgConversationRuntimeSessionRepository,
   type ConversationRuntimeSession,
@@ -29,8 +30,7 @@ import {
   ROOM_RECENT_TOKEN_BUDGET,
 } from "../rooms/conversationContext.js";
 import {
-  CONVERSATION_TOOL_ALLOWANCE,
-  ROOM_CONVERSATION_TOOL_ALLOWANCE,
+  conversationToolGrantInput as conversationToolGrantInputFor,
 } from "../systemActions/scenarioToolAllowance.js";
 import {
   ACTION_RESULT_REPORTING_POLICY,
@@ -40,6 +40,8 @@ import {
   QUESTION_DECOMPOSITION_ACTION_POLICY,
   PROPOSAL_DECISION_POLICY,
   RESEARCH_EXECUTION_POLICY,
+  PROJECT_DEFINITION_ACTION_POLICY,
+  PLAN_ACTION_POLICY,
 } from "../systemActions/conversationPolicy.js";
 import {
   type AgentCapabilitySnapshotRecord,
@@ -404,9 +406,11 @@ export class AgentGroupRunService {
       // Project. Before this it declared no capabilities at all, so whatever
       // its Agent's standing permissions said, the intersection was empty and
       // it could call nothing.
-      const conversationToolAllowance = group.room_id
-        ? ROOM_CONVERSATION_TOOL_ALLOWANCE
-        : CONVERSATION_TOOL_ALLOWANCE;
+      //
+      // Host kind is intentionally absent from this decision. It selects the
+      // delivery mechanism for the same Run-scoped tool surface; it is not a
+      // second authority for what a conversation may do.
+      const conversationToolGrantInput = conversationToolGrantInputFor(group);
       const roomRunGranteeUserIds = group.room_id
         ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
         : [];
@@ -435,9 +439,6 @@ export class AgentGroupRunService {
           const segment = routingSegments[segmentIndex]!;
           for (const recipientAgentId of segment.recipient_agent_ids) {
             const preparedBackend = backends.get(recipientAgentId);
-            const runToolAllowance = preparedBackend?.host_thread
-              ? [] as const
-              : conversationToolAllowance;
             const run = await repos.runs.createGroupedAgentRun({
               agent_id: recipientAgentId,
               space_id: input.space_id,
@@ -449,7 +450,7 @@ export class AgentGroupRunService {
               session_id: rootRun.session_id,
               project_id: rootRun.project_id,
               workspace_location_id: preparedBackend?.workspace_location_id ?? null,
-              trust_mode: preparedBackend?.host_thread ? "trusted_host" : null,
+              trust_mode: preparedBackend?.host_is_remote ? "trusted_host" : null,
               host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
               prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
@@ -463,8 +464,7 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: [...runToolAllowance],
-              scenario_tool_allowance: runToolAllowance,
+              ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
@@ -475,7 +475,7 @@ export class AgentGroupRunService {
             recipientRuns.push({ run, segment_index: segmentIndex });
             const hostThread = preparedBackend?.host_thread;
             if (hostThread) {
-              await hostThreads.recordDispatch(hostThread.id, {
+              await recordHostDispatch(hostThreads, hostThread, {
                 lastRunId: run.id,
                 sessionId: group.session_id!,
                 dispatchLockId: preparedBackend!.host_dispatch_lock_id!,
@@ -490,9 +490,6 @@ export class AgentGroupRunService {
           throw new HttpError(422, "recipient_segments is required");
         }
         const preparedRootBackend = backends.get(firstRecipientAgentId);
-        const rootRunToolAllowance = preparedRootBackend?.host_thread
-          ? [] as const
-          : conversationToolAllowance;
         const rootRun = await repos.runs.createQueuedRun({
           agent_id: firstRecipientAgentId,
           space_id: input.space_id,
@@ -506,7 +503,7 @@ export class AgentGroupRunService {
               project_id: group.project_id,
           project_folder_id: preparedRootBackend?.host_project_folder_id ?? group.project_folder_id,
           workspace_location_id: preparedRootBackend?.workspace_location_id ?? null,
-          trust_mode: preparedRootBackend?.host_thread ? "trusted_host" : null,
+          trust_mode: preparedRootBackend?.host_is_remote ? "trusted_host" : null,
           host_task_thread_id: preparedRootBackend?.host_thread?.id ?? null,
               runtime_profile_id: preparedRootBackend?.runtime_profile_id ?? null,
               runtime_profile_selection_source: preparedRootBackend
@@ -524,8 +521,7 @@ export class AgentGroupRunService {
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
-          capabilities_json: [...rootRunToolAllowance],
-          scenario_tool_allowance: rootRunToolAllowance,
+          ...conversationToolGrantInput,
           allow_system_assistant: Boolean(group.room_id),
         });
         const linkedRootRun = await repos.runs.linkRunToGroupRoot({
@@ -545,7 +541,7 @@ export class AgentGroupRunService {
         recipientRuns.push({ run: linkedRootRun, segment_index: 0 });
         const rootHostThread = preparedRootBackend?.host_thread;
         if (rootHostThread) {
-          await hostThreads.recordDispatch(rootHostThread.id, {
+          await recordHostDispatch(hostThreads, rootHostThread, {
             lastRunId: linkedRootRun.id,
             sessionId: group.session_id!,
             dispatchLockId: preparedRootBackend!.host_dispatch_lock_id!,
@@ -557,9 +553,6 @@ export class AgentGroupRunService {
             if (segmentIndex === 0 && recipientIndex === 0) continue;
             const recipientAgentId = segment.recipient_agent_ids[recipientIndex]!;
             const preparedBackend = backends.get(recipientAgentId);
-            const runToolAllowance = preparedBackend?.host_thread
-              ? [] as const
-              : conversationToolAllowance;
             const run = await repos.runs.createGroupedAgentRun({
               agent_id: recipientAgentId,
               space_id: input.space_id,
@@ -571,7 +564,7 @@ export class AgentGroupRunService {
               session_id: linkedRootRun.session_id,
               project_id: linkedRootRun.project_id,
               workspace_location_id: preparedBackend?.workspace_location_id ?? null,
-              trust_mode: preparedBackend?.host_thread ? "trusted_host" : null,
+              trust_mode: preparedBackend?.host_is_remote ? "trusted_host" : null,
               host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
               prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
@@ -585,8 +578,7 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
               }),
-              capabilities_json: [...runToolAllowance],
-              scenario_tool_allowance: runToolAllowance,
+              ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
               budget_json: group.budget_json,
               context_policy_json: contextPolicy,
@@ -597,7 +589,7 @@ export class AgentGroupRunService {
             recipientRuns.push({ run, segment_index: segmentIndex });
             const hostThread = preparedBackend?.host_thread;
             if (hostThread) {
-              await hostThreads.recordDispatch(hostThread.id, {
+              await recordHostDispatch(hostThreads, hostThread, {
                 lastRunId: run.id,
                 sessionId: group.session_id!,
                 dispatchLockId: preparedBackend!.host_dispatch_lock_id!,
@@ -640,23 +632,41 @@ export class AgentGroupRunService {
         },
       });
 
-      for (const { run: recipientRun } of recipientRuns) {
+      for (let recipientIndex = 0; recipientIndex < recipientRuns.length; recipientIndex += 1) {
+        const recipientRun = recipientRuns[recipientIndex]!.run;
+        // A Conversation has one filesystem scope and therefore one active
+        // Run. Keep fan-out Runs durable, but park every recipient after the
+        // first behind the preceding Run; the lifecycle projector requeues
+        // the next one after its dependency reaches a terminal state.
+        if (group.session_id && recipientIndex > 0) {
+          const dependencyRun = recipientRuns[recipientIndex - 1]!.run;
+          await client.query(
+            `UPDATE runs
+                SET status = 'waiting_for_dependency',
+                    output_json = jsonb_build_object(
+                      'waiting_for_results', jsonb_build_object(
+                        'status', 'waiting',
+                        'scope', 'conversation_serialization',
+                        'reason', 'Conversation Runs share one execution directory and run serially.',
+                        'depends_on_run_ids', jsonb_build_array($3::text)
+                      )
+                    ),
+                    updated_at = now()
+              WHERE space_id = $1 AND id = $2 AND status = 'queued'`,
+            [input.space_id, recipientRun.id, dependencyRun.id],
+          );
+        }
         const jobPayload: Record<string, unknown> = {
           run_id: recipientRun.id,
           run_group_id: group.id,
           root_run_id: rootRunId,
           trigger_origin: "manual",
         };
-        const preparedBackend = backends.get(recipientRun.agent_id);
-        if (preparedBackend?.host_thread) {
-          jobPayload.adapter_config = preparedBackend.host_resume_attempted && preparedBackend.host_thread.vendor_session_id
-            ? { remote_resume_session_id: preparedBackend.host_thread.vendor_session_id }
-            : {};
-          jobPayload.host_task_thread_id = preparedBackend.host_thread.id;
-          jobPayload.host_thread_resume_attempted = preparedBackend.host_resume_attempted;
-        }
+        // The host thread and the vendor session to resume are read from the
+        // Run's own `host_thread` override by the job handler, not carried here.
         if (recipientRun.parent_run_id) jobPayload.parent_run_id = recipientRun.parent_run_id;
 
+        if (group.session_id && recipientIndex > 0) continue;
         await repos.jobs.enqueue({
           job_type: "agent_run",
           space_id: input.space_id,
@@ -1026,6 +1036,7 @@ export class AgentGroupRunService {
       : [];
     let delegatedBackend: ResolvedConversationBackend | null = null;
     let delegatedHostDispatch: PreparedRoomHostDispatch | null = null;
+    let delegatedWorkspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [];
     if (group.room_id) {
       if (!parentRun.session_id) {
         throw new HttpError(409, "Room delegation requires a Room conversation session");
@@ -1034,27 +1045,58 @@ export class AgentGroupRunService {
         repos.db,
         new CliCredentialBroker(this.config),
       );
-      const hostOption = (await backendRepository.listOptions(
-        input.space_id,
-        identity.userId,
-        input.target_agent_id,
-      )).find((option) => option.host_bound);
-      if (hostOption) {
+      const executionContexts = new PgConversationExecutionContextRepository(repos.db);
+      const executionContext = await executionContexts.getContext(input.space_id, parentRun.session_id);
+      if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
+        throw new HttpError(409, "Initialize the Conversation execution context before delegating a Room task");
+      }
+      const projectLocations = await executionContexts.listProjectLocations(input.space_id, parentRun.project_id);
+      for (const attachment of await executionContexts.listAttachments(input.space_id, parentRun.session_id)) {
+        if (attachment.status !== "active") continue;
+        const location = projectLocations.find((candidate) => candidate.id === attachment.workspace_location_id
+          && candidate.project_folder_id === attachment.project_folder_id);
+        if (!location || location.execution_host_id !== executionContext.execution_host_id
+          || location.execution_ready !== true
+          || !(location.host_kind === "server" || (location.host_status === "online" && !isStale(location.last_heartbeat_at)))) {
+          throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
+        }
+        delegatedWorkspaceAccess.push({
+          workspace_location_id: location.id,
+          access_mode: attachment.access_mode,
+        });
+      }
+      {
         delegatedBackend = await backendRepository.resolveBinding({
           space_id: input.space_id,
           user_id: identity.userId,
           session_id: parentRun.session_id,
           agent_id: input.target_agent_id,
-          requested: {
-            runtime_profile_id: hostOption.runtime_profile_id,
-            credential_profile_id: null,
-          },
+          requested: null,
         });
+        const thread = await executionContexts.getConversationThread(
+          input.space_id,
+          parentRun.session_id,
+          input.target_agent_id,
+        );
+        if (!thread || thread.execution_host_id !== executionContext.execution_host_id
+          || thread.workspace_mode !== executionContext.primary_workspace_mode
+          || thread.workspace_location_id !== executionContext.primary_workspace_location_id) {
+          throw new HttpError(409, `Conversation runtime continuity for Agent '${input.target_agent_id}' is unavailable`);
+        }
+        delegatedBackend = {
+          ...delegatedBackend,
+          adapter_type: thread.adapter_type,
+          execution_host_id: thread.execution_host_id,
+          workspace_mode: thread.workspace_mode,
+          workspace_location_id: thread.workspace_location_id,
+          runtime_installation: thread.runtime_installation,
+        };
         delegatedHostDispatch = await prepareHostConversationDispatch({
           db: repos.db,
           backend: delegatedBackend,
-          container: { kind: "room", room_id: group.room_id },
+          container: { kind: "conversation", conversation_id: parentRun.session_id },
           sessionId: parentRun.session_id,
+          spaceId: input.space_id,
           projectId: parentRun.project_id,
           agentId: input.target_agent_id,
           userId: identity.userId,
@@ -1065,6 +1107,10 @@ export class AgentGroupRunService {
       agent_id: input.target_agent_id,
       space_id: input.space_id,
       user_id: identity.userId,
+      // The child acts in the same conversation its parent was spoken to in,
+      // and is allowed the same things there. Declaring nothing here meant a
+      // delegated specialist could call no action at all.
+      ...conversationToolGrantInputFor({ room_id: group.room_id, project_id: parentRun.project_id }),
       parent_run_id: input.parent_run_id,
       root_run_id: input.root_run_id,
       run_group_id: input.group_id,
@@ -1072,14 +1118,14 @@ export class AgentGroupRunService {
       instructed_by_agent_id: input.requesting_agent_id,
       project_folder_id: delegatedHostDispatch?.project_folder_id ?? parentRun.project_folder_id,
       workspace_location_id: delegatedBackend?.workspace_location_id ?? null,
-      trust_mode: delegatedHostDispatch ? "trusted_host" : null,
+      trust_mode: delegatedHostDispatch?.host_is_remote ? "trusted_host" : null,
       host_task_thread_id: delegatedHostDispatch?.host_thread.id ?? null,
       session_id: parentRun.session_id,
       project_id: parentRun.project_id,
       prompt: group.room_id ? input.instruction : null,
       instruction: input.instruction,
       model_override_json: group.room_id
-        ? delegatedRoomModelOverride(parentRun, input.target_agent_id, delegatedBackend, delegatedHostDispatch)
+        ? delegatedRoomModelOverride(parentRun, input.target_agent_id, delegatedBackend, delegatedHostDispatch, delegatedWorkspaceAccess)
         : null,
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
@@ -1091,14 +1137,11 @@ export class AgentGroupRunService {
       allow_system_assistant: Boolean(group.room_id),
     });
     if (delegatedHostDispatch) {
-      await new PgHostThreadRepository(repos.db).recordDispatch(
-        delegatedHostDispatch.host_thread.id,
-        {
-          lastRunId: childRun.id,
-          sessionId: parentRun.session_id!,
-          dispatchLockId: delegatedHostDispatch.dispatch_lock_id,
-        },
-      );
+      await recordHostDispatch(new PgHostThreadRepository(repos.db), delegatedHostDispatch.host_thread, {
+        lastRunId: childRun.id,
+        sessionId: parentRun.session_id!,
+        dispatchLockId: delegatedHostDispatch.dispatch_lock_id,
+      });
     }
     const queued = await repos.groups.updateDelegationAfterPolicy({
       space_id: input.space_id,
@@ -1120,32 +1163,9 @@ export class AgentGroupRunService {
         policy_decision_record_id: policy.policy_decision_record_id ?? null,
       },
     });
-    await repos.jobs.enqueue({
-      job_type: "agent_run",
-      space_id: input.space_id,
-      user_id: identity.userId,
-      agent_id: input.target_agent_id,
-      project_folder_id: childRun.project_folder_id ?? null,
-      payload: {
-        run_id: childRun.id,
-        run_group_id: input.group_id,
-        delegation_id: delegation.id,
-        parent_run_id: input.parent_run_id,
-        root_run_id: input.root_run_id,
-        instructed_by_agent_id: input.requesting_agent_id,
-        trigger_origin: "delegation",
-        ...(delegatedHostDispatch
-          ? {
-              adapter_config: delegatedHostDispatch.host_resume_attempted
-                && delegatedHostDispatch.host_thread.vendor_session_id
-                ? { remote_resume_session_id: delegatedHostDispatch.host_thread.vendor_session_id }
-                : {},
-              host_task_thread_id: delegatedHostDispatch.host_thread.id,
-              host_thread_resume_attempted: delegatedHostDispatch.host_resume_attempted,
-            }
-          : {}),
-      },
-    });
+    // A Room Conversation serializes filesystem access. The child remains a
+    // durable queued Run and is enqueued when its parent yields/finishes by
+    // the lifecycle projector, so it cannot overlap the parent's turn.
 
     return {
       delegation: queued,
@@ -1344,16 +1364,19 @@ interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
   runtime_context_fingerprint: string | null;
   message_cursor_id: string;
   host_project_folder_id: string | null;
+  host_is_remote: boolean;
   host_thread: HostThread | null;
   host_workspace: LaunchWorkspace | null;
   host_prompt_context: string | null;
   host_prompt_fresh: boolean;
   host_resume_attempted: boolean;
   host_dispatch_lock_id: string | null;
+  workspace_access: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
 }
 
 interface PreparedRoomHostDispatch {
   project_folder_id: string | null;
+  host_is_remote: boolean;
   host_thread: HostThread;
   workspace: LaunchWorkspace;
   host_prompt_fresh: boolean;
@@ -1361,11 +1384,24 @@ interface PreparedRoomHostDispatch {
   dispatch_lock_id: string;
 }
 
+async function recordHostDispatch(
+  threads: PgHostThreadRepository,
+  thread: HostThread,
+  input: { lastRunId: string; sessionId: string; dispatchLockId: string },
+): Promise<void> {
+  if (thread.container_kind === "conversation") {
+    await threads.recordConversationDispatch(thread.id, input);
+  } else {
+    await threads.recordDirectDispatch(thread.id, input);
+  }
+}
+
 export async function prepareHostConversationDispatch(input: {
   db: Pool | PoolClient;
   backend: ResolvedConversationBackend;
-  container: { kind: "room"; room_id: string } | { kind: "direct"; user_id: string };
+  container: { kind: "conversation"; conversation_id: string } | { kind: "direct"; user_id: string };
   sessionId: string;
+  spaceId: string;
   projectId: string | null;
   agentId: string;
   userId: string;
@@ -1386,8 +1422,16 @@ export async function prepareHostConversationDispatch(input: {
     throw new HttpError(409, `Room agent '${input.agentId}' has a host binding for an unsupported runtime`);
   }
 
+  // A Project Room can contain several Conversations. Runtime continuity and
+  // the managed cwd therefore belong to this Conversation, not to the Room.
+  const conversationScoped = input.container.kind === "conversation";
+  const directUserId = input.container.kind === "direct" ? input.container.user_id : null;
+
   const target = input.backend.workspace_mode === "location"
-    ? await new PgWorkspaceLocationRepository(input.db).resolveDispatchTarget(input.backend.workspace_location_id!)
+    ? await new PgWorkspaceLocationRepository(input.db).resolveDispatchTarget(
+        input.backend.workspace_location_id!,
+        { allowStale: conversationScoped },
+      )
     : (await input.db.query<{
         host_id: string;
         host_kind: string;
@@ -1401,8 +1445,16 @@ export async function prepareHostConversationDispatch(input: {
            FROM hosts WHERE id = $1 LIMIT 1`,
         [input.backend.execution_host_id],
       )).rows[0];
-  if (!target || ("execution_host_kind" in target && target.execution_host_kind !== "remote") || ("host_kind" in target && target.host_kind !== "remote")) {
+  const hostKind = target && "execution_host_kind" in target
+    ? target.execution_host_kind
+    : target && "host_kind" in target
+      ? target.host_kind
+      : null;
+  if (!target || target.host_id !== input.backend.execution_host_id || (hostKind !== "remote" && hostKind !== "server")) {
     throw new HttpError(409, `Room agent '${input.agentId}' has an invalid host execution target`);
+  }
+  if (!conversationScoped && !directUserId) {
+    throw new HttpError(422, "Direct host dispatch requires a user-scoped container");
   }
   if (
     input.backend.workspace_mode === "location"
@@ -1410,42 +1462,39 @@ export async function prepareHostConversationDispatch(input: {
   ) {
     throw new HttpError(409, `Location-bound Agent '${input.agentId}' requires its Project context`);
   }
-  if (target.host_owner_user_id !== input.userId) {
+  if (hostKind === "remote" && target.host_owner_user_id !== input.userId) {
     throw new HttpError(403, `Room agent '${input.agentId}' can only be triggered by its host owner`);
   }
-  const hostOnline = "host_online" in target
-    ? target.host_online
-    : target.host_status === "online" && !isStale(target.last_heartbeat_at);
+  const hostOnline = hostKind === "server"
+    ? ("host_status" in target ? target.host_status === "online" : target.host_online)
+    : "host_online" in target
+      ? target.host_online
+      : target.host_status === "online" && !isStale(target.last_heartbeat_at);
   const executionReady = "execution_ready" in target ? target.execution_ready : true;
-  if (!hostOnline || !executionReady || !hostInstallationIds(target.capabilities_json, input.backend.adapter_type).includes(input.backend.runtime_installation!)) {
+  const runtimeAvailable = hostKind === "server"
+    || hostInstallationIds(target.capabilities_json, input.backend.adapter_type).includes(input.backend.runtime_installation!);
+  if (!hostOnline || !executionReady || !runtimeAvailable) {
     throw new HttpError(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
   }
 
   const threads = new PgHostThreadRepository(input.db);
-  const hostThread = input.backend.workspace_mode === "managed"
-    ? input.container.kind === "room"
-      ? await threads.getOrCreateForManagedRoomAgent({
-          executionHostId: input.backend.execution_host_id!,
-          roomId: input.container.room_id,
-          agentId: input.agentId,
-          adapterType: input.backend.adapter_type,
-          runtimeInstallation: input.backend.runtime_installation!,
-          createdByUserId: input.userId,
-        })
-      : await threads.getOrCreateForDirect({
+  let hostThread = conversationScoped
+    ? await threads.getOrCreateForConversationAgent({
+        executionHostId: input.backend.execution_host_id!,
+        workspaceMode: input.backend.workspace_mode!,
+        workspaceLocationId: input.backend.workspace_location_id,
+        spaceId: input.spaceId,
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        adapterType: input.backend.adapter_type,
+        runtimeInstallation: input.backend.runtime_installation!,
+        createdByUserId: input.userId,
+      })
+    : input.backend.workspace_mode === "managed"
+      ? await threads.getOrCreateForDirect({
           workspaceMode: "managed",
           executionHostId: input.backend.execution_host_id!,
-          userId: input.container.user_id,
-          agentId: input.agentId,
-          adapterType: input.backend.adapter_type,
-          runtimeInstallation: input.backend.runtime_installation!,
-          createdByUserId: input.userId,
-        })
-    : input.container.kind === "room"
-      ? await threads.getOrCreateForRoomAgent({
-          executionHostId: input.backend.execution_host_id!,
-          workspaceLocationId: input.backend.workspace_location_id!,
-          roomId: input.container.room_id,
+          userId: directUserId!,
           agentId: input.agentId,
           adapterType: input.backend.adapter_type,
           runtimeInstallation: input.backend.runtime_installation!,
@@ -1455,7 +1504,7 @@ export async function prepareHostConversationDispatch(input: {
           workspaceMode: "location",
           workspaceLocationId: input.backend.workspace_location_id!,
           executionHostId: input.backend.execution_host_id!,
-          userId: input.container.user_id,
+          userId: directUserId!,
           agentId: input.agentId,
           adapterType: input.backend.adapter_type,
           runtimeInstallation: input.backend.runtime_installation!,
@@ -1474,8 +1523,8 @@ export async function prepareHostConversationDispatch(input: {
     );
   }
   const dispatchLockId = randomUUID();
-  const claimed = input.container.kind === "room"
-    ? await threads.claimRoomDispatch(hostThread.id, dispatchLockId)
+  const claimed = conversationScoped
+    ? await threads.claimConversationDispatch(hostThread.id, dispatchLockId)
     : await threads.claimDirectDispatch(hostThread.id, dispatchLockId);
   if (!claimed) {
     throw new HttpError(
@@ -1487,10 +1536,11 @@ export async function prepareHostConversationDispatch(input: {
     || hostThread.last_session_id !== input.sessionId;
   return {
     project_folder_id: "project_folder_id" in target ? target.project_folder_id : null,
+    host_is_remote: hostKind === "remote",
     workspace: input.backend.workspace_mode === "managed"
-      ? { kind: "managed", agent_id: input.agentId, container: input.container.kind === "room"
-          ? { kind: "room", room_id: input.container.room_id }
-          : { kind: "direct", user_id: input.container.user_id } }
+      ? { kind: "managed", agent_id: input.agentId, container: conversationScoped
+          ? { kind: "conversation", conversation_id: input.sessionId }
+          : { kind: "direct", user_id: directUserId! } }
       : { kind: "location", workspace_location_id: input.backend.workspace_location_id! },
     host_thread: { ...hostThread, dispatch_lock_id: dispatchLockId },
     host_prompt_fresh: hostPromptFresh,
@@ -1542,6 +1592,33 @@ async function prepareRoomConversationBackends(input: {
     replayContext.summary_text,
   );
   const runtimeSessions = new PgConversationRuntimeSessionRepository(input.db);
+  const executionContexts = new PgConversationExecutionContextRepository(input.db);
+  const executionContext = await executionContexts.getContext(input.identity.spaceId, input.sessionId);
+  if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
+    throw new HttpError(409, "Initialize the Conversation execution context before sending a Room message");
+  }
+  const executionHost = await input.db.query<{ kind: "server" | "remote" }>(
+    "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
+    [executionContext.execution_host_id],
+  );
+  if (!executionHost.rows[0]) throw new HttpError(409, "The Conversation execution Host is unavailable");
+  const hostIsRemote = executionHost.rows[0].kind === "remote";
+  const pinnedLocations = await executionContexts.listProjectLocations(input.identity.spaceId, input.projectId);
+  const workspaceAccess = [] as Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  for (const attachment of await executionContexts.listAttachments(input.identity.spaceId, input.sessionId)) {
+    if (attachment.status !== "active") continue;
+    const location = pinnedLocations.find((candidate) => candidate.id === attachment.workspace_location_id
+      && candidate.project_folder_id === attachment.project_folder_id);
+    if (!location || location.execution_host_id !== executionContext.execution_host_id
+      || location.execution_ready !== true
+      || !(location.host_kind === "server" || (location.host_status === "online" && !isStale(location.last_heartbeat_at)))) {
+      throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
+    }
+    workspaceAccess.push({
+      workspace_location_id: location.id,
+      access_mode: attachment.access_mode,
+    });
+  }
   const resolved = new Map<string, PreparedRoomConversationBackend>();
   for (const agentId of input.agentIds) {
     const requested = requestedByAgent.get(agentId);
@@ -1551,18 +1628,36 @@ async function prepareRoomConversationBackends(input: {
       session_id: input.sessionId,
       agent_id: agentId,
       requested: requested
-        ? {
+          ? {
             runtime_profile_id: requested.runtime_profile_id,
             credential_profile_id: requested.credential_profile_id ?? null,
           }
         : null,
     });
+    const thread = await executionContexts.getConversationThread(
+      input.identity.spaceId,
+      input.sessionId,
+      agentId,
+    );
+    if (!thread || thread.execution_host_id !== executionContext.execution_host_id
+      || thread.workspace_mode !== executionContext.primary_workspace_mode
+      || thread.workspace_location_id !== executionContext.primary_workspace_location_id) {
+      throw new HttpError(409, `Conversation runtime continuity for Agent '${agentId}' is unavailable`);
+    }
+    const pinnedBackend: ResolvedConversationBackend = {
+      ...backend,
+      adapter_type: thread.adapter_type,
+      execution_host_id: thread.execution_host_id,
+      workspace_mode: thread.workspace_mode,
+      workspace_location_id: thread.workspace_location_id,
+      runtime_installation: thread.runtime_installation,
+    };
     const revision = contextRevisions.get(agentId) ?? null;
     if (!revision?.agent_version_id) {
       throw new HttpError(409, `Room agent '${agentId}' has no active version`);
     }
     const hostBound = Boolean(
-      backend.execution_host_id && backend.workspace_mode && backend.runtime_installation,
+      pinnedBackend.execution_host_id && pinnedBackend.workspace_mode && pinnedBackend.runtime_installation,
     );
     let hostThread: HostThread | null = null;
     let hostWorkspace: LaunchWorkspace | null = null;
@@ -1574,9 +1669,10 @@ async function prepareRoomConversationBackends(input: {
     if (hostBound) {
       const hostDispatch = await prepareHostConversationDispatch({
         db: input.db,
-        backend,
-        container: { kind: "room", room_id: input.roomId },
+        backend: pinnedBackend,
+        container: { kind: "conversation", conversation_id: input.sessionId },
         sessionId: input.sessionId,
+        spaceId: input.identity.spaceId,
         projectId: input.projectId,
         agentId,
         userId: input.identity.userId,
@@ -1605,10 +1701,10 @@ async function prepareRoomConversationBackends(input: {
         renderRoomPromptMessages(hostMessages, hostPromptFresh ? replayContext.summary_text : null),
       ].filter(Boolean).join("\n\n") || null;
     }
-    const localCli = isLocalCliRuntimeAdapter(backend.adapter_type) && !hostBound;
+    const localCli = isLocalCliRuntimeAdapter(pinnedBackend.adapter_type) && !hostBound;
     const contextFingerprint = localCli
       ? roomRuntimeContextFingerprint(
-          backend,
+          pinnedBackend,
           agentId,
           input.projectId,
           revision,
@@ -1616,12 +1712,11 @@ async function prepareRoomConversationBackends(input: {
       : null;
     const runtimeSession = contextFingerprint
       ? await runtimeSessions.prepare({
-          binding_id: backend.binding_id,
+          binding_id: pinnedBackend.binding_id,
           space_id: input.identity.spaceId,
           session_id: input.sessionId,
-          user_id: input.identity.userId,
           agent_id: agentId,
-          runtime_state_key: backend.runtime_state_key,
+          runtime_state_key: pinnedBackend.runtime_state_key,
           context_fingerprint: contextFingerprint,
         })
       : null;
@@ -1642,7 +1737,7 @@ async function prepareRoomConversationBackends(input: {
       ? messagesAfterCursor(resumeMessages, agentId, input.identity.userId)
       : replayContext.recent_messages;
     resolved.set(agentId, {
-      ...backend,
+      ...pinnedBackend,
       room_id: input.roomId,
       session_id: input.sessionId,
       user_id: input.identity.userId,
@@ -1655,12 +1750,14 @@ async function prepareRoomConversationBackends(input: {
       runtime_context_fingerprint: contextFingerprint,
       message_cursor_id: input.messageCursorId,
       host_project_folder_id: hostProjectFolderId,
+      host_is_remote: hostIsRemote,
       host_thread: hostThread,
       host_workspace: hostWorkspace,
       host_prompt_context: hostPromptContext,
       host_prompt_fresh: hostPromptFresh,
       host_resume_attempted: hostResumeAttempted,
       host_dispatch_lock_id: hostDispatchLockId,
+      workspace_access: workspaceAccess,
     });
   }
   return resolved;
@@ -1701,6 +1798,7 @@ function roomRunModelOverride(
     ...(backend.host_thread
       ? {
           workspace: backend.host_workspace,
+          workspace_access: backend.workspace_access,
           host_thread: {
             schema_version: "host_thread.v1",
             thread_id: backend.host_thread.id,
@@ -1735,6 +1833,7 @@ function delegatedRoomModelOverride(
   targetAgentId: string,
   backend?: ResolvedConversationBackend | null,
   hostDispatch?: PreparedRoomHostDispatch | null,
+  workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
 ): Record<string, unknown> {
   const parent = recordValue(parentRun.model_override_json);
   const parentTurn = recordValue(parent.chat_turn);
@@ -1762,6 +1861,8 @@ function delegatedRoomModelOverride(
       : {}),
     ...(backend && hostDispatch
       ? {
+          workspace: hostDispatch.workspace,
+          workspace_access: workspaceAccess,
           host_thread: {
             schema_version: "host_thread.v1",
             thread_id: hostDispatch.host_thread.id,
@@ -2024,6 +2125,8 @@ function roomRunPrompt(
     "[Room execution rules]",
     IDENTIFIER_POLICY,
     DURABLE_ACTION_CLAIM_POLICY,
+    PROJECT_DEFINITION_ACTION_POLICY,
+    PLAN_ACTION_POLICY,
     QUESTION_DECOMPOSITION_ACTION_POLICY,
     CONCLUSION_ACTION_POLICY,
     RESEARCH_EXECUTION_POLICY,

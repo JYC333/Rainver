@@ -547,7 +547,6 @@ function projectBriefReference(row: Record<string, unknown>): Record<string, unk
     project_status: row.project_status,
     current_focus: row.current_focus,
     confirmed_decisions: row.confirmed_decisions_json,
-    primary_mode: row.primary_mode,
     workspace_identity: row.workspace_identity_json,
     workspace_boundary: row.workspace_boundary_json,
     source_refs: row.source_refs_json,

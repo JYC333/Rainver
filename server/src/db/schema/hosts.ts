@@ -31,6 +31,10 @@ export const hosts = pgTable("hosts", {
 	platform: varchar({ length: 64 }),
 	arch: varchar({ length: 32 }),
 	daemonVersion: varchar("daemon_version", { length: 32 }),
+	// The owner's preferred CLI on this machine: what auto-provisioned
+	// Assistant backends and dispatch defaults pick first. Null = the built-in
+	// preference ordering.
+	defaultAdapterType: varchar("default_adapter_type", { length: 64 }),
 	/**
 	 * The control-plane address this daemon actually reaches, as it reports it.
 	 * The server cannot guess it — its own in-network hostname is a Compose

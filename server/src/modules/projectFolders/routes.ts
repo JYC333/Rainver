@@ -13,6 +13,8 @@ import {
 } from "../routeUtils/common.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { PgProjectFolderRepository } from "./repository.js";
+import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
+import { PgWorkspaceLocationRepository } from "./workspaceLocations.js";
 
 interface ProjectFolderServices {
   repository: Pick<
@@ -24,6 +26,7 @@ interface ProjectFolderServices {
     | "update"
     | "archive"
     | "unregister"
+    | "activateLocation"
     | "getTree"
     | "getFile"
     | "getGitStatus"
@@ -159,6 +162,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.post("/api/v1/projects/:projectId/folders/:folderId/locations/:locationId/activate", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const locationId = params(request).locationId;
+      if (!locationId) throw new HttpError(422, "locationId is required");
+      return reply.send(await services(context).repository.activateLocation(
+        id,
+        projectId(request),
+        folderId(request),
+        locationId,
+      ));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.patch("/api/v1/projects/:projectId/folders/:folderId", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
@@ -192,8 +212,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
+      // Captured before the rows disappear: after a successful unregister the
+      // daemon should drop its local path mapping too (best effort — an
+      // offline daemon keeps it, and `workspace list` shows the divergence).
+      const remoteLocations = (await new PgWorkspaceLocationRepository(dbPool(context.config)).listForFolder(id, folderId(request)))
+        .filter((location) => location.execution_host_kind === "remote");
       const removed = await services(context).repository.unregister(id, projectId(request), folderId(request));
       if (!removed) return reply.code(404).send({ detail: "Project Folder not found" });
+      for (const location of remoteLocations) {
+        void sharedHostConnectionRegistry.forgetHostWorkspace(location.execution_host_id, location.id);
+      }
       return reply.code(204).send();
     } catch (error) {
       return sendRouteError(reply, error);

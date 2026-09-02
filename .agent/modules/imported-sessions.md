@@ -224,10 +224,10 @@ being present, and attended consent does not stand in for unattended spending
   session, because the destination now protects it by construction — which is
   what withholding it was protecting.
 
-  What is held for the composer is the reference, keyed by Room, not seed
-  text; the first message writes the reference and the conversation together.
-  Nothing is created before that message, so abandoning the draft leaves
-  nothing behind.
+  What is held for the composer is the reference, keyed by Room and the
+  explicitly opened Conversation draft, not seed text. The reference is
+  attached through the Conversation endpoint before the addressed message.
+  Abandoning the draft leaves no message or Run behind.
 
   An imported session's records can also be **referenced** into a conversation:
   picked at the source and copied in as a `reference` message, once, with

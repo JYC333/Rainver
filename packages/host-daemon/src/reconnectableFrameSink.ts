@@ -1,3 +1,4 @@
+import type { HostDaemonFrame } from "@rainver/protocol";
 /**
  * A run outlives a single WebSocket connection (control-center-plan.md §5 —
  * "an interrupted connection while a run is active keeps the process
@@ -12,14 +13,14 @@
  * reconnect happened.
  */
 export class ReconnectableFrameSink {
-  private current: ((frame: Record<string, unknown>) => void) | null = null;
+  private current: ((frame: HostDaemonFrame) => void) | null = null;
 
-  send(frame: Record<string, unknown>): void {
+  send(frame: HostDaemonFrame): void {
     this.current?.(frame);
   }
 
   /** Called once a connection's hello succeeds — frames now go out on it. */
-  bind(sendOnThisConnection: (frame: Record<string, unknown>) => void): void {
+  bind(sendOnThisConnection: (frame: HostDaemonFrame) => void): void {
     this.current = sendOnThisConnection;
   }
 
@@ -29,7 +30,7 @@ export class ReconnectableFrameSink {
    * newer connection's `bind` already ran before this older connection's
    * `close` event fires, which would otherwise clobber the newer binding.
    */
-  unbindIfCurrent(sendOnThisConnection: (frame: Record<string, unknown>) => void): void {
+  unbindIfCurrent(sendOnThisConnection: (frame: HostDaemonFrame) => void): void {
     if (this.current === sendOnThisConnection) this.current = null;
   }
 }

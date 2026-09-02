@@ -145,7 +145,7 @@ describe("executionTopologyDb", () => {
         executionHostKind: "server",
         rootPath: "/tmp/topology-server",
       });
-      expect(serverLocation.preferred).toBe(true);
+      expect(serverLocation.status).toBe("active");
       expect(serverLocation.execution_ready).toBe(false);
 
       const pairing = await hosts.issuePairingCode(USER, "Topology Laptop");

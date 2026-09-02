@@ -49,8 +49,10 @@ ProjectFolder`.
 - `project_folders` is the logical repository identity owned by one Project;
   it carries no host or path.
 - `workspace_locations` is a physical checkout of a Folder on one Host —
-  server `root_path` or remote `display_path`, branch/head/dirty metadata,
-  preferred selection, persisted `execution_ready`.
+  server `root_path` or remote `display_path`, branch/head/dirty metadata, and
+  persisted `execution_ready`; the active row is the only candidate for new
+  work. A stale row may still serve an initialized Conversation that already
+  pins it; archived rows are not dispatch targets.
 
 Runs and host task threads bind to a Location when they execute against a
 registered Project checkout. A host-bound Agent may instead use a **managed
@@ -82,8 +84,8 @@ products because the owner deliberately dispatched the Run; live tree/file/
 Git reads are machine state and remain owner-only.
 
 A Room specialist bound to a remote Workspace Location is still an Agent
-identity, but its Room turns are sent through the same host daemon and one
-opaque vendor session is kept per Room × Agent. The same owner-only gate
+identity, but its Conversation turns are sent through the same host daemon and
+one opaque vendor session is kept per Conversation × Agent. The same owner-only gate
 applies to a managed workspace, including a direct chat between the Host owner
 and the Agent. A rendered Room prompt (Project state plus Room
 summary/recent messages) or direct-chat history is prompt content the owner
@@ -99,8 +101,13 @@ the daemon is authoritative for the real directory. `folder_read` frames carry
 only a Workspace Location id and relative path; the daemon resolves the root
 from its local registration and applies the shared read policy. Managed launch
 frames carry only `{ agent, container }`; the daemon derives
-`<config>/agents/<agent>/{rooms|direct}/<container>` and validates the opaque
-identifiers before joining them. `execution_host_kind` is a constrained
+`<config>/agents/<agent>/direct/<container>` or the shared
+`<config>/conversations/<container>` and validates the opaque
+identifiers before joining them. The owner may also browse and register a
+directory from the web UI: the daemon answers per-level directory-name
+listings and runs its own `workspace add` validation — the control plane
+forwards the request and stores, as ever, only the reported display path.
+`execution_host_kind` is a constrained
 denormalised copy of `hosts.kind` so the database can enforce the remote-root
 invariant.
 
@@ -158,9 +165,9 @@ converted into API billing.
 tracked by the control plane only as an opaque `vendor_session_id` per task
 thread pinned to one (host, workspace, installation).
 
-Room continuity uses the same host-thread authority, generalized from Task
-threads: one live `host_threads` row per Room × Agent, resettable by the host
-owner, and closed when the specialist leaves the Room. Direct continuity is
+Conversation continuity uses the same host-thread authority, generalized from
+Task threads: one live `host_threads` row per Conversation × Agent, resettable
+by the host owner, and closed when the specialist leaves the Room. Direct continuity is
 one live row per Agent × Host owner, with the direct session's recent history
 rendered into the next prompt. A managed thread has no Location and carries
 the managed Agent/container in its launch frame; a Location thread pins the
@@ -184,8 +191,9 @@ The daemon's durable role:
   duplex stdio frame stream through the same outbound connection.
 - bounded read-only tree, file, and Git requests for registered workspaces,
   with the same path policy and byte/file-count limits on the daemon.
-- managed-workspace lifecycle: derive a per-Agent × container directory, create
-  it for launch, archive on Room removal/direct-session deletion, restore only
+- managed-workspace lifecycle: derive a shared Conversation or per-Agent
+  direct-owner directory, create it for launch, archive on Conversation/Room
+  removal or direct-session deletion, restore only
   after an explicit request, sweep archives older than 30 days, and report the
   opaque availability inventory on heartbeat.
 
@@ -230,7 +238,7 @@ or daemon heartbeat writes `execution_ready` and branch/head/dirty metadata;
 dispatch requires a live Host and a ready Location, and omitted remote
 reports mark Locations not ready. The dispatch surfaces are
 `POST /api/v1/tasks/:taskId/runs` and `POST /api/v1/tasks/runs`, which accept
-a Location, default to the Folder's preferred one, enforce Project write
+a Location, enforce Project write
 access and Host ownership/capability/readiness, and enqueue the same agent
 job. Every terminal Run flows through one Run-terminal → Task-status
 projection: a Task becomes `done` only after all linked Runs are
@@ -285,10 +293,10 @@ probing, and full local-first replication are likewise out of scope.
   `folder_read` pull channel and shared `@rainver/folder-read` policy keep
   paths host-owned while returning bounded tree/file/Git data to Files & Code.
 - **2026-08-30** — Room specialists are host-bound Agent records with one
-  owner-only Room × Agent host thread; Room prompt context remains prompt
-  content and never becomes server-brokered Runtime Context.
-- **2026-08-30** — managed workspaces add daemon-derived per-Agent × Room or
-  direct-owner directories, archive/restore/sweep lifecycle, and direct chat;
+  owner-only Conversation × Agent host thread; Room prompt context remains
+  prompt content and never becomes server-brokered Runtime Context.
+- **2026-08-30** — managed workspaces add daemon-derived shared Conversation
+  or direct-owner directories, archive/restore/sweep lifecycle, and direct chat;
   the control plane stores only the host, workspace mode, and opaque container
   identity. Room removal and direct-session deletion archive rather than
   delete, and reset retires vendor continuity without touching the directory.

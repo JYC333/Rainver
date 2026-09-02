@@ -12,6 +12,7 @@ import {
 } from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { seedServerHost } from "./support/domainSeeds.js";
 
 let repository: PgConversationBackendRepository | undefined;
 const loggedInProfileIds = new Set<string>();
@@ -129,8 +130,8 @@ beforeEach(async () => {
 });
 
 describe("PgConversationBackendRepository (real Postgres)", () => {
-  it("lists and persists only the signed-in user's CLI credential", async () => {
-    if (!db.available || !repository || !db.pool) return;
+  it("lists and persists only the signed-in user's CLI credential", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
 
     expect(await repository.listOptions("space-1", "user-1", "agent-1")).toEqual([
       expect.objectContaining({
@@ -175,7 +176,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       await db.pool.query(
         `SELECT runtime_profile_id, credential_profile_id
            FROM session_conversation_backends
-          WHERE session_id = 'session-1' AND user_id = 'user-1'`,
+          WHERE session_id = 'session-1' AND bound_by_user_id = 'user-1'`,
       ),
     ).toMatchObject({
       rows: [{
@@ -185,8 +186,83 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
   });
 
-  it("records an opaque runtime session and rotates isolated state when context changes", async () => {
-    if (!db.available || !repository || !db.pool) return;
+  it("keeps initialized configuration snapshots and fails closed when the binding is disabled", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
+
+    await seedServerHost(db.pool, { id: "host-context" });
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET execution_host_id = 'host-context', workspace_mode = 'managed',
+              workspace_location_id = NULL, runtime_installation = 'own',
+              model_name = 'initial-model', runtime_config_json = '{"effort":"medium"}',
+              runtime_policy_json = '{"network":"deny"}'
+        WHERE id = 'runtime-cli'`,
+    );
+
+    const binding = await repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+      requested: {
+        runtime_profile_id: "runtime-cli",
+        credential_profile_id: null,
+      },
+    });
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, space_id, execution_host_id, workspace_mode, session_id, agent_id,
+         container_kind, adapter_type, runtime_installation, status,
+         created_by_user_id, created_at, updated_at
+       ) VALUES (
+         'thread-context', 'space-1', 'host-context', 'managed', 'session-1', 'agent-1',
+         'conversation', 'claude_code', 'own', 'active', 'user-1', now(), now()
+       )`,
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts
+         (id, space_id, session_id, execution_host_id, primary_workspace_mode,
+          state, initialized_at, initialized_by_user_id, created_at, updated_at)
+       VALUES ('context-1', 'space-1', 'session-1', 'host-context', 'managed',
+          'initialized', now(), 'user-1', now(), now())`,
+    );
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET model_name = 'changed-model', runtime_config_json = '{"effort":"high"}',
+              runtime_policy_json = '{"network":"allow"}'
+        WHERE id = 'runtime-cli'`,
+    );
+    await expect(repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+    })).resolves.toMatchObject({
+      model_name: "initial-model",
+      runtime_config_json: { effort: "medium" },
+      runtime_policy_json: { network: "deny" },
+    });
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET enabled = false
+        WHERE id = 'runtime-cli'`,
+    );
+
+    await expect(repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+    })).rejects.toEqual(expect.objectContaining({
+      name: ConversationBackendError.name,
+      statusCode: 409,
+      message: "The initialized Conversation Agent runtime binding is missing",
+    }));
+    expect(binding.runtime_profile_id).toBe("runtime-cli");
+  });
+
+  it("records an opaque runtime session and rotates isolated state when context changes", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
     const runtimeSessions = new PgConversationRuntimeSessionRepository(db.pool);
     const binding = await repository.resolveBinding({
       space_id: "space-1",
@@ -209,7 +285,6 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       binding_id: binding.binding_id,
       space_id: "space-1",
       session_id: "session-1",
-      user_id: "user-1",
       agent_id: "agent-1",
       runtime_state_key: binding.runtime_state_key,
       context_fingerprint: "fingerprint-a",
@@ -223,7 +298,6 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       binding_id: binding.binding_id,
       space_id: "space-1",
       session_id: "session-1",
-      user_id: "user-1",
       agent_id: "agent-1",
       runtime_state_key: binding.runtime_state_key,
       context_fingerprint: "fingerprint-b",
@@ -284,13 +358,13 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     expect(switched.runtime_state_key).not.toBe(invalidated.runtime_state_key);
   });
 
-  it("rejects a second turn while the user's previous chat Run is active", async () => {
-    if (!db.available) return;
+  it("rejects a second turn while another Room member's previous Run is active", async (ctx) => {
+    if (!db.available) return ctx.skip();
     const runs = new PgRunRepository(db.pool);
     await runs.createQueuedRun({
       agent_id: "agent-1",
       space_id: "space-1",
-      user_id: "user-1",
+      user_id: "user-2",
       mode: "live",
       run_type: "agent",
       trigger_origin: "manual",
@@ -301,7 +375,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       model_override_json: {
         chat_turn: {
           schema_version: "chat_turn.v1",
-          user_id: "user-1",
+          user_id: "user-2",
         },
       },
     });
@@ -316,8 +390,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     }));
   });
 
-  it("atomically invalidates the conversation binding with terminal Run visibility", async () => {
-    if (!db.available || !repository || !db.pool) return;
+  it("atomically invalidates the conversation binding with terminal Run visibility", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
     const binding = await repository.resolveBinding({
       space_id: "space-1",
       user_id: "user-1",
@@ -444,8 +518,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
   });
 
-  it("allows only the winning terminal update to mutate the runtime binding", async () => {
-    if (!db.available || !repository || !db.pool) return;
+  it("allows only the winning terminal update to mutate the runtime binding", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
     const binding = await repository.resolveBinding({
       space_id: "space-1",
       user_id: "user-1",
@@ -528,8 +602,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     }
   });
 
-  it("terminates an old Run without overwriting a binding that has moved to new state", async () => {
-    if (!db.available || !repository || !db.pool) return;
+  it("terminates an old Run without overwriting a binding that has moved to new state", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
     const binding = await repository.resolveBinding({
       space_id: "space-1",
       user_id: "user-1",
@@ -594,8 +668,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
   });
 
-  it("rejects another member's credential instead of falling back", async () => {
-    if (!db.available || !repository) return;
+  it("rejects another member's credential instead of falling back", async (ctx) => {
+    if (!db.available || !repository) return ctx.skip();
     await expect(repository.resolveBinding({
       space_id: "space-1",
       user_id: "user-1",
@@ -611,8 +685,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     }));
   });
 
-  it("hides logged-out credentials and refuses to silently replace a stale binding", async () => {
-    if (!db.available || !repository) return;
+  it("hides logged-out credentials and refuses to silently replace a stale binding", async (ctx) => {
+    if (!db.available || !repository) return ctx.skip();
     await repository.resolveBinding({
       space_id: "space-1",
       user_id: "user-1",
@@ -637,8 +711,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     }));
   });
 
-  it("routes CLI capacity through the Run owner's grant and honors an explicit credential", async () => {
-    if (!db.available) return;
+  it("routes CLI capacity through the Run owner's grant and honors an explicit credential", async (ctx) => {
+    if (!db.available) return ctx.skip();
     const routing = new PgRouteDecisionRepository(db.pool, undefined, {
       availableProfiles: async () => [
         { id: "credential-user-1", logged_in: true },

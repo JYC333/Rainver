@@ -339,6 +339,12 @@ describe("agents CRUD routes", () => {
   it("lists runtime profiles for an agent", async () => {
     const query = vi.fn(async (sql: string) => {
       const norm = sql.replace(/\s+/g, " ").trim();
+      if (norm.includes("SELECT agent_kind, project_id") && norm.includes("FROM agents")) {
+        return { rows: [{ agent_kind: "standard", project_id: null }], rowCount: 1 };
+      }
+      if (norm.includes("FROM agents a")) {
+        return { rows: [{ id: "agent-1", space_id: "space-1", project_id: null, owner_user_id: "user-1", name: "Agent", description: null, role_instruction: null, status: "active", agent_kind: "standard", current_version_id: null, visibility: "private", access_level: "private", runtime_policy_json: { default_adapter_type: "model_api" } }], rowCount: 1 };
+      }
       if (norm.startsWith("SELECT id FROM agents WHERE space_id = $1 AND id = $2")) {
         return { rows: [{ id: "agent-1" }], rowCount: 1 };
       }
@@ -458,10 +464,16 @@ describe("agents CRUD routes", () => {
       }),
       release: vi.fn(),
     };
-    const pool = {
-      connect: vi.fn(async () => client),
-      query: vi.fn(async (sql: string) => {
-        const normalized = sql.replace(/\s+/g, " ").trim();
+      const pool = {
+        connect: vi.fn(async () => client),
+        query: vi.fn(async (sql: string) => {
+          const normalized = sql.replace(/\s+/g, " ").trim();
+        if (normalized.includes("SELECT agent_kind, project_id") && normalized.includes("FROM agents")) {
+          return { rows: [{ agent_kind: "standard", project_id: null }], rowCount: 1 };
+        }
+        if (normalized.includes("FROM agents a")) {
+          return { rows: [{ id: "agent-1", space_id: "space-1", project_id: null, owner_user_id: "user-1", name: "Agent", description: null, role_instruction: null, status: "active", agent_kind: "standard", current_version_id: null, visibility: "private", access_level: "private", runtime_policy_json: { default_adapter_type: "model_api" } }], rowCount: 1 };
+        }
         if (normalized.startsWith("SELECT id FROM agents")) {
           return { rows: [{ id: "agent-1" }], rowCount: 1 };
         }

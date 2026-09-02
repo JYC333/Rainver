@@ -1,3 +1,4 @@
+import { TASK_STATUSES as PROTOCOL_TASK_STATUSES } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool.js";
 import {
@@ -64,9 +65,7 @@ const DEFAULT_TASK_LIMITS = {
   maxCost: 10,
   maxDurationSeconds: 3600,
 } as const;
-const TASK_STATUSES = new Set([
-  "inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled",
-]);
+const TASK_STATUSES = new Set<string>(PROTOCOL_TASK_STATUSES);
 /**
  * Statuses after which a still-queued message must not dispatch into a fresh
  * Run. `waiting_for_review` belongs here for the same reason the terminal ones
@@ -715,17 +714,17 @@ export class PgTaskRepository {
 
       const locations = new PgWorkspaceLocationRepository(client);
       const namedLocationId = optionalString(body.workspace_location_id);
-      const preferred = !namedLocationId && task.project_folder_id
-        ? await locations.getPreferred(task.project_folder_id)
+      const activeLocation = !namedLocationId && task.project_folder_id
+        ? await locations.getActive(task.project_folder_id)
         : null;
       const target = namedLocationId
         ? await locations.resolveDispatchTarget(namedLocationId)
-        : preferred
-          ? await locations.resolveDispatchTarget(preferred.id)
+        : activeLocation
+          ? await locations.resolveDispatchTarget(activeLocation.id)
           : null;
       if (namedLocationId && !target) throw new HttpError(404, "Workspace Location not found");
       if (task.project_folder_id && !target) {
-        throw new HttpError(409, "Task Project Folder has no active preferred Workspace Location");
+        throw new HttpError(409, "Task Project Folder has no active Workspace Location");
       }
       if (target && (target.space_id !== identity.spaceId || target.project_folder_id !== task.project_folder_id || target.project_id !== task.project_id)) {
         throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");

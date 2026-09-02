@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
   FolderKanban, Target, Edit2, Archive, ChevronLeft,
@@ -16,7 +16,6 @@ import { StatusBadge } from '../../components/ui/badge'
 import { Label } from '../../components/ui/label'
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
-import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import {
@@ -32,6 +31,7 @@ import EditProjectBriefGoalDialog from './EditProjectBriefGoalDialog'
 import ProjectPulse from './ProjectPulse'
 import { AmbientImportBanner } from './AmbientImportBanner'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
+import ProjectConversationBackendCard from './ProjectConversationBackendCard'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -44,12 +44,11 @@ interface EditDialogProps {
   open: boolean
   onOpenChange: (v: boolean) => void
   onSaved: (updated: Project) => void
-  onModeChanged: (overview: ProjectOverview) => void
 }
 
 // General Project settings only. Research intake configuration used to share
 // this dialog; it belongs to the Research Area, which owns that state.
-function EditProjectDialog({ project, overview, open, onOpenChange, onSaved, onModeChanged }: EditDialogProps) {
+function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: EditDialogProps) {
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description ?? '')
   const [focus, setFocus] = useState(project.current_focus ?? '')
@@ -95,6 +94,7 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved, onM
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          <ProjectConversationBackendCard projectId={project.id} />
           <div className="space-y-1.5">
             <Label>Name <span className="text-destructive">*</span></Label>
             <Input value={name} onChange={e => setName(e.target.value)} />
@@ -112,27 +112,6 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved, onM
               placeholder="What are you actively working on right now?"
             />
           </div>
-          {overview && (
-            <div className="space-y-1.5">
-              <Label>How this Project advances</Label>
-              {/* Settings, not the front page: it changes only the Loop's stage
-                  wording and the Assistant's framing, and is changed rarely. */}
-              <Select
-                ariaLabel="How this Project advances"
-                value={overview.project.primary_mode}
-                options={overview.available_modes.map(mode => ({
-                  value: mode,
-                  label: mode.charAt(0).toUpperCase() + mode.slice(1),
-                }))}
-                onChange={async value => {
-                  try {
-                    await projectsApi.transitionMode(project.id, value, 'Changed from Project settings')
-                    onModeChanged(await projectsApi.getOverview(project.id))
-                  } catch (e) { toast.error(errMsg(e)) }
-                }}
-              />
-            </div>
-          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -161,6 +140,7 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved, onM
  */
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { activeSpaceId, spaces, userId } = useSpace()
 
@@ -173,6 +153,11 @@ export default function ProjectDetailPage() {
   const [instructionOpen, setInstructionOpen] = useState(false)
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const runtimeSettingsRequested = searchParams.get('settings') === 'runtime'
+
+  useEffect(() => {
+    if (runtimeSettingsRequested) setEditOpen(true)
+  }, [runtimeSettingsRequested])
 
   // React StrictMode (dev only) intentionally double-invokes the mount effect,
   // which has no cleanup to cancel the first call — collapse a second call for
@@ -218,6 +203,8 @@ export default function ProjectDetailPage() {
       if (loadInFlightRef.current?.promise === promise) loadInFlightRef.current = null
     }
   }, [projectId, activeSpaceId, loadImpl])
+  // Stable: Pulse re-reads on an interval keyed on this callback's identity.
+  const refreshOverview = useCallback(() => { void load(true) }, [load])
 
   useEffect(() => { void load() }, [load])
 
@@ -350,7 +337,8 @@ export default function ProjectDetailPage() {
           /* The overview owns the attention list, so acting on an item from
              Pulse has to reload it here — a suggestion that stays on the list
              after being taken is the failure the classes exist to prevent. */
-          onOverviewChanged={() => { void load(true) }}
+          onOverviewChanged={refreshOverview}
+          onDefineGoal={() => setBriefGoalOpen(true)}
         />
       )}
 
@@ -369,10 +357,6 @@ export default function ProjectDetailPage() {
         open={editOpen}
         onOpenChange={setEditOpen}
         onSaved={updated => setProject(updated)}
-        onModeChanged={next => {
-          setKernelOverview(next)
-          setProject(current => current ? { ...current, primary_mode: next.project.primary_mode } : current)
-        }}
       />
       <EditProjectBriefGoalDialog
         projectId={project.id}

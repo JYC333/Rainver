@@ -16,7 +16,7 @@ export interface SandboxMountRef {
   root: "workspaces" | "sandboxes" | "runtime_tools" | "run_homes" | "conversation_homes" | "login_homes";
   id: string;
   target: "/workspace" | "/delivery" | "/runtime-tool" | "/home/sandbox"
-    | "/run-exchange/input" | "/run-exchange/output";
+    | "/run-exchange/input" | "/run-exchange/output" | `/attachments/${number}`;
   access: SandboxAccess;
 }
 
@@ -52,6 +52,7 @@ export interface SandboxRuntimeEnvironment {
     cli_path?: string;
     skill_path?: string;
   };
+  workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; target: `/attachments/${number}` }>;
   exchange?: boolean;
 }
 

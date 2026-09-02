@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
-import { ProjectPrimaryModeSchema, type ProjectPrimaryMode } from "./projects.js";
 
 /**
  * Work Loop stages and the Project work event vocabulary.
@@ -18,11 +17,10 @@ import { ProjectPrimaryModeSchema, type ProjectPrimaryMode } from "./projects.js
  *
  * The five stages are a **system constant**, not per-Project configuration.
  * The stress test across delivery, research, operations, learning, events and
- * personal work found the same five everywhere; what differed was the wording.
- * So `primary_mode` swaps labels and nothing else — the keys, their order, and
- * their meaning are identical in every Project. A versioned per-Project loop
- * definition would carry only those labels, which is not enough to justify a
- * configuration table with a publish lifecycle.
+ * personal work found the same five everywhere; only the wording differed, and
+ * a per-Project "mode" that swapped the wording was the last thing left of a
+ * Project classification nothing else read, so it went (ADR 0019). The keys,
+ * their order, and their meaning are identical in every Project.
  */
 
 /**
@@ -33,6 +31,15 @@ import { ProjectPrimaryModeSchema, type ProjectPrimaryMode } from "./projects.js
  * Board's own filter lists them. A badge that disagreed with the list it opens
  * sends someone to look for a card that is not there.
  */
+/**
+ * Every flow status a Task can be in. The one list: the `tasks` and
+ * `board_columns` check constraints, the repository's validator and the
+ * Board's lanes all derive from it, and `projectWorkContracts.test.ts` pins
+ * them to it — a status with no lane is a card counted and never drawn.
+ */
+export const TASK_STATUSES = ["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
 export const PERSON_ONLY_TASK_STATUSES = ["waiting_for_review", "blocked"] as const;
 
 export const WORK_LOOP_STAGE_KEYS = ["frame", "plan", "act", "verify", "conclude"] as const;
@@ -40,46 +47,19 @@ export const WorkLoopStageKeySchema = z.enum(WORK_LOOP_STAGE_KEYS);
 export type WorkLoopStageKey = z.infer<typeof WorkLoopStageKeySchema>;
 
 /**
- * Mode-specific wording for the same five stages. Presentation only: nothing
- * branches on these strings, and a Mode transition changes what a Task's stage
- * is *called*, never which stage it is in.
+ * One wording for the five stages, whatever the Project is about. The stage
+ * keys are the vocabulary the docs use, so they are the labels too.
  */
-export const WORK_LOOP_STAGE_LABELS: Record<
-  ProjectPrimaryMode,
-  Record<WorkLoopStageKey, string>
-> = {
-  research: {
-    frame: "Question",
-    plan: "Method",
-    act: "Investigate",
-    verify: "Evaluate",
-    conclude: "Conclude",
-  },
-  delivery: {
-    frame: "Define",
-    plan: "Design",
-    act: "Build",
-    verify: "Verify",
-    conclude: "Ship",
-  },
-  operations: {
-    frame: "Scope",
-    plan: "Procedure",
-    act: "Execute",
-    verify: "Check",
-    conclude: "Close",
-  },
-  learning: {
-    frame: "Goal",
-    plan: "Plan",
-    act: "Study",
-    verify: "Assess",
-    conclude: "Consolidate",
-  },
+export const WORK_LOOP_STAGE_LABELS: Record<WorkLoopStageKey, string> = {
+  frame: "Frame",
+  plan: "Plan",
+  act: "Act",
+  verify: "Verify",
+  conclude: "Conclude",
 };
 
-export function workLoopStageLabel(mode: ProjectPrimaryMode, stage: WorkLoopStageKey): string {
-  return WORK_LOOP_STAGE_LABELS[mode][stage];
+export function workLoopStageLabel(stage: WorkLoopStageKey): string {
+  return WORK_LOOP_STAGE_LABELS[stage];
 }
 
 /**
@@ -198,8 +178,6 @@ export const TaskLoopStateSchema = z
   .passthrough();
 export type TaskLoopState = z.infer<typeof TaskLoopStateSchema>;
 
-export const ProjectWorkModeSchema = ProjectPrimaryModeSchema;
-
 /**
  * Why a Task cannot close yet.
  *
@@ -268,7 +246,6 @@ export const ProjectBoardResponseSchema = z
     project: z.object({
       id: IdSchema,
       name: z.string(),
-      primary_mode: ProjectPrimaryModeSchema,
     }).strict(),
     columns: z.array(ProjectBoardColumnSchema),
     cards: z.array(ProjectBoardCardSchema),

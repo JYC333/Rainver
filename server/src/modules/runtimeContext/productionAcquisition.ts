@@ -451,7 +451,6 @@ const PROJECT_BRIEF_CONVERSATION_FIELDS = [
   "assumptions",
   "current_focus",
   "confirmed_decisions",
-  "primary_mode",
   "workspace_identity",
   "workspace_boundary",
   "source_refs",

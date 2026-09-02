@@ -1375,7 +1375,7 @@ describe("RunOrchestrationService", () => {
 
   it("tells the execution preflight a managed-API run on a remote Location is not a remote run", async () => {
     // Only a local_cli adapter is dispatched to a daemon. A model_api run
-    // inside a Folder whose preferred Location is remote still executes on
+    // inside a Folder whose active Location is remote still executes on
     // the server, against exactly the provider it recorded — so telling the
     // preflight otherwise strips that provider and fails the run.
     //

@@ -61,7 +61,6 @@ Each step adds trust validation and human review opportunity.
 | `status` | string | `active` \| `archived` \| `deleted` |
 | `current_focus` | text (nullable) | Generic foreground/display focus for non-Inquiry work; Auto Research does not read or write it as a Question authority |
 | `settings_json` | JSON (nullable) | Flexible per-project configuration |
-| `primary_mode` | string | How this Project advances: `research`, `delivery`, `operations`, or `learning`. Presentation/progress focus only; changing it does not move domain data |
 | `active_brief_version_id` | FK → project_brief_versions | Current immutable Brief version, constrained to the same Project/Space |
 | `active_instruction_version_id` | FK → project_instruction_versions | Current approved Project Instruction, constrained to the same Project/Space |
 | `created_at` / `updated_at` | datetime | Standard timestamps |
@@ -112,10 +111,19 @@ single-owner FK.
 ### WorkspaceLocation (physical checkout)
 
 `workspace_locations` binds a Folder to one ExecutionHost. It carries the
-server-only `root_path` or remote display label, preferred selection,
-branch/head/dirty observations, and the persisted `execution_ready` fact. A
-remote Location never carries a server path. Runs and host task threads bind to
-this row when physical execution matters.
+server-only `root_path` or remote display label, branch/head/dirty observations,
+and the persisted `execution_ready` fact. A remote Location never carries a
+server path. A Folder has at most one active execution Location. New work and
+new attachments select only that active row; an explicitly replaced Location
+becomes stale and remains executable only for initialized Conversations that
+already pin it. Archived rows are non-executable history. Task Runs may bind
+to the active Location directly. Project Conversations pin their Primary
+Location (or a Conversation-owned managed workspace) in the execution context
+and never consult a Folder-level preferred Location.
+An initialized Conversation may also retain same-Host attachment pins when a
+new active checkout is selected. Trusted remote Hosts can receive explicit
+read/write attachment grants; server-host attachments are read-only so a Run
+cannot bypass the managed worktree and patch-application boundary.
 
 A Folder has no separate owner, visibility, membership, or access-level
 authority — it inherits its owning Project's ACL completely. Unregistering a
@@ -172,52 +180,49 @@ v1 row, even when all optional Brief fields are empty. Later edits append a
 draft; a writer submits it for review and only a Project owner or Space
 owner/admin may publish it and move `projects.active_brief_version_id`.
 Each Brief version freezes the Project status, current focus, confirmed
-decisions, primary mode, workspace identity/boundary, source references, and
+decisions, workspace identity/boundary, source references, and
 authorship alongside goal/scope/success/constraints/assumptions. Goal-only UI
 edits carry forward the user-owned aggregate fields; the server snapshots the
 current Project-owned status/focus/mode in the same transaction.
 
 A Project's **mainline Room** is a second structural singleton on the same
 footing ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision
-4): created in the same transaction, present from the start, empty until
-spoken in. "A Project with no Room" is not a state, so no caller handles its
-absence. Nothing that can fail runs on that path — no Assistant is provisioned
-and no conversation created, both of which wait for the Room's first message —
-so a Space's backend configuration cannot stand between someone and a new
-Project. `PgProjectRepository.create` writes `rooms` and `room_user_members`
-directly through `PgRoomRepository`, rather than through `RoomService`, because
-that service opens its own transaction and asserts writer authority on a
-Project that does not exist yet.
+4): created in the same transaction, present from the start, empty until a
+user explicitly opens a Conversation draft. "A Project with no Room" is not a
+state, so no caller handles its absence. Project/Room creation provisions no
+Assistant and opens no Conversation; the explicit draft action performs lazy
+manager provisioning and exposes execution preflight. `PgProjectRepository.create`
+writes `rooms` and `room_user_members` directly through `PgRoomRepository`,
+rather than through `RoomService`, because that service opens its own
+transaction and asserts writer authority on a Project that does not exist yet.
 
 `project_instruction_versions` follows the same lifecycle; only the active
 published Instruction is runtime-authoritative. Brief writer authority and
 Instruction/publish owner-level authority are rechecked and locked inside the
 mutating transaction, so concurrent member revocation wins deterministically.
-`project_mode_transitions` is likewise append-only.
+A Project has no type field ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
+There was a `primary_mode` — `research`, `delivery`, `operations`,
+`learning`, "how work advances" — chosen at creation, changed from Settings
+and logged in `project_mode_transitions`; by the end it was read in one place,
+to pick one of four wordings for the same five Loop stages, while every
+Project was in fact created as `research` with no chooser and advanced by
+research-shaped conversation policies regardless. What kind of work a Project
+is, is derived, never declared: the accepted Brief's goal says how it advances
+and the Agent reads it every turn, and what the Project comes to hold (Threads
+and Sources, or Tasks and file changes, or recurring Tasks) is its shape. A
+Project may change shape as it goes. No surface shows a type label. When a
+kind of work needs structure the shared model lacks, the answer is a new
+object owned by an Area, never a mode that switches behaviour.
 
-`primary_mode` is the system's one classification axis, and it classifies by
-**how work advances**, not by subject matter: `research`, `delivery`,
-`operations`, `learning`. `inquiry` and `decision` were absorbed into
-`research` — asking is how research starts and deciding is where it ends, and
-a Project that advances by delivery makes decisions too, which is why neither
-was ever a way of advancing work. Both remain first-class entities with their
-own surfaces, and Inquiry's pending Candidates reach the shell through its
-attention adapter.
+`inquiry` and `decision` are entities with their own surfaces, not ways of
+advancing work: asking is how research starts and deciding is where it ends,
+and a Project that advances by delivery makes decisions too. Inquiry's pending
+Candidates reach the shell through its attention adapter.
 
-A Primary Mode transition changes Project-shell presentation only — every
-installed Project Area remains reachable independent of `primary_mode`, and
-the transition does not convert, copy, or reclassify domain rows. What it
-changes is the Loop's stage wording (`WORK_LOOP_STAGE_LABELS`) and the
-Assistant's framing; nothing else reads it. There used to be a per-Mode
-"projection" (a state summary and next-action links) and a per-Mode set of
-placeholder rows; both were removed once the front page stopped duplicating
-the sidebar, because nothing consumed them. Every Mode is always available:
-there is no adapter to register before one can be chosen.
+### Creation presets nothing
 
-### Creation presets nothing but the Mode
-
-Creating a Project writes a name, an optional Brief, and `primary_mode`. It
-binds no Sources, creates no Workflow, and installs no starter content.
+Creating a Project writes a name and an optional Brief. It binds no Sources,
+creates no Workflow, installs no starter content, and records no type.
 
 User-visible Project initialization is complete when the active published
 Brief defines a Project goal or core problem. Publication/review metadata does
@@ -240,11 +245,11 @@ Nobody noticed the justification had expired. A later pass stripped its
 Primary Mode and `sections`, leaving a pack that saved roughly three clicks in
 the Sources Area and only when the Space already held matching connections.
 
-Every job it ever held has another home: classification is `primary_mode`;
-starting shape is `MODE_PLACEHOLDER_ENTITIES` plus each Area's empty state;
-extraction profiles are chosen per binding in Project Sources; Workflows are
-started explicitly. Nothing should reintroduce a creation-time preset without
-first naming which of these it is not.
+Every job it ever held has another home: classification is derived from the
+goal and the Project's contents (ADR 0019); starting shape is each Area's
+empty state; extraction profiles are chosen per binding in Project Sources;
+Workflows are started explicitly. Nothing should reintroduce a creation-time
+preset without first naming which of these it is not.
 
 Academic research is a set of Sources and an extraction profile, not a project
 type. Binding active arXiv and OpenAlex channels with the `academic_paper_v1`
@@ -982,7 +987,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | DELETE | `/projects/{id}/folders/{folderId}` | Archive a Project Folder |
 | POST | `/projects/{id}/folders/{folderId}/unregister` | Remove only the registration row; never touches disk |
 | POST | `/projects/{id}/folders/scan` | Scan for unregistered directories eligible to connect |
-| GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads; preferred remote Locations round-trip through the owning host daemon |
+| GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads; the requested active remote Location round-trips through the owning host daemon |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |
@@ -1075,7 +1080,7 @@ every retrieval result is revalidated against the canonical Project ACL, and
 graph responses enforce one bounded node budget across Inquiry and
 `space_objects` producers.
 
-Experiment is a separate Project capability, not a Primary Mode and not a
+Experiment is a separate Project capability, not a Project type and not a
 second research state machine. One Definition has immutable Versions;
 `manual` and `managed_code_comparison` are executor types. Each Experiment Run
 requires an explicitly approved Version, freezes its Version config, records
@@ -1150,19 +1155,22 @@ space.
   pause/remove, health, and the materialized project item collection. Global
   Sources remains the source-level management surface.
 - Project conversation enters the project-bound Room surface at
-  `/rooms?project={id}`. A Room may own multiple durable sessions; every
-  message opens one auditable collaboration task whose Runs retain the
-  validated `project_id`, optional Room-bound `project_folder_id`, speaker
-  identity, task group, and session. There is
-  no separate Project Chat route or execution authority. Projects without a
-  Folder may use Room; a selected active execution-enabled Folder is bound once
-  at Room creation and remains governed by the normal read-only sandbox boundary.
+  `/rooms?project={id}`. A Room may own multiple durable Conversations; each
+  explicit draft pins one Host, CLI installation, and Primary Workspace in its
+  Conversation execution context, then each message opens one auditable
+  collaboration task whose Runs retain the validated `project_id`, pinned
+  execution context, speaker identity, task group, and session. There is no
+  separate Project Chat route or execution authority. Projects without a
+  Folder visibly default to a Conversation-owned managed workspace; a Folder
+  Location can be selected explicitly before initialization or attached later
+  with same-Host, per-Conversation access. Existing Conversations never rebind
+  when Folder Locations change; their stale pinned Location remains executable
+  until it is explicitly archived or otherwise becomes unavailable.
   Creating a Room requires Project writer authority and every human roster
   member must already have Project read access. All later Room operations
   re-check that ACL, so Project revocation immediately removes Room access.
-- Project creation atomically records the initial Brief and Mode Transition,
-  not a permanent Project type; Primary Mode can later change without moving
-  or converting Folder-owned data.
+- Project creation atomically records the initial Brief; there is no Project
+  type, permanent or otherwise (ADR 0019).
 - Project Detail also shows recent Sources recommendations from project-linked
   source post-processing decisions. These are selected/maybe candidate items for
   review and follow-up; accepting durable Knowledge still goes through proposal
@@ -1230,9 +1238,12 @@ action; nothing hides an Area.
 
 Attention is rendered by the persistent navigation shell, which is on screen
 from every Area, and by Pulse. Pulse is the Project's front page — goal and
-current focus, a prompt to define the goal until one exists, what needs
+current focus, a prompt to define the goal until one exists (it opens the
+same goal dialog as the header's "Edit goal") and a quiet
+line pointing at Files & Code (`?setup=folder`, which opens the connect
+dialog on arrival) until a Folder is connected, what needs
 attention, what is in progress, the latest reported updates — and nothing an
-Area owns. Primary Mode is changed from the Settings dialog.
+Area owns.
 Pulse can edit the goal and current focus directly;
 changing the goal appends an immutable Brief draft while preserving the other
 fields, then makes review and publish explicit. Submitted Briefs remain visible
@@ -1244,13 +1255,8 @@ Project Folders are reached through Research, Sources, and Files & Code, each
 of which owns its own creation and configuration actions rather than
 delegating them back to Pulse. Workflow creation
 remains an explicit user command after its required inputs are ready.
-Mode transitions append history only;
-they do not enable/disable an Area and do not translate domain records. Every
-Mode is always available (`available_modes` is the full list); there is no
-adapter to register before one can be chosen. An Area with
-preserved data remains reachable through grouped navigation regardless of
-`primary_mode`; that does not make its Mode selectable before it has a real
-progress model.
+An Area with preserved data remains reachable through grouped navigation
+whatever the Project has come to hold.
 
 Inquiry is a Project-owned domain with Question/Hypothesis Threads, typed
 relations plus an acyclic primary-parent tree, protected cognitive Iterations,
@@ -1446,7 +1452,7 @@ Raw material and Digest are tabs of Sources (three points on one
 source → corpus pipeline); Knowledge review and Experiments are views of
 Inquiry (a candidate queue that linked back to Inquiry's Review, and a test of
 a hypothesis Thread); Learning and Operations retired to the Space. Every
-previous deep link redirects to its new home. Primary Mode does not add, remove, or reorder an
+previous deep link redirects to its new home. Nothing about a Project adds, removes, or reorders an
 entry — navigation position carries muscle memory, and a sidebar that grows as
 a Project is used costs more than the clutter it saves. An Area with nothing in
 it is still reachable and opens on an empty state offering the first action.
@@ -1457,8 +1463,7 @@ top-level `/tasks/:taskId` route, which stays for deep links and for the
 cross-Project Tasks list; the difference is that reaching it from the Board
 keeps the Areas and the chat panel on screen.
 
-Changing Primary Mode changes foreground projection, not object ownership or
-visibility.
+Nothing a Project is used for changes object ownership or visibility.
 
 Board attention is an ACL-filtered Task projection; Automations contribute
 `operational_alert` Activity as attention. These adapters register through

@@ -1,4 +1,11 @@
-import { helloInfo, parseRuntimeProbes, type RuntimeProbe } from "../api.js";
+import {
+  HostServerFrameSchema,
+  type HostDaemonFrame,
+  type HostServerFrame,
+  type HostServerFrameOf,
+  type RuntimeProbe,
+} from "@rainver/protocol";
+import { helloInfo } from "../api.js";
 import { loadConfig, requireConfig } from "../config.js";
 import {
   handleLaunch,
@@ -8,15 +15,15 @@ import {
   resolveAcpLaunch,
   sweepStaleRunProfiles,
   type LaunchFrame,
-  type ProviderBindingFrame,
-  type TerminateFrame,
+  type LaunchWorkspace,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
-import { OWN_INSTALLATION, installTool, managedInstallationId, parseInstallToolFrame, parseUninstallToolFrame, uninstallTool } from "../tools.js";
-import { loginSession, openLoginSession, parseLoginOpenFrame } from "../login.js";
+import { OWN_INSTALLATION, installTool, managedInstallationId, uninstallTool } from "../tools.js";
+import { loginSession, openLoginSession } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
-import { DEFAULT_LIMITS, importAmbientSessions, sanitizeFailure, type AmbientImportRequest, type AmbientTrimLimits } from "../ambientSessions.js";
-import { FolderReadFrameError, parseFolderReadFrame, performFolderRead } from "../folderRead.js";
+import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
+import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
+import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
 import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -30,110 +37,101 @@ function wsUrl(serverUrl: string): string {
 }
 
 /**
- * Persistent outbound connection: register/hello, heartbeat, and now (P3)
- * job dispatch — launch/stream/terminate/upload/complete, delegated to
- * `execution.ts` (`RemoteHostExecutionAdapter`'s daemon-side counterpart;
- * see control-center-plan.md §5). This function does not return; it runs
- * until the process is killed, exactly like a systemd/launchd-managed
- * service is expected to.
+ * One inbound frame, parsed against the shared wire contract.
+ *
+ * This is the only place a control-plane frame becomes a typed value. There
+ * is no field-by-field rebuild after it: a handler receives the parsed frame
+ * itself, so a field the contract carries cannot be left behind on the way
+ * — which is exactly how `provider_binding` and then `work_surface` each
+ * shipped inert once, when this daemon copied frames by hand.
+ *
+ * A frame that does not parse is reported, not thrown: throwing inside the
+ * socket listener would take the whole daemon down, losing the reporting
+ * channel for every other run.
  */
+export function parseServerFrame(raw: unknown):
+  | { ok: true; frame: HostServerFrame }
+  | { ok: false; type: string | null; run_id: string | null; launch_id: string | null; detail: string } {
+  const parsed = HostServerFrameSchema.safeParse(raw);
+  if (parsed.success) return { ok: true, frame: parsed.data };
+  const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const issue = parsed.error.issues[0];
+  const detail = issue
+    ? `${issue.path.length > 0 ? issue.path.join(".") : "frame"}: ${issue.message}`
+    : "malformed frame";
+  return {
+    ok: false,
+    type: typeof record.type === "string" ? record.type : null,
+    run_id: typeof record.run_id === "string" ? record.run_id : null,
+    launch_id: typeof record.launch_id === "string" ? record.launch_id : null,
+    detail,
+  };
+}
+
 /**
- * Reads an `ambient_import` frame and resolves the runtime it names.
+ * The wire's `launch` frame as `execution.ts` consumes it. Everything is
+ * carried over by spread; only the managed-workspace container is renamed
+ * from its wire form (`user_id` / `conversation_id`) to the daemon's `id`.
+ */
+export function toLaunchFrame(frame: HostServerFrameOf<"launch">): LaunchFrame {
+  const { type: _type, workspace, ...rest } = frame;
+  return { ...rest, workspace: toLaunchWorkspace(workspace) };
+}
+
+function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]): LaunchWorkspace | undefined {
+  if (!workspace) return undefined;
+  if (workspace.kind === "location") return { kind: "location", workspace_location_id: workspace.workspace_location_id };
+  return {
+    kind: "managed",
+    agent_id: workspace.agent_id,
+    container: workspace.container.kind === "direct"
+      ? { kind: "direct", id: workspace.container.user_id }
+      : { kind: "conversation", id: workspace.container.conversation_id },
+  };
+}
+
+/**
+ * Resolves an `ambient_import` frame to the runtime it names.
  *
  * The argv comes from the server's own runtime probes, cached from
  * `hello_ack`, never from anything in the frame: which binary implements an
  * adapter is the server's knowledge (ADR 0016 §5), and a frame that could
  * name its own command would make this daemon spawn whatever it was told to.
+ * The workspace's real path is resolved here and never sent (ADR 0016 D3).
  */
-export function parseAmbientImportFrame(
-  frame: Record<string, unknown>,
+export function toAmbientImportRequest(
+  frame: HostServerFrameOf<"ambient_import">,
   probes: readonly RuntimeProbe[],
   workspaces: Record<string, string>,
 ): AmbientImportRequest {
-  const locationId = typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : "";
-  const adapterType = typeof frame.adapter_type === "string" ? frame.adapter_type : "";
-  if (!locationId || !adapterType) {
-    throw new Error("ambient_import frame needs a workspace_location_id and an adapter_type");
-  }
-  // Resolved here, never sent: this file is the only place a workspace's real
-  // path is written down, and the control plane never learns it (ADR 0016 D3).
-  const cwd = workspaces[locationId];
-  if (!cwd) throw new Error(`This host has no registered directory for location ${locationId}`);
-  const probe = probes.find((candidate) => candidate.adapter_type === adapterType);
-  if (!probe) throw new Error(`This host has no probe for ${adapterType}; reconnect to refresh them.`);
-  const unchanged = new Map<string, string>();
-  if (Array.isArray(frame.unchanged)) {
-    for (const entry of frame.unchanged) {
-      const record = entry as Record<string, unknown> | null;
-      if (typeof record?.session_id !== "string" || typeof record.updated_at !== "string") continue;
-      unchanged.set(record.session_id, record.updated_at);
-    }
-  }
-  const positiveInt = (value: unknown, fallback: number): number =>
-    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
-  const rawLimits = (frame.limits ?? {}) as Record<string, unknown>;
-  const limits: AmbientTrimLimits = {
-    text_max_bytes: positiveInt(rawLimits.text_max_bytes, DEFAULT_LIMITS.text_max_bytes),
-    tool_input_max_bytes: positiveInt(rawLimits.tool_input_max_bytes, DEFAULT_LIMITS.tool_input_max_bytes),
-    tool_output_max_bytes: positiveInt(rawLimits.tool_output_max_bytes, DEFAULT_LIMITS.tool_output_max_bytes),
-    raw_max_bytes: positiveInt(rawLimits.raw_max_bytes, DEFAULT_LIMITS.raw_max_bytes),
-  };
+  const cwd = workspaces[frame.workspace_location_id];
+  if (!cwd) throw new Error(`This host has no registered directory for location ${frame.workspace_location_id}`);
+  const probe = probes.find((candidate) => candidate.adapter_type === frame.adapter_type);
+  if (!probe) throw new Error(`This host has no probe for ${frame.adapter_type}; reconnect to refresh them.`);
   return {
     cwd,
     target: {
-      adapter_type: adapterType,
-      installation: typeof frame.installation === "string" && frame.installation ? frame.installation : OWN_INSTALLATION,
+      adapter_type: frame.adapter_type,
+      installation: frame.installation || OWN_INSTALLATION,
       argv: probe.argv,
     },
-    session_ids: Array.isArray(frame.session_ids)
-      ? frame.session_ids.filter((value): value is string => typeof value === "string")
-      : null,
-    retry_session_ids: Array.isArray(frame.retry_session_ids)
-      ? frame.retry_session_ids.filter((value): value is string => typeof value === "string")
-      : [],
-    unchanged,
-    window_days: positiveInt(frame.window_days, 30),
-    max_sessions: positiveInt(frame.max_sessions, 50),
-    limits,
+    session_ids: frame.session_ids,
+    retry_session_ids: frame.retry_session_ids,
+    unchanged: new Map(frame.unchanged.map((entry) => [entry.session_id, entry.updated_at])),
+    window_days: frame.window_days,
+    max_sessions: frame.max_sessions,
+    limits: frame.limits,
   };
 }
 
-export function parseProviderBinding(value: unknown): ProviderBindingFrame | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("launch frame carried a malformed provider_binding");
-  }
-  const record = value as Record<string, unknown>;
-  const files = Array.isArray(record.files) ? record.files : null;
-  if (!files || !isStringMap(record.env) || !isStringMap(record.profile_env)) {
-    throw new Error("launch frame carried a malformed provider_binding");
-  }
-  if (typeof record.profile_key !== "string" || !record.profile_key) {
-    throw new Error("launch frame carried a provider_binding with no profile key");
-  }
-  return {
-    profile_key: record.profile_key,
-    env: record.env as Record<string, string>,
-    profile_env: record.profile_env as Record<string, string>,
-    files: files.map((entry) => {
-      const file = entry as Record<string, unknown>;
-      if (typeof file?.relative_path !== "string" || typeof file?.contents !== "string") {
-        throw new Error("launch frame carried a malformed provider_binding file");
-      }
-      return {
-        relative_path: file.relative_path,
-        contents: file.contents,
-        ...(file.escape === "toml_basic_string" ? { escape: "toml_basic_string" as const } : {}),
-      };
-    }),
-  };
-}
-
-function isStringMap(value: unknown): boolean {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-    && Object.values(value as Record<string, unknown>).every((entry) => typeof entry === "string");
-}
-
+/**
+ * Persistent outbound connection: register/hello, heartbeat, and job
+ * dispatch — launch/stream/terminate/upload/complete, delegated to
+ * `execution.ts` (`RemoteHostExecutionAdapter`'s daemon-side counterpart;
+ * see control-center-plan.md §5). This function does not return; it runs
+ * until the process is killed, exactly like a systemd/launchd-managed
+ * service is expected to.
+ */
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<never> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
   const config = await requireConfig();
@@ -172,7 +170,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     // server actually registers this connection in
     // `sharedHostConnectionRegistry` — a frame sent on this socket before
     // that would be rejected server-side as unauthenticated anyway.
-    const sendOnThisConnection = (payload: Record<string, unknown>) => {
+    const sendOnThisConnection = (payload: HostDaemonFrame) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(payload));
     };
@@ -181,7 +179,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     // already names its runtimes rather than only git for one heartbeat.
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
     const sendHeartbeat = () => {
-      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => socket.send(JSON.stringify({ type: "heartbeat", ...info })));
+      void currentWorkspaces()
+        .then((ws) => helloInfo(ws, serverUrl, runtimeProbes))
+        .then((info) => sendOnThisConnection({ type: "heartbeat", ...info }));
       // Fire-and-forget, and deliberately after the heartbeat is already on
       // its way: counting starts an agent process per runtime, so it must
       // never be something a heartbeat waits for. Whatever it measures is
@@ -202,232 +202,213 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           if (removed > 0) log(`removed ${removed} finished run director${removed === 1 ? "y" : "ies"}`);
         }).catch(() => {});
         void sweepManagedWorkspaceArchives().catch((error) => log(`managed workspace sweep failed: ${error instanceof Error ? error.message : String(error)}`));
-        socket.send(JSON.stringify({ type: "hello", token, ...info }));
+        sendOnThisConnection({ type: "hello", token, ...info });
       });
     });
 
     socket.addEventListener("message", (event) => {
-      let frame: Record<string, unknown>;
+      let raw: unknown;
       try {
-        frame = JSON.parse(String(event.data));
+        raw = JSON.parse(String(event.data));
       } catch {
         return;
       }
-      if (frame.type === "hello_ack") {
-        helloAcked = true;
-        sink.bind(sendOnThisConnection);
-        log(`connected as host ${String(frame.host_id)}`);
-        // The hello went out before the server could say how to ask each
-        // runtime for its options, so report them now rather than a
-        // heartbeat interval later.
-        runtimeProbes = parseRuntimeProbes(frame.runtime_probes);
-        lastRuntimeProbes = runtimeProbes;
-        sendHeartbeat();
-        heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
-        return;
-      }
-      if (frame.type === "error") {
-        log(`server error: ${String(frame.detail)}`);
-        return;
-      }
-      if (frame.type === "launch" && typeof frame.run_id === "string" && Array.isArray(frame.argv)) {
-        let providerBinding: ProviderBindingFrame | undefined;
-        try {
-          providerBinding = parseProviderBinding(frame.provider_binding);
-        } catch (error) {
-          // Throwing here would escape the WS listener and take the whole
-          // daemon down, losing the reporting channel for every other run.
-          // Fail this run instead, and say why.
-          log(`launch run ${String(frame.run_id)}: rejected: ${error instanceof Error ? error.message : String(error)}`);
-          sink.send({
-            type: "complete",
-            run_id: frame.run_id,
-            exit_code: 1,
-            timed_out: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return;
+      const parsed = parseServerFrame(raw);
+      if (!parsed.ok) {
+        log(`rejected ${parsed.type ?? "unknown"} frame: ${parsed.detail}`);
+        // A run the server is waiting on must be told, or it hangs until its
+        // timeout; the reply is routed by the dispatch nonce, so a frame with
+        // none can only be logged. Other requests have their own timeouts.
+        if (parsed.type === "launch" && parsed.run_id && parsed.launch_id) {
+          sink.send({ type: "complete", run_id: parsed.run_id, launch_id: parsed.launch_id, exit_code: 1, timed_out: false, error: `launch frame rejected: ${parsed.detail}` });
         }
-        let launchFrame: LaunchFrame;
-        try {
-          launchFrame = {
-            run_id: frame.run_id,
-            workspace_location_id: typeof frame.workspace_location_id === "string" ? frame.workspace_location_id : undefined,
-            workspace: parseLaunchWorkspace(frame.workspace),
-            project_folder_id: typeof frame.project_folder_id === "string" ? frame.project_folder_id : undefined,
-            argv: frame.argv.map(String),
-            installation: typeof frame.installation === "string" ? frame.installation : undefined,
-            adapter_type: typeof frame.adapter_type === "string" ? frame.adapter_type : undefined,
-            stdin: typeof frame.stdin === "string" ? frame.stdin : null,
-            timeout_seconds: typeof frame.timeout_seconds === "number" ? frame.timeout_seconds : null,
-            keep_stdin_open: frame.keep_stdin_open === true,
-            // Dropping this silently is how a bound run ends up on the machine's
-            // own login while the control plane believes otherwise, so it is
-            // parsed strictly above: a malformed binding fails the run rather
-            // than degrading into an unbound one.
-            provider_binding: providerBinding,
-          };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log(`launch run ${String(frame.run_id)}: rejected: ${message}`);
-          sink.send({ type: "complete", run_id: frame.run_id, exit_code: 1, timed_out: false, error: message });
-          return;
-        }
-        log(`launch run ${launchFrame.run_id}`);
-        // Always routed through `sink`, never `sendOnThisConnection`
-        // directly — this run's `complete` frame may need to go out on a
-        // later reconnect, not this connection.
-        void handleLaunch(launchFrame, (payload) => sink.send(payload), log).catch((error) => {
-          log(`run ${launchFrame.run_id}: launch failed: ${error instanceof Error ? error.message : String(error)}`);
-          sink.send({
-            type: "complete",
-            run_id: launchFrame.run_id,
-            exit_code: 1,
-            timed_out: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
         return;
       }
-      if (frame.type === "managed_workspace_archive" || frame.type === "managed_workspace_restore") {
-        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-        if (!requestId || typeof frame.agent_id !== "string" || (frame.container_kind !== "room" && frame.container_kind !== "direct") || typeof frame.container_id !== "string") return;
-        void (async () => {
-          try {
-            const container: ManagedWorkspaceContainer = { kind: frame.container_kind as "room" | "direct", id: frame.container_id as string };
-            const changed = frame.type === "managed_workspace_archive"
-              ? await archiveManagedWorkspace(frame.agent_id as string, container)
-              : await restoreManagedWorkspace(frame.agent_id as string, container);
-            sink.send({ type: "managed_workspace_result", request_id: requestId, action: frame.type === "managed_workspace_archive" ? "archive" : "restore", ok: true, changed, error: null });
-            sendHeartbeat();
-          } catch (error) {
-            sink.send({ type: "managed_workspace_result", request_id: requestId, action: frame.type === "managed_workspace_archive" ? "archive" : "restore", ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
-          }
-        })();
-        return;
-      }
-      if (frame.type === "install_tool" || frame.type === "uninstall_tool") {
-        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-        const fail = (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          log(`${String(frame.type)} failed: ${message}`);
-          if (requestId) sink.send({ type: "tool_result", request_id: requestId, ok: false, error: message, installation: null });
-        };
-        const action = frame.type === "install_tool"
-          ? (async () => {
-              const install = parseInstallToolFrame(frame);
-              log(`install ${install.adapter_type} ${managedInstallationId(install.version)}`);
-              const manifest = await installTool(install, log);
-              log(`installed ${install.adapter_type} ${managedInstallationId(install.version)} → ${manifest.command}`);
-              return managedInstallationId(install.version);
-            })()
-          : (async () => {
-              const uninstall = parseUninstallToolFrame(frame);
-              if (!(await uninstallTool(uninstall))) throw new Error(`${uninstall.adapter_type} ${managedInstallationId(uninstall.version)} is not installed`);
-              log(`removed ${uninstall.adapter_type} ${managedInstallationId(uninstall.version)}`);
-              return managedInstallationId(uninstall.version);
-            })();
-        void action.then((installation) => {
-          // Report the new capability now rather than on the next interval.
+      const frame = parsed.frame;
+      switch (frame.type) {
+        case "hello_ack": {
+          helloAcked = true;
+          sink.bind(sendOnThisConnection);
+          log(`connected as host ${frame.host_id}`);
+          // The hello went out before the server could say how to ask each
+          // runtime for its options, so report them now rather than a
+          // heartbeat interval later.
+          runtimeProbes = frame.runtime_probes;
+          lastRuntimeProbes = runtimeProbes;
           sendHeartbeat();
-          sink.send({ type: "tool_result", request_id: requestId, ok: true, error: null, installation });
-        }, fail);
-        return;
-      }
-      if (frame.type === "login_open") {
-        const sessionId = typeof frame.session_id === "string" ? frame.session_id : null;
-        try {
-          openLoginSession(parseLoginOpenFrame(frame), (payload) => {
-            sink.send(payload);
-            // A finished login changes what this host reports.
-            if (payload.type === "login_exit") sendHeartbeat();
-          }, log);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log(`login_open rejected: ${message}`);
-          if (sessionId) {
-            sink.send({ type: "login_output", session_id: sessionId, data: `${message}\n` });
-            sink.send({ type: "login_exit", session_id: sessionId, exit_code: -1, logged_in: null });
-          }
+          heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+          return;
         }
-        return;
-      }
-      if (frame.type === "login_input" && typeof frame.session_id === "string" && typeof frame.data === "string") {
-        loginSession(frame.session_id)?.write(frame.data);
-        return;
-      }
-      if (frame.type === "login_close" && typeof frame.session_id === "string") {
-        loginSession(frame.session_id)?.close();
-        return;
-      }
-      if (frame.type === "ambient_import") {
-        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-        if (!requestId) return;
-        void (async () => {
-          try {
-            const request = parseAmbientImportFrame(frame, runtimeProbes ?? [], await currentWorkspaces());
-            log(`ambient import ${request.target.adapter_type} in ${request.cwd}`);
-            const { sessions, enumeration } = await importAmbientSessions(request, resolveAcpLaunch, log);
-            for (const session of sessions) {
-              // One frame per session rather than one for the whole import:
-              // a folder's history is megabytes even after trimming, and a
-              // single frame would have to be buffered whole on both ends.
-              sink.send({ type: "ambient_import_session", request_id: requestId, session });
+        case "heartbeat_ack":
+          return;
+        case "error":
+          log(`server error: ${frame.detail}`);
+          return;
+        case "launch": {
+          const launchFrame = toLaunchFrame(frame);
+          log(`launch run ${launchFrame.run_id}`);
+          // Always routed through `sink`, never `sendOnThisConnection`
+          // directly — this run's `complete` frame may need to go out on a
+          // later reconnect, not this connection.
+          void handleLaunch(launchFrame, (payload) => sink.send(payload), log).catch((error) => {
+            log(`run ${launchFrame.run_id}: launch failed: ${error instanceof Error ? error.message : String(error)}`);
+            sink.send({
+              type: "complete",
+              run_id: launchFrame.run_id,
+              launch_id: launchFrame.launch_id,
+              exit_code: 1,
+              timed_out: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+          return;
+        }
+        case "terminate":
+          handleTerminate(frame, log);
+          return;
+        case "stdin":
+          handleStdin(frame);
+          return;
+        case "stdin_close":
+          handleStdinClose(frame);
+          return;
+        case "list_dirs": {
+          void listDirectories(frame.path).then((result) => {
+            sink.send({ type: "list_dirs_result", request_id: frame.request_id, ...result });
+          });
+          return;
+        }
+        case "workspace_register": {
+          void registerWorkspace({ path: frame.path, project_id: frame.project_id, name: frame.name }).then((result) => {
+            sink.send({ type: "workspace_register_result", request_id: frame.request_id, ...result });
+            if (result.ok) sendHeartbeat();
+          });
+          return;
+        }
+        case "workspace_forget": {
+          void forgetWorkspace(frame.workspace_id).then((result) => {
+            sink.send({ type: "workspace_forget_result", request_id: frame.request_id, ...result });
+          }).catch((error) => {
+            sink.send({ type: "workspace_forget_result", request_id: frame.request_id, ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
+          });
+          return;
+        }
+        case "managed_workspace_archive":
+        case "managed_workspace_restore": {
+          const action = frame.type === "managed_workspace_archive" ? "archive" : "restore";
+          void (async () => {
+            try {
+              const container: ManagedWorkspaceContainer = { kind: frame.container_kind, id: frame.container_id };
+              const changed = action === "archive"
+                ? await archiveManagedWorkspace(frame.agent_id, container)
+                : await restoreManagedWorkspace(frame.agent_id, container);
+              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: true, changed, error: null });
+              sendHeartbeat();
+            } catch (error) {
+              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
             }
-            // What the runtime still holds for this folder, before any
-            // Rainver-side narrowing — the server needs it to decide which of
-            // its own imports the machine no longer has, a question its own
-            // records cannot answer. Null when the enumeration was
-            // inconclusive, because "I found nothing" and "I could not tell"
-            // must not both read as "everything here is gone".
-            sink.send({
-              type: "ambient_import_result",
-              request_id: requestId,
-              ok: true,
-              error: null,
-              session_count: sessions.length,
-              listed_session_ids: enumeration.conclusive ? enumeration.held : null,
-            });
-          } catch (error) {
-            const message = sanitizeFailure(error);
-            log(`ambient import failed: ${message}`);
-            sink.send({ type: "ambient_import_result", request_id: requestId, ok: false, error: message, session_count: 0, listed_session_ids: null });
-          }
-        })();
-        return;
-      }
-      if (frame.type === "folder_read") {
-        const requestId = typeof frame.request_id === "string" ? frame.request_id : null;
-        if (!requestId) return;
-        void (async () => {
+          })();
+          return;
+        }
+        case "install_tool":
+        case "uninstall_tool": {
+          const fail = (error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            log(`${frame.type} failed: ${message}`);
+            sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: message, installation: null });
+          };
+          const action = frame.type === "install_tool"
+            ? (async () => {
+                log(`install ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
+                const manifest = await installTool(frame, log);
+                log(`installed ${frame.adapter_type} ${managedInstallationId(frame.version)} → ${manifest.command}`);
+                return managedInstallationId(frame.version);
+              })()
+            : (async () => {
+                if (!(await uninstallTool(frame))) throw new Error(`${frame.adapter_type} ${managedInstallationId(frame.version)} is not installed`);
+                log(`removed ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
+                return managedInstallationId(frame.version);
+              })();
+          void action.then((installation) => {
+            // Report the new capability now rather than on the next interval.
+            sendHeartbeat();
+            sink.send({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, installation });
+          }, fail);
+          return;
+        }
+        case "login_open": {
           try {
-            const request = parseFolderReadFrame(frame, await currentWorkspaces());
-            sink.send(await performFolderRead(request));
+            openLoginSession(frame, (payload) => {
+              sink.send(payload);
+              // A finished login changes what this host reports.
+              if (payload.type === "login_exit") sendHeartbeat();
+            }, log);
           } catch (error) {
-            const code = error instanceof FolderReadFrameError ? error.code : "read_failed";
-            sink.send({
-              type: "folder_read_result",
-              request_id: requestId,
-              ok: false,
-              error: code,
-              message: sanitizeFailure(error),
-            });
+            const message = error instanceof Error ? error.message : String(error);
+            log(`login_open rejected: ${message}`);
+            sink.send({ type: "login_output", session_id: frame.session_id, data: `${message}\n` });
+            sink.send({ type: "login_exit", session_id: frame.session_id, exit_code: -1, logged_in: null });
           }
-        })();
-        return;
-      }
-      if (frame.type === "terminate" && typeof frame.run_id === "string") {
-        const terminateFrame: TerminateFrame = { run_id: frame.run_id, force: frame.force === true };
-        handleTerminate(terminateFrame, log);
-        return;
-      }
-      if (frame.type === "stdin" && typeof frame.run_id === "string" && typeof frame.value === "string") {
-        handleStdin({ run_id: frame.run_id, value: frame.value });
-        return;
-      }
-      if (frame.type === "stdin_close" && typeof frame.run_id === "string") {
-        handleStdinClose({ run_id: frame.run_id });
-        return;
+          return;
+        }
+        case "login_input":
+          loginSession(frame.session_id)?.write(frame.data);
+          return;
+        case "login_close":
+          loginSession(frame.session_id)?.close();
+          return;
+        case "ambient_import": {
+          void (async () => {
+            try {
+              const request = toAmbientImportRequest(frame, runtimeProbes ?? [], await currentWorkspaces());
+              log(`ambient import ${request.target.adapter_type} in ${request.cwd}`);
+              const { sessions, enumeration } = await importAmbientSessions(request, resolveAcpLaunch, log);
+              for (const session of sessions) {
+                // One frame per session rather than one for the whole import:
+                // a folder's history is megabytes even after trimming, and a
+                // single frame would have to be buffered whole on both ends.
+                sink.send({ type: "ambient_import_session", request_id: frame.request_id, session });
+              }
+              // What the runtime still holds for this folder, before any
+              // Rainver-side narrowing — the server needs it to decide which of
+              // its own imports the machine no longer has, a question its own
+              // records cannot answer. Null when the enumeration was
+              // inconclusive, because "I found nothing" and "I could not tell"
+              // must not both read as "everything here is gone".
+              sink.send({
+                type: "ambient_import_result",
+                request_id: frame.request_id,
+                ok: true,
+                error: null,
+                session_count: sessions.length,
+                listed_session_ids: enumeration.conclusive ? enumeration.held : null,
+              });
+            } catch (error) {
+              const message = sanitizeFailure(error);
+              log(`ambient import failed: ${message}`);
+              sink.send({ type: "ambient_import_result", request_id: frame.request_id, ok: false, error: message, session_count: 0, listed_session_ids: null });
+            }
+          })();
+          return;
+        }
+        case "folder_read": {
+          void (async () => {
+            try {
+              const request = resolveFolderReadRequest(frame, await currentWorkspaces());
+              sink.send(await performFolderRead(request));
+            } catch (error) {
+              const code = error instanceof FolderReadFrameError ? error.code : "read_failed";
+              sink.send({
+                type: "folder_read_result",
+                request_id: frame.request_id,
+                ok: false,
+                error: code,
+                message: sanitizeFailure(error),
+              });
+            }
+          })();
+          return;
+        }
       }
     });
 
@@ -446,25 +427,4 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       // connection-failure path; let that handler settle the promise.
     });
   });
-}
-
-function parseLaunchWorkspace(value: unknown): LaunchFrame["workspace"] {
-  if (value === undefined || value === null) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("launch frame carried a malformed workspace");
-  const record = value as Record<string, unknown>;
-  if (record.kind === "location" && typeof record.workspace_location_id === "string") {
-    return { kind: "location", workspace_location_id: record.workspace_location_id };
-  }
-  const container = record.container as Record<string, unknown> | null;
-  if (record.kind === "managed" && typeof record.agent_id === "string" && container
-    && ((container.kind === "room" && typeof container.room_id === "string") || (container.kind === "direct" && typeof container.user_id === "string"))) {
-    return {
-      kind: "managed",
-      agent_id: record.agent_id,
-      container: container.kind === "room"
-        ? { kind: "room", id: container.room_id as string }
-        : { kind: "direct", id: container.user_id as string },
-    };
-  }
-  throw new Error("launch frame carried a malformed workspace");
 }

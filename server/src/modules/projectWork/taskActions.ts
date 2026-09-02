@@ -29,6 +29,13 @@ export interface AgentActionContext {
   runId: string;
   /** The person this Run acts for. The Agent's reach is theirs, never wider. */
   instructedByUserId: string;
+  /**
+   * The Project this Run was opened in. A Task-addressed action reaches only
+   * its Tasks: a Room is one Project's conversation (ADR 0018, 0019), and an
+   * id from another Project the person can read is still not this
+   * conversation's to move.
+   */
+  projectId: string;
   /** The tool call, so a retried dispatch records one advancement. */
   idempotencyKey: string;
 }
@@ -53,6 +60,7 @@ export async function requireProjectTask(
   spaceId: string,
   taskId: string,
   instructedByUserId: string,
+  projectId: string,
 ): Promise<TaskRow & { project_id: string }> {
   const result = await db.query<TaskRow>(
     `SELECT t.id, t.project_id, t.status, t.title
@@ -62,7 +70,9 @@ export async function requireProjectTask(
     [spaceId, taskId, instructedByUserId],
   );
   const task = result.rows[0];
-  if (!task) throw new HttpError(404, "Task not found");
+  // Another Project's Task answers as not found, the same as an invented id:
+  // the executor then replies with the ids this Project actually has.
+  if (!task || task.project_id !== projectId) throw new HttpError(404, "Task not found");
   if (!task.project_id) {
     throw new HttpError(422, "This Task is not in a Project, so it has no work stream to write to");
   }
@@ -157,7 +167,7 @@ export async function reportOnTask(
   context: AgentActionContext,
   input: { task_id: string; summary: string; outcome?: string; refs?: readonly { type: string; id: string }[] },
 ): Promise<{ task_id: string; event_id: string }> {
-  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId);
+  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
   const event = await appendProjectWorkEvent(db, {
     spaceId: context.spaceId,
     projectId: task.project_id,
@@ -189,7 +199,7 @@ export async function handoffTask(
   context: AgentActionContext,
   input: { task_id: string; to: { kind: "user" | "agent"; id: string } | null; note?: string | null },
 ): Promise<{ task_id: string }> {
-  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId);
+  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
   if (task.status === "done" || task.status === "cancelled") {
     throw new HttpError(409, `Task is ${task.status}; there is no work left to hand off`);
   }
@@ -267,7 +277,7 @@ export async function advanceTaskStage(
   context: AgentActionContext,
   input: { task_id: string; to_stage: WorkLoopStageKey; reason: string },
 ): Promise<{ task_id: string; stage: WorkLoopStageKey }> {
-  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId);
+  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
   await recordStageChange(db, {
     spaceId: context.spaceId,
     projectId: task.project_id,
@@ -295,7 +305,7 @@ export async function requestTaskReview(
   input: { task_id: string; reason: string; options?: readonly string[] },
 ): Promise<{ task_id: string; status: string }> {
   return withQueryableTransaction(db, async (tx) => {
-    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId);
+    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
     if (task.status === "done" || task.status === "cancelled") {
       throw new HttpError(409, `Task is ${task.status} and cannot be sent for review`);
     }

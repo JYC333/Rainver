@@ -9,6 +9,7 @@ vi.mock('sonner', () => ({
 }))
 
 vi.mock('../../api/client', () => ({
+  hostsApi: { executionTargets: vi.fn().mockResolvedValue({ targets: [] }), browseDirectories: vi.fn(), registerWorkspace: vi.fn() },
   projectFoldersApi: {
     list: vi.fn(),
     tree: vi.fn(),
@@ -82,6 +83,34 @@ describe('Project Files & Code Area', () => {
     fireEvent.click(create)
 
     expect(await screen.findByRole('heading', { name: 'New Project Folder' })).toBeInTheDocument()
+  })
+
+  it('opens the connect dialog on arrival from a ?setup=folder link, once', async () => {
+    // Pulse and the conversation preflight send someone here to connect a
+    // Folder; landing on the page and then hunting for the button is the
+    // extra click the link exists to remove. The parameter is consumed so a
+    // reload does not reopen the dialog.
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [], total: 0, limit: 200, offset: 0,
+    })
+    renderPage('/projects/project-1/files?setup=folder')
+    // Queried afresh: consuming the parameter re-renders the route, and an
+    // element found before that is detached by the time it is asserted on.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'New Project Folder' })).toBeInTheDocument())
+  })
+
+  it('keeps the one dialog it opened on arrival while the Folders load', async () => {
+    // The dialog is showing before the Folder list answers; the switch to the
+    // empty state must keep that instance rather than mount a second one,
+    // which played the open animation twice.
+    const list = deferred<{ items: never[]; total: number; limit: number; offset: number }>()
+    vi.mocked(projectFoldersApi.list).mockReturnValue(list.promise as never)
+    renderPage('/projects/project-1/files?setup=folder')
+    const heading = await screen.findByRole('heading', { name: 'New Project Folder' })
+    list.resolve({ items: [], total: 0, limit: 200, offset: 0 })
+    await screen.findByText('No Project Folders yet')
+    expect(screen.getAllByRole('heading', { name: 'New Project Folder' })).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'New Project Folder' })).toBe(heading)
   })
 
   it('declares the shared-workspace boundary before Folder registration', async () => {
@@ -261,7 +290,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.locations).mockResolvedValue([{
       id: 'location-1', project_folder_id: 'folder-1', execution_host_id: 'host-1',
       execution_host_kind: 'remote', display_path: '/Users/alice/source', root_path: null,
-      branch: null, git_head: null, dirty: false, status: 'active', preferred: true,
+      branch: null, git_head: null, dirty: false, status: 'active',
       execution_ready: false, last_seen_at: null, created_at: '', updated_at: '',
       host_name: 'Alice laptop', host_online: true, host_owner_is_me: true,
     }])
@@ -385,7 +414,7 @@ describe('Project Files & Code Area', () => {
     firstLocations.resolve([{
       id: 'location-1', project_folder_id: 'folder-1', execution_host_id: 'host-1',
       execution_host_kind: 'remote', display_path: '/Users/alice/old', root_path: null,
-      branch: null, git_head: null, dirty: false, status: 'active', preferred: true,
+      branch: null, git_head: null, dirty: false, status: 'active',
       execution_ready: false, last_seen_at: null, created_at: '', updated_at: '',
       host_name: 'Old laptop', host_online: true, host_owner_is_me: true,
     }])
@@ -403,7 +432,7 @@ describe('Project Files & Code Area', () => {
     secondLocations.resolve([{
       id: 'location-2', project_folder_id: 'folder-1', execution_host_id: 'host-2',
       execution_host_kind: 'remote', display_path: '/Users/alice/new', root_path: null,
-      branch: null, git_head: null, dirty: false, status: 'active', preferred: true,
+      branch: null, git_head: null, dirty: false, status: 'active',
       execution_ready: false, last_seen_at: null, created_at: '', updated_at: '',
       host_name: 'New laptop', host_online: true, host_owner_is_me: true,
     }])

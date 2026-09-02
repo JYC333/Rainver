@@ -11,6 +11,9 @@ import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { RoomConversation } from '../../agent_groups/conversation/RoomConversation'
+import { ConversationBackendSetupCard } from '../../agent_groups/conversation/ConversationBackendSetupCard'
+import { ConversationExecutionPreflight } from '../../agent_groups/conversation/ConversationExecutionPreflight'
+import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
 
 /**
  * Talking to the Project's Agent without leaving what you are looking at.
@@ -124,7 +127,11 @@ export default function ProjectChatSidecar() {
   const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const [sessionId, setSessionId] = useState<string>('')
+  const [setupTargets, setSetupTargets] = useState<string[]>([])
+  const [runtimeRevision, setRuntimeRevision] = useState(0)
+  const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [executionReady, setExecutionReady] = useState(false)
 
   // Per Project: whether you want the Agent alongside one Project says nothing
   // about whether you want it alongside another.
@@ -135,6 +142,8 @@ export default function ProjectChatSidecar() {
     if (!projectId || !open || onRoomsArea) return
     let active = true
     setLoading(true)
+    setSetupTargets([])
+    setExecutionReady(false)
     void (async () => {
       try {
         setFailure(null)
@@ -149,6 +158,7 @@ export default function ProjectChatSidecar() {
         const page = await roomsApi.conversations(mainline.room.id, { limit: 50 })
         if (!active) return
         setConversations(page.items)
+        if (page.items.length === 0) setRuntimeOpen(true)
         // Remembered per Room, not per Project: the id names a conversation
         // *in* a Room, and a stale one matching nothing silently fell back.
         const remembered = readStored(conversationKey(mainline.room.id))
@@ -172,13 +182,13 @@ export default function ProjectChatSidecar() {
   const focusRefs = useMemo(() => focusRefsFor(pathname), [pathname])
 
   /**
-   * Leave the composer bound to no conversation. Sending is what creates one
-   * (ADR 0018 decision 5), and the send reports it back through
-   * `onConversationUpdated` — so a thread nobody writes in never exists.
+   * Leave the composer bound to no conversation until the user explicitly
+   * opens a draft and reviews its execution context.
    */
   const startThread = useCallback(() => {
     if (!room) return
     setSessionId('')
+    setExecutionReady(false)
   }, [room])
 
   if (onRoomsArea) return null
@@ -244,12 +254,26 @@ export default function ProjectChatSidecar() {
         </div>
       </div>
 
+      <details
+        className="border-b border-border px-3 py-2"
+        open={runtimeOpen}
+        onToggle={event => setRuntimeOpen(event.currentTarget.open)}
+      >
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+          Runtime &amp; workspace
+        </summary>
+        <div className="mt-2">
+          <ProjectConversationBackendCard key={`${projectId}:${runtimeRevision}`} projectId={projectId} />
+        </div>
+      </details>
+
       {conversations.length > 1 && (
         <div className="border-b border-border p-2">
           <Select
             ariaLabel="Conversation"
             value={sessionId}
             onChange={value => {
+              setExecutionReady(false)
               setSessionId(value)
               if (room) writeStored(conversationKey(room.id), value)
             }}
@@ -266,30 +290,56 @@ export default function ProjectChatSidecar() {
       ) : failure ? (
         <p className="p-3 text-xs text-destructive">{failure}</p>
       ) : !room ? null : (
-        // The same conversation module the full Room page renders: one
-        // implementation of what a conversation is, two places it is read.
-        <RoomConversation
-          // Picking works here too: the panel has the Room's other
-          // threads, so a pick has somewhere to go. Starting a new thread is
-          // not one of this surface's affordances, so that action is not
-          // offered and the toolbar hides it.
-          siblingConversations={conversations}
-          key={`${room.id}:${sessionId}`}
-          roomId={room.id}
-          conversationId={sessionId || null}
-          variant="panel"
-          focusRefs={focusRefs}
-          onConversationUpdated={conversation => {
-            // The first message created it. Bind to it so the next send goes
-            // to the same thread, and remember it like any other.
-            setSessionId(current => (current === conversation.id ? current : conversation.id))
-            setConversations(current => (current.some(item => item.id === conversation.id)
-              ? current.map(item => (item.id === conversation.id ? conversation : item))
-              : [conversation, ...current]))
-            writeStored(conversationKey(room.id), conversation.id)
-          }}
-          emptyHint="Ask the Agent about what you are looking at — it already knows which Task that is."
-        />
+        <>
+          {setupTargets.length > 0 && (
+            <div className="border-b border-border p-3">
+              <ConversationBackendSetupCard setupTargets={setupTargets} />
+            </div>
+          )}
+          {/* The same conversation module the full Room page renders: one
+              implementation of what a conversation is, two places it is read. */}
+          <RoomConversation
+            // Picking works here too: the panel has the Room's other
+            // threads, so a pick has somewhere to go. Starting a new thread is
+            // not one of this surface's affordances, so that action is not
+            // offered and the toolbar hides it.
+            siblingConversations={conversations}
+            roomId={room.id}
+            conversationId={sessionId || null}
+            executionReady={executionReady}
+            executionPreflight={(
+              <ConversationExecutionPreflight
+                projectId={projectId}
+                roomId={room.id}
+                sessionId={sessionId || null}
+                onConversationCreated={conversation => {
+                  setSessionId(conversation.id)
+                  setConversations(current => [conversation, ...current.filter(item => item.id !== conversation.id)])
+                  writeStored(conversationKey(room.id), conversation.id)
+                }}
+                onNewConversation={startThread}
+                onReadyChange={setExecutionReady}
+              />
+            )}
+            variant="panel"
+            focusRefs={focusRefs}
+            onBackendRequired={setSetupTargets}
+            onSent={() => {
+              setSetupTargets([])
+              setRuntimeRevision(current => current + 1)
+            }}
+            onConversationUpdated={conversation => {
+              // Keep the selected Conversation's server metadata current
+              // after a send or an explicit setup action.
+              setSessionId(current => (current === conversation.id ? current : conversation.id))
+              setConversations(current => (current.some(item => item.id === conversation.id)
+                ? current.map(item => (item.id === conversation.id ? conversation : item))
+                : [conversation, ...current]))
+              writeStored(conversationKey(room.id), conversation.id)
+            }}
+            emptyHint="Ask the Agent about what you are looking at — it already knows which Task that is."
+          />
+        </>
       )}
       <div className="flex items-center justify-end border-t border-border px-3 py-1.5">
         <Link

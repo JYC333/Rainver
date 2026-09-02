@@ -46,6 +46,29 @@ describe("conversation runtime state", () => {
       .resolves.toBe("vendor state");
   });
 
+  it("shares the managed Conversation cwd while keeping each Agent HOME isolated", async () => {
+    const rainverHome = await root("rainver-conversation-home-");
+    const sandboxRoot = await root("rainver-conversation-sandbox-");
+    const conversationId = "22222222-2222-4222-8222-222222222222";
+    const first = await prepareConversationRuntimeState({
+      rainver_home: rainverHome,
+      sandbox_root: sandboxRoot,
+      state_key: STATE_KEY,
+      conversation_id: conversationId,
+      resume_requested: false,
+    });
+    const second = await prepareConversationRuntimeState({
+      rainver_home: rainverHome,
+      sandbox_root: sandboxRoot,
+      state_key: "33333333-3333-4333-8333-333333333333",
+      conversation_id: conversationId,
+      resume_requested: true,
+    });
+    expect(second.cwd).toBe(first.cwd);
+    expect(second.home_dir).not.toBe(first.home_dir);
+    expect(second.resume).toBe(false);
+  });
+
   it("clears partial state and forces replay when one state directory is missing", async () => {
     const rainverHome = await root("rainver-conversation-home-");
     const sandboxRoot = await root("rainver-conversation-sandbox-");

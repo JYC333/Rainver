@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openLoginSession, parseLoginOpenFrame, resolveLoginCommand } from "../src/login.js";
+import { openLoginSession, resolveLoginCommand } from "../src/login.js";
 import { toolsDir } from "../src/tools.js";
 
 let configDir: string;
@@ -48,11 +48,6 @@ describe("login sessions", () => {
     expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:9", login: null })).toThrow(/not have/);
   });
 
-  it("parses login_open strictly", () => {
-    expect(parseLoginOpenFrame({ session_id: "s", adapter_type: "opencode", installation: "own", login: LOGIN })).toEqual({ session_id: "s", adapter_type: "opencode", installation: "own", login: LOGIN });
-    expect(parseLoginOpenFrame({ session_id: "s", adapter_type: "opencode", installation: "own", login: { command: "x" } }).login).toBeNull();
-    expect(() => parseLoginOpenFrame({ session_id: "s" })).toThrow();
-  });
 
   it.skipIf(!hasScript)("runs the login on a PTY, relays typed input, and reports the login state on exit", async () => {
     const frames: Record<string, unknown>[] = [];
