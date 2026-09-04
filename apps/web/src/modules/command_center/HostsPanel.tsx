@@ -119,7 +119,7 @@ export default function HostsPanel() {
         <div>
           <h2 className="text-sm font-semibold">Register a new machine</h2>
           <p className="text-xs text-muted-foreground">
-            Generate a pairing code, then run <code className="font-mono">rainver-host register --server &lt;url&gt; --code &lt;code&gt;</code> on that machine.
+            Linux: download the latest installer from GitHub, then use the generated code to install, pair, and start the background service.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -132,16 +132,22 @@ export default function HostsPanel() {
           </Button>
         </div>
         {pairing && (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 p-3">
-            <code className="font-mono text-sm">{pairing.pairing_code}</code>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => { navigator.clipboard.writeText(pairing.pairing_code); toast.success('Copied') }}
-            >
-              <Copy className="size-3.5" />
-            </Button>
-            <span className="text-xs text-muted-foreground">expires {fmt(pairing.expires_at)}</span>
+          <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="font-mono text-sm">{pairing.pairing_code}</code>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { navigator.clipboard.writeText(pairing.pairing_code); toast.success('Copied') }}
+              >
+                <Copy className="size-3.5" />
+              </Button>
+              <span className="text-xs text-muted-foreground">expires {fmt(pairing.expires_at)}</span>
+            </div>
+            <code aria-label="Linux host installation command" className="block overflow-x-auto whitespace-nowrap rounded bg-background p-2 font-mono text-xs">
+              curl -fsSL https://github.com/JYC333/Rainver/releases/download/host-installer/install-host.sh | bash<br />
+              {'\n'}rainver-host register --server &lt;Rainver URL&gt; --code {pairing.pairing_code}
+            </code>
           </div>
         )}
       </Card>
@@ -170,7 +176,7 @@ export default function HostsPanel() {
                 <p className="text-xs text-muted-foreground">
                   {host.kind === 'server'
                     ? 'Built-in server execution host'
-                    : `${host.platform ?? '—'} / ${host.arch ?? '—'} · last seen ${fmt(host.last_heartbeat_at)}`}
+                    : `${host.platform ?? '—'} / ${host.arch ?? '—'} · daemon ${host.daemon_version ?? 'unknown'} · last seen ${fmt(host.last_heartbeat_at)}`}
                 </p>
                 {host.capabilities_json?.runtimes && host.capabilities_json.runtimes.length > 0 && (
                   <div className="flex flex-wrap gap-1">

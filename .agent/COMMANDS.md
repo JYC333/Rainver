@@ -207,6 +207,27 @@ Tools are written under `$RAINVER_HOME/runtime-tools`; npm cache is under
 `$RAINVER_HOME/cache/npm`. Space owners/admins select enabled/default
 versions through `PUT /api/v1/runtime-tools/space-policy/{runtime}`.
 
+## Linux execution host
+
+The public rolling releases are built by
+`.github/workflows/host-daemon-release.yml`: `master` publishes `stable`, each
+relevant `dev` push publishes `edge`, and the nightly schedule publishes
+`nightly` from `dev`. Generate a pairing code in the Hosts panel, install the
+self-contained stable build on the target host, then register through the CLI:
+
+```bash
+curl -fsSL https://github.com/JYC333/Rainver/releases/download/host-installer/install-host.sh | bash
+rainver-host register --server https://rainver.example.com --code <pairing-code>
+
+# Opt-in automatic latest checks, or update once manually:
+rainver-host update --auto-update
+rainver-host update
+rainver-host update --channel edge
+```
+
+See `packages/host-daemon/README.md` for service/log commands and the
+headless-login lingering note.
+
 ## Docker
 
 ```bash

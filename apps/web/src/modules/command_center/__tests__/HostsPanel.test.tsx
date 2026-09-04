@@ -74,6 +74,10 @@ describe('HostsPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Generate pairing code' }))
     await waitFor(() => expect(hostsApi.pairingCode).toHaveBeenCalledWith('desktop'))
     expect(await screen.findByText('abc-123')).toBeInTheDocument()
+    const command = screen.getByLabelText('Linux host installation command')
+    expect(command.textContent).toContain('releases/download/host-installer/install-host.sh | bash')
+    expect(command.textContent).toContain('rainver-host register --server')
+    expect(command.textContent).toContain('--code abc-123')
   })
 
   it('revokes a host and refreshes the list', async () => {

@@ -1,0 +1,203 @@
+name: Publish Rainver Host channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Rolling release channel to publish
+        required: true
+        default: edge
+        type: choice
+        options:
+          - stable
+          - edge
+          - nightly
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [master, dev]
+    paths:
+      - .github/workflows/host-daemon-release.yml
+      - ops/scripts/host/bootstrap-host.sh
+      - ops/scripts/host/install-host.sh
+      - packages/host-daemon/**
+      - packages/agent-cli/**
+      - packages/folder-read/**
+      - packages/protocol/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rainver-host-release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      channel: ${{ steps.release.outputs.channel }}
+      ref: ${{ steps.release.outputs.ref }}
+    steps:
+      - id: release
+        name: Resolve branch and channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            channel="nightly"
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            channel="${{ inputs.channel }}"
+          elif [[ "$GITHUB_REF_NAME" == "master" ]]; then
+            channel="stable"
+          else
+            channel="edge"
+          fi
+          if [[ "$channel" == "stable" ]]; then ref="master"; else ref="dev"; fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build daemon workspace packages
+        run: |
+          pnpm --filter @rainver/protocol build
+          pnpm --filter @rainver/agent-cli build
+          pnpm --filter @rainver/folder-read build
+          pnpm --filter @rainver/host-daemon build
+
+      - name: Assemble self-contained Linux archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_sha="$(git rev-parse HEAD)"
+          mkdir -p release deploy "package/rainver-host/node/bin"
+          pnpm --filter @rainver/host-daemon deploy --prod --legacy deploy/app
+          printf '%s\n' "$build_sha" > deploy/app/BUILD_ID
+          cp -a deploy/app "package/rainver-host/app"
+          cp "deploy/app/BUILD_ID" "package/rainver-host/BUILD_ID"
+          cp -L "$(command -v node)" "package/rainver-host/node/bin/node"
+          tar -czf "release/rainver-host-linux-${{ matrix.arch }}.tar.gz" -C package rainver-host
+
+      - name: Upload archive for publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: rainver-host-linux-${{ matrix.arch }}
+          path: release/rainver-host-linux-${{ matrix.arch }}.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - name: Download Linux archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rainver-host-linux-*
+          path: release
+          merge-multiple: true
+
+      - name: Prepare rolling release assets
+        run: |
+          cp ops/scripts/host/install-host.sh release/install-host.sh
+          (cd release && sha256sum install-host.sh rainver-host-linux-*.tar.gz > SHA256SUMS)
+
+      - name: Move the rolling channel tag
+        env:
+          RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+        run: |
+          build_sha="$(git rev-parse HEAD)"
+          release_tag="host-${RELEASE_CHANNEL}"
+          git tag --force "$release_tag" "$build_sha"
+          git push origin "+refs/tags/${release_tag}"
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            git tag --force host-installer "$build_sha"
+            git push origin "+refs/tags/host-installer"
+          fi
+
+      - name: Publish or replace latest assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_sha="$(git rev-parse HEAD)"
+          short_sha="${build_sha:0:12}"
+          release_tag="host-${RELEASE_CHANNEL}"
+          title="Rainver Host ${RELEASE_CHANNEL} (${short_sha})"
+          notes="Rolling Linux ${RELEASE_CHANNEL} release built from ${build_sha}. The ${release_tag} tag and assets are replaced in place."
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release upload "$release_tag" release/* --clobber
+            if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+              gh release edit "$release_tag" --title "$title" --notes "$notes" --latest
+            else
+              gh release edit "$release_tag" --title "$title" --notes "$notes" --prerelease
+            fi
+          else
+            if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+              gh release create "$release_tag" release/* --title "$title" --notes "$notes" --latest
+            else
+              gh release create "$release_tag" release/* --title "$title" --notes "$notes" --prerelease
+            fi
+          fi
+
+      - name: Publish unified installer
+        if: needs.resolve.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p installer-release
+          cp ops/scripts/host/bootstrap-host.sh installer-release/install-host.sh
+          title="Rainver Host installer"
+          notes="Channel-neutral installer bootstrap. Use --channel stable, edge, or nightly; stable is the default."
+          if gh release view host-installer >/dev/null 2>&1; then
+            gh release upload host-installer installer-release/install-host.sh --clobber
+            gh release edit host-installer --title "$title" --notes "$notes" --latest=false
+          else
+            gh release create host-installer installer-release/install-host.sh --title "$title" --notes "$notes" --latest=false
+          fi

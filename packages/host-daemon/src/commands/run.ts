@@ -1,3 +1,5 @@
+import { rm, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   HostServerFrameSchema,
   type HostDaemonFrame,
@@ -6,12 +8,13 @@ import {
   type RuntimeProbe,
 } from "@rainver/protocol";
 import { helloInfo } from "../api.js";
-import { loadConfig, requireConfig } from "../config.js";
+import { configDir, loadConfig, requireConfig } from "../config.js";
 import {
   handleLaunch,
   handleStdin,
   handleStdinClose,
   handleTerminate,
+  hasInFlightRuns,
   resolveAcpLaunch,
   sweepStaleRunProfiles,
   type LaunchFrame,
@@ -30,6 +33,7 @@ import { clearFailedRuntimeOptionsCache } from "../capabilities.js";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+const UPDATE_RESTART_POLL_MS = 30_000;
 /** What the last `hello_ack` said about runtimes; see `helloInfo`. */
 let lastRuntimeProbes: RuntimeProbe[] | undefined;
 
@@ -145,7 +149,11 @@ export async function runService(options: { log?: (line: string) => void } = {})
 
   for (;;) {
     try {
-      await connectOnce(config.server_url, config.token, log, sink, config.workspaces);
+      const result = await connectOnce(config.server_url, config.token, log, sink, config.workspaces);
+      if (result === "update") {
+        log("latest release is installed and the host is idle; restarting into it");
+        process.exit(0);
+      }
       reconnectDelay = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
       log(`connection lost: ${error instanceof Error ? error.message : String(error)}`);
@@ -160,13 +168,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<void> {
+function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update"> {
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
     const socket = new WebSocket(endpoint);
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let helloAcked = false;
+    let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
+    let restartForUpdate = false;
+    const updateRequestPath = join(configDir(), "update-restart-requested");
     // Bound into `sink` only once hello succeeds (below), matching when the
     // server actually registers this connection in
     // `sharedHostConnectionRegistry` — a frame sent on this socket before
@@ -206,6 +217,19 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         sendOnThisConnection({ type: "hello", token, ...info });
       });
     });
+
+    updateRestartTimer = setInterval(() => {
+      if (restartForUpdate || hasInFlightRuns()) return;
+      void stat(updateRequestPath).then(() => {
+        // A launch may have arrived while stat was in flight.
+        if (hasInFlightRuns()) return;
+        restartForUpdate = true;
+        socket.close(1000, "update installed");
+      }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") log(`could not inspect update request: ${error.message}`);
+      });
+    }, UPDATE_RESTART_POLL_MS);
+    updateRestartTimer.unref?.();
 
     socket.addEventListener("message", (event) => {
       let raw: unknown;
@@ -419,8 +443,15 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
 
     socket.addEventListener("close", (event) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (updateRestartTimer) clearInterval(updateRestartTimer);
       sink.unbindIfCurrent(sendOnThisConnection);
-      if (helloAcked) resolve();
+      // A launch message already queued when close() was requested may have
+      // registered a child before this event. Reconnect and retry later in
+      // that case; the marker stays in place and no Run is interrupted.
+      if (restartForUpdate && !hasInFlightRuns()) {
+        void rm(updateRequestPath, { force: true }).then(() => resolve("update"), reject);
+      }
+      else if (helloAcked) resolve("disconnected");
       else {
         const reason = event.reason ? `, reason ${event.reason}` : "";
         reject(new Error(`connection closed before hello was acknowledged (code ${event.code}${reason})`));

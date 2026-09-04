@@ -179,6 +179,11 @@ const launchingRuns = new Set<string>();
  */
 const finishingRuns = new Set<string>();
 
+/** A release updater may restart the daemon only after all Run work is settled. */
+export function hasInFlightRuns(): boolean {
+  return activeRuns.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0;
+}
+
 /**
  * Removes run directories left behind by a daemon that was killed mid-run.
  * Each holds that run's outputs and work surface, and an older layout also put

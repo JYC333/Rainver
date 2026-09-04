@@ -899,6 +899,28 @@ real local path is ever written down.
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it.
 
+Linux distribution uses three rolling public GitHub Releases: `host-stable`
+from `master`, `host-edge` from each relevant `dev` push, and `host-nightly`
+from the scheduled `dev` build. Each has separate x64/arm64 archives, an
+embedded Node runtime, SHA-256 manifest, and `install-host.sh`; a target host
+therefore needs neither a source checkout nor Node/pnpm. A channel-neutral
+`host-installer` bootstrap published from `master` is the single public install
+URL; it validates the selected channel's installer before executing it, with
+`stable` as the default. The installer keeps immutable build directories below
+`~/.local/share/rainver-host/releases/`, atomically moves `current`, installs a
+systemd user unit, and captures the installing user's PATH for CLI discovery.
+The one-time installer needs no pairing arguments: the installed
+`rainver-host register` command exchanges the code and then enables/starts the
+service. `--auto-update` optionally installs a six-hour systemd timer;
+updates request a daemon restart only when no Run is launching, executing, or
+uploading. After the one-time installer bootstrap, `rainver-host update`
+owns manual updates, channel selection, and the optional timer toggle; the
+selected channel persists locally and the installer path remains an internal
+implementation detail. The package version is read from package metadata, while a release
+archive's `BUILD_ID` appends the publishing commit to `daemon_version`, so the
+rolling channel remains diagnosable without numbered release tags. See
+`packages/host-daemon/README.md`.
+
 Managed Agent workspaces are derived only on the daemon: a launch frame names
 `workspace.kind = managed`, an Agent id, and either a Conversation or
 direct-chat container id. Conversation workspaces are shared at

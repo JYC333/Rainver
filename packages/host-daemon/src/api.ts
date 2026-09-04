@@ -8,8 +8,7 @@ import { probeAcpOptions } from "./acpProbe.js";
 import { resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
-
-const DAEMON_VERSION = "0.1.0";
+import { daemonVersion } from "./version.js";
 
 export class ApiError extends Error {
   constructor(
@@ -89,7 +88,7 @@ async function helloInfo(
   return {
     platform: currentPlatform,
     arch: arch(),
-    daemon_version: DAEMON_VERSION,
+    daemon_version: daemonVersion(),
     environment_kind,
     capabilities_json: { ...capabilities },
     workspace_reports: await collectWorkspaceStatus(workspaces),
