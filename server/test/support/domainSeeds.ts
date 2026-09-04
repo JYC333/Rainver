@@ -217,3 +217,77 @@ export async function seedSpaceMember(
     [randomUUID(), input.space, input.user, input.role ?? "member", now],
   );
 }
+
+/**
+ * A linear conversation, written the way the repository writes one.
+ *
+ * `messages` is a tree — `parent_message_id`, `path_depth`, `branch_path`, and
+ * the session's `head_message_id` together decide what a transcript read can
+ * see. A fixture that inserts rows without them creates messages that are on
+ * no branch at all, which every path-following read correctly ignores; the
+ * test then passes for the wrong reason. Fixtures that want ordinary history
+ * should come through here.
+ *
+ * Returns the ids in the order given, so a caller can name a specific turn.
+ */
+export async function seedConversationMessages(
+  pool: Pool,
+  input: {
+    space: string;
+    session: string;
+    messages: ReadonlyArray<{
+      id: string;
+      role: string;
+      content: string;
+      userId?: string | null;
+      senderAgentId?: string | null;
+      runId?: string | null;
+      metadata?: Record<string, unknown> | null;
+      createdAt?: string;
+    }>;
+  },
+): Promise<string[]> {
+  // Append to whatever the conversation already has: these rows join the same
+  // branch, after the current head, exactly as the repository would write them.
+  const current = await pool.query<{ head_message_id: string | null; path_depth: number | null }>(
+    `SELECT session_row.head_message_id, head.path_depth
+       FROM sessions session_row
+       LEFT JOIN messages head
+         ON head.id = session_row.head_message_id
+        AND head.space_id = session_row.space_id
+        AND head.session_id = session_row.id
+      WHERE session_row.id = $1 AND session_row.space_id = $2`,
+    [input.session, input.space],
+  );
+  let parent = current.rows[0]?.head_message_id ?? null;
+  let depth = parent === null ? 0 : (current.rows[0]?.path_depth ?? 0) + 1;
+  for (const message of input.messages) {
+    await pool.query(
+      `INSERT INTO messages
+         (id, space_id, session_id, user_id, sender_agent_id, role, content,
+          metadata_json, parent_message_id, run_id, path_depth, branch_path, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,'/',COALESCE($12::timestamptz, now()))`,
+      [
+        message.id,
+        input.space,
+        input.session,
+        message.userId ?? null,
+        message.senderAgentId ?? null,
+        message.role,
+        message.content,
+        message.metadata ? JSON.stringify(message.metadata) : null,
+        parent,
+        message.runId ?? null,
+        depth,
+        message.createdAt ?? null,
+      ],
+    );
+    parent = message.id;
+    depth += 1;
+  }
+  await pool.query(
+    `UPDATE sessions SET head_message_id = $3 WHERE id = $1 AND space_id = $2`,
+    [input.session, input.space, parent],
+  );
+  return input.messages.map((message) => message.id);
+}

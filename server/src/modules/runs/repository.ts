@@ -253,7 +253,7 @@ export class PgRunRepository {
              WHERE message.space_id = run_row.space_id
                AND message.session_id = run_row.session_id
                AND message.role = 'assistant'
-               AND message.metadata_json->>'run_id' = run_row.id
+               AND message.run_id = run_row.id
           )
         ORDER BY run_row.updated_at ASC, run_row.id ASC
         LIMIT $1`,
@@ -504,8 +504,19 @@ export class PgRunRepository {
       input.runtime_profile_selection_source
       ?? (input.runtime_profile_id ? "explicit" : "default");
     // Requested route state is immutable. The router is the sole authority
-    // that stamps selected runtime, adapter, provider, and route decision.
-    const resolved = { adapterType: null, modelProviderId: null, modelName: null, source: "unrouted" };
+    // that stamps selected runtime, provider and route decision.
+    //
+    // The adapter is the one exception, and only when the caller supplies it:
+    // a dispatch to a paired machine has already chosen and validated its
+    // runtime at admission, and `remoteHostCliAdapter` reads it back off the
+    // Run to pick the spec. Left null there would be a Run nothing can
+    // execute. Every other caller passes nothing and the router still owns it.
+    const resolved = {
+      adapterType: input.adapter_type ?? null,
+      modelProviderId: input.model_provider_id ?? null,
+      modelName: null,
+      source: "unrouted",
+    };
     const requiredSandboxLevel = "none";
 
     const now = new Date().toISOString();
@@ -533,9 +544,16 @@ export class PgRunRepository {
         : {}),
     });
     const runId = randomUUID();
+    // Only what the router itself resolved is merged in. A caller-supplied
+    // provider (a remote dispatch, which resolved its own backend at
+    // admission) must not be re-stamped here: it would overwrite the model
+    // the caller recorded with the router's null and its `source` with
+    // `unrouted`, throwing away the decision that was actually made.
+    const routerResolvedModel = resolved.modelName
+      || (resolved.modelProviderId && !input.model_provider_id);
     const modelOverride = {
       ...(input.model_override_json ?? {}),
-      ...(resolved.modelName || resolved.modelProviderId
+      ...(routerResolvedModel
         ? { model: resolved.modelName, source: resolved.source }
         : {}),
     };

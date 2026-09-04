@@ -14,7 +14,26 @@ import {
   sessionsApi,
   spacesApi,
 } from '../../../api/client'
-import type { AgentOut, Project, Room, RoomConversation, RoomDetail, Run } from '../../../types/api'
+import type { AgentOut, Project, Room, RoomConversation, RoomDetail, Run, RunTurn, TurnPart } from '../../../types/api'
+
+/** A turn in progress, for the stream mock. */
+function workingTurn(runId: string, parts: TurnPart[]): RunTurn {
+  return {
+    schema_version: 'run_turn.v1',
+    run_id: runId,
+    state: 'working',
+    source: 'run_events',
+    parts,
+    blocked_on: null,
+    cursor: parts.length,
+    updated_at: null,
+  }
+}
+
+/** A turn as read back, for the read-once mock. */
+function doneTurn(runId: string, parts: TurnPart[]): RunTurn {
+  return { ...workingTurn(runId, parts), state: 'done' }
+}
 
 const mockedSpaceContext = vi.hoisted(() => ({ activeSpaceId: 'space-1', userId: 'user-1' }))
 
@@ -54,7 +73,7 @@ vi.mock('../../../api/client', async () => {
     initializeExecution: vi.fn(),
     mutateExecutionAttachments: vi.fn(),
   },
-  runsApi: { get: vi.fn(), streamEvents: vi.fn() },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },
   spacesApi: { members: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   }
@@ -193,6 +212,9 @@ describe('Rooms page', () => {
     sessionStorage.clear()
     mockedSpaceContext.activeSpaceId = 'space-1'
     mockedSpaceContext.userId = 'user-1'
+    // A terminal Run with no reply has its turn read once; tests that do not
+    // care still need the call to return something.
+    vi.mocked(runsApi.turn).mockResolvedValue(workingTurn('run-default', []))
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
     vi.mocked(roomsApi.get).mockResolvedValue(detail)
     vi.mocked(roomsApi.conversations).mockResolvedValue({
@@ -288,7 +310,7 @@ describe('Rooms page', () => {
       // would have offered and the server would have refused.
       { user_id: 'user-9', display_name: 'Outsider', email: 'outsider@example.test' },
     ] as Awaited<ReturnType<typeof spacesApi.members>>)
-    vi.mocked(runsApi.streamEvents).mockResolvedValue(undefined)
+    vi.mocked(runsApi.streamTurn).mockResolvedValue(undefined)
   })
 
   it('opens a limited Room by choosing who is in it, and invites them', async () => {
@@ -731,12 +753,11 @@ describe('Rooms page', () => {
       id: 'run-1',
       status: 'running',
     } as Run)
-    vi.mocked(runsApi.streamEvents).mockImplementation(async (_runId, options) => {
-      options.onLifecycle({
-        event_type: 'adapter_invoked',
-        status: 'running',
-        summary: 'Agent started',
-      })
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (_runId, options) => {
+      options.onTurn(workingTurn('run-1', [
+        { type: 'tool_call', index: 0, call_id: 'c1', name: 'Agent started',
+          kind: null, status: 'running', input: null, output: null },
+      ]))
     })
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
@@ -746,6 +767,458 @@ describe('Rooms page', () => {
     expect(screen.getAllByText('Owner').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Member').length).toBeGreaterThan(0)
     expect(await screen.findByText('Agent started')).toBeInTheDocument()
+  })
+
+  it('keeps a failed turn on screen, because nothing else says what went wrong', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-failed',
+        session_id: 'session-1',
+        space_id: 'space-1',
+        user_id: 'user-1',
+        sender_agent_id: null,
+        role: 'user',
+        content: 'Do the thing.',
+        metadata_json: { run_ids: ['run-failed'] },
+        created_at: '2026-07-26T00:00:02.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    // A failed Run writes no assistant message, so its turn is the only
+    // account of the failure. Dropping it when the Run goes terminal would
+    // take that away and leave an empty conversation.
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-failed', status: 'failed' } as unknown as Run)
+    // Already terminal when this surface first sees it, so there is nothing
+    // to stream: the turn is read once.
+    vi.mocked(runsApi.turn).mockResolvedValue({
+      ...workingTurn('run-failed', [{
+        type: 'diagnostic', index: 0, level: 'error',
+        text: 'No credential profile is available for this runtime.',
+        error_code: 'cli_credential_unavailable',
+      }]),
+      state: 'failed',
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('No credential profile is available for this runtime.')).toBeInTheDocument()
+  })
+
+  it('asks once for a terminal Run\'s turn, and tries again if that ask fails', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-retry',
+        session_id: 'session-1',
+        space_id: 'space-1',
+        user_id: 'user-1',
+        sender_agent_id: null,
+        role: 'user',
+        content: 'Do the thing.',
+        metadata_json: { run_ids: ['run-retry'] },
+        created_at: '2026-07-26T00:00:02.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-retry', status: 'failed' } as unknown as Run)
+    // One blip, then it works. Holding the "already asked" mark through a
+    // failure would make that blip permanent — and this Run's turn is the
+    // only account of why it failed.
+    vi.mocked(runsApi.turn)
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({
+        ...workingTurn('run-retry', [{
+          type: 'diagnostic', index: 0, level: 'error',
+          text: 'Upstream refused.', error_code: 'provider_unavailable',
+        }]),
+        state: 'failed',
+      })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('Upstream refused.')).toBeInTheDocument()
+    // Twice: the blip, then the retry. The in-flight mark this asserts is
+    // released on failure — held, it would make one blip permanent, and this
+    // Run's turn is the only account of why it failed.
+    expect(runsApi.turn).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks for a terminal turn once, not once per poll', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-once',
+        session_id: 'session-1',
+        space_id: 'space-1',
+        user_id: 'user-1',
+        sender_agent_id: null,
+        role: 'user',
+        content: 'Do the thing.',
+        metadata_json: { run_ids: ['run-once'] },
+        created_at: '2026-07-26T00:00:02.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-once', status: 'failed' } as unknown as Run)
+    // Never resolving: the window this guards is the one before the first
+    // answer lands, when `liveTurns` cannot yet absorb a repeat. Only a
+    // driven poll opens it — a `waitFor` does not.
+    vi.mocked(runsApi.turn).mockReturnValue(new Promise(() => {}))
+
+    vi.useFakeTimers()
+    try {
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      await act(async () => { await vi.advanceTimersByTimeAsync(16) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(runsApi.turn).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('folds a finished turn\'s work above the reply it produced', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'message-ask', session_id: 'session-1', space_id: 'space-1',
+          user_id: 'user-1', sender_agent_id: null, role: 'user',
+          content: 'Find it.', metadata_json: { run_ids: ['run-fold'] },
+          created_at: '2026-07-26T00:00:02.000Z',
+        },
+        {
+          id: 'message-reply', session_id: 'session-1', space_id: 'space-1',
+          user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+          content: 'Found three.', metadata_json: null, run_id: 'run-fold',
+          created_at: '2026-07-26T00:00:03.000Z',
+        },
+      ],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-fold', status: 'running' } as unknown as Run)
+    // As the server streams it: the steps, then the state it settled in
+    // before the stream closes. The turn's own state is what the surface
+    // renders — the server decides it with facts a client does not have.
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (_runId, options) => {
+      const parts: TurnPart[] = [{
+        type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+        kind: null, status: 'succeeded', input: null, output: null,
+      }]
+      options.onTurn(workingTurn('run-fold', parts))
+      options.onTurn(doneTurn('run-fold', parts))
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    // D3's finished state, in the Room: the reply is the bubble and the work
+    // that produced it folds above it — rather than vanishing the moment the
+    // reply is written.
+    expect(await screen.findByText('Found three.')).toBeInTheDocument()
+    expect(await screen.findByText('show work (1 step)')).toBeInTheDocument()
+  })
+
+  it('keeps saying it is blocked once the pause notice arrives as a reply', async () => {
+    // The server writes an assistant row at the pause, not only at the end
+    // (`chatTurnFinalizer` posts the waiting-for-review notice under the
+    // Agent's name). So a paused Run reaches a steady state where a reply and
+    // a blocked turn coexist — and a surface that reads "there is a reply" as
+    // "the turn is over" silently drops the approval link, which is the one
+    // thing a paused turn exists to show.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'message-ask', session_id: 'session-1', space_id: 'space-1',
+          user_id: 'user-1', sender_agent_id: null, role: 'user',
+          content: 'Do the protected thing.', metadata_json: { run_ids: ['run-paused'] },
+          created_at: '2026-07-26T00:00:02.000Z',
+        },
+        {
+          id: 'message-notice', session_id: 'session-1', space_id: 'space-1',
+          user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+          content: 'Waiting for approval before continuing.', metadata_json: null,
+          run_id: 'run-paused', created_at: '2026-07-26T00:00:03.000Z',
+        },
+      ],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({
+      id: 'run-paused', status: 'waiting_for_review',
+      error_json: { authorization_request_id: 'authorization-1' },
+    } as unknown as Run)
+    vi.mocked(runsApi.streamTurn).mockImplementation((_runId, options) => {
+      options.onTurn({ ...workingTurn('run-paused', []), state: 'blocked', blocked_on: 'authorization' })
+      return new Promise(() => {})
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('Waiting for approval before continuing.')).toBeInTheDocument()
+    expect(screen.getByText('approval needed')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review request' })).toBeInTheDocument()
+  })
+
+  it('re-watches a paused Run whose stream went away, keeping the approval link', async () => {
+    // The server keeps a blocked stream open on purpose — the turn resumes
+    // when somebody decides — so it waits at human pace and a proxy idle
+    // timeout on that connection is the ordinary ending. The Room's own
+    // recovery is to watch it again: a paused Run stays in the watch set, so
+    // the next poll re-opens the stream and the link comes back.
+    //
+    // What must NOT happen is the read-once path claiming it: a paused Run is
+    // skipped there by design, so a turn released to it would be lost for
+    // good. (That the client no longer reports a blocked ending as a fault at
+    // all is covered directly in `chat-api.test.ts`.)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-notice', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'Waiting for approval before continuing.', metadata_json: null,
+        run_id: 'run-timeout', created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({
+      id: 'run-timeout', status: 'waiting_for_review',
+      error_json: { authorization_request_id: 'authorization-1' },
+    } as unknown as Run)
+    let endStream!: () => void
+    vi.mocked(runsApi.streamTurn).mockImplementation((_runId, options) => {
+      options.onTurn({ ...workingTurn('run-timeout', []), state: 'blocked', blocked_on: 'authorization' })
+      return new Promise((_resolve, rejectStream) => {
+        endStream = () => rejectStream(new ApiRequestError('Run turn stream ended before the turn settled', 502))
+      })
+    })
+
+    vi.useFakeTimers()
+    try {
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      expect(screen.getByText('approval needed')).toBeInTheDocument()
+
+      await act(async () => { endStream() })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+
+      // Watched again rather than abandoned.
+      expect(vi.mocked(runsApi.streamTurn).mock.calls.length).toBeGreaterThan(1)
+      expect(screen.getByText('approval needed')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Review request' })).toBeInTheDocument()
+      // Never handed to the read-once path, which skips a paused Run.
+      expect(vi.mocked(runsApi.turn)).not.toHaveBeenCalledWith('run-timeout')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not leave a cold-loaded Room reply saying the Agent is still working', async () => {
+    // Same race as the chat panel's: the reply is written before
+    // `chat_completed`, so a turn read back can still say `working` on
+    // finished work — and a read is not a stream, so nothing corrects it.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-lagging', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'The answer is 42.', metadata_json: null, run_id: 'run-lagging',
+        created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-lagging', status: 'succeeded' } as unknown as Run)
+    vi.mocked(runsApi.turn).mockResolvedValue(workingTurn('run-lagging', [{
+      type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+      kind: null, status: 'succeeded', input: null, output: null,
+    }]))
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    await waitFor(() => {
+      expect(screen.getByText('The answer is 42.')).toBeInTheDocument()
+      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+    }, { timeout: 3000 })
+    expect(screen.queryByText('Working…')).not.toBeInTheDocument()
+  })
+
+  it('recovers a turn stranded by a broken stream, rather than saying "working" forever', async () => {
+    // A stream that dies before the turn settles — a database error on the
+    // poll, a dropped connection, a proxy timeout — leaves a turn on screen
+    // saying the Agent is still working. Nothing else corrects it: the stream
+    // is gone and the read-once effect skips any run a turn is held for.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-stranded', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'Done here.', metadata_json: null, run_id: 'run-stranded',
+        created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    // Running while the stream is alive — so the only turn on screen is the
+    // streamed one, and the read-once effect cannot reach it. It goes
+    // terminal once the stream has died, which is what makes recovery
+    // possible and what the stale hold used to prevent.
+    let streamDied = false
+    vi.mocked(runsApi.get).mockImplementation(async () => ({
+      id: 'run-stranded',
+      status: streamDied ? 'succeeded' : 'running',
+    } as unknown as Run))
+    // The stranding, exactly as it happens: the working turn lands and is
+    // held, and only then does the stream die. A mock that threw before
+    // delivering anything would leave nothing held — and would pass whether
+    // or not the surface recovers.
+    let killStream!: () => void
+    vi.mocked(runsApi.streamTurn).mockImplementation((_runId, options) => {
+      options.onTurn(workingTurn('run-stranded', [{
+        type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+        kind: null, status: 'succeeded', input: null, output: null,
+      }]))
+      return new Promise((_resolve, rejectStream) => {
+        killStream = () => {
+          streamDied = true
+          rejectStream(new Error('Run turn stream ended before the turn settled'))
+        }
+      })
+    })
+    vi.mocked(runsApi.turn).mockResolvedValue(doneTurn('run-stranded', [{
+      type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+      kind: null, status: 'succeeded', input: null, output: null,
+    }]))
+
+    // Recovery arrives on the next poll, and the poll slows to 5 s once no
+    // Run is active — which is exactly the moment this test creates. The
+    // clock is faked and advanced past it rather than waited out: a real 5 s
+    // wait makes the test's runtime hostage to the surface's poll cadence.
+    vi.useFakeTimers()
+    try {
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+      // Stranded: the turn says the Agent is working, on a finished reply.
+      expect(screen.getByText('Working…')).toBeInTheDocument()
+
+      await act(async () => { killStream() })
+      // Past the idle poll, so the released turn can be read back settled.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+
+      expect(screen.getByText('Done here.')).toBeInTheDocument()
+      // Settled: the work folds, and nothing claims the Agent is still going.
+      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+      expect(screen.queryByText('Working…')).not.toBeInTheDocument()
+      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-stranded')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not call a degraded Run failed — the server already decided it did not', async () => {
+    // `degraded` records a non-blocking warning; the reply is complete.
+    // `turnReadModel.turnState` maps it to `done` for exactly that reason, so
+    // a surface that re-derives the state from the Run status stamps "Could
+    // not complete" on a correct answer.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-degraded', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'Here is the answer you asked for.', metadata_json: null,
+        run_id: 'run-degraded', created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-degraded', status: 'degraded' } as unknown as Run)
+    vi.mocked(runsApi.turn).mockResolvedValue(doneTurn('run-degraded', [{
+      type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+      kind: null, status: 'succeeded', input: null, output: null,
+    }]))
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    await waitFor(() => {
+      expect(screen.getByText('Here is the answer you asked for.')).toBeInTheDocument()
+      // Finished work folds; failed work does not.
+      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Could not complete')).not.toBeInTheDocument()
+  })
+
+  it('reads a replied turn back on reload, so its work is still there', async () => {
+    // Nothing streams here: the Run was terminal before this surface existed,
+    // which is every reply on a reloaded page. An Agent reply renders *as* its
+    // turn, so without reading the turn back the fold exists only in the page
+    // session that happened to watch it live.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-reply', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'Found three.', metadata_json: null, run_id: 'run-old',
+        created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-old', status: 'succeeded' } as unknown as Run)
+    vi.mocked(runsApi.turn).mockResolvedValue(doneTurn('run-old', [{
+      type: 'tool_call', index: 0, call_id: 'c1', name: 'search',
+      kind: null, status: 'succeeded', input: null, output: null,
+    }]))
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    // The turn is read back after the Run refresh, so both the reply and its
+    // fold have to be waited for together — the reply alone is on screen from
+    // the first paint, and asserting it first proves nothing about the fold.
+    await waitFor(() => {
+      expect(screen.getByText('Found three.')).toBeInTheDocument()
+      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+    })
+    expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old')
+  })
+
+  it('a Run that failed after writing its reply still says so, with its steps', async () => {
+    // A failed Room Run writes `Room task failed (...)` as an assistant row.
+    // Reading that reply as a finished turn would show the failure text with
+    // no failure marker and no account of what went wrong.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-fail', session_id: 'session-1', space_id: 'space-1',
+        user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+        content: 'Room task failed (provider_unavailable): upstream refused.',
+        metadata_json: null, run_id: 'run-broken',
+        created_at: '2026-07-26T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-broken', status: 'failed' } as unknown as Run)
+    vi.mocked(runsApi.turn).mockResolvedValue({
+      ...doneTurn('run-broken', [{
+        type: 'tool_call', index: 0, call_id: 'c1', name: 'write',
+        kind: null, status: 'failed', input: null, output: null,
+      }]),
+      state: 'failed',
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('Could not complete')).toBeInTheDocument()
+    // Failed work does not fold: the steps are the explanation.
+    expect(await screen.findByText('write')).toBeInTheDocument()
   })
 
   it('shows a human action label instead of the internal review status', async () => {
@@ -773,13 +1246,28 @@ describe('Rooms page', () => {
         error_text: 'Project file access requires approval.',
       },
     } as unknown as Run)
+    // A paused turn keeps its stream: it is waiting on a person, not
+    // finished, and the rest of it arrives once they decide. The stream is
+    // left open here, as the server leaves it — a mock that resolves would
+    // clear the controller for the surface and hide whether it handles a
+    // still-open blocked stream at all.
+    let opened = 0
+    vi.mocked(runsApi.streamTurn).mockImplementation((_runId, options) => {
+      opened += 1
+      options.onTurn({ ...workingTurn('run-review', []), state: 'blocked', blocked_on: 'authorization' })
+      return new Promise(() => {})
+    })
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('approval needed')).toBeInTheDocument()
     expect(screen.getByText('Review request')).toBeInTheDocument()
     expect(screen.queryByText('waiting_for_review')).not.toBeInTheDocument()
-    expect(runsApi.streamEvents).not.toHaveBeenCalled()
+    // One stream, not one per render. Treating a blocked turn as finished
+    // drops its controller while the stream is still open, and the watch
+    // effect opens another on the next pass — thousands within a second.
+    await new Promise(resolve => { setTimeout(resolve, 50) })
+    expect(opened).toBe(1)
   })
 
   it('loads older Room history, and a later poll does not refetch terminal Runs', async () => {
@@ -1013,12 +1501,8 @@ describe('Rooms page', () => {
     })
     vi.mocked(proposalsApi.get).mockResolvedValue({ status: 'accepted' } as Awaited<ReturnType<typeof proposalsApi.get>>)
     vi.mocked(roomsApi.continueAfterProposal).mockReturnValue(continuationRequest)
-    vi.mocked(runsApi.streamEvents).mockImplementation(async (_runId, options) => {
-      finalizeRun = () => options.onLifecycle({
-        event_type: 'run_finalized',
-        status: 'succeeded',
-        summary: 'Finished',
-      })
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (_runId, options) => {
+      finalizeRun = () => options.onTurn({ ...workingTurn('run-1', []), state: 'done' })
     })
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
@@ -1048,7 +1532,7 @@ describe('Rooms page', () => {
         sender_agent_id: 'agent-1',
         role: 'assistant',
         content: '下一步已经准备好了。',
-        metadata_json: { run_id: 'run-resume' },
+        run_id: 'run-resume',
         created_at: '2026-07-26T00:00:05.000Z',
       }],
       task_group_ids: ['group-resume'],
@@ -1069,9 +1553,118 @@ describe('Rooms page', () => {
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })
     expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center?tab=hosts')
+    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center')
     expect(screen.queryByRole('link', { name: /configure cli/i })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Room message')).toHaveValue('Anyone there?')
+  })
+
+  it('renders ACP controls in the shared composer and sends them with the Room backend', async () => {
+    vi.mocked(agentsApi.conversationBackends).mockResolvedValue({
+      options: [{
+        runtime_profile_id: 'runtime-cli', name: 'Codex', adapter_type: 'codex_cli', model_name: null,
+        requires_cli_credential: false, credential_profiles: [],
+        session_config_options: [{
+          id: 'model', name: 'Model', description: null, category: 'model', type: 'select',
+          current_value: 'gpt-5', options: [
+            { value: 'gpt-5', name: 'GPT-5', description: null, group: null },
+            { value: 'gpt-5.1', name: 'GPT-5.1', description: null, group: null },
+          ],
+        }, {
+          id: 'fast', name: 'Fast mode', description: null, category: 'model_config',
+          type: 'boolean', current_value: false,
+        }],
+      }],
+      binding: { runtime_profile_id: 'runtime-cli', adapter_type: 'codex_cli', credential_profile_id: null },
+      session_config: [],
+    })
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-new', session_id: 'session-1', role: 'user', content: 'Use this model', metadata_json: {} },
+      conversation: initialConversation, task_group_ids: ['group-1'], run_ids: [],
+    } as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Model' }))
+    fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Use this model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({
+      backends: [{
+        agent_id: 'agent-1', runtime_profile_id: 'runtime-cli', credential_profile_id: null,
+        session_config: [
+          { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
+          { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
+        ],
+      }],
+    })))
+  })
+
+  it('refreshes composer options from the CLI pinned during execution setup', async () => {
+    let initialized = false
+    const openCodeCatalog = {
+      options: [{
+        runtime_profile_id: 'runtime-opencode', name: 'OpenCode', adapter_type: 'opencode', model_name: null,
+        requires_cli_credential: false, credential_profiles: [],
+        session_config_options: [{
+          id: 'model', name: 'Model', description: null, category: 'model', type: 'select' as const,
+          current_value: 'openai/gpt-5', options: [{ value: 'openai/gpt-5', name: 'OpenCode GPT-5', description: null, group: 'OpenCode' }],
+        }],
+      }],
+      binding: null,
+      session_config: [],
+    }
+    const codexCatalog = {
+      options: [{
+        runtime_profile_id: 'runtime-codex', name: 'Codex', adapter_type: 'codex_cli', model_name: null,
+        requires_cli_credential: false, credential_profiles: [],
+        session_config_options: [{
+          id: 'model', name: 'Model', description: null, category: 'model', type: 'select' as const,
+          current_value: 'gpt-5.2-codex', options: [{ value: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', description: null, group: 'Codex' }],
+        }],
+      }],
+      binding: { runtime_profile_id: 'runtime-codex', adapter_type: 'codex_cli', credential_profile_id: null },
+      session_config: [],
+    }
+    vi.mocked(agentsApi.conversationBackends).mockImplementation(async () => (
+      initialized ? codexCatalog : openCodeCatalog
+    ))
+    vi.mocked(sessionsApi.executionContext).mockImplementation(async () => ({
+      summary: initialized ? {
+        session_id: 'session-1', state: 'initialized',
+        host: { host_id: 'host-1', host_name: 'Laptop', host_kind: 'remote', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: '2026-09-04T10:00:00.000Z' },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-codex', credential_profile_id: null, adapter_type: 'codex_cli', runtime_installation: 'own' },
+        primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null },
+        attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+      } : {
+        session_id: 'session-1', state: 'draft', host: null, runtime: null, primary: null,
+        attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: false,
+        blocked_reason: 'Confirm the execution context',
+      },
+      available_hosts: [{
+        host_id: 'host-1', host_name: 'Laptop', host_kind: 'remote', online: true,
+        managed_workspace_available: true, daemon_last_heartbeat_at: '2026-09-04T10:00:00.000Z',
+      }],
+      available_runtime_profiles: [{
+        agent_id: 'agent-1', agent_name: 'Space Assistant', runtime_profile_id: 'runtime-codex',
+        adapter_type: 'codex_cli', runtime_installation: 'own', execution_host_id: 'host-1',
+        workspace_mode: 'managed', workspace_location_id: null, preferred: true, usable: true, reason: null,
+      }],
+      available_primary_locations: [],
+    } as never))
+    vi.mocked(sessionsApi.initializeExecution).mockImplementation(async () => {
+      initialized = true
+      return {} as never
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('OpenCode GPT-5')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm execution context' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
+
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.2 Codex'))
+    expect(screen.getByRole('button', { name: 'Model' })).not.toHaveTextContent('OpenCode GPT-5')
   })
 
   it('keeps a Room it just created when the catalog refresh fails', async () => {
@@ -1477,6 +2070,9 @@ describe('Rooms page', () => {
   it('drops a locally committed Room when the active Space changes', async () => {
     // The pending entry is Space-scoped: carrying it across a Space switch
     // would show a Room from somewhere else.
+    // A terminal Run with no reply has its turn read once; tests that do not
+    // care still need the call to return something.
+    vi.mocked(runsApi.turn).mockResolvedValue(workingTurn('run-default', []))
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
     vi.mocked(roomsApi.create).mockResolvedValue({
       room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],

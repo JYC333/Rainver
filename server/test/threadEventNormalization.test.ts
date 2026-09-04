@@ -25,7 +25,7 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     const normalizer = createThreadEventNormalizer();
     expect(normalizer.pushAcpTextDelta("Hel")).toEqual([]);
     expect(normalizer.pushAcpTextDelta("lo wor")).toEqual([]);
-    expect(normalizer.pushAcpTextDelta("ld\n")).toEqual([{ event_type: "assistant_text", text: "Hello world" }]);
+    expect(normalizer.pushAcpTextDelta("ld\n")).toEqual([{ event_type: "assistant_text", text: "Hello world\n" }]);
   });
 
   it("emits tool_activity_started with tool_kind from an ACP tool_call update (ACP runtime replatform P3, A9)", () => {
@@ -42,6 +42,8 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
       tool_name: "Read file",
       tool_input_summary: null,
       tool_kind: "read",
+      tool_result_summary: null,
+      status: "pending",
     }]);
   });
 
@@ -56,7 +58,10 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     });
     expect(drafts).toEqual([
       { event_type: "assistant_text", text: "Reading the file" },
-      { event_type: "tool_activity_started", tool_call_id: "tool-1", tool_name: "Read", tool_input_summary: null, tool_kind: null },
+      {
+        event_type: "tool_activity_started", tool_call_id: "tool-1", tool_name: "Read",
+        tool_input_summary: null, tool_kind: null, tool_result_summary: null, status: "pending",
+      },
     ]);
   });
 
@@ -71,6 +76,9 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     expect(drafts).toEqual([{
       event_type: "tool_activity_finished",
       tool_call_id: "call-1",
+      tool_name: null,
+      tool_input_summary: null,
+      tool_kind: null,
       status: "in_progress",
       tool_result_summary: null,
     }]);
@@ -87,6 +95,9 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     expect(drafts).toEqual([{
       event_type: "tool_activity_finished",
       tool_call_id: "call-1",
+      tool_name: null,
+      tool_input_summary: null,
+      tool_kind: null,
       status: "failed",
       tool_result_summary: null,
     }]);
@@ -111,6 +122,9 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     expect(drafts).toEqual([{
       event_type: "tool_activity_finished",
       tool_call_id: "call-1",
+      tool_name: null,
+      tool_input_summary: null,
+      tool_kind: null,
       status: "succeeded",
       tool_result_summary: "command output",
     }]);
@@ -146,32 +160,32 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
   });
 
   describe("reasoning", () => {
-    // Two runtimes, two conventions. Before this, the ACP channel was dropped
-    // by construction and inlined <think> was stored as the answer — a
-    // MiniMax turn showed its whole reasoning block above the reply.
     it("keeps a runtime's own reasoning channel apart from its answer", () => {
       const normalizer = createThreadEventNormalizer();
       expect(normalizer.pushAcpThoughtDelta("weighing options\n")).toEqual([
-        { event_type: "assistant_thought", text: "weighing options" },
+        { event_type: "assistant_thought", text: "weighing options\n" },
       ]);
       expect(normalizer.pushAcpTextDelta("the answer\n")).toEqual([
-        { event_type: "assistant_text", text: "the answer" },
+        { event_type: "assistant_text", text: "the answer\n" },
       ]);
     });
 
-    it("splits inlined <think> out of the message text", () => {
+    it("preserves channel arrival order across partial chunks", () => {
       const normalizer = createThreadEventNormalizer();
       const drafts = [
-        ...normalizer.pushAcpTextDelta("<think>the user asks what model I am\n</think>我是 MiniMax-M3。\n"),
+        ...normalizer.pushAcpTextDelta("I will inspect"),
+        ...normalizer.pushAcpThoughtDelta("considering"),
+        ...normalizer.pushAcpTextDelta("The answer"),
         ...normalizer.finish(),
       ];
       expect(drafts).toEqual([
-        { event_type: "assistant_thought", text: "the user asks what model I am" },
-        { event_type: "assistant_text", text: "我是 MiniMax-M3。" },
+        { event_type: "assistant_text", text: "I will inspect" },
+        { event_type: "assistant_thought", text: "considering" },
+        { event_type: "assistant_text", text: "The answer" },
       ]);
     });
 
-    it("handles a tag split across deltas, which is how it actually streams", () => {
+    it("does not infer thought from message text", () => {
       const normalizer = createThreadEventNormalizer();
       const drafts = [
         ...normalizer.pushAcpTextDelta("<thi"),
@@ -180,22 +194,8 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
         ...normalizer.pushAcpTextDelta("k>answer"),
         ...normalizer.finish(),
       ];
-      // The partial tags are never emitted as text.
       expect(drafts).toEqual([
-        { event_type: "assistant_thought", text: "reasoning" },
-        { event_type: "assistant_text", text: "answer" },
-      ]);
-    });
-
-    it("does not merge reasoning into the answer's first line when no newline separates them", () => {
-      const normalizer = createThreadEventNormalizer();
-      const drafts = [
-        ...normalizer.pushAcpTextDelta("<think>why</think>because\n"),
-        ...normalizer.finish(),
-      ];
-      expect(drafts).toEqual([
-        { event_type: "assistant_thought", text: "why" },
-        { event_type: "assistant_text", text: "because" },
+        { event_type: "assistant_text", text: "<think>reasoning</think>answer" },
       ]);
     });
 
@@ -210,7 +210,7 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     it("leaves text with no reasoning in it completely untouched", () => {
       const normalizer = createThreadEventNormalizer();
       expect(normalizer.pushAcpTextDelta("a < b and c > d\n")).toEqual([
-        { event_type: "assistant_text", text: "a < b and c > d" },
+        { event_type: "assistant_text", text: "a < b and c > d\n" },
       ]);
     });
   });

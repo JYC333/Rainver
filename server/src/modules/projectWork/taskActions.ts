@@ -6,7 +6,6 @@ import { assertSqlIdentifier, contentReadSql } from "../access/contentAccessSql.
 import { assertProjectWriterForMutation } from "../projects/access.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
 import { recordStageChange } from "./loopState.js";
-import { lockTaskQueueForTerminalMutation, withdrawQueuedTaskMessages } from "../tasks/taskRunStatusProjection.js";
 
 /**
  * What an Agent may do to a Project's work.
@@ -315,15 +314,11 @@ export async function requestTaskReview(
     if (task.status === "waiting_for_review") {
       throw new HttpError(409, "Task is already waiting for a decision");
     }
-    await lockTaskQueueForTerminalMutation(tx, context.spaceId, [task.id]);
     await tx.query(
       `UPDATE tasks SET status = 'waiting_for_review', updated_at = now()
         WHERE space_id = $1 AND id = $2`,
       [context.spaceId, task.id],
     );
-    // A queued message dispatching into a fresh Run behind the person's
-    // pending decision is exactly what the hold is meant to prevent.
-    await withdrawQueuedTaskMessages(tx, context.spaceId, [task.id]);
 
     const event = await appendProjectWorkEvent(tx, {
       spaceId: context.spaceId,

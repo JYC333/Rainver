@@ -18,7 +18,7 @@ import { PgRoomRepository, ROOM_AUDIENCE_SQL, type RoomRecord } from "./reposito
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
-import type { RoomDetail, ThreadReferencePick } from "@rainver/protocol";
+import type { RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService } from "./rosterService.js";
 import { RoomConversationSummaryService } from "./conversationSummaryService.js";
@@ -589,6 +589,7 @@ export class RoomService {
       agent_id: string;
       runtime_profile_id: string;
       credential_profile_id?: string | null;
+      session_config?: RuntimeSessionConfigSelection[];
     }>;
   }) {
     return withDbTransaction(this.pool, async (client) => {
@@ -698,6 +699,7 @@ export class RoomService {
       agent_id: string;
       runtime_profile_id: string;
       credential_profile_id?: string | null;
+      session_config?: RuntimeSessionConfigSelection[];
     }>;
   }) {
     return withDbTransaction(this.pool, async (client) => {
@@ -870,6 +872,7 @@ export class RoomService {
         agent_id: string;
         runtime_profile_id: string;
         credential_profile_id?: string | null;
+        session_config?: RuntimeSessionConfigSelection[];
       }>;
       /** See `AddMessageInput.created_at`; set when references precede it. */
       created_at?: string;
@@ -983,6 +986,7 @@ export class RoomService {
         agent_id: backend.agent_id,
         runtime_profile_id: backend.runtime_profile_id,
         credential_profile_id: backend.credential_profile_id ?? null,
+        ...(backend.session_config?.length ? { session_config: backend.session_config } : {}),
       }));
       const effectiveSegments = input.recipient_segments?.length
         ? segments ? [...segments] : null

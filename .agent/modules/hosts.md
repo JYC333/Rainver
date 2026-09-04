@@ -137,54 +137,28 @@ Host registry:
 - `POST /api/v1/tasks/:taskId/runs` dispatches an existing coding Task and
   accepts `workspace_location_id`; without one it uses the Folder's sole
   active, execution-ready Location.
-- `POST /api/v1/tasks/runs` creates a lightweight coding Task and dispatches it
-  in the same request.
 
-Both routes enforce Project write access, Location/Folder/Space scope,
-execution readiness, remote Host ownership, implemented ACP adapter and host
-capability checks, then enqueue the durable agent job. The former
-`POST /api/v1/hosts/dispatch` route is removed; no compatibility route is
-registered by the server. Thread queue operations below remain under this
-module, but their thread is always Location-bound.
-- `POST /api/v1/hosts/threads/:threadId/messages/:messageId/withdraw` — pulls
-  back a still-`queued` message before it ever becomes a Run; 409 if the
-  message is already `dispatched` or `withdrawn`. Requires Project write
-  access (`requireThreadProjectWriter`, resolved via the thread's Folder) —
-  any writer, not only the message's own sender, matching dispatch's own
-  Project-wide (not per-user) trust boundary. `requireThreadProjectWriter`
-  resolves a thread by id alone with no space scoping before checking write
-  access, unlike the sibling `GET .../events` endpoint's `identity.spaceId`-
-  scoped lookup — an authenticated caller with no relationship to a given
-  Space can distinguish "this thread id exists somewhere" (403) from
-  "doesn't" (404). Low practical severity (opaque UUIDs, existence-only) and
-  it matches dispatch's own Folder-resolution pattern, but it's an internal
-  inconsistency between this phase's own new endpoints — recorded as a
-  conscious, accepted gap (discovery review, P2), not fixed: closing it
-  would mean switching these three endpoints off `getCurrentUser` onto
-  `introspectIdentity` (the events endpoint's space-scoped auth), a real
-  auth-flow change out of proportion for a minor, low-severity finding.
-- `POST /api/v1/hosts/threads/:threadId/resume-queue` — clears a paused
-  queue (P2, C4) and immediately tries to advance it. The only way a pause
-  clears; never automatic. Requires Project write access.
-- `POST /api/v1/hosts/threads/:threadId/cancel` — cancels the thread's
-  current active Run via the existing generic `orchestration.cancelRun`
-  (same mechanism `PATCH /api/v1/runs/:runId/stop` uses) — this endpoint's
-  job is finding "the active run for this thread" and gating it behind
-  Project write access, not new cancellation machinery. 409 if no active run.
-  Never touches the queue directly (C4: cancel is explicit, never coupled to
-  sending) — the queue pauses as a side effect of the cancelled Run reaching
-  a non-`succeeded` terminal status through the ordinary post-terminal hook,
-  the same as any other failure.
-- `GET /api/v1/hosts/threads/:threadId/events?after=<index>` — cursor read
-  for a thread's normalized conversation events (below), everything after
-  `after` (default `-1`, i.e. from the start), oldest first. Space-scoped via
-  the thread's Folder → Project, same `assertProjectReadable` pattern as
-  `GET /api/v1/hosts/threads`.
-- `GET /api/v1/hosts/threads/:threadId/messages` (P3) — read side for
-  `host_thread_messages`, the durable per-thread message ledger; same
-  space-scoped `assertProjectReadable` auth shape as the events read above.
-  `runs.prompt` is redacted on read, so this is the only readable record of
-  what was actually sent into a thread.
+It enforces Project write access, Location/Folder/Space scope, execution
+readiness, remote Host ownership, implemented ACP adapter and host capability
+checks, then creates one Run and enqueues the durable agent job. The former
+`POST /api/v1/hosts/dispatch` and `POST /api/v1/tasks/runs` routes are removed;
+no compatibility route is registered by the server.
+
+A remote dispatch creates its Run synchronously, exactly as a server-host one
+does — the two differ in what they stamp on the Run (the thread, the adapter,
+the installation and the vendor session to resume), not in when the Run comes
+into being. It used to enqueue a message on the thread and let a per-thread
+queue turn it into a Run once nothing blocked it; that queue existed for the
+Command Center's thread page, which paused it on any non-success and offered a
+Resume button. With the page gone nothing could resume a paused queue, so a
+remote Task run whose predecessor failed would have sat queued forever. Deleted
+with it: `host_thread_messages`, `advanceThreadQueue`, `queue_paused_at`,
+`threadMessageRepository`, and the thread routes (withdraw, resume-queue,
+cancel, events read, messages read).
+
+Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
+other Run — the deleted thread-cancel route was a thread-to-run lookup wrapping
+that same `orchestration.cancelRun`, not separate machinery.
 
 Model-backend binding. Space-scoped
 via `introspectIdentity` because validating a ModelProvider needs the Space its
@@ -211,46 +185,54 @@ default > none**, and an explicit `model_provider_id: null` is a real choice
 ("ambient login for this one dispatch"), so the override is read by key
 presence, not truthiness.
 
-A thread's own backend is the resolved provider and model of its newest message
-that will run or has run — queued counts, withdrawn does not
-(`currentBinding`). The Host × adapter default therefore decides a thread's
-*first* backend only. Without that step, resolution re-read the default at every
-dispatch, so changing it moved **every** existing thread on that host onto a new
-backend, and since a bound run's vendor session lives inside that provider's
-profile directory, each of them lost its conversation as well — a setting meant
-to pick a default for new work silently reset old work. Queued has to count: a
-binding is frozen at enqueue and the queue drains FIFO, so reading only
-dispatched rows lets a message sent while a run is active resolve against the
-older backend and land *after* an override, flipping the thread back
-mid-conversation. An override becomes what the thread inherits next, which is
-how a user changes a thread's backend.
+A thread's own backend is the resolved provider and model of its newest Run
+(`threadRunBinding` in `tasks/repository.ts`). The Host × adapter default
+therefore decides a thread's *first* backend only. Without that step,
+resolution re-read the default at every dispatch, so changing it moved
+**every** existing thread on that host onto a new backend, and since a bound
+run's vendor session lives inside that provider's profile directory, each of
+them lost its conversation as well — a setting meant to pick a default for new
+work silently reset old work. An override becomes what the thread inherits
+next, which is how a user changes a thread's backend. (This used to read the
+thread's newest *message* — the queue's ledger — where queued rows counted and
+withdrawn ones did not; with one Run created per dispatch there is no queued
+state to reason about.)
 
-Resolution happens at **dispatch** time, and the result is snapshotted onto
-`host_thread_messages.model_provider_id` / `.model`: validation can then fail
-the request the sender is waiting on, and a message already queued does not
-change backend because someone edited the host default while it waited. The
-snapshot names a concrete model, not "whatever the provider defaults to" — a
-thread that inherited a null model would follow the provider's `default_model`
-if that were later edited, which is the same drift one level down.
+Resolution happens at **dispatch** time, and the result is stamped onto the Run
+it creates: `runs.model_provider_id` and `model_override_json.model`.
+Validation can then fail the request the sender is waiting on. The snapshot
+names a concrete model, not "whatever the provider defaults to" — a thread that
+inherited a null model would follow the provider's `default_model` if that were
+later edited, which is the same drift one level down. `source: "request"` is
+written even when the decision was "no provider at all", because that is what
+tells an admission that deliberately chose ambient login apart from a Run that
+never chose and should fall back to the Host default.
 
-`advanceThreadQueue` copies that snapshot onto the Run it creates, and writes
-the thread and the vendor session to resume into the Run's
-`model_override_json.host_thread` — the same shape the Room, delegation and
-direct-chat paths write. The `agent_run` job handler reads both from the Run
-(`hosts/threadDispatchInputs.ts`), never from the job payload: twenty places
-enqueue that job, and the ones that did not know they were re-dispatching a
-thread-bound Run (the supervisor retry, an authorization re-enqueue, the
+Such a Run is `run_type: 'system'`, which `routeRun` skips. That is load-bearing
+rather than cosmetic: on any other run_type the router would stamp its own
+predicted provider over the backend the dispatch already resolved and
+validated, and binding resolution reads that column.
+
+The admission also writes the thread and the vendor session to resume into the
+Run's `model_override_json.host_thread` — the same shape the Room, delegation
+and direct-chat paths write. The `agent_run` job handler reads both from the
+Run (`hosts/threadDispatchInputs.ts`), never from the job payload: twenty
+places enqueue that job, and the ones that did not know they were re-dispatching
+a thread-bound Run (the supervisor retry, an authorization re-enqueue, the
 resume endpoint, direct chat) used to start a fresh vendor session every turn
-while the thread believed it was resuming one. At execution, a Run with no message — an Automation, Room root run, Plan or
-Workflow node, evolution run whose Folder prefers a remote Location — falls
-back to the Host × adapter default, so the per-host setting means what the
-Command Center says it means rather than applying only to dispatched threads.
+while the thread believed it was resuming one. At execution, a Run that never
+went through dispatch — an Automation, Room root run, Plan or Workflow node,
+evolution run whose Folder prefers a remote Location — falls back to the Host ×
+adapter default, so the per-host setting means what the Command Center says it
+means rather than applying only to dispatched threads.
 
 **Before execution, `runs.model_provider_id` is not evidence of a binding**:
 `PgRouteDecisionRepository.routeRun` stamps that column for any routed run
 before host kind is resolved, so a remote run created by another path can carry
-a provider it never used. Binding *resolution* therefore never reads it — it
-reads the message, else the Host default. Once the binding is resolved — before the run launches — the
+a provider it never used. A dispatched Run is `run_type: 'system'`, which the
+router skips, so on that path the column carries the dispatch's own decision
+and binding resolution reads it; a Run without one falls back to the Host
+default. Once the binding is resolved — before the run launches — the
 column becomes authoritative in the other direction: the remote adapter writes
 back what it bound and marks it `source = "host_binding"`, so a reader can tell
 a chosen provider from a predicted one. The write-back merges into
@@ -405,35 +387,16 @@ Sending a bare name to OpenCode names no provider it knows, against an endpoint
 that looks correctly configured — so a rejection names both the model asked for
 and the one the runtime is on.
 
-The capability probe also reports the model **and reasoning effort** each
-installed CLI is *configured* to use (`capabilities_json.models` and
-`.reasoning`, keyed by capability probe), read from that CLI's own config — Claude's `settings.json`, Codex's top-level `config.toml`
-key, OpenCode's `opencode.json{,c}`. This is the one thing the control plane
-cannot otherwise know: with no binding, an unbound run's model is the CLI's
-business, so the composer could offer "this machine's login" without being able
-to say whether that meant opus or sonnet. It is the configured model, not a
-runtime-negotiated one — a session switched with an in-CLI command differs until
-written back — and it is read rather than probed by starting each runtime,
-because this runs on every heartbeat.
-
-The Codex catalog a binding writes declares real reasoning levels
-(`low`/`medium`/`high`, defaulting to `medium` — Codex's own fallback). Codex
-encodes effort into the model id it works with (`model[effort]`) and sends it
-upstream as a request parameter, so this is the *model's* reasoning, not a
-harness behaviour: declaring only `none`, which this did until 2026-08-25, told
-Codex that every bound provider's model cannot reason, and pinned a reasoning
-model like MiniMax-M3 to `model[none]` on every bound run. We cannot know which
-levels a given third-party endpoint honours, so it answers for itself; an
-endpoint that ignores the parameter behaves exactly as before. **Unverified
-against a real third-party endpoint** — see below.
-
-Beyond the configured values, the probe asks each ACP runtime **what it can be
-set to** (`capabilities_json.options`): its model list, its effort list, and
-which of each is current. It opens one throwaway ACP session in a temp
-directory, reads `configOptions`, and kills it — cached for 15 minutes, because
-each ask starts an agent process while the capability probe itself runs every
-heartbeat. A runtime that cannot be asked (absent, not logged in, slow) falls
-back to reading its config, and offers no lists rather than guessed ones.
+The capability probe asks each ACP runtime for its modern `configOptions` and
+stores them without projecting special model/effort fields. Select options
+(including groups), boolean options, categories, descriptions, and current
+values remain runtime-owned. The probe opens a throwaway session in a temp
+directory and caches a successful answer for 15 minutes. A failed ask is
+cached for only one minute and is cleared immediately when the daemon receives
+a fresh control-plane `hello_ack`, so one transient probe failure cannot hide
+the composer controls across a server restart. While the runtime cannot
+answer, that installation reports no options; Rainver does not read vendor
+config files or synthesize a fallback catalog.
 
 *How* each runtime's ACP process is launched for the ask is not the daemon's
 knowledge: `hello_ack` carries `runtime_probes` — one `{ runtime, argv }` per
@@ -475,17 +438,14 @@ everything about a copy lives on the copy. The capability report is
 `{ runtimes, versions, installations }`: `installations[adapter_type]` holds
 one `{ id, version, logged_in, options }` per copy (`logged_in` from the
 credential file in that copy's HOME, null when the runtime declares no
-login; `options` is what that copy said it can be set to over ACP, or just
-its configured model/effort when it could not be asked). `runtimes`/`versions`
+login; `options.config_options` is exactly what that copy advertised over
+ACP). `runtimes`/`versions`
 are the plain PATH inventory (vendor binaries and git), for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
-`HostCapabilitiesSchema`, and `DispatchOptionsSchema` for the dispatch
-contract below), so server and web share one definition and the server
-validates what it stores and serves. The server normalizes every
-hello/heartbeat into this shape before storing it (`hosts/capabilities.ts`) — a daemon that predates installations reported
-PATH binaries plus per-binary option maps, and that is translated there into
-the `own` copies it meant — so every reader (dispatch, queue advance, the
-web) sees one shape and no fallback logic exists anywhere else.
+`HostCapabilitiesSchema`), so server and web share one definition and the
+server validates what it stores and serves. Daemon and server deploy together;
+`hosts/capabilities.ts` accepts only the current installations shape and does
+not translate obsolete heartbeat layouts.
 
 Install (`POST /api/v1/hosts/:hostId/installations/:adapterType`, host owner)
 sends `install_tool { request_id, adapter_type, version, distribution, login }`;
@@ -497,15 +457,12 @@ the rendered `login_command`), answers `tool_result { installation }` and
 heartbeats. `DELETE .../installations/:adapterType/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
 
-What a dispatch can choose from is decided where dispatch is validated:
-`GET /api/v1/hosts/:hostId/dispatch-options?adapter_type&installation&thread_id`
-(`hosts/dispatchOptions.ts`) returns the host's copies per adapter, the
-effective selection (a thread's pin wins), and for that copy every backend —
-`inherit` (the thread's own, else the host default, with what it resolves
-to), `ambient` (the copy's own login), each eligible ModelProvider — with
-`usable`/`reason` and the models/efforts it offers. The composer renders
-that and sends back the choice; it no longer reconstructs eligibility,
-inheritance or login gating from bindings, providers and capabilities.
+What a dispatch may choose is decided where dispatch is validated — the
+admission resolves the backend and refuses an unusable one, so the caller
+finds out on the request it is waiting for rather than on someone's laptop
+minutes later. There is no longer a read endpoint for the option list: it
+existed for the Command Center's dispatch composer, which was deleted with
+that surface.
 
 A thread pins its copy (`host_threads.runtime_installation`, default
 `own`) the way it pins its adapter: the vendor session lives in that copy's
@@ -553,70 +510,31 @@ next to the server-host runtime tools it is the sibling of: enabled agents
 (Disable, refused while installed anywhere) and a search of the registry to
 Enable more — an instance-level decision that needs no host.
 
-Asking rather than guessing is not a refinement. A hardcoded
-`low/medium/high` was wrong for both runtimes — Claude offers
-`default/low/medium/high/xhigh/max`, Codex adds `ultra` — and, worse, model ids
-carry brackets that are **part of the name**: `claude-fable-5[1m]` is one
-model, not a model and an effort. Any encoding of the pair into one string is
-therefore undecodable, which is why `host_thread_messages.reasoning_effort` is
-its own column and the two travel as two fields all the way to two ACP
-`session/set_config_option` calls. Each runtime names its own option
-(`reasoning_effort` for Codex, `effort` for Claude; OpenCode exposes none, and
-asking for one it never offered would be rejected as `invalid_params`).
-
-A runtime that refuses the effort does **not** lose the turn: the model is
-already right and the answer still arrives, so the mismatch is reported and the
-prompt proceeds.
-
-Both are settable per dispatch, including on an unbound run — that is where it
-matters most, since an unbound run's model is the CLI's own and the effort is
-otherwise the only part of it the control plane could set.
-
-**Not yet observed on a real paired host.** Until this landed,
-`session/set_config_option` never fired on the remote path at all —
-`RunExecuteRequestSchema` carries no model, so the controller's model was
-always null there. It now fires for **every** bound Codex/OpenCode remote run,
-including host-default-bound Automation, Room, Workflow and evolution runs that
-never asked for a model, and the response is checked with exact string equality
-and no normalization (normalization is Claude-only). A runtime that does not
-echo `configOptions` on that response, or echoes a canonicalized form, therefore
-fails **every bound remote run on that host** — including ones that succeeded
-before. The server-host path has been sending these exact shapes and working,
-which lowers the risk materially, but it runs the server's own binaries rather
-than the host's and versions can differ. Read the first bound remote run after
-a host upgrade as a go/no-go on that host, not as a feature check.
-
-Codex's `applyModelChange` shows how that failure arrives: it looks the
-requested model up in the catalog the binding wrote, and if it is absent it
-accepts the value only when it equals the session's current model — otherwise
-it answers `invalid_params` and the run fails. So a catalog Codex does not read
-turns every bound run on that host into a rejected model change, not a run that
-quietly uses the wrong model. The same lookup is what resolves the run's
-reasoning effort.
-
-Declaring real reasoning levels is also unverified in the same way: the effort
-now travels upstream as a request parameter where it previously did not. An
-endpoint that rejects the parameter outright — rather than ignoring it — would
-fail runs that worked before.
+Direct Agent chat, Room, and Project sidecar expose the selected installation's
+generic ACP options through the shared composer. The request stores selected
+`{ id, type, value, category }`
+entries as `model_override_json.acp_session_config`. The controller validates
+each selection against `session/new`, applies them in category order (model,
+mode, thought level, model config, then unknown), and requires every
+`session/set_config_option` response to return the requested current value
+before prompting. Each response replaces the option snapshot because a model
+change may change available reasoning levels. There are no `set_model`,
+`set_effort`, legacy `modes`, or vendor-config compatibility paths.
 
 **Which model a run is recorded as having used is the server's own answer, not
 the runtime's echo of it.** The controller takes `attributed_model` separately
-from `model`: the first is what the run executes against, the second is what to
-ask for over ACP, and they differ whenever the runtime's identifier space is
-not the provider's — Claude is told no model at all yet runs on one the server
-chose, and OpenCode is asked for `<provider>/<model>` but runs on `<model>`.
+from the model-category session selection because the two identifier spaces
+can differ — Claude is told no model at all yet runs on one the server chose,
+and OpenCode is asked for `<provider>/<model>` but runs on `<model>`.
 Reading the echo instead reports an alias (`default`) on a fresh session and
 the *previous* turn's model on a resumed one, which is precisely when the
 answer matters.
 
-The **server-host** path (`vendorCliAdapter.ts`) still sends a bound Claude
-run's provider model name over ACP, so the fall-through above can happen there:
-a resumed conversation whose model changed may re-assert the previous turn's
-model. Whether it actually does depends on whether claude-code-acp reports a
-concrete third-party model name as `currentValue` or only its own aliases — if
-only aliases, the send is a no-op, since all four environment variables name
-the same model. Left as-is rather than changed blind; see the deferred
-register.
+The server-host and remote paths use this same generic controller. Provider-
+bound Codex/OpenCode runs add their translated model as a normal model-category
+selection. Claude remains environment-controlled because provider model names
+do not share Claude ACP's alias namespace. Usage attribution remains the
+server's resolved provider model rather than the runtime's display alias.
 
 B67's remote enforcement point is that same spawn: for a bound run the daemon
 rebuilds the environment from an **allowlist** rather than filtering a denylist
@@ -627,27 +545,6 @@ The allowlist is the same shape the server host uses in `cliSubprocessEnv.ts`.
 A run with **no** binding keeps the machine's environment untouched, exactly as
 before.
 
-Space-scoped, not user-scoped like the rest of this module (P4, control
-center work stream):
-
-- `GET /api/v1/hosts/threads?project_id=X` — every task thread across every
-  remote workspace in a Project. Authenticated via `introspectIdentity`
-  (session + `X-Rainver-Space-Id`, the standard space-scoped pattern every
-  other Project-owned read endpoint uses) rather than the bare
-  `getCurrentUser` this module's other routes use, because a thread's
-  visibility follows Project **read** access (`assertProjectReadable`), not
-  host ownership — a Project member who has never registered a host can
-  still see what's been dispatched to one. 422 without `project_id`.
-- `GET /api/v1/hosts/threads/recent?limit=N` (P3, C10) — cross-project
-  landing read for the Command Center: every thread in the space the caller
-  can read, most-recently-updated first, joined with
-  project_id/project_name/folder_name. Space membership alone is **not**
-  the readability bar here — a household/team space's Projects each carry
-  their own membership list, so the query inlines the same rule
-  `canReadProject` (`projects/access.ts`) applies per-Project: personal
-  space, or the caller owns the Project, or an active `project_members`
-  row, and (added after a discovery-review finding) `deleted_at IS NULL`,
-  matching the project-scoped route's own `assertProjectReadable` boundary.
 - `GET /api/v1/hosts/runtime-adapters` (P3, C6) — static catalog of
   remote-eligible adapters (`implemented` + ACP protocol — since the ACP
   runtime replatform, that's all three: `claude_code`, `codex_cli`,
@@ -811,18 +708,11 @@ from `agentRunHandler.ts`'s `handleAgentRun` (via
 once the dispatched Run's `agent_run` job reaches terminal — not from the
 dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
 
-The Command Center displays the thread's opaque `vendor_session_id` so a
-successful remote Run and its resume target are visible without confusing
-them with the server-owned `runs.session_id`. Run output/progress display is
-no longer a client-side parse of the raw vendor stream-json summary (that
-mechanism — `apps/web/src/modules/command_center/runOutput.ts` — was deleted
-in P1, superseded by the normalized event log below); the P3 conversation UI
-is what renders it.
-
-`host_threads.queue_paused_at` (P2, non-null while the message queue is
-paused) is a separate concern from `status`/`session_reset` — a thread can be
-`active` (vendor session fine) and queue-paused (something needs the user's
-attention) at the same time.
+`vendor_session_id` is the thread's own resume target, deliberately distinct
+from the server-owned `runs.session_id`. No surface displays it any more — the
+Command Center thread page that did was deleted with the rest of that surface;
+what a remote Run produced is read as a turn, from the normalized event log
+below, through `modules/conversation`.
 
 Removing a managed Room specialist or deleting an owner's direct session
 closes its thread and sets `pending_archive_at`. The server asks the connected
@@ -833,100 +723,22 @@ explicit restore when the heartbeat reports `archived_available`; restore
 never restores the vendor session. Archives older than 30 days are swept by
 the daemon on heartbeat.
 
-## Message queue (P2, C4 — `server/src/modules/hosts/{threadMessageRepository,queueAdvance}.ts`)
-
-`host_thread_messages` is the durable, per-thread message ledger — `queued`
-(waiting its turn), `dispatched` (became `run_id`'s Run), or `withdrawn`.
-Rows are never deleted, including `dispatched`/`withdrawn` ones: `runs.prompt`
-is unconditionally redacted to null on every API read (`runReadModel.ts`), so
-this table is the canonical, readable record of what a user actually said
-into a remote thread, not merely a pending-work buffer.
-
-`advanceThreadQueue(pool, threadId)` is the single decision point for "should
-the next queued message actually dispatch right now" — called from the
-dispatch route (right after enqueueing, in case nothing blocks an immediate
-send) and from `agentRunHandler.ts`'s post-terminal hook (right after a Run
-completes). It pops the oldest `queued` message unless: the thread is paused;
-the thread's latest Run is not yet in a terminal status (`isTerminalRunStatus`
-— **not** a hand-rolled status list; an earlier draft of this check omitted
-`waiting_for_review`, silently deadlocking the queue forever after any Run
-that landed there, since nothing besides `succeeded` was ever expected);
-or the host is currently offline (the message stays queued — nothing in this
-phase re-triggers on host reconnect, so it waits for the next dispatch or
-completion to try again). A clean `succeeded` terminal advances the queue;
-anything else (`failed`, `cancelled`, `degraded`, `orphaned`, timed out,
-`waiting_for_review`) pauses it instead of firing the next message on top of
-whatever just went wrong — resuming is always an explicit user action
-(`POST .../resume-queue`), never automatic.
-
-`createAndQueueRun` (`queueAdvance.ts`) is the shared "insert the Run row,
-enqueue its `agent_run` job" core the dispatch route's first send and every
-later auto-advance both call, so the two paths cannot silently drift.
-
-Cancel (`POST .../threads/:threadId/cancel`) does not touch the queue
-directly — it finds the thread's active Run and calls the existing generic
-`orchestration.cancelRun`, the same mechanism `PATCH /api/v1/runs/:runId/stop`
-already used for any other Run. The queue pausing is a side effect of the
-cancelled Run reaching a non-`succeeded` terminal status through the ordinary
-post-terminal hook, not special-cased in the cancel endpoint itself. For a
-Run whose job has not yet been claimed by the worker, `cancelRun` resolves
-synchronously with no daemon round trip (`CliProcessRegistry.terminate`
-finds nothing registered yet, so `confirmedExit` stays at its default
-`true`); for a Run already executing, cancellation waits (up to 5s) for the
-daemon to confirm the process exited, mirroring the server-host cancel path
-exactly — this is pre-existing `orchestration.cancelRun` behavior, not new
-P2 machinery.
-
-### System remote-dispatch agent (P2, C8 — `server/src/modules/hosts/remoteDispatchAgent.ts`)
-
-The Agent selection requirement is gone from dispatch — `agent_id` is not
-part of the request contract at all (see the REST surface entry above) — D1
-already strips every server-Agent input from a remote run (no runtime
-context, no provider resolution, no credentials), so requiring one was
-ceremony. `runs.agent_id`/`agent_version_id` stay NOT NULL
-FKs (loosening them would ripple through the whole runs subsystem), so
-`ensureRemoteDispatchAgent` lazily creates one space-shared, system-owned
-Agent per space (`agent_kind = 'system_remote_dispatch'`, a new value in
-`ck_agents_agent_kind`, with the same `uq_agents_system_*_per_space`
-unique-while-active pattern as `system_research`/etc) and reuses it for
-every agent-id-less dispatch in that space. Its own `adapter_type`/model
-config are never read by anything — a remote run's execution is driven
-entirely by `runs.adapter_type`, not the Agent.
-
-Written as a direct `INSERT` into `agents`/`agent_versions`, not through
-`PgAgentRepository.create()` — that path's `resolveRuntimeConfig` has real
-requirements for an Agent that will actually execute (a configured model
-provider for `model_api`-family adapter types, a registered CLI runtime tool
-version for `local_cli`-family types like `claude_code`) that have nothing
-to do with a placeholder whose `adapter_type` is inert; paying either cost
-would make remote dispatch depend on unrelated server-host configuration.
-
-This is a registered cleanup item (deferred-register.md), not a permanent
-  model — it remains the Task path's placeholder. Room specialists now carry
-  their real Agent identity and use the generalized `host_threads` Room path.
-
 ## Thread events (P1, `server/src/modules/hosts/threadEventRepository.ts` /
 `threadEventNormalization.ts`)
 
 `host_thread_events` is the normalized, per-thread conversation log —
 `assistant_text` (coalesced text segments), `tool_activity_started`/
-`tool_activity_finished` (paired by `tool_call_id`, never carrying tool
-result content), `status` (`run_started`/`run_succeeded`/`run_failed`/
+`tool_activity_finished` (ACP ToolCall/ToolCallUpdate fields, upserted by
+`tool_call_id` when projected), `status` (`run_started`/`run_succeeded`/`run_failed`/
 `run_timeout`), `diagnostic` (one stderr line each), and `assistant_thought`
 (reasoning, coalesced the same way as `assistant_text`).
 
-Reasoning was originally dropped by construction, with no event_type for it
-(C5). That held only while every runtime reported reasoning on a channel of
-its own: a model that inlines it in the message text instead — MiniMax and
-other `<think>`-tag models, where no ACP channel separates it — had its
-reasoning stored and rendered as the answer. Both sources now become
-`assistant_thought`: `agent_thought_chunk` reaches the normalizer through
-`pushAcpThoughtDelta`, and inlined `<think>…</think>` is split out of the text
-stream (tags split across streamed deltas are held back rather than emitted as
-text; an unterminated tag at end of stream is emitted as the literal text it
-is). The turn's `output_text` stays reasoning-free — it is the answer. The
-conversation view renders reasoning as a collapsed disclosure, never as the
-reply. `event_index` is a monotonic
+Reasoning follows the ACP channel exactly, as Zed's client does:
+`agent_thought_chunk` becomes `assistant_thought` and `agent_message_chunk`
+becomes `assistant_text`. The normalizer does not inspect prose or infer that
+inline `<think>` text is reasoning. The turn's `output_text` stays free of
+protocol-level reasoning — it is the answer. The conversation view renders
+reasoning as a collapsed disclosure, never as the reply. `event_index` is a monotonic
 cursor **per thread**, not per run, since the read model is the whole
 conversation across every run/turn dispatched into it; enforced by
 `uq_host_thread_events_thread_event_index`.

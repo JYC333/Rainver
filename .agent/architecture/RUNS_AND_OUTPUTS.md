@@ -87,17 +87,19 @@ Ordinary Assistant Chat uses the same queued Run pipeline. `POST
 /api/v1/agents/{id}/chat` atomically persists the session/user message, Run,
 and `agent_run` job in one database transaction, then returns
 HTTP 202 with `chat_turn_accepted.v1`; it never
-executes an adapter on the request path. The client then follows the canonical
-RunEvent SSE endpoint. The accepted `run_id` is also attached to the durable
-user message, so a reload retains a direct recovery link even if the live
-stream disconnects. The worker persists one assistant message keyed by
-`run_id` before appending the sole terminal `chat_completed` event. On that
-event the client reads the durable message, including Artifact and canonical
-tool-call references. Worker recovery periodically reconciles any terminal Chat
-Run missing this event, including stale/orphaned and retry-exhausted work.
-While the adapter is running, non-durable `chat.text_delta` frames share that
-SSE connection so the reply renders incrementally; lifecycle remains the
-persisted RunEvent granularity.
+executes an adapter on the request path. The client then follows the Run's
+turn (`/runs/{runId}/turn/stream`), which projects whichever event log this Run
+wrote to into one ordered list of parts. The accepted `run_id` is also attached
+to the durable user message, so a reload retains a direct recovery link even if
+the live stream disconnects. The worker persists one assistant message keyed by
+`run_id` before appending the sole terminal `chat_completed` event, and that
+event — not the Run going terminal — is what moves the turn to `done`, because
+everything earlier happens while the reply does not yet exist. On `done` the
+client reads the durable message, including Artifact and canonical tool-call
+references. Worker recovery periodically reconciles any terminal Chat Run
+missing this event, including stale/orphaned and retry-exhausted work. While
+the adapter is running, non-durable `chat.text_delta` frames reach the client
+as a growing `text` part, so the reply renders incrementally.
 
 Conversation backend selection is a user × session binding. The selectable
 runtime profiles come from the Agent, while CLI credentials come only from the

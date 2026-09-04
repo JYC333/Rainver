@@ -15,6 +15,7 @@ import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayload
 import { revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedConversationMessages } from "./support/domainSeeds.js";
 
 describe("runtimeContextCliContinuityDb", () => {
   const SPACE = "71000000-0000-4000-8000-000000000001";
@@ -464,12 +465,14 @@ describe("runtimeContextCliContinuityDb", () => {
     async function message(suffix: string, content: string, role: "user" | "assistant"): Promise<string> {
       void suffix;
       const id = randomUUID();
-      await db.pool.query(
-        `INSERT INTO messages (id,space_id,session_id,user_id,sender_agent_id,role,content,created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,now())`,
-        [id, SPACE, SESSION, role === "user" ? USER : null,
-          role === "assistant" ? AGENT : null, role, content],
-      );
+      await seedConversationMessages(db.pool!, {
+        space: SPACE, session: SESSION,
+        messages: [{
+          id, role, content,
+          userId: role === "user" ? USER : null,
+          senderAgentId: role === "assistant" ? AGENT : null,
+        }],
+      });
       return id;
     }
 

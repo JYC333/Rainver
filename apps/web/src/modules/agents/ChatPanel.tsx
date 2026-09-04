@@ -1,21 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { agentsApi, hostsApi, proposalsApi, sessionsApi } from '../../api/client'
+import { agentsApi, hostsApi, proposalsApi, runsApi, sessionsApi } from '../../api/client'
 import type {
   AgentOut,
   ChatActionPreview,
   ConversationBackendBinding,
   ConversationBackendOption,
   Message,
+  RunTurn,
 } from '../../types/api'
-import { ChatThread, type ChatThreadMessage } from '../../components/ChatThread'
+import { ConversationView } from '../conversation/ConversationView'
+import {
+  ConversationSessionConfig,
+  mergeSessionConfig,
+  type SessionConfigSelection,
+} from '../conversation/ConversationSessionConfig'
+import { readBackTurnState, settledTurn } from '../conversation/settledTurn'
 import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
 
-interface ChatMessage extends ChatThreadMessage {
+/**
+ * How far back a reload reads turns for.
+ *
+ * Every read is a `loadRunTurn`, so this is what keeps opening a long
+ * conversation from fanning out one request per reply. Older replies render
+ * as prose, which is what they were before the fold existed.
+ */
+const HISTORY_TURN_READS = 20
+
+interface ChatMessage {
+  id?: string
+  role: string
+  content: string
+  error?: boolean
+  /** The live turn, while the Agent is working on this reply. */
+  turn?: RunTurn | null
   actionPreviews?: ChatActionPreview[]
   artifactRefs?: string[]
   runId?: string
@@ -53,11 +75,11 @@ export default function ChatPanel({
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId ?? undefined)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [lifecycle, setLifecycle] = useState<string | null>(null)
   const [loadingHistory, setLoadingHistory] = useState(Boolean(initialSessionId))
   const [backendOptions, setBackendOptions] = useState<ConversationBackendOption[]>([])
   const [backend, setBackend] = useState<ConversationBackendBinding | null>(null)
   const [loadingBackends, setLoadingBackends] = useState(true)
+  const [sessionConfig, setSessionConfig] = useState<SessionConfigSelection[]>([])
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof hostsApi.list>>['items']>([])
   const [restoreWorkspace, setRestoreWorkspace] = useState(false)
   const [hostError, setHostError] = useState<string | null>(null)
@@ -76,8 +98,11 @@ export default function ChatPanel({
     })
       .then(catalog => {
         if (cancelled) return
+        const selected = catalogBackend(catalog.options, catalog.binding)
         setBackendOptions(catalog.options)
-        setBackend(catalogBackend(catalog.options, catalog.binding))
+        setBackend(selected)
+        const option = catalog.options.find(candidate => candidate.runtime_profile_id === selected?.runtime_profile_id)
+        setSessionConfig(mergeSessionConfig(option?.session_config_options ?? [], catalog.session_config ?? []))
       })
       .catch(error => {
         if (!cancelled) toast.error(errMsg(error))
@@ -115,13 +140,41 @@ export default function ChatPanel({
     sessionsApi.messages(id)
       .then(async (rows: Message[]) => {
         if (cancelled) return
-        const history = await Promise.all(rows.map(async m => ({
+        // Turns are read for the tail only. The fold is a reading affordance
+        // for what a person is looking at when the page opens, and every
+        // reply is one `loadRunTurn` — a long conversation would otherwise
+        // fan out one uncapped request per reply on every reload.
+        const foldFrom = Math.max(0, rows.length - HISTORY_TURN_READS)
+        const history = await Promise.all(rows.map(async (m, index) => ({
           id: m.id,
           role: m.role,
           content: m.content,
           actionPreviews: await refreshActionPreviews(Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined),
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
-          runId: typeof m.metadata_json?.run_id === 'string' ? m.metadata_json.run_id : undefined,
+          runId: m.run_id ?? undefined,
+          // The turn behind a saved reply, so D3's fold survives a reload
+          // rather than existing only in the session that watched it stream.
+          //
+          // Through `settledTurn` like every other settle: the turn supplies
+          // the work, the saved message supplies the prose. Rendering the
+          // read-back turn as-is would show whatever text the projection
+          // holds — for a managed Run, nothing, because its prose is streamed
+          // and never persisted in the log — and the reply would vanish.
+          //
+          // The state is the turn's own, not an assumption that a saved reply
+          // means a finished turn: the server writes a reply at the pause too,
+          // and a turn read back as `blocked` has to keep saying so — that is
+          // the approval link, and without it a paused conversation looks
+          // merely finished.
+          //
+          // A turn that cannot be read (reaped events, a Run gone) — or one
+          // further back than the tail — leaves the reply as prose, which is
+          // what it was before.
+          turn: m.role === 'assistant' && m.run_id && index >= foldFrom
+            ? await runsApi.turn(m.run_id)
+              .then(read => settledTurn(read, readBackTurnState(read.state), m.content))
+              .catch(() => null)
+            : null,
         })))
         if (cancelled) return
         setSessionId(id)
@@ -137,15 +190,35 @@ export default function ChatPanel({
   }, [initialSessionId])
 
   const selectedBackendOption = backendOptions.find(option => option.runtime_profile_id === backend?.runtime_profile_id) ?? null
+  /**
+   * A turn's request, from send until it resolves — including while it is
+   * blocked, which is a stop rather than an end.
+   *
+   * `sending` says the same thing and drives the spinner and the composer;
+   * this ref exists because `send` needs to read it synchronously, before a
+   * state update could have landed.
+   */
+  const inFlight = useRef(false)
+  const awaitingDecision = messages.some(message => message.turn?.state === 'blocked')
 
   const send = useCallback(async (text: string) => {
     const message = text.trim()
-    if (!message || sending || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
+    // `inFlight` rather than `sending`: a blocked turn hands the composer back
+    // so the person can go and approve something, but its request is still
+    // open, and a second send while it is would be two turns at once.
+    //
+    // `awaitingDecision` as well as `inFlight`, because the same stop is
+    // reachable two ways: a turn blocked in this session, whose request is
+    // still open, and one blocked before a reload, whose is not. The note
+    // above the composer is driven by `awaitingDecision`, so a guard that
+    // only knew about `inFlight` told the person their message was held and
+    // then sent it anyway.
+    if (!message || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
+    inFlight.current = true
     setInput('')
     setHostError(null)
     setMessages(m => [...m, { role: 'user', content: message }])
     setSending(true)
-    setLifecycle('Queued')
     const streamingMessageId = `stream:${crypto.randomUUID()}`
     let streamedContent = ''
     try {
@@ -159,6 +232,7 @@ export default function ChatPanel({
             runtime_profile_id: backend.runtime_profile_id,
             credential_profile_id: backend.credential_profile_id ?? null,
           },
+          ...(sessionConfig.length ? { session_config: sessionConfig } : {}),
           ...(restoreWorkspace ? { restore_workspace: true } : {}),
         },
         {
@@ -182,22 +256,21 @@ export default function ChatPanel({
                       : item)
             })
           },
-          onLifecycle: event => {
-            setLifecycle(event.summary?.trim() || lifecycleLabel(event.event_type))
-          },
-          onTextDelta: delta => {
-            streamedContent += delta
+          onTurn: turn => {
+
+            // The turn itself goes into the message, so the bubble shows the
+            // steps as they happen rather than a status line beside them.
+            streamedContent = turn.parts
+              .filter(part => part.type === 'text')
+              .map(part => part.text)
+              .join('')
             setMessages(current => {
               const index = current.findIndex(item => item.id === streamingMessageId)
-              if (index < 0) {
-                return [...current, {
-                  id: streamingMessageId,
-                  role: 'assistant',
-                  content: delta,
-                }]
+              const entry: ChatMessage = {
+                id: streamingMessageId, role: 'assistant', content: streamedContent, turn,
               }
-              return current.map((item, itemIndex) =>
-                itemIndex === index ? { ...item, content: item.content + delta } : item)
+              if (index < 0) return [...current, entry]
+              return current.map((item, itemIndex) => itemIndex === index ? entry : item)
             })
           },
         },
@@ -207,15 +280,17 @@ export default function ChatPanel({
       onSessionChange?.(res.session_id)
       if (res.ok) {
         setMessages(current => {
+          const streamed = current.find(item => item.id === streamingMessageId)
           const completed: ChatMessage = {
             id: res.assistant_message?.id,
             role: 'assistant',
             content: res.reply ?? '',
+            turn: settledTurn(streamed?.turn, 'done', res.reply ?? ''),
             actionPreviews: res.action_previews,
             artifactRefs: res.assistant_message?.artifact_refs,
             runId: res.run_id,
           }
-          return current.some(item => item.id === streamingMessageId)
+          return streamed
             ? current.map(item => item.id === streamingMessageId ? completed : item)
             : [...current, completed]
         })
@@ -224,13 +299,17 @@ export default function ChatPanel({
           ? 'No model provider is configured for this space yet. Add one to enable chat.'
           : (res.error ?? 'The assistant could not complete this turn.')
         setMessages(current => {
+          const streamed = current.find(item => item.id === streamingMessageId)
           const failed: ChatMessage = {
             role: 'assistant',
             content: streamedContent ? `${streamedContent}\n\n${note}` : note,
             error: true,
+            // The steps stay on a failure, as much as on a success — when
+            // something went wrong they are the explanation.
+            turn: settledTurn(streamed?.turn, 'failed', note),
             actionPreviews: res.action_previews,
           }
-          return current.some(item => item.id === streamingMessageId)
+          return streamed
             ? current.map(item => item.id === streamingMessageId ? failed : item)
             : [...current, failed]
         })
@@ -247,20 +326,28 @@ export default function ChatPanel({
       if (errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound) setHostError(note)
       toast.error(note)
       setMessages(current => {
+        const streamed = current.find(item => item.id === streamingMessageId)
         const failed: ChatMessage = {
           role: 'assistant',
           content: streamedContent ? `${streamedContent}\n\n${note}` : note,
           error: true,
+          // The third way a turn settles, and the same rule: what the Agent
+          // did before the break is what explains the break.
+          turn: settledTurn(
+            streamed?.turn,
+            'failed',
+            streamedContent ? `${streamedContent}\n\n${note}` : note,
+          ),
         }
-        return current.some(item => item.id === streamingMessageId)
+        return streamed
           ? current.map(item => item.id === streamingMessageId ? failed : item)
           : [...current, failed]
       })
     } finally {
+      inFlight.current = false
       setSending(false)
-      setLifecycle(null)
     }
-  }, [agent.id, agent.space_id, backend, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionId, sending])
+  }, [agent.id, agent.space_id, awaitingDecision, backend, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId])
 
   // Auto-send a draft carried from Home's assistant entry (the user already hit "Open").
   useEffect(() => {
@@ -316,7 +403,11 @@ export default function ChatPanel({
             disabled={loadingBackends || sending || backendChoices.length === 0}
             onChange={event => {
               const selected = backendChoices.find(choice => choice.key === event.target.value)
-              if (selected) setBackend(selected.backend)
+              if (selected) {
+                setBackend(selected.backend)
+                const option = backendOptions.find(candidate => candidate.runtime_profile_id === selected.backend.runtime_profile_id)
+                setSessionConfig(mergeSessionConfig(option?.session_config_options ?? [], []))
+              }
             }}
             className="h-8 min-w-0 max-w-[22rem] rounded-md border border-border bg-input px-2 text-xs text-foreground"
           >
@@ -359,21 +450,19 @@ export default function ChatPanel({
           No eligible conversation backend is configured. Add a model provider or grant one of your CLI login profiles to this space.
         </p>
       )}
-      {sending && lifecycle && (
-        <div className="mb-2 text-xs text-muted-foreground" role="status">
-          {lifecycle}
-        </div>
-      )}
-      <ChatThread
-        messages={messages.map(m => ({
-          ...m,
+      <ConversationView
+        entries={messages.map((m, index) => ({
+          id: m.id ?? `entry-${index}`,
+          role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+          content: m.content,
+          turn: m.turn ?? null,
+          error: m.error,
           extra: (
             <>
               {m.actionPreviews?.length ? <div className="mt-2 space-y-2">{m.actionPreviews.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null}
-              {(m.artifactRefs?.length || m.runId) && <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
+              {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                 {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
-                {m.runId && <Link className="text-muted-foreground hover:text-foreground hover:underline" to={`/runs/${m.runId}`}>Inspect Run</Link>}
-              </div>}
+              </div> : null}
               {m.error && providerMissing && m.content.includes('model provider') && (
                 <div className="mt-1.5">
                   <Link to="/providers" className="text-[12px] underline text-accent-foreground">Configure a provider →</Link>
@@ -387,11 +476,22 @@ export default function ChatPanel({
         input={input}
         onInputChange={setInput}
         onSend={() => void send(input)}
+        runHref={entry => (entry.turn ? `/runs/${entry.turn.run_id}` : undefined)}
         placeholder="Ask your assistant… (Enter to send, Shift+Enter for newline)"
         emptyTitle="Ask your assistant"
         emptyDescription="It is aware of your space — memory, projects, captures, runs, and proposals. Long-term changes are always proposals you approve."
-        assistantLabel="Assistant"
         composerDisabled={loadingBackends || !backend || hostBlocked}
+        composerControls={selectedBackendOption?.session_config_options?.length ? (
+          <ConversationSessionConfig
+            options={selectedBackendOption.session_config_options}
+            value={sessionConfig}
+            onChange={setSessionConfig}
+            disabled={sending || loadingBackends || hostBlocked}
+          />
+        ) : undefined}
+        composerNote={awaitingDecision
+          ? 'This turn is waiting for your decision. Review it to carry on.'
+          : undefined}
       />
     </div>
   )
@@ -451,13 +551,6 @@ function backendKey(backend: Pick<ConversationBackendBinding, 'runtime_profile_i
   return `${backend.runtime_profile_id}:${backend.credential_profile_id ?? ''}`
 }
 
-function lifecycleLabel(eventType: string) {
-  return eventType
-    .split('_')
-    .filter(Boolean)
-    .map(word => word[0]?.toUpperCase() + word.slice(1))
-    .join(' ')
-}
 
 function hostErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== 'object' || !('status' in error)) return null

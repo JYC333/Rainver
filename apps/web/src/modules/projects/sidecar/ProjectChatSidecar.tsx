@@ -10,9 +10,9 @@ import type { Room, RoomConversation as RoomConversationRecord } from '../../../
 import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { Skeleton } from '../../../components/ui/skeleton'
-import { RoomConversation } from '../../agent_groups/conversation/RoomConversation'
+import { ConversationSurface } from '../../conversation/ConversationSurface'
 import { ConversationBackendSetupCard } from '../../agent_groups/conversation/ConversationBackendSetupCard'
-import { ConversationExecutionPreflight } from '../../agent_groups/conversation/ConversationExecutionPreflight'
+import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
 import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
 
 /**
@@ -298,7 +298,7 @@ export default function ProjectChatSidecar() {
           )}
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
-          <RoomConversation
+          <ConversationSurface
             // Picking works here too: the panel has the Room's other
             // threads, so a pick has somewhere to go. Starting a new thread is
             // not one of this surface's affordances, so that action is not

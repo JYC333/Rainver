@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
+import { RuntimeSessionConfigOptionSchema, RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { TraceSafeJsonSchema } from "./runOrchestration.js";
 
 const JsonObjectSchema = z.record(z.unknown());
@@ -32,6 +33,125 @@ export const SessionOutSchema = z
   .passthrough();
 export type SessionOut = z.infer<typeof SessionOutSchema>;
 
+/**
+ * What a message carries besides its text.
+ *
+ * `room_display` is the discriminator: it says what kind of thing the row is
+ * in a transcript, and each kind carries its own fields. A row without it is
+ * ordinary conversation — a person speaking or an Agent replying.
+ *
+ * The Run a message belongs to is NOT here: it is `messages.run_id`, a column
+ * with a foreign key. `run_ids` below is the different, plural case — one
+ * dispatched Room message that fanned out to several Agents, each with its
+ * own Run.
+ */
+
+const ActionPreviewSchema = z.object({
+  action_id: z.string(),
+  tool_call_id: z.string().nullish(),
+  status: z.enum(["proposed", "auto_applied", "completed", "failed", "rejected"]),
+  proposal_id: IdSchema.nullish(),
+  proposal_type: z.string().nullish(),
+  title: z.string().nullish(),
+  summary: z.string().nullish(),
+  risk_level: z.string().nullish(),
+  scope: JsonObjectSchema.nullish(),
+}).strict();
+export type MessageActionPreview = z.infer<typeof ActionPreviewSchema>;
+
+/** Fields any message may carry, whatever its display kind. */
+const CommonMessageMetadata = {
+  /** The Room this conversation belongs to, denormalized for the client. */
+  room_id: IdSchema.nullish(),
+  /** The Task group a dispatch created. */
+  task_group_id: IdSchema.nullish(),
+  /** One dispatch, several recipient Agents, one Run each. */
+  run_ids: z.array(IdSchema).nullish(),
+  recipient_run_ids: z.array(IdSchema).nullish(),
+  /** The producing Run's terminal status, for an Agent reply. */
+  status: z.string().nullish(),
+  error_code: z.string().nullish(),
+  /** Why a paused turn needs a person: a decision, or an authorization. */
+  attention_kind: z.enum(["run_decision", "authorization"]).nullish(),
+  authorization_request_id: IdSchema.nullish(),
+  artifact_refs: z.array(IdSchema).nullish(),
+  action_previews: z.array(ActionPreviewSchema).nullish(),
+  assistant_message_id: IdSchema.nullish(),
+  /** Notebook chat: the reply reports a failed Run rather than an answer. */
+  error: z.boolean().nullish(),
+  /** Notebook chat: the note this reply edited, and whether it conflicted. */
+  notebook_edit: z.object({
+    note_id: IdSchema,
+    version: z.number().int(),
+    conflict: z.boolean(),
+  }).nullish(),
+};
+
+/** A person speaking, or an Agent replying. The default. */
+export const ConversationMessageMetadataSchema = z.object({
+  room_display: z.literal("conversation").nullish(),
+  ...CommonMessageMetadata,
+}).strict();
+
+/**
+ * An instruction written into the transcript for the Agent to act on, hidden
+ * from the person reading it. Continuations are the main producer: a Proposal
+ * decision or a domain event that the conversation should carry on from.
+ */
+export const InternalMessageMetadataSchema = z.object({
+  room_display: z.literal("internal"),
+  continuation: z.boolean().nullish(),
+  continuation_requested_by_user_id: IdSchema.nullish(),
+  continuation_proposal_id: IdSchema.nullish(),
+  continuation_proposal_status: z.string().nullish(),
+  continuation_proposal_type: z.string().nullish(),
+  continuation_event_kind: z.string().nullish(),
+  continuation_event_key: z.string().nullish(),
+  continuation_directive: z.string().nullish(),
+  continuation_context: JsonObjectSchema.nullish(),
+  ...CommonMessageMetadata,
+}).strict();
+
+/**
+ * Something the system did, shown in the transcript. `execution_event` plus
+ * `execution_event_key` make a retried mutation idempotent: the key is the
+ * client-stable identity of the change, so the same one is written once.
+ */
+export const SystemNoticeMessageMetadataSchema = z.object({
+  room_display: z.literal("system_notice"),
+  execution_event: z.string().nullish(),
+  execution_event_key: z.string().nullish(),
+  execution_details: JsonObjectSchema.nullish(),
+  host_thread_id: IdSchema.nullish(),
+  host_thread_event: z.string().nullish(),
+  host_thread_reset_reason: z.string().nullish(),
+  ...CommonMessageMetadata,
+}).strict();
+
+/**
+ * Content copied in from outside this conversation. `reference.trust` decides
+ * how far the Agent may act on it; `external_untrusted` marks a conversation
+ * as having held content from outside Rainver.
+ */
+export const ReferenceMessageMetadataSchema = z.object({
+  room_display: z.literal("reference"),
+  reference: JsonObjectSchema,
+  ...CommonMessageMetadata,
+}).strict();
+
+export type InternalMessageMetadata = z.infer<typeof InternalMessageMetadataSchema>;
+export type SystemNoticeMessageMetadata = z.infer<typeof SystemNoticeMessageMetadataSchema>;
+export type ReferenceMessageMetadata = z.infer<typeof ReferenceMessageMetadataSchema>;
+export type ConversationMessageMetadata = z.infer<typeof ConversationMessageMetadataSchema>;
+
+export const MessageMetadataSchema = z.union([
+  InternalMessageMetadataSchema,
+  SystemNoticeMessageMetadataSchema,
+  ReferenceMessageMetadataSchema,
+  ConversationMessageMetadataSchema,
+]);
+export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
+
 export const MessageOutSchema = z
   .object({
     id: IdSchema,
@@ -41,7 +161,11 @@ export const MessageOutSchema = z
     sender_agent_id: IdSchema.nullish(),
     role: z.string(),
     content: z.string(),
-    metadata_json: JsonObjectSchema.nullish(),
+    metadata_json: MessageMetadataSchema.nullish(),
+    /** The message this one replies to; null only for a session's first. */
+    parent_message_id: IdSchema.nullish(),
+    /** The Run that produced this message, or that this message started. */
+    run_id: IdSchema.nullish(),
     created_at: ISODateTimeSchema,
     ...SecretResponseGuards,
   })
@@ -86,8 +210,10 @@ export const ChatTurnRequestSchema = z
       runtime_profile_id: IdSchema,
       credential_profile_id: IdSchema.nullish(),
     }).strict().optional(),
+    session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   })
   .strict();
+export type ChatTurnRequest = z.infer<typeof ChatTurnRequestSchema>;
 
 export const ConversationBackendBindingSchema = z.object({
   runtime_profile_id: IdSchema,
@@ -112,6 +238,7 @@ export const ConversationBackendOptionSchema = z.object({
   host_name: z.string().nullish().optional(),
   host_online: z.boolean().nullish().optional(),
   host_owner_is_me: z.boolean().nullish().optional(),
+  session_config_options: z.array(RuntimeSessionConfigOptionSchema).optional(),
   credential_profiles: z.array(z.object({
     id: IdSchema,
     name: z.string().trim().min(1),
@@ -125,6 +252,7 @@ export type ConversationBackendOption = z.infer<
 export const ConversationBackendCatalogSchema = z.object({
   options: z.array(ConversationBackendOptionSchema),
   binding: ConversationBackendBindingSchema.nullable(),
+  session_config: z.array(RuntimeSessionConfigSelectionSchema).optional(),
 }).strict();
 export type ConversationBackendCatalog = z.infer<
   typeof ConversationBackendCatalogSchema

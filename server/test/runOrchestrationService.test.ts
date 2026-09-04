@@ -75,28 +75,58 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
  * helper drives a single ACP turn to completion, same as it did for the old
  * protocol, just speaking session/new + session/prompt instead.
  */
-function completeCodexProtocol(
+async function completeCodexProtocol(
   controller: CliStdioController | undefined,
   text: string,
   sessionId = "session-1",
-): void {
+): Promise<void> {
   if (!controller) throw new Error("expected ACP stdio controller");
   const sent: Record<string, unknown>[] = [];
   const send = (message: Record<string, unknown>) => { sent.push(message); };
   const close = () => {};
   controller.start(send);
-  controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
-  controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId } }, send, close);
-  const setConfigOption = sent.at(-1);
+  const initialize = sent.at(-1)!;
+  if (initialize.method !== "initialize") throw new Error(`expected initialize request, got ${JSON.stringify(initialize)}`);
+  await controller.receive({ jsonrpc: "2.0", id: initialize.id, result: { protocolVersion: 1 } }, send, close);
+  const session = sent.at(-1)!;
+  if (session.method !== "session/new" && session.method !== "session/resume") {
+    throw new Error(`expected session request, got ${JSON.stringify(session)}`);
+  }
+  const advertisedModels = [
+    "gpt-4o-mini",
+    "provider/model",
+    "example-model",
+  ];
+  const modelOption = {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: advertisedModels[0],
+    options: advertisedModels.map((value) => ({ value, name: value })),
+  };
+  const sessionResponse = {
+    jsonrpc: "2.0",
+    id: session.id,
+    result: { sessionId, configOptions: [modelOption] },
+  };
+  await controller.receive(sessionResponse, send, close);
+  if (controller.result().error) {
+    throw new Error(`fake ACP session failed: ${JSON.stringify({ sessionResponse, result: controller.result() })}`);
+  }
+  const setConfigOption = sent.at(-1)!;
   if (setConfigOption?.method === "session/set_config_option") {
     const requestedModel = (setConfigOption.params as { value?: unknown } | undefined)?.value;
-    controller.receive({
+    await controller.receive({
       jsonrpc: "2.0",
-      id: 3,
-      result: { configOptions: [{ id: "model", currentValue: requestedModel }] },
+      id: setConfigOption.id,
+      result: {
+        configOptions: [{ ...modelOption, currentValue: requestedModel }],
+      },
     }, send, close);
   }
-  controller.receive({
+  const prompt = sent.at(-1)!;
+  await controller.receive({
     jsonrpc: "2.0",
     method: "session/update",
     params: {
@@ -104,9 +134,9 @@ function completeCodexProtocol(
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
     },
   }, send, close);
-  controller.receive({
+  await controller.receive({
     jsonrpc: "2.0",
-    id: 4,
+    id: prompt.id,
     result: {
       stopReason: "end_turn",
       usage: {
@@ -119,6 +149,10 @@ function completeCodexProtocol(
       },
     },
   }, send, close);
+  const result = controller.result();
+  if (!result.completed || result.error) {
+    throw new Error(`fake ACP turn did not complete: ${JSON.stringify({ result, sent })}`);
+  }
 }
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
@@ -1004,7 +1038,7 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            completeCodexProtocol(input.stdio_controller, "cli ok");
+            await completeCodexProtocol(input.stdio_controller, "cli ok");
             return {
               returncode: 0,
               stdout: "cli ok",
@@ -1152,7 +1186,7 @@ describe("RunOrchestrationService", () => {
             expect(output).toBeTruthy();
             await mkdir(dirname(`${output}/report.json`), { recursive: true });
             await writeFile(`${output}/report.json`, JSON.stringify({ answer: "ok" }));
-            completeCodexProtocol(input.stdio_controller, "done");
+            await completeCodexProtocol(input.stdio_controller, "done");
             return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
           },
         },
@@ -1214,7 +1248,7 @@ describe("RunOrchestrationService", () => {
         executor: {
           async runCommand(input) {
             executorCalls.push({ command: input.command, cwd: input.cwd });
-            completeCodexProtocol(input.stdio_controller, "cli ok");
+            await completeCodexProtocol(input.stdio_controller, "cli ok");
             return {
               returncode: 0,
               stdout: "cli ok",
@@ -1954,7 +1988,7 @@ describe("RunOrchestrationService", () => {
         executor: {
           async runCommand(input) {
             executorInputs.push({ read_only: input.read_only });
-            completeCodexProtocol(input.stdio_controller, "critical cli ok");
+            await completeCodexProtocol(input.stdio_controller, "critical cli ok");
             return { returncode: 0, stdout: "critical cli ok", stderr: "", timed_out: false };
           },
         },
@@ -2011,7 +2045,7 @@ describe("RunOrchestrationService", () => {
         executor: {
           async runCommand(input) {
             adapterConfigs.push({ command: input.command });
-            completeCodexProtocol(input.stdio_controller, "ok");
+            await completeCodexProtocol(input.stdio_controller, "ok");
             return { returncode: 0, stdout: "ok", stderr: "", timed_out: false };
           },
         },
@@ -2126,7 +2160,7 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            completeCodexProtocol(input.stdio_controller, "ok");
+            await completeCodexProtocol(input.stdio_controller, "ok");
             return { returncode: 0, stdout: "ok", stderr: "", timed_out: false };
           },
         },
@@ -2303,7 +2337,7 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            completeCodexProtocol(input.stdio_controller, "late ok");
+            await completeCodexProtocol(input.stdio_controller, "late ok");
             // A stop lands while the CLI is still running.
             await service.cancelRun({
               run_id: "run-1",
@@ -2524,7 +2558,7 @@ describe("RunOrchestrationService", () => {
         },
         executor: {
           async runCommand(input) {
-            completeCodexProtocol(input.stdio_controller, "done");
+            await completeCodexProtocol(input.stdio_controller, "done");
             return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
           },
         },

@@ -50,6 +50,9 @@ describe("test hygiene", () => {
       // Deliberately small pools, to prove the code under test survives saturation.
       "coreVersionIntegrityDb.test.ts",
       "runSupervisorDb.test.ts",
+      // Genuinely separate connections, to prove concurrent appends to one
+      // conversation cannot both claim the same position on its path.
+      "sessionsIntegration.test.ts",
     ])).toEqual([]);
   });
 

@@ -63,7 +63,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `spaces` | kernel | `/spaces`, `/invitations` | hook registry | Spaces, memberships, invitations, space-created hook dispatch. |
 | `catalog` | capability | `/server/catalog*`, `/capabilities*` | yes | Read-only on-disk catalog. Owns legacy catalog-backed capability/template manifest surfaces. |
 | `capabilities` | capability | `/capability-definitions*`, `/capability-packs*`, `/skill-sources*`, `/skill-packages*` | yes | Capability/open-skill control plane: canonical definitions, packs, imported skill packages, and runtime skill bindings. Does not execute native capabilities. |
-| `streaming` | infra | `/runs/{runId}/events/stream` | empty | Run event SSE stream. |
+| `streaming` | infra | `/runs/{runId}/turn/stream` | empty | Agent turn SSE stream, as ordered parts. |
 | `notifications` | infra | `/server/notifications/webhooks/*` | empty | Notification webhook egress policy plus durable operational-alert pointers delivered through Activity Inbox. |
 | `runtimeTools` | infra | `/runtime-tools*` | empty | Controlled runtime CLI installer/status/catalog. |
 | `providers` | infra | `/providers*`, `/credentials/cli*`, `/internal/providers-credentials/*` | yes | Model providers, credential pools, provider invocation, and CLI credential broker/audit. There is no separate credentials route module. |

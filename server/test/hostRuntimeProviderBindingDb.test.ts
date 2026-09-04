@@ -12,10 +12,9 @@ import {
   type ProviderLookupPort,
 } from "../src/modules/hosts/runtimeProviderBindingResolution.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
-import { advanceThreadQueue } from "../src/modules/hosts/queueAdvance.js";
-import { hostThreadDispatchInputs } from "../src/modules/hosts/threadDispatchInputs.js";
-import { PgHostThreadMessageRepository } from "../src/modules/hosts/threadMessageRepository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { hostThreadDispatchInputs } from "../src/modules/hosts/threadDispatchInputs.js";
 import { runToOut } from "../src/modules/runs/runReadModel.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import { resolveRunRemoteness } from "../src/modules/runs/runRemoteness.js";
@@ -36,7 +35,7 @@ import {
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for which model backend the control plane picks for a
 // host's runtime adapter, and what it refuses. Precedence and validation are
@@ -55,6 +54,9 @@ const FOLDER = "88888888-8888-4888-8888-888888888888";
 const LOCATION = "99999999-9999-4999-8999-999999999999";
 const THREAD = "aaaa1111-1111-4111-8111-111111111111";
 const TASK = "bbbb2222-2222-4222-8222-222222222222";
+const OTHER_TASK = "bbbb3333-3333-4333-8333-333333333333";
+const AGENT = "cccc3333-3333-4333-8333-333333333333";
+const AGENT_VERSION = "dddd4444-4444-4444-8444-444444444444";
 const CLAUDE_PROVIDER = "55555555-5555-4555-8555-555555555555";
 const OPENAI_PROVIDER = "66666666-6666-4666-8666-666666666666";
 
@@ -81,7 +83,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["host_runtime_provider_bindings", "host_thread_messages", "host_threads", "runs", "agent_versions", "agents", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
+    ["host_runtime_provider_bindings", "host_threads", "runs", "agent_versions", "agents", "tasks", "workspace_locations", "project_folders", "projects", "model_provider_space_grants", "model_providers", "hosts", "machines", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -448,9 +450,9 @@ describe("host runtime provider binding routes", () => {
 });
 
 /**
- * Everything `advanceThreadQueue` needs to turn a queued message into a Run:
- * a Project, a Folder with a remote Location on this Host, a Task, and a
- * thread pinned to that Location.
+ * Everything a remote Task dispatch needs to create a Run: a Project, a
+ * Folder with a remote Location on this Host, a Task, and a thread pinned to
+ * that Location.
  */
 async function seedDispatchableThread(): Promise<void> {
   const now = new Date().toISOString();
@@ -484,8 +486,11 @@ async function seedDispatchableThread(): Promise<void> {
      ) VALUES ($1,$2,$3,'location',$4,'claude_code','own','active',$5,$6,$6)`,
     [THREAD, HOST, LOCATION, TASK, OWNER, now],
   );
-  // The capability probe is rechecked when the queue advances, not only at
-  // dispatch, so the host has to still report the runtime here.
+  // The queue used to create its dispatch Agent lazily; a synchronous
+  // admission takes the Agent the caller (or the Task) names.
+  await seedAgentWithVersion(db.pool, {
+    agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, now,
+  });
   await db.pool.query(
     `UPDATE hosts
         SET capabilities_json = '{"installations":{"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
@@ -495,17 +500,30 @@ async function seedDispatchableThread(): Promise<void> {
   );
 }
 
+/** A remote Task dispatch onto the seeded thread, as the route admits one. */
+function dispatch(body: Record<string, unknown> = {}) {
+  // The real providers port, as the route wires one: resolution reads it to
+  // check the provider is usable for this Space and adapter.
+  return new PgTaskRepository(db.pool, providerPort()).createTaskRun(
+    { spaceId: SPACE, userId: OWNER },
+    TASK,
+    {
+      workspace_location_id: LOCATION,
+      adapter_type: "claude_code",
+      prompt: "go",
+      thread_id: THREAD,
+      agent_id: AGENT,
+      ...body,
+    },
+  );
+}
+
 describe("binding carried onto the Run", () => {
-  it("stamps the message's resolved binding onto the Run the queue creates", async () => {
+  it("stamps the dispatch's resolved binding onto the Run it creates", async () => {
     if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(
-      THREAD, TASK, "go", OWNER,
-      { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
-    );
 
-    const result = await advanceThreadQueue(db.pool, THREAD);
-    expect(result.advanced).toBe(true);
+    await dispatch({ model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" });
 
     const run = await db.pool.query<{ model_provider_id: string | null; model_override_json: { model?: string; source?: string } | null }>(
       `SELECT model_provider_id, model_override_json FROM runs WHERE host_task_thread_id = $1`,
@@ -540,8 +558,8 @@ describe("binding carried onto the Run", () => {
     if (!db.available) return;
     await seedDispatchableThread();
     await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-sess-1' WHERE id = $1`, [THREAD]);
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
-    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
+
+    await dispatch();
 
     // The job handler reads both from the Run row (`hostThreadDispatchInputs`),
     // so the twenty places that enqueue an `agent_run` job — the supervisor
@@ -557,23 +575,226 @@ describe("binding carried onto the Run", () => {
       `SELECT payload_json FROM jobs WHERE payload_json->>'run_id' = $1`, [run.rows[0]!.id],
     );
     expect(job.rows).toHaveLength(1);
-    expect(Object.keys(job.rows[0]!.payload_json).sort()).toEqual(["run_id", "timeout_ms"]);
+    expect(Object.keys(job.rows[0]!.payload_json).sort()).toEqual(["run_id"]);
+  });
+
+  it("gives the Run the adapter it was admitted for, so it is executable", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    await dispatch();
+
+    // `remoteHostCliAdapter` reads `adapter_type` off the Run to pick the
+    // runtime spec. Normally the router is the only authority for that
+    // column; a remote dispatch already chose and validated its runtime at
+    // admission, and a Run that reached the host without one could not run.
+    const run = await db.pool.query<{ adapter_type: string | null; trust_mode: string | null }>(
+      `SELECT adapter_type, trust_mode FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    expect(run.rows[0]?.adapter_type).toBe("claude_code");
+    // Someone's own machine, not a sandbox the control plane owns. The read
+    // model reads this to decide whether the adapter actually consumed the
+    // provider the Run records.
+    expect(run.rows[0]?.trust_mode).toBe("trusted_host");
+  });
+
+  it("keeps the router out of a dispatch that already resolved its backend", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    await dispatch({ model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" });
+
+    // `routeRun` skips `system` runs. On any other run_type the router would
+    // stamp its own predicted provider over the backend this dispatch
+    // resolved and validated — and `resolveRemoteRunBinding` reads that
+    // column, so the host would be leased something the dispatch never chose.
+    const run = await db.pool.query<{ run_type: string; model_provider_id: string | null }>(
+      `SELECT run_type, model_provider_id FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    expect(run.rows[0]?.run_type).toBe("system");
+    expect(run.rows[0]?.model_provider_id).toBe(CLAUDE_PROVIDER);
+  });
+
+  it("refuses a second Run while one is in flight on the same thread", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    await dispatch({ model_provider_id: null });
+    // Still running. Two Runs on one thread would both resume the same vendor
+    // session — the thread's whole reason to exist — and the second would
+    // corrupt what the first is holding.
+    await expect(dispatch({ model_provider_id: null }))
+      .rejects.toMatchObject({ statusCode: 409 });
+
+    const runs = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    expect(runs.rows[0]?.count).toBe("1");
+  });
+
+  it("does not let one Task borrow another Task's host thread", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+    await db.pool.query(
+      `INSERT INTO tasks (id, space_id, project_id, project_folder_id, title, status, task_role,
+         created_by_user_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Another task','ready','source',$5,now(),now())`,
+      [OTHER_TASK, SPACE, PROJECT, FOLDER, OWNER],
+    );
+
+    await expect(new PgTaskRepository(db.pool, providerPort()).createTaskRun(
+      { spaceId: SPACE, userId: OWNER },
+      OTHER_TASK,
+      {
+        workspace_location_id: LOCATION,
+        adapter_type: "claude_code",
+        prompt: "borrow the thread",
+        thread_id: THREAD,
+        agent_id: AGENT,
+        model_provider_id: null,
+      },
+    )).rejects.toMatchObject({ statusCode: 404 });
+
+    const runs = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`,
+      [THREAD],
+    );
+    expect(runs.rows[0]?.count).toBe("0");
+  });
+
+  it("serializes concurrent admissions for the same Task thread", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    const results = await Promise.allSettled([
+      dispatch({ model_provider_id: null }),
+      dispatch({ model_provider_id: null }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")?.reason).toMatchObject({ statusCode: 409 });
+
+    const runs = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`,
+      [THREAD],
+    );
+    expect(runs.rows[0]?.count).toBe("1");
+  });
+
+  it("does not deadlock a thread whose Run stopped for review", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    await dispatch({ model_provider_id: null });
+    // `waiting_for_review` is terminal for this purpose: the Run stopped and
+    // is waiting on a person. A hand-rolled status list here once missed it
+    // and deadlocked the thread forever after any Run that landed in review.
+    await db.pool.query(
+      `UPDATE runs SET status = 'waiting_for_review' WHERE host_task_thread_id = $1`,
+      [THREAD],
+    );
+
+    await dispatch({ model_provider_id: null });
+    const runs = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    expect(runs.rows[0]?.count).toBe("2");
+  });
+
+  it("lets the next dispatch through after one failed", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+
+    await dispatch({ model_provider_id: null });
+    // The predecessor fails. Under the queue this paused the thread, and the
+    // only thing that could clear a pause was a Resume button on a page that
+    // no longer exists — so the next run would have sat queued forever.
+    await db.pool.query(
+      `UPDATE runs SET status = 'failed', ended_at = now() WHERE host_task_thread_id = $1`,
+      [THREAD],
+    );
+
+    await dispatch({ model_provider_id: null });
+    const runs = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    expect(runs.rows[0]?.count).toBe("2");
+  });
+
+  it("snapshots the Task's budget onto a remote Run, so it is capped like a server one", async () => {
+    if (!db.available) return;
+    await seedDispatchableThread();
+    // A Task whose policy caps it at one run. Both dispatch branches must
+    // carry that onto the Run: `budgetEnforcement` reads `budget_sources` off
+    // the contract snapshot, so a snapshot missing them admits every time and
+    // the cap silently does not exist on this path.
+    await db.pool.query(
+      `UPDATE tasks SET max_runs = 1,
+              policy_json = $2::jsonb
+        WHERE id = $1`,
+      [TASK, JSON.stringify({
+        budget_sources: [{ source: { kind: "task", id: TASK }, max_runs: 1 }],
+        budget_precedence: 1,
+      })],
+    );
+
+    await dispatch({ model_provider_id: null });
+
+    const run = await db.pool.query<{ contract_snapshot_json: Record<string, unknown> | null }>(
+      `SELECT contract_snapshot_json FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    const snapshot = run.rows[0]?.contract_snapshot_json ?? {};
+    expect(snapshot.max_runs).toBe(1);
+    // The cap reaches the enforceable side too: `budgetEnforcement` reads
+    // `budget_sources`, and the declared precedence is folded into the source
+    // rather than kept as a top-level key.
+    expect(snapshot.budget_sources).toContainEqual(
+      expect.objectContaining({
+        source: { kind: "task", id: TASK },
+        max_runs: 1,
+        precedence: 1,
+      }),
+    );
+    expect((snapshot.effective_budget as Record<string, unknown>).max_runs).toBe(1);
+
+    // And the cap actually binds *at launch*, which is what the snapshot is
+    // for. The admission has its own budget gate that reads `tasks.policy_json`
+    // directly, so a second dispatch is refused whether or not the snapshot
+    // carries anything — asserting on that would prove nothing about this
+    // repair. `checkRunDispatchContract` is the reader that only has the
+    // snapshot: with `budget_sources` missing it finds no source to enforce
+    // and lets an over-cap Run launch.
+    const created = await db.pool.query<RunRecord>(
+      `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
+    );
+    // A second Run against the same Task, so the cap of one is already spent
+    // by work that is not this Run — `checkRunBudget` excludes the Run being
+    // checked, as it must, since a Run cannot count against its own launch.
+    const other = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
+         status, mode, owner_user_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,now(),now())`,
+      [other, SPACE, AGENT, AGENT_VERSION, OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
+       VALUES ($1, $2, $3, $4, 'primary', now())`,
+      [randomUUID(), SPACE, TASK, other],
+    );
+    const verdict = await new PgRunRepository(db.pool).checkRunDispatchContract(created.rows[0]!);
+    expect(verdict).toMatchObject({ allowed: false, error_code: "task_max_runs_exceeded" });
   });
 
   it("qualifies a remote run whose trust_mode was never set", async () => {
     if (!db.available) return;
     await seedDispatchableThread();
-    // The failure this guards: only the thread-dispatch path writes
-    // `trust_mode`, so an Automation, Room, Workflow or evolution run on a
-    // remote Location has it null and still executes remotely, with a
-    // provider the router stamped and nothing ever injected. Remoteness must
-    // come from the Location.
+    // The failure this guards: only the dispatch path writes `trust_mode`, so
+    // an Automation, Room, Workflow or evolution run on a remote Location has
+    // it null and still executes remotely, with a provider the router stamped
+    // and nothing ever injected. Remoteness must come from the Location.
     const runId = randomUUID();
     const now = new Date().toISOString();
-    // The system dispatch Agent is created lazily by the queue, so drive one
-    // ordinary advance first and reuse its identity for the hand-built run.
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "seed", OWNER);
-    await advanceThreadQueue(db.pool, THREAD);
     const agent = await db.pool.query<{ id: string; current_version_id: string }>(
       `SELECT id, current_version_id FROM agents WHERE space_id = $1 LIMIT 1`, [SPACE],
     );
@@ -598,44 +819,27 @@ describe("binding carried onto the Run", () => {
     expect(view.disclosure_note).toContain("remote execution host");
   });
 
-  it("leaves the Run unbound when the message carried no binding", async () => {
+  it("leaves the Run unbound when the dispatch chose ambient login", async () => {
     if (!db.available) return;
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
 
-    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
-    const run = await db.pool.query<{ model_provider_id: string | null; model_override_json: unknown }>(
+    // An explicit null: "ignore the host default, use the machine's own
+    // login for this one dispatch".
+    await dispatch({ model_provider_id: null });
+
+    const run = await db.pool.query<{ model_provider_id: string | null; model_override_json: Record<string, unknown> | null }>(
       `SELECT model_provider_id, model_override_json FROM runs WHERE host_task_thread_id = $1`,
       [THREAD],
     );
     expect(run.rows[0]?.model_provider_id).toBeNull();
-    // No model and no `source` for an unbound run — the read model relies on
-    // that. The thread itself is always named, for the job handler.
+    // No model for an unbound run — but `source` is still written, because
+    // "no provider" was a decision this dispatch made. Without it
+    // `resolveRemoteRunBinding` could not tell it apart from a Run that never
+    // chose, and would fall back to the Host default at launch.
     expect(run.rows[0]?.model_override_json).toEqual({
+      source: "request",
       host_thread: { schema_version: "host_thread.v1", thread_id: THREAD, runtime_session_id: null },
     });
-  });
-
-  it("uses the snapshot, not the host default as it stands when the queue advances", async () => {
-    if (!db.available) return;
-    await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(
-      THREAD, TASK, "go", OWNER,
-      { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
-    );
-    // Someone re-points the host while the message waits its turn. The queued
-    // message must run against what it was validated for.
-    await repo().upsert({
-      hostId: HOST, adapterType: "claude_code",
-      modelProviderId: OPENAI_PROVIDER, model: "deepseek-chat", createdByUserId: OWNER,
-    });
-
-    expect((await advanceThreadQueue(db.pool, THREAD)).advanced).toBe(true);
-    const run = await db.pool.query<{ model_provider_id: string | null }>(
-      `SELECT model_provider_id FROM runs WHERE host_task_thread_id = $1`,
-      [THREAD],
-    );
-    expect(run.rows[0]?.model_provider_id).toBe(CLAUDE_PROVIDER);
   });
 });
 
@@ -648,11 +852,7 @@ describe("carrying the binding to the executing host", () => {
 
   async function boundRun(): Promise<RunRecord> {
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(
-      THREAD, TASK, "go", OWNER,
-      { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" },
-    );
-    await advanceThreadQueue(db.pool, THREAD);
+    await dispatch({ model_provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2" });
     const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
@@ -684,10 +884,7 @@ describe("carrying the binding to the executing host", () => {
     // that run would regress something that used to work on ambient login;
     // a provider the dispatch explicitly asked for still fails.
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(
-      THREAD, TASK, "go", OWNER, { provider_id: CLAUDE_PROVIDER, model: null },
-    );
-    await advanceThreadQueue(db.pool, THREAD);
+    await dispatch({ model_provider_id: CLAUDE_PROVIDER, model: null });
     const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
@@ -723,8 +920,7 @@ describe("carrying the binding to the executing host", () => {
     await seedDispatchableThread();
     // The message was resolved at dispatch and deliberately unbound; the host
     // default must not resurrect itself at execution.
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
-    await advanceThreadQueue(db.pool, THREAD);
+    await dispatch({ model_provider_id: null });
     const row = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
@@ -827,8 +1023,20 @@ describe("the files a bound host is told to write", () => {
   async function frameFor(adapterType: string, providerId: string) {
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER, { provider_id: providerId, model: "m-1" });
-    await advanceThreadQueue(db.pool, THREAD);
+    // The thread and the host both have to be on the runtime under test: the
+    // admission validates that the provider can serve this adapter and that
+    // the host reports an installation of it, which is the point of dispatch
+    // and not something to route around here.
+    await db.pool.query(
+      `UPDATE host_threads SET adapter_type = $2 WHERE id = $1`, [THREAD, adapterType],
+    );
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
+      [HOST, JSON.stringify({
+        installations: { [adapterType]: [{ id: "own", version: "1.0.0", logged_in: true }] },
+      })],
+    );
+    await dispatch({ adapter_type: adapterType, model_provider_id: providerId, model: "m-1" });
     const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
     const built = await buildRemoteProviderBinding({
       config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
@@ -879,8 +1087,14 @@ describe("the files a bound host is told to write", () => {
     setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
     await db.pool.query(`UPDATE model_providers SET default_model = NULL, capabilities_json = '{}'::jsonb WHERE id = $1`, [OPENAI_PROVIDER]);
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER, { provider_id: OPENAI_PROVIDER, model: null });
-    await advanceThreadQueue(db.pool, THREAD);
+    // On the runtime under test, as above: admission validates the provider
+    // against the adapter it is dispatching to.
+    await db.pool.query(`UPDATE host_threads SET adapter_type = 'codex_cli' WHERE id = $1`, [THREAD]);
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = '{"installations":{"codex_cli":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb WHERE id = $1`,
+      [HOST],
+    );
+    await dispatch({ adapter_type: "codex_cli", model_provider_id: OPENAI_PROVIDER, model: null });
     const row = await db.pool.query<RunRecord>(`SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD]);
     const registry = new ProviderProxyLeaseRegistry();
 
@@ -897,8 +1111,7 @@ describe("the files a bound host is told to write", () => {
 describe("recording what a remote run actually executed against", () => {
   async function runWithOverride(override: Record<string, unknown>): Promise<string> {
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "go", OWNER);
-    await advanceThreadQueue(db.pool, THREAD);
+    await dispatch({ model_provider_id: null });
     const row = await db.pool.query<{ id: string }>(
       `SELECT id FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
@@ -1005,8 +1218,7 @@ describe("what counts as executing remotely", () => {
     );
     if (existing.rows[0]) return existing.rows[0];
     await seedDispatchableThread();
-    await new PgHostThreadMessageRepository(db.pool).enqueue(THREAD, TASK, "seed", OWNER);
-    await advanceThreadQueue(db.pool, THREAD);
+    await dispatch({ model_provider_id: null });
     const seeded = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
@@ -1125,17 +1337,18 @@ describe("a thread keeps the backend it started with", () => {
   // so changing that default moved every existing thread on the host onto a
   // new backend — and the vendor session lives inside the new provider's
   // profile, so each of them lost its conversation as well.
-  const SECOND_PROVIDER = "cccc3333-3333-4333-8333-333333333333";
+  //
+  // The thread's own backend used to be read from its last queued message.
+  // With the queue gone it is read from the thread's last Run, which is what
+  // `threadRunBinding` does; these tests are what says the two agree.
+  const SECOND_PROVIDER = "eeee5555-5555-4555-8555-555555555555";
 
-  async function dispatch(body: Record<string, unknown>) {
+  async function dispatchOn(body: Record<string, unknown> = {}) {
     const repo = new PgTaskRepository(
       db.pool,
       resolveProvidersDbPort(loadConfig({ SERVER_DATABASE_URL: db.connectionUri })),
     );
-    // `createTaskRun` returns either a server-host Run or a queued remote
-    // message; these dispatches are all remote, so narrow it once here rather
-    // than at every call.
-    const result = await repo.createTaskRun(
+    await repo.createTaskRun(
       { spaceId: SPACE, userId: OWNER },
       TASK,
       {
@@ -1144,33 +1357,42 @@ describe("a thread keeps the backend it started with", () => {
         project_folder_id: FOLDER,
         thread_id: THREAD,
         prompt: "go",
+        agent_id: AGENT,
         ...body,
       },
-    ) as { message_id?: unknown };
-    if (typeof result.message_id !== "string") {
-      throw new Error("remote dispatch did not queue a thread message");
-    }
-    return { message_id: result.message_id };
+    );
+    return latestRunBinding();
   }
 
-  async function messageBinding(messageId: string) {
-    const row = await db.pool.query<{ model_provider_id: string | null; model: string | null }>(
-      `SELECT model_provider_id, model FROM host_thread_messages WHERE id = $1`,
-      [messageId],
+  /** What the thread's newest Run was admitted against. */
+  async function latestRunBinding() {
+    const row = await db.pool.query<{
+      model_provider_id: string | null;
+      model_override_json: { model?: string } | null;
+    }>(
+      `SELECT model_provider_id, model_override_json FROM runs
+        WHERE host_task_thread_id = $1
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [THREAD],
     );
-    return row.rows[0]!;
+    const found = row.rows[0]!;
+    return {
+      model_provider_id: found.model_provider_id,
+      model: found.model_override_json?.model ?? null,
+    };
   }
 
   /**
-   * `createTaskRun` advances the queue itself, but a Run has to reach a
-   * terminal state before the next message may advance. Settle it so the
-   * following dispatch sees a thread that has actually dispatched something.
+   * A Run has to reach a terminal state before the Task will admit another.
+   * Settling the newest one is what lets the next dispatch see a thread that
+   * has actually run something.
    */
-  async function settle(messageId: string) {
+  async function settleLatest() {
     await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now()
-        WHERE id = (SELECT run_id FROM host_thread_messages WHERE id = $1)`,
-      [messageId],
+        WHERE id = (SELECT id FROM runs WHERE host_task_thread_id = $1
+                     ORDER BY created_at DESC, id DESC LIMIT 1)`,
+      [THREAD],
     );
   }
 
@@ -1201,17 +1423,15 @@ describe("a thread keeps the backend it started with", () => {
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const first = await dispatch({});
-    expect((await messageBinding(first.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
-    await settle(first.message_id);
+    expect((await dispatchOn()).model_provider_id).toBe(CLAUDE_PROVIDER);
+    await settleLatest();
 
     // The operator repoints the host at a different backend.
     await bindings.upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const second = await dispatch({});
-    expect((await messageBinding(second.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
+    expect((await dispatchOn()).model_provider_id).toBe(CLAUDE_PROVIDER);
   });
 
   it("uses the host default for a thread that has never dispatched", async () => {
@@ -1220,8 +1440,7 @@ describe("a thread keeps the backend it started with", () => {
     await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
-    const queued = await dispatch({});
-    expect((await messageBinding(queued.message_id)).model_provider_id).toBe(SECOND_PROVIDER);
+    expect((await dispatchOn()).model_provider_id).toBe(SECOND_PROVIDER);
   });
 
   it("honors an explicit override and inherits it next time", async () => {
@@ -1231,61 +1450,16 @@ describe("a thread keeps the backend it started with", () => {
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const overridden = await dispatch({ model_provider_id: SECOND_PROVIDER, model: "Second-M1" });
-    expect(await messageBinding(overridden.message_id)).toMatchObject({
+    expect(await dispatchOn({ model_provider_id: SECOND_PROVIDER, model: "Second-M1" })).toMatchObject({
       model_provider_id: SECOND_PROVIDER,
       model: "Second-M1",
     });
-    await settle(overridden.message_id);
+    await settleLatest();
 
-    const following = await dispatch({});
-    expect(await messageBinding(following.message_id)).toMatchObject({
+    expect(await dispatchOn()).toMatchObject({
       model_provider_id: SECOND_PROVIDER,
       model: "Second-M1",
     });
-  });
-
-  it("keeps a queued override rather than resolving the next message against the older backend", async () => {
-    if (!db.available) return;
-    await seedDispatchableThread();
-    const bindings = new PgHostRuntimeProviderBindingRepository(db.pool);
-    await bindings.upsert({
-      hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
-    });
-
-    const first = await dispatch({});
-    expect((await messageBinding(first.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
-
-    // Sent while the first run is still active: it enqueues rather than
-    // dispatching, and its binding is frozen now.
-    const override = await dispatch({ model_provider_id: SECOND_PROVIDER });
-    expect((await messageBinding(override.message_id)).model_provider_id).toBe(SECOND_PROVIDER);
-
-    // A plain message behind it must land on the override, not on what the
-    // thread last *dispatched* — the queue drains FIFO, so resolving against
-    // the older backend would run them B then A and flip the thread back.
-    const following = await dispatch({});
-    expect((await messageBinding(following.message_id)).model_provider_id).toBe(SECOND_PROVIDER);
-  });
-
-  it("ignores a withdrawn message when deciding what the thread runs on", async () => {
-    if (!db.available) return;
-    await seedDispatchableThread();
-    await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
-      hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
-    });
-
-    // The first message dispatches and holds the queue, so the override behind
-    // it stays queued — which is the only state a message can be withdrawn
-    // from (a dispatched one has a run_id and the check constraint forbids it).
-    const running = await dispatch({});
-    expect((await messageBinding(running.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
-    const withdrawn = await dispatch({ model_provider_id: SECOND_PROVIDER });
-    await db.pool.query(`UPDATE host_thread_messages SET status = 'withdrawn' WHERE id = $1`, [withdrawn.message_id]);
-
-    // A message that will never run is not what the thread runs on.
-    const next = await dispatch({});
-    expect((await messageBinding(next.message_id)).model_provider_id).toBe(CLAUDE_PROVIDER);
   });
 
   it("drops a pinned model back to the provider's default when asked", async () => {
@@ -1295,16 +1469,14 @@ describe("a thread keeps the backend it started with", () => {
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const pinned = await dispatch({ model_provider_id: SECOND_PROVIDER, model: "Second-M2" });
-    expect((await messageBinding(pinned.message_id)).model).toBe("Second-M2");
-    await settle(pinned.message_id);
+    expect((await dispatchOn({ model_provider_id: SECOND_PROVIDER, model: "Second-M2" })).model).toBe("Second-M2");
+    await settleLatest();
 
     // `model: null` with no provider key: keep the thread's provider, drop the
     // pin. Coalescing absent and null would make this unexpressible — the
     // thread would keep Second-M2 forever. What it resolves to is the
     // provider's default *as it stands now*, stamped concretely.
-    const cleared = await dispatch({ model: null });
-    expect(await messageBinding(cleared.message_id)).toMatchObject({
+    expect(await dispatchOn({ model: null })).toMatchObject({
       model_provider_id: SECOND_PROVIDER,
       model: "Second-M1",
     });
@@ -1313,7 +1485,7 @@ describe("a thread keeps the backend it started with", () => {
   it("stamps a concrete model when the caller took the provider's default", async () => {
     if (!db.available) return;
     // A null model here would be re-read against the provider's `default_model`
-    // on every later message, so editing that field would move the model of
+    // on every later dispatch, so editing that field would move the model of
     // every thread that never named one — the same drift thread inheritance
     // exists to stop, one level down.
     await seedDispatchableThread();
@@ -1321,17 +1493,15 @@ describe("a thread keeps the backend it started with", () => {
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const first = await dispatch({});
-    expect(await messageBinding(first.message_id)).toMatchObject({
+    expect(await dispatchOn()).toMatchObject({
       model_provider_id: SECOND_PROVIDER,
       model: "Second-M1",
     });
-    await settle(first.message_id);
+    await settleLatest();
 
     // The provider's default changes; the thread does not follow it.
     await db.pool.query(`UPDATE model_providers SET default_model = 'Second-M9' WHERE id = $1`, [SECOND_PROVIDER]);
-    const next = await dispatch({});
-    expect((await messageBinding(next.message_id)).model).toBe("Second-M1");
+    expect((await dispatchOn()).model).toBe("Second-M1");
   });
 
   it("validates an inherited provider exactly like an explicit one", async () => {
@@ -1344,17 +1514,16 @@ describe("a thread keeps the backend it started with", () => {
     await new PgHostRuntimeProviderBindingRepository(db.pool).upsert({
       hostId: HOST, adapterType: "claude_code", modelProviderId: SECOND_PROVIDER, model: null, createdByUserId: OWNER,
     });
-    const pinned = await dispatch({});
-    expect((await messageBinding(pinned.message_id)).model_provider_id).toBe(SECOND_PROVIDER);
-    await settle(pinned.message_id);
+    expect((await dispatchOn()).model_provider_id).toBe(SECOND_PROVIDER);
+    await settleLatest();
 
     await db.pool.query(`UPDATE model_provider_space_grants SET enabled = false WHERE provider_id = $1`, [SECOND_PROVIDER]);
 
-    await expect(dispatch({})).rejects.toMatchObject({ statusCode: 422 });
-    // And the message names the conversation, not the host: changing the
+    await expect(dispatchOn()).rejects.toMatchObject({ statusCode: 422 });
+    // And the refusal names the conversation, not the host: changing the
     // host's backend no longer affects an existing thread, so pointing there
     // would be the one remedy that cannot work.
-    await expect(dispatch({})).rejects.toThrow(/this conversation has been running on/);
+    await expect(dispatchOn()).rejects.toThrow(/this conversation has been running on/);
   });
 
   it("treats an explicit null as a real choice the thread then keeps", async () => {
@@ -1364,13 +1533,11 @@ describe("a thread keeps the backend it started with", () => {
       hostId: HOST, adapterType: "claude_code", modelProviderId: CLAUDE_PROVIDER, model: null, createdByUserId: OWNER,
     });
 
-    const ambient = await dispatch({ model_provider_id: null });
-    expect((await messageBinding(ambient.message_id)).model_provider_id).toBeNull();
-    await settle(ambient.message_id);
+    expect((await dispatchOn({ model_provider_id: null })).model_provider_id).toBeNull();
+    await settleLatest();
 
     // Inheriting "the machine's own login" must not fall through to the host
     // default — that is exactly the silent substitution this path forbids.
-    const following = await dispatch({});
-    expect((await messageBinding(following.message_id)).model_provider_id).toBeNull();
+    expect((await dispatchOn()).model_provider_id).toBeNull();
   });
 });

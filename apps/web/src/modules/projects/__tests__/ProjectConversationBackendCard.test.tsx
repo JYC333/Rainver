@@ -46,7 +46,7 @@ describe('ProjectConversationBackendCard', () => {
     expect(screen.getByRole('link', { name: /configure an api provider/i })).toHaveAttribute('href', '/spaces/space-1/providers')
     expect(screen.getByRole('link', { name: /grant a server cli credential/i })).toHaveAttribute('href', '/cli-profiles')
     expect(screen.getByRole('link', { name: /pair or sign in on a host cli/i }))
-      .toHaveAttribute('href', '/spaces/space-1/command-center?tab=hosts')
+      .toHaveAttribute('href', '/spaces/space-1/command-center')
   })
 
   it('lists the Project Assistant profiles and sets a new default', async () => {

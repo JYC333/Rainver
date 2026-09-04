@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ConversationBackendBinding,
   ConversationBackendOption,
+  RuntimeSessionConfigOption,
 } from "@rainver/protocol";
 import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
@@ -9,7 +10,7 @@ import {
   providerCredentialEligibilitySql,
 } from "../providers/eligibility.js";
 import { isStale } from "../hosts/repository.js";
-import { hostInstallationIds } from "../hosts/capabilities.js";
+import { hostInstallationIds, hostInstallationOptions } from "../hosts/capabilities.js";
 import type { Queryable } from "../routeUtils/common.js";
 
 interface BackendRow {
@@ -92,6 +93,7 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
   retired_runtime_state_key: string | null;
+  session_config_options?: RuntimeSessionConfigOption[];
 }
 
 export class ConversationBackendError extends Error {
@@ -279,6 +281,13 @@ export class PgConversationBackendRepository {
         host_name: hostBound ? profile.host_name : null,
         host_online: hostBound ? hostOnline : null,
         host_owner_is_me: hostBound ? hostOwnerIsMe : null,
+        session_config_options: hostBound && profile.runtime_installation
+          ? hostInstallationOptions(
+              profile.host_capabilities_json,
+              profile.adapter_type,
+              profile.runtime_installation,
+            ).filter((option) => !(profile.model_provider_id && option.category === "model"))
+          : [],
         credential_profiles: credentialProfiles,
       }];
     });
@@ -335,7 +344,11 @@ export class PgConversationBackendRepository {
       // An initialized Conversation never re-resolves mutable profile defaults
       // or silently switches to a fallback. Runtime dispatch will additionally
       // replace mutable workspace fields with the pinned Host thread snapshot.
-      return existing;
+      // ACP option metadata is read afresh because the installed Agent may
+      // legitimately change its catalog without changing this binding.
+      const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id))
+        .find((candidate) => candidate.runtime_profile_id === existing.runtime_profile_id);
+      return { ...existing, session_config_options: option?.session_config_options ?? [] };
     }
     const options = await this.listOptions(
       input.space_id,
@@ -436,7 +449,8 @@ export class PgConversationBackendRepository {
       adapter_type: option.adapter_type,
       credential_profile_id: credentialProfileId,
     };
-    return this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
+    const resolved = await this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
+    return { ...resolved, session_config_options: option.session_config_options ?? [] };
   }
 
   async findBinding(

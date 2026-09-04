@@ -7,6 +7,7 @@ import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
+import { visibleMessagePathSql } from "../sessions/messagePath.js";
 import {
   PgConversationBackendRepository,
   type ResolvedConversationBackend,
@@ -51,7 +52,7 @@ import {
   PgAgentGroupRepository,
 } from "./repository.js";
 
-import type { LaunchWorkspace, PolicyCheckRequest } from "@rainver/protocol";
+import type { LaunchWorkspace, PolicyCheckRequest, RuntimeSessionConfigSelection } from "@rainver/protocol";
 
 export interface AgentGroupIdentity {
   spaceId: string;
@@ -92,6 +93,7 @@ export interface SendAgentGroupMessageInput {
     agent_id: string;
     runtime_profile_id: string;
     credential_profile_id?: string | null;
+    session_config?: RuntimeSessionConfigSelection[];
   }> | null;
   /**
    * Precomputed Project state context text (mode projection + attention),
@@ -1352,6 +1354,7 @@ function messageRecipientSegmentsForInput(
 }
 
 interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
+  session_config: RuntimeSessionConfigSelection[];
   room_id: string;
   session_id: string;
   user_id: string;
@@ -1652,6 +1655,10 @@ async function prepareRoomConversationBackends(input: {
       workspace_location_id: thread.workspace_location_id,
       runtime_installation: thread.runtime_installation,
     };
+    const sessionConfig = validateRoomSessionConfig(
+      requested?.session_config ?? [],
+      pinnedBackend.session_config_options ?? [],
+    );
     const revision = contextRevisions.get(agentId) ?? null;
     if (!revision?.agent_version_id) {
       throw new HttpError(409, `Room agent '${agentId}' has no active version`);
@@ -1738,6 +1745,7 @@ async function prepareRoomConversationBackends(input: {
       : replayContext.recent_messages;
     resolved.set(agentId, {
       ...pinnedBackend,
+      session_config: sessionConfig,
       room_id: input.roomId,
       session_id: input.sessionId,
       user_id: input.identity.userId,
@@ -1777,6 +1785,7 @@ function roomRunModelOverride(
   return {
     ...routing,
     execution_mode: "room_conversation.v1",
+    ...(backend.session_config.length > 0 ? { acp_session_config: backend.session_config } : {}),
     conversation_backend: {
       schema_version: "conversation_backend.v1",
       runtime_profile_id: backend.runtime_profile_id,
@@ -1826,6 +1835,29 @@ function roomRunModelOverride(
         }
       : {}),
   };
+}
+
+function validateRoomSessionConfig(
+  requested: RuntimeSessionConfigSelection[],
+  advertised: NonNullable<ResolvedConversationBackend["session_config_options"]>,
+): RuntimeSessionConfigSelection[] {
+  const seen = new Set<string>();
+  return requested.map((selection) => {
+    if (seen.has(selection.id)) throw new HttpError(422, `Session option '${selection.id}' was selected more than once`);
+    seen.add(selection.id);
+    const option = advertised.find((candidate) => candidate.id === selection.id);
+    if (!option || option.type !== selection.type || option.category !== selection.category) {
+      throw new HttpError(422, `Session option '${selection.id}' is not available for this backend`);
+    }
+    if (option.type === "select") {
+      if (typeof selection.value !== "string" || !option.options.some((choice) => choice.value === selection.value)) {
+        throw new HttpError(422, `Value for session option '${selection.id}' is not available`);
+      }
+    } else if (typeof selection.value !== "boolean") {
+      throw new HttpError(422, `Value for session option '${selection.id}' must be boolean`);
+    }
+    return selection;
+  });
 }
 
 function delegatedRoomModelOverride(
@@ -1970,18 +2002,23 @@ async function listRoomMessagesSinceAgentTurn(
   agentId: string,
 ): Promise<RoomPromptMessage[]> {
   const result = await db.query<RoomPromptMessage>(
+    // Bounded and ordered by `path_depth`: the window is a stretch of the
+    // conversation's visible path, so a branch abandoned elsewhere in the
+    // session must not appear in it, and two branches must not interleave by
+    // the clock.
     `WITH current_message AS (
-       SELECT created_at, id
+       SELECT path_depth, id
          FROM messages
         WHERE space_id = $1 AND session_id = $2 AND id = $3
      ), last_agent_message AS (
-       SELECT message.created_at, message.id
+       SELECT message.path_depth, message.id
          FROM messages message
          JOIN current_message current ON true
         WHERE message.space_id = $1 AND message.session_id = $2
           AND message.sender_agent_id = $4 AND message.role = 'assistant'
-          AND (message.created_at, message.id) < (current.created_at, current.id)
-        ORDER BY message.created_at DESC, message.id DESC
+          AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+          AND (message.path_depth, message.id) < (current.path_depth, current.id)
+        ORDER BY message.path_depth DESC, message.id DESC
         LIMIT 1
      )
      SELECT message.id, message.user_id, message.sender_agent_id,
@@ -1992,11 +2029,12 @@ async function listRoomMessagesSinceAgentTurn(
        LEFT JOIN last_agent_message last_agent ON true
        LEFT JOIN runs producer
          ON producer.space_id = message.space_id
-        AND producer.id = message.metadata_json->>'run_id'
+        AND producer.id = message.run_id
       WHERE message.space_id = $1 AND message.session_id = $2
-        AND (message.created_at, message.id) <= (current.created_at, current.id)
-        AND (last_agent.id IS NULL OR (message.created_at, message.id) > (last_agent.created_at, last_agent.id))
-      ORDER BY message.created_at ASC, message.id ASC`,
+        AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+        AND (message.path_depth, message.id) <= (current.path_depth, current.id)
+        AND (last_agent.id IS NULL OR (message.path_depth, message.id) > (last_agent.path_depth, last_agent.id))
+      ORDER BY message.path_depth ASC, message.id ASC`,
     [spaceId, sessionId, currentMessageId, agentId],
   );
   return result.rows;
@@ -2011,9 +2049,9 @@ async function listRoomMessagesAfterCursor(
 ): Promise<RoomPromptMessage[] | null> {
   const result = await db.query<RoomPromptMessage & { cursor_exists: boolean }>(
     `WITH bounds AS (
-       SELECT cursor.created_at AS cursor_created_at,
+       SELECT cursor.path_depth AS cursor_path_depth,
               cursor.id AS cursor_id,
-              current.created_at AS current_created_at,
+              current.path_depth AS current_path_depth,
               current.id AS current_id
          FROM messages cursor
          JOIN messages current
@@ -2023,7 +2061,7 @@ async function listRoomMessagesAfterCursor(
           AND cursor.session_id = $2
           AND cursor.id = $3
           AND current.id = $4
-          AND (cursor.created_at, cursor.id) <= (current.created_at, current.id)
+          AND (cursor.path_depth, cursor.id) <= (current.path_depth, current.id)
      )
      SELECT message.id, message.user_id, message.sender_agent_id,
             message.role, message.content, message.created_at,
@@ -2033,14 +2071,15 @@ async function listRoomMessagesAfterCursor(
        LEFT JOIN messages message
          ON message.space_id = $1
         AND message.session_id = $2
-        AND (message.created_at, message.id)
-              > (bounds.cursor_created_at, bounds.cursor_id)
-        AND (message.created_at, message.id)
-              <= (bounds.current_created_at, bounds.current_id)
+        AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+        AND (message.path_depth, message.id)
+              > (bounds.cursor_path_depth, bounds.cursor_id)
+        AND (message.path_depth, message.id)
+              <= (bounds.current_path_depth, bounds.current_id)
        LEFT JOIN runs producer
          ON producer.space_id = message.space_id
-        AND producer.id = message.metadata_json->>'run_id'
-       ORDER BY message.created_at ASC NULLS LAST, message.id ASC NULLS LAST
+        AND producer.id = message.run_id
+       ORDER BY message.path_depth ASC NULLS LAST, message.id ASC NULLS LAST
        LIMIT 2049`,
     [spaceId, sessionId, cursorId, currentMessageId],
   );

@@ -4,6 +4,8 @@ import {
   AgentRunMessageRecipientSegmentSchema,
   AgentRunMessageRoutingModeSchema,
 } from "./agentGroupRuns.js";
+import { MessageMetadataSchema } from "./memorySessions.js";
+import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 
 export const RoomSchema = z.object({
   id: IdSchema,
@@ -338,7 +340,11 @@ export const RoomMessageSchema = z.object({
   sender_agent_id: IdSchema.nullish(),
   role: z.enum(["user", "assistant", "system", "tool"]),
   content: z.string(),
-  metadata_json: z.record(z.unknown()).nullish(),
+  metadata_json: MessageMetadataSchema.nullish(),
+  /** The message this one replies to; null only for a session's first. */
+  parent_message_id: IdSchema.nullish(),
+  /** The Run that produced this message, or that this message started. */
+  run_id: IdSchema.nullish(),
   created_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict().superRefine((message, context) => {
@@ -445,6 +451,7 @@ export const SendRoomMessageRequestSchema = z.object({
     agent_id: IdSchema,
     runtime_profile_id: IdSchema,
     credential_profile_id: IdSchema.nullish(),
+    session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   }).strict()).default([]),
 }).strict();
 export type SendRoomMessageRequest = z.infer<typeof SendRoomMessageRequestSchema>;
@@ -455,6 +462,7 @@ export const ContinueRoomAfterProposalRequestSchema = z.object({
     agent_id: IdSchema,
     runtime_profile_id: IdSchema,
     credential_profile_id: IdSchema.nullish(),
+    session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   }).strict()).default([]),
 }).strict();
 export type ContinueRoomAfterProposalRequest = z.infer<typeof ContinueRoomAfterProposalRequestSchema>;

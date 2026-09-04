@@ -2,14 +2,20 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { projectNotebookChatApi, notesApi, sessionsApi, type ModelProviderOut } from '../../../api/client'
 import type { Message } from '../../../types/api'
-import { ChatThread, type ChatThreadMessage } from '../../../components/ChatThread'
+import { ConversationView } from '../../conversation/ConversationView'
 import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { errMsg } from '../../../lib/utils'
 import { defaultModelProvider } from '../../providers/defaultProvider'
 
 interface NotebookEdit { note_id: string; version: number; conflict: boolean }
-interface ChatMessage extends ChatThreadMessage { notebookEdit?: NotebookEdit | null }
+interface ChatMessage {
+  id?: string
+  role: string
+  content: string
+  error?: boolean
+  notebookEdit?: NotebookEdit | null
+}
 
 const sessionStorageKey = (projectId: string) => `project-notebook-chat-session:${projectId}`
 
@@ -102,9 +108,12 @@ export function NotebookChatPanel({
       <p className="text-xs text-muted-foreground">Discuss and edit the project's notes. Edits apply immediately and can always be undone.</p>
       <Select value={provider} onChange={setProvider} ariaLabel="AI provider" options={providers.map((p) => ({ value: p.id, label: p.name }))} />
       <div className="min-h-0 flex-1">
-        <ChatThread
-          messages={messages.map(m => ({
-            ...m,
+        <ConversationView
+          entries={messages.map((m, index) => ({
+            id: m.id ?? `entry-${index}`,
+            role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+            content: m.content,
+            error: m.error,
             extra: m.notebookEdit ? (
               <NotebookEditCard
                 edit={m.notebookEdit}
@@ -121,7 +130,6 @@ export function NotebookChatPanel({
           placeholder="Ask about or update the project's notes…"
           emptyTitle="Discuss the notes"
           emptyDescription="Ask a question or ask for an update — edits are applied immediately and can be undone."
-          assistantLabel="Assistant"
         />
       </div>
     </div>

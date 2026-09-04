@@ -62,7 +62,11 @@ import {
   envForNetworkProfile,
   resolveNetworkProfileRepository,
 } from "../networkProfiles/index.js";
-import { createCliConversationController } from "./cliConversationProtocol.js";
+import {
+  acpSessionConfigFromRunOverride,
+  createCliConversationController,
+  withAcpModelSelection,
+} from "./cliConversationProtocol.js";
 import { type CliRuntimeMeasurement } from "./cliRuntimeMeasurement.js";
 import { managedAdapterRequest } from "../runtimeContext/index.js";
 import type { RunInvocationAttemptLifecycle } from "./runtimeContextAttempts.js";
@@ -371,7 +375,10 @@ export async function executeVendorCliAdapter(
     // `--model`-flag rendering path above, not ACP's independent
     // session/set_config_option — codex-acp does support model switching
     // over ACP even though its spec declares no argv override.
-    model: runtimeBinding.model ?? input.model ?? null,
+    session_config: withAcpModelSelection(
+      acpSessionConfigFromRunOverride(input.run.model_override_json),
+      spec.adapter_type === "claude_code" ? null : runtimeBinding.model ?? input.model ?? null,
+    ),
     // The provider's own model name, not the runtime-shaped id above: for a
     // bound OpenCode run those differ (`<provider>/<model>` versus `<model>`),
     // and it is the server that decided which model this run uses — reading

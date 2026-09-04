@@ -149,7 +149,7 @@ describe("memory + sessions contracts", () => {
         run_id: "run-1",
         user_message_id: "message-1",
         status: "queued",
-        event_stream_url: "/api/v1/runs/run-1/events/stream",
+        event_stream_url: "/api/v1/runs/run-1/turn/stream",
         backend: {
           runtime_profile_id: "runtime-profile-1",
           adapter_type: "model_api",

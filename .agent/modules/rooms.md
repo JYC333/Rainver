@@ -45,13 +45,22 @@ task/audit authority, not a second conversation UI.
 - Shared Room UI (`apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`) at
   `/projects/:projectId/rooms`, inside the persistent Project Shell
 - One conversation component
-  (`apps/web/src/modules/agent_groups/conversation/RoomConversation.tsx`):
-  messages, paging, sending, Run progress/streaming, polling, scroll-follow
-  and inline Proposal cards with continuation. The full Room page renders it
-  as `variant="full"` (adds routing, per-agent backends, the summary) and the
-  Project chat panel (`projects/sidecar/ProjectChatSidecar.tsx`) as
+  (`apps/web/src/modules/conversation/ConversationSurface.tsx`):
+  messages, paging, sending, turn streaming, polling, scroll-follow and
+  inline Proposal cards with continuation. The full Room page renders it as
+  `variant="full"` (adds routing, per-agent backends, the summary) and the
+  Project chat sidecar (`projects/sidecar/ProjectChatSidecar.tsx`) as
   `variant="panel"` with focus refs. There is no second conversation
   implementation; a behaviour a conversation needs is added there once.
+
+  What a *turn* looks like is not this component's: it renders each one
+  through `modules/conversation/ConversationTurn`, the single renderer the
+  Agent chat panel also uses, so a turn looks the same wherever it is read.
+  (The notebook panel shares the message list, `ConversationView`, but has no
+  Run behind its replies and so never passes a turn.) The Room owns audience
+  and membership; the Conversation module owns transcript, composer,
+  execution preflight, and turn rendering. See
+  [`architecture/CONVERSATION.md`](../architecture/CONVERSATION.md).
 
 ## Navigation And Ordering
 
@@ -337,7 +346,7 @@ Agent-drafted changes that still wait for a person (see
 `architecture/SYSTEM_ACTIONS.md`; opening a Thread and recording a conclusion
 no longer do) surface back
 into the conversation as an inline Proposal review card
-(`RoomActionPreviewCard`, rendered by `conversation/RoomConversation.tsx`), reusing
+(`RoomActionPreviewCard`, rendered by `modules/conversation/ConversationSurface.tsx`), reusing
 `loadProjectChatActionPreviews` — the same generic proposals-by-run-id lookup
 `finalizeChatTurn` already writes onto a Room assistant message's
 `metadata_json.action_previews` for every project-bound Room run. That
@@ -449,7 +458,7 @@ two people in it stops being reused for content meant for one.
 
 A Room turn's proposals (a research question, a Project definition, a
 conclusion, a promotion) are decided where they were made. The Run snapshots
-them onto its message as `action_previews`; the shared `RoomConversation`
+them onto its message as `action_previews`; the shared `ConversationSurface`
 component — so both the full Room page and the Project chat panel — renders
 each as a card with Accept / Reject, and a decision continues the
 conversation in place (`continueAfterProposal`). They also

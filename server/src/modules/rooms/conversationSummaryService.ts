@@ -4,6 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { visibleMessagePathSql } from "../sessions/messagePath.js";
 import {
   resolveProviderCommandStore,
   type ProviderCommandStore,
@@ -86,6 +87,25 @@ interface MessageRow {
 }
 
 /** Request a summary without doing model work in the send/finalization path. */
+/**
+ * Whether the incoming request names a message further along the conversation
+ * than the one the watermark already holds.
+ *
+ * Position, not clock: `messages.path_depth` is the conversation's own order,
+ * and attaching references stamps timestamps past the wall clock
+ * (`referenceService`), so a later message can carry an earlier `created_at`.
+ * The freshness sweep selects on this same key — the two must agree, or a
+ * session is selected repeatedly without its watermark ever advancing.
+ */
+const summaryWatermarkAdvancedSql = `(
+  SELECT incoming.path_depth > held.path_depth
+    FROM messages incoming, messages held
+   WHERE incoming.id = EXCLUDED.requested_through_message_id
+     AND held.id = room_conversation_summary_states.requested_through_message_id
+     AND incoming.space_id = EXCLUDED.space_id
+     AND held.space_id = room_conversation_summary_states.space_id
+)`;
+
 export async function requestRoomConversationSummary(
   db: Queryable,
   input: {
@@ -103,9 +123,16 @@ export async function requestRoomConversationSummary(
         JOIN sessions session_row
            ON session_row.id=message.session_id AND session_row.space_id=message.space_id
         WHERE message.space_id=$1 AND message.session_id=$2
-          AND session_row.room_id=$5
+          AND session_row.room_id=$4
+          AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
           AND message.content IS NOT NULL AND btrim(message.content) <> ''
-          AND (message.created_at,message.id) <= ($4::timestamptz,$3::varchar)
+          -- Bounded by position, like the sweep gate and the watermark
+          -- advance. The through-message names a point on the path; its
+          -- timestamp is not that point when a reference was stamped ahead.
+          AND message.path_depth <= COALESCE((
+                SELECT through.path_depth FROM messages through
+                 WHERE through.id=$3 AND through.space_id=$1 AND through.session_id=$2
+              ), -1)
           AND NOT EXISTS (
             SELECT 1
               FROM room_conversation_summary_versions summary
@@ -116,7 +143,7 @@ export async function requestRoomConversationSummary(
                AND (message.created_at,message.id)
                    <= (summary.covered_through_created_at,summary.covered_through_message_id)
           )`,
-      [input.spaceId, input.sessionId, input.throughMessageId, input.throughCreatedAt, input.roomId],
+      [input.spaceId, input.sessionId, input.throughMessageId, input.roomId],
     );
     // `estimateModelTokens` is the shared tokenizer fallback used by Room
     // context assembly. SQL uses byte length only to avoid loading a full
@@ -132,17 +159,20 @@ export async function requestRoomConversationSummary(
          retry_count, updated_at
        ) VALUES ($1,$2,$3,$4,'queued',$5,$6,0,$7)
        ON CONFLICT (session_id) DO UPDATE SET
+         -- Advanced by position, on the same key the freshness sweep selects
+         -- by. Comparing timestamps here while the sweep compares depth is
+         -- what lets a request whose message is deeper but clock-earlier be
+         -- selected forever without ever moving the watermark — a sweep loop
+         -- that re-enqueues a billed summary job on every tick.
          requested_through_message_id = CASE
-           WHEN room_conversation_summary_states.requested_through_created_at IS NULL
-             OR (EXCLUDED.requested_through_created_at, EXCLUDED.requested_through_message_id)
-                > (room_conversation_summary_states.requested_through_created_at, room_conversation_summary_states.requested_through_message_id)
+           WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+             OR ${summaryWatermarkAdvancedSql}
            THEN EXCLUDED.requested_through_message_id
            ELSE room_conversation_summary_states.requested_through_message_id
          END,
          requested_through_created_at = CASE
-           WHEN room_conversation_summary_states.requested_through_created_at IS NULL
-             OR (EXCLUDED.requested_through_created_at, EXCLUDED.requested_through_message_id)
-                > (room_conversation_summary_states.requested_through_created_at, room_conversation_summary_states.requested_through_message_id)
+           WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+             OR ${summaryWatermarkAdvancedSql}
            THEN EXCLUDED.requested_through_created_at
            ELSE room_conversation_summary_states.requested_through_created_at
          END,
@@ -331,14 +361,13 @@ export class RoomConversationSummaryService {
          FROM sessions session_row
          JOIN rooms room
            ON room.id=session_row.room_id AND room.space_id=session_row.space_id
-         JOIN LATERAL (
-           SELECT message.id,message.created_at
-             FROM messages message
-            WHERE message.space_id=session_row.space_id
-              AND message.session_id=session_row.id
-            ORDER BY message.created_at DESC,message.id DESC
-            LIMIT 1
-         ) latest ON true
+         -- The conversation's head, which is its newest message on the
+         -- visible path — not the newest row by clock, which after a branch
+         -- could be one the transcript no longer shows.
+         JOIN messages latest
+           ON latest.id=session_row.head_message_id
+          AND latest.space_id=session_row.space_id
+          AND latest.session_id=session_row.id
          LEFT JOIN room_conversation_summary_states state
            ON state.space_id=session_row.space_id AND state.session_id=session_row.id
         WHERE room.status='active'
@@ -346,10 +375,25 @@ export class RoomConversationSummaryService {
             state.id IS NULL
             OR state.requested_through_created_at IS NULL
             OR state.requested_through_message_id IS NULL
-            OR (latest.created_at,latest.id) >
-               (state.requested_through_created_at,state.requested_through_message_id)
+            -- Compared by position, not by clock. The head is the newest
+            -- message on the path, which is not always the newest by
+            -- created_at: attaching references stamps them past the wall
+            -- clock (see referenceService), so the message written after them
+            -- can carry an earlier timestamp than the watermark. Comparing
+            -- clocks there leaves the conversation permanently un-swept.
+            OR latest.path_depth > COALESCE((
+                 SELECT watermark.path_depth
+                   FROM messages watermark
+                  WHERE watermark.id=state.requested_through_message_id
+                    AND watermark.space_id=session_row.space_id
+                    AND watermark.session_id=session_row.id
+               ), -1)
           )
-        ORDER BY latest.created_at ASC,latest.id ASC
+        -- Oldest conversation first. path_depth is per-session, so it says
+        -- nothing across sessions and would sort long conversations last
+        -- every sweep — starving exactly the ones most in need of a summary
+        -- whenever the backlog exceeds the limit.
+        ORDER BY session_row.updated_at ASC,session_row.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.floor(limit)))],
     );
@@ -480,13 +524,20 @@ export class RoomConversationSummaryService {
   ): Promise<MessageOut[]> {
     const result = await this.db.query<MessageRow>(
       `SELECT message.id,message.session_id,message.space_id,message.user_id,message.sender_agent_id,
-              message.role,message.content,message.metadata_json,message.created_at
+              message.role,message.content,message.metadata_json,message.path_depth,message.created_at
          FROM messages message
          JOIN sessions session_row
            ON session_row.id=message.session_id AND session_row.space_id=message.space_id
           AND session_row.room_id=$5
         WHERE message.space_id=$1 AND message.session_id=$2
+          AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
           AND ($3::timestamptz IS NULL OR (message.created_at > $3 OR (message.created_at=$3 AND message.id>$4)))
+        -- Ordered by the same key the coverage cursor is stored and compared
+        -- on (covered_through_created_at, and isAfterCoverage in
+        -- conversationContext). Ordering by path_depth here while paging by
+        -- the clock would make the window's first row and the cursor's next
+        -- row disagree. The path predicate above is what keeps an abandoned
+        -- branch out; within one branch the two keys agree.
         ORDER BY message.created_at ASC,message.id ASC
         LIMIT 2048`,
       [spaceId, sessionId, summary?.covered_through_created_at ?? null,
@@ -667,10 +718,16 @@ export class RoomConversationSummaryService {
             schema_version: ROOM_SUMMARY_SCHEMA_VERSION,
           }),ROOM_SUMMARY_SYSTEM_PROMPT_VERSION,ROOM_SUMMARY_SCHEMA_VERSION,row.active_summary_id],
       );
+      // Restricted to the visible path, like `loadMessages` that answers the
+      // follow-up. Asking over every row would count a message on an
+      // abandoned branch as work remaining, and the next pass would find
+      // nothing to compact and finish without publishing — one wasted job per
+      // publish, forever.
       const remaining = await client.query(
-        `SELECT 1 FROM messages
-          WHERE space_id=$1 AND session_id=$2
-            AND (created_at,id) > ($3::timestamptz,$4::varchar)
+        `SELECT 1 FROM messages m
+          WHERE m.space_id=$1 AND m.session_id=$2
+            AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
+            AND (m.created_at,m.id) > ($3::timestamptz,$4::varchar)
           LIMIT 1`,
         [input.spaceId,input.sessionId,batch.covered_through_message.created_at,batch.covered_through_message.id],
       );

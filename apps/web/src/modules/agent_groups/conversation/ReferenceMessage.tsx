@@ -1,7 +1,7 @@
 import { SpaceLink as Link } from '../../../core/spaceNav'
 import { personLabel } from '../audience'
 import { Quote, ShieldAlert } from 'lucide-react'
-import { MarkdownMessage } from '../MarkdownMessage'
+import { MessageResponse } from '../../../components/ai-elements/message'
 import type { RoomMessage, SpaceMember, ThreadReferenceProvenance } from '../../../types/api'
 
 /** The provenance a `reference` message carries, or null if it is not one. */
@@ -83,7 +83,7 @@ export function ReferenceMessage({
           )}
           {reference.clipped && <span>· shortened to fit</span>}
         </div>
-        <MarkdownMessage content={message.content} className="text-sm" />
+        <MessageResponse className="text-sm">{message.content}</MessageResponse>
       </div>
     </div>
   )

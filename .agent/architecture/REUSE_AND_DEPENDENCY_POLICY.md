@@ -236,6 +236,8 @@ what is installed.
 | Rich text editing | TipTap | `apps/web/src/components/editor/` |
 | Markdown → editor document | `markdown-it` | `apps/web/src/components/editor/markdownToProseMirror.ts` |
 | Drag and drop | `@dnd-kit` | components |
+| Conversation / Agent-turn UI | **AI Elements** (Vercel's shadcn registry) — copied source under `components/ai-elements/`, not a runtime dependency, so it is edited in place like any other component here; re-add through the CLI rather than merging | `apps/web/src/components/ai-elements/`, `components.json` |
+| Markdown rendering (chat) | `streamdown` — via AI Elements' `MessageResponse`; tolerates the half-formed markdown a stream produces mid-token | `apps/web/src/components/ai-elements/message.tsx` |
 
 ### Testing mechanisms
 

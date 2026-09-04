@@ -20,6 +20,9 @@ const buttonVariants = cva(
         sm:      'h-7 px-2.5 text-xs',
         lg:      'h-11 px-6',
         icon:    'h-9 w-9',
+        // The AI Elements message toolbar sizes its actions smaller than a
+        // standalone icon button.
+        'icon-sm': 'h-7 w-7',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

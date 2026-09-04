@@ -1,9 +1,15 @@
+import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // Dedicated test config — avoids the Tailwind/PWA plugins used by the app build.
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // Matches the app build: the shadcn CLI writes `@/…` into the components
+    // it copies.
+    alias: [{ find: /^@\//, replacement: `${resolve(import.meta.dirname, 'src')}/` }],
+  },
   server: {
     fs: {
       allow: ['../..'],

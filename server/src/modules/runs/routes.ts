@@ -15,6 +15,7 @@ import { enqueueAgentRunJob } from "./agentRunHandler.js";
 import { RunMaterializationService } from "./materializationService.js";
 import { buildRunOrchestration } from "./orchestrationFactory.js";
 import { InvocationSnapshotService } from "../runtimeContext/index.js";
+import { loadRunTurn } from "./turnReadModel.js";
 import {
   canonicalRunOutput,
   isHardTerminalRunStatus,
@@ -459,6 +460,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       parent: null,
       children: children.map(runLineageToOut),
     });
+  });
+
+  /**
+   * The Run's turn, as ordered parts.
+   *
+   * One shape for every conversation surface, whichever event log this Run
+   * wrote to. Always the whole turn: see `loadRunTurn` on why a partial read
+   * is not something a client could use.
+   */
+  app.get("/api/v1/runs/:runId/turn", async (request, reply) => {
+    const result = await visibleRun(context, request, reply);
+    if (!result) return reply;
+    const turn = await loadRunTurn(dbPool(context.config), {
+      spaceId: result.run.space_id,
+      runId: result.run.id,
+    });
+    if (!turn) return reply.code(404).send({ detail: "Run not found" });
+    return reply.send(turn);
   });
 
   app.get("/api/v1/runs/:runId/attempts", async (request, reply) => {

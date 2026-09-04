@@ -550,15 +550,23 @@ describe("hosts routes", () => {
     });
     expect(probes.find((probe) => probe.runtime === "codex")?.argv).toEqual(["codex-acp"]);
 
-    // A heartbeat in the pre-installations wire format is stored in the one
-    // shape every reader uses: the PATH binary becomes the `own` copy, with
-    // whatever that daemon knew about it.
+    // Daemon and server use the current installation/configOptions contract
+    // directly; obsolete heartbeat layouts are not projected forward.
     socket.send(JSON.stringify({
       type: "heartbeat", ...HELLO_INFO,
       capabilities_json: {
         runtimes: ["claude", "git"],
         versions: { claude: "2.1.0", git: "git version 2.44" },
-        options: { claude: { models: [{ value: "sonnet", name: "Sonnet" }], current_model: "sonnet", efforts: [], current_effort: "high" } },
+        installations: {
+          claude_code: [{
+            id: "own", version: "2.1.0", logged_in: true,
+            options: { config_options: [{
+              id: "model", name: "Model", description: null, category: "model", type: "select",
+              current_value: "sonnet",
+              options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
+            }] },
+          }],
+        },
       },
     }));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -574,8 +582,12 @@ describe("hosts routes", () => {
       versions: { claude: "2.1.0", git: "git version 2.44" },
       installations: {
         claude_code: [{
-          id: "own", version: "2.1.0", logged_in: null,
-          options: { models: [{ value: "sonnet", name: "Sonnet", description: null }], current_model: "sonnet", efforts: [], current_effort: "high" },
+          id: "own", version: "2.1.0", logged_in: true,
+          options: { config_options: [{
+            id: "model", name: "Model", description: null, category: "model", type: "select",
+            current_value: "sonnet",
+            options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
+          }] },
         }],
       },
     });

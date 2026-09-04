@@ -9,7 +9,11 @@ import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
 import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution.js";
 import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
-import { createCliConversationController } from "./cliConversationProtocol.js";
+import {
+  acpSessionConfigFromRunOverride,
+  createCliConversationController,
+  withAcpModelSelection,
+} from "./cliConversationProtocol.js";
 import { normalizeVendorEvents } from "./runtimeEventNormalization.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
@@ -89,7 +93,7 @@ export interface RemoteHostCliAdapterInput {
   workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
 }
 
-/** A setting a dispatch asked for, as `advanceThreadQueue` stamped it. */
+/** A setting a dispatch asked for, as the admission stamped it on the Run. */
 function runOverrideField(value: unknown, key: string): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const field = (value as Record<string, unknown>)[key];
@@ -433,16 +437,14 @@ async function runRemoteHostCliAdapter(
     input.workspace_access ?? [],
   );
   let stdoutText = "";
-  // A caller sends the pair the way both CLIs write it, in the one field a
-  // message has for it. For a bound run that is the binding's resolved model;
-  // for an unbound one it is what the dispatch asked for, carried on the Run.
-  // `input.model` stays untrusted either way — it is the router's guess.
-  // Two settings, never one string: a model id can carry brackets of its own
-  // (Claude's `claude-fable-5[1m]` is one name), so the pair is not recoverable
-  // from an encoding.
+  // Provider binding is authoritative for a bound run. User-selected generic
+  // ACP options travel independently in acp_session_config.
   const requestedModel = providerBinding?.used_model
     ?? runOverrideField(input.run.model_override_json, "model");
-  const requestedEffort = runOverrideField(input.run.model_override_json, "reasoning_effort");
+  const requestedSessionConfig = acpSessionConfigFromRunOverride(input.run.model_override_json);
+  const runtimeModel = providerBinding
+    ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, requestedModel)
+    : null;
   const stdioController = createCliConversationController({
     adapter_type: spec.adapter_type as VendorCliAdapterType,
     prompt,
@@ -452,18 +454,7 @@ async function runRemoteHostCliAdapter(
     // name one the bound provider does not serve. Null for Claude, whose model
     // is decided entirely by the environment the binding sets.
     //
-    // A run with no binding keeps whatever the caller asked for. No production
-    // caller supplies one today — `RunExecuteRequestSchema` has no `model`
-    // field, so every host-thread dispatch arrives with null — but the input
-    // is part of this adapter's contract and dropping it would silently
-    // discard a model a future caller passes.
-    model: providerBinding
-      ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, requestedModel)
-      : requestedModel ?? input.model,
-    // Chosen alongside the model and applied as its own ACP request. An
-    // unbound run is where this matters most: its model is the CLI's own, and
-    // the effort is the only part of it the control plane can still set.
-    reasoning_effort: requestedEffort,
+    session_config: withAcpModelSelection(requestedSessionConfig, runtimeModel),
     // What the run executes against, which the server decided and does not
     // need to ask the host about. Without it, attribution reads the runtime's
     // echo: an alias for Claude (which is told no model at all), and the

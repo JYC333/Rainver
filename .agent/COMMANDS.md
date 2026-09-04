@@ -340,7 +340,9 @@ curl -X PATCH http://localhost:3000/api/v1/runs/<run_id>/stop \
   -d '{"reason":"manual smoke"}'
 curl http://localhost:3000/api/v1/runs/<run_id>/trace \
   -H "Authorization: Bearer <token>"
-curl http://localhost:3000/api/v1/runs/<run_id>/events/stream \
+curl http://localhost:3000/api/v1/runs/<run_id>/turn \
+  -H "Authorization: Bearer <token>"
+curl http://localhost:3000/api/v1/runs/<run_id>/turn/stream \
   -H "Authorization: Bearer <token>"
 ```
 

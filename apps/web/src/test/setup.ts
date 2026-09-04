@@ -33,6 +33,32 @@ if (typeof document !== 'undefined') {
   if (!HTMLElement.prototype.getBoundingClientRect) {
     HTMLElement.prototype.getBoundingClientRect = () => new DOMRect()
   }
+
+  // jsdom has no ResizeObserver, and the conversation view's stick-to-bottom
+  // scrolling constructs one on mount — without this, every conversation
+  // surface fails to render at all.
+  //
+  // It reports once on `observe`, rather than never, so a component that
+  // sizes itself from the observer sees the same first callback it would in a
+  // browser. Nothing currently depends on that — both existing consumers
+  // measure explicitly as well — but a silent observer is a stub that quietly
+  // disagrees with the environment it stands in for.
+  if (!('ResizeObserver' in globalThis)) {
+    class TestResizeObserver implements ResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element): void {
+        const box = { inlineSize: 0, blockSize: 0 } as ResizeObserverSize
+        this.callback([{
+          target,
+          contentRect: target.getBoundingClientRect(),
+          borderBoxSize: [box], contentBoxSize: [box], devicePixelContentBoxSize: [box],
+        }], this)
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    globalThis.ResizeObserver = TestResizeObserver
+  }
 }
 
 afterEach(() => {

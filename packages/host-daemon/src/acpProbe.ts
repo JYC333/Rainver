@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
 
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
@@ -8,47 +9,69 @@ import { spawn } from "node:child_process";
  * values a runtime really offers (`1m`, `default`). Only the runtime knows,
  * and ACP exists to ask it.
  */
-/** One choice as the runtime describes it, not as we would guess. */
-export interface AcpOption {
-  value: string;
-  /** The runtime's own display name — `Fable` for `claude-fable-5[1m]`. */
-  name: string | null;
-  /** What it resolves to, which is the only way to know what `default` means. */
-  description: string | null;
-}
-
-export interface AcpRuntimeOptions {
-  models: AcpOption[];
-  currentModel: string | null;
-  efforts: AcpOption[];
-  currentEffort: string | null;
-}
-
-/** Codex and Claude each name their own effort option; OpenCode exposes none. */
-const EFFORT_OPTION_IDS = ["reasoning_effort", "effort"];
-
-interface ConfigOption {
-  id?: unknown;
-  currentValue?: unknown;
-  options?: unknown;
-}
-
-function optionValues(option: ConfigOption | undefined): AcpOption[] {
-  if (!option || !Array.isArray(option.options)) return [];
-  return option.options.flatMap((entry) => {
-    const record = entry as { value?: unknown; name?: unknown; description?: unknown } | null;
-    const value = record?.value;
-    if (typeof value !== "string" || !value) return [];
-    return [{
-      value,
-      name: stringOrNull(record?.name),
-      description: stringOrNull(record?.description),
-    }];
-  });
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function selectChoice(value: unknown, group: string | null): RuntimeOptionChoice | null {
+  const entry = record(value);
+  const id = stringOrNull(entry.value);
+  if (!id) return null;
+  return {
+    value: id,
+    name: stringOrNull(entry.name),
+    description: stringOrNull(entry.description),
+    group,
+  };
+}
+
+function selectChoices(value: unknown): RuntimeOptionChoice[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const entry = record(item);
+    if (Array.isArray(entry.options)) {
+      const group = stringOrNull(entry.name) ?? stringOrNull(entry.group);
+      return entry.options.flatMap((choice) => {
+        const parsed = selectChoice(choice, group);
+        return parsed ? [parsed] : [];
+      });
+    }
+    const parsed = selectChoice(entry, null);
+    return parsed ? [parsed] : [];
+  });
+}
+
+/** Defensive ACP-wire parser, exported so the protocol shape is testable without spawning a CLI. */
+export function parseAcpSessionOptions(resultValue: unknown): RuntimeOptions {
+  const result = record(resultValue);
+  const configOptions = Array.isArray(result.configOptions) ? result.configOptions : [];
+  const parsed = configOptions.flatMap((value): RuntimeSessionConfigOption[] => {
+    const option = record(value);
+    const id = stringOrNull(option.id);
+    const name = stringOrNull(option.name) ?? id;
+    if (!id || !name) return [];
+    const base = {
+      id,
+      name,
+      description: stringOrNull(option.description),
+      category: stringOrNull(option.category),
+    };
+    if (option.type === "boolean" && typeof option.currentValue === "boolean") {
+      return [{ ...base, type: "boolean", current_value: option.currentValue }];
+    }
+    if (option.type === "select" && typeof option.currentValue === "string") {
+      return [{ ...base, type: "select", current_value: option.currentValue, options: selectChoices(option.options) }];
+    }
+    return [];
+  });
+
+  return { config_options: parsed };
 }
 
 /**
@@ -70,10 +93,10 @@ export function probeAcpOptions(
   /** Must not be a real workspace: some runtimes snapshot or index whatever they are opened in. */
   cwd: string,
   timeoutMs = 20_000,
-): Promise<AcpRuntimeOptions | null> {
+): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (value: AcpRuntimeOptions | null) => {
+    const finish = (value: RuntimeOptions | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -116,18 +139,7 @@ export function probeAcpOptions(
           continue;
         }
         if (message.id === 2) {
-          const result = (message.result ?? {}) as { configOptions?: unknown };
-          const options = Array.isArray(result.configOptions)
-            ? (result.configOptions as ConfigOption[])
-            : [];
-          const model = options.find((option) => option.id === "model");
-          const effort = options.find((option) => EFFORT_OPTION_IDS.includes(String(option.id)));
-          finish({
-            models: optionValues(model),
-            currentModel: stringOrNull(model?.currentValue),
-            efforts: optionValues(effort),
-            currentEffort: stringOrNull(effort?.currentValue),
-          });
+          finish(parseAcpSessionOptions(message.result));
         }
       }
     });
@@ -138,7 +150,13 @@ export function probeAcpOptions(
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
-      params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+      params: {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: false, writeTextFile: false },
+          session: { configOptions: { boolean: {} } },
+        },
+      },
     });
   });
 }

@@ -88,6 +88,7 @@ export function RoomMessageComposer({
   disabled,
   resetToken,
   onSubmit,
+  embedded = false,
 }: {
   value: RoomMessageComposerValue
   onChange: (value: RoomMessageComposerValue) => void
@@ -96,6 +97,8 @@ export function RoomMessageComposer({
   disabled: boolean
   resetToken: number
   onSubmit: () => void
+  /** The shared conversation frame owns the border and focus treatment. */
+  embedded?: boolean
 }) {
   const [mentionRange, setMentionRange] = useState<MentionRange | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
@@ -141,7 +144,9 @@ export function RoomMessageComposer({
     editable: !disabled,
     editorProps: {
       attributes: {
-        class: 'min-h-[84px] rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed outline-none focus:border-primary',
+        class: embedded
+          ? 'min-h-[84px] px-3 py-2 text-sm leading-relaxed outline-none'
+          : 'min-h-[84px] rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed outline-none focus:border-primary',
         role: 'textbox',
         'aria-label': 'Room message',
       },

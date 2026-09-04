@@ -167,18 +167,37 @@ export async function resolveRemoteRunBinding(
     [run.host_task_thread_id ?? null],
   );
   if (conversationThread.rows[0]?.container_kind === "conversation") return null;
-  const message = await db.query<{ model_provider_id: string | null; model: string | null }>(
-    `SELECT model_provider_id, model FROM host_thread_messages WHERE run_id = $1 LIMIT 1`,
+  // What the dispatch resolved to, read off the Run it stamped. This used to
+  // come from the queued message row that produced the Run; a remote Task run
+  // is one Run created at admission now, and the admission writes the same
+  // decision onto it.
+  const dispatched = await db.query<{
+    model_provider_id: string | null;
+    model_override_json: Record<string, unknown> | null;
+  }>(
+    `SELECT model_provider_id, model_override_json FROM runs WHERE id = $1 LIMIT 1`,
     [run.id],
   );
-  const row = message.rows[0];
-  if (row) {
-    // A dispatched message is authoritative, including when it deliberately
-    // chose ambient login by overriding the host default away.
-    return row.model_provider_id
-      ? { provider_id: row.model_provider_id, model: row.model, origin: "dispatch" }
-      : null;
+  const row = dispatched.rows[0];
+  const override = row?.model_override_json ?? {};
+  // A dispatch that named a provider is authoritative. Tested on the column
+  // rather than on `source`, which is not stable for this purpose: the
+  // admission writes `request`, and `recordRemoteRunBackend` overwrites it
+  // with `host_binding` at launch — so a re-resolve on the same Run would
+  // fall through to the Host default and could pick a different backend than
+  // the one it is already running on.
+  if (row?.model_provider_id) {
+    const model = override.model;
+    return {
+      provider_id: row.model_provider_id,
+      model: typeof model === "string" ? model : null,
+      origin: "dispatch",
+    };
   }
+  // An admission that deliberately chose ambient login by overriding the host
+  // default away — it made a decision, and it was "no provider". Told apart
+  // from a Run that never chose by the marker the admission writes.
+  if (override.source === "request") return null;
 
   const fallback = await new PgHostRuntimeProviderBindingRepository(db).get(hostId, adapterType);
   return fallback

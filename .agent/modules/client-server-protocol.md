@@ -1,9 +1,9 @@
 # Module: Client-Server Protocol
 
 ## Status
-**CURRENT REST + PARTIAL STREAMING** — REST API exists. Run event SSE exists at
-`GET /api/v1/runs/{runId}/events/stream`. General WebSocket / real-time layer is
-not yet built.
+**CURRENT REST + PARTIAL STREAMING** — REST API exists. Agent turn SSE exists
+at `GET /api/v1/runs/{runId}/turn/stream`. General WebSocket / real-time layer
+is not yet built.
 
 ## Purpose
 Define how frontend and mobile clients communicate with the client-facing API
@@ -73,20 +73,38 @@ with a route-specific maximum.
 Run event streaming is implemented as:
 
 ```
-GET /api/v1/runs/{runId}/events/stream?from_event_index=0&tail=true
+GET /api/v1/runs/{runId}/turn/stream
 Accept: text/event-stream
 ```
 
-`tail=false` replays available events and closes instead of polling.
+The stream carries the turn, not the log it was recorded in. A client gets one
+`turn.snapshot` frame with everything so far, then `turn.part_appended`,
+`turn.part_updated` and `turn.state_changed` as it happens. A part changes in
+place — a tool call finishing updates the part it started as — so a frame's
+`part.index` is where it belongs in the list, not a running counter.
+`turn.state_changed` carries `blocked_on` alongside `state`, because `blocked`
+on its own does not say what the turn is waiting for.
 
-Assistant Chat is a two-step use of this existing transport:
+`GET /api/v1/runs/{runId}/turn` is the same projection as a plain read, always
+whole: part indices restart at 0 and the reply and Proposals are appended
+unconditionally, so a partial read is not something a client could merge.
+
+Assistant Chat is a two-step use of this transport:
 
 1. `POST /api/v1/agents/{agentId}/chat` returns HTTP 202 with
    `chat_turn_accepted.v1`, including the queued `run_id` and an API-rooted
-   `event_stream_url`.
-2. The client subscribes to that URL. `chat_completed` is the only Chat
-   terminal event. Its metadata contains durable identifiers, not assistant
-   content; the client reads the persisted session message after receipt.
+   `event_stream_url` pointing at the turn stream.
+2. The client follows the turn. It ends on `done` or `failed`; on `done` the
+   client reads the persisted assistant message, which is the durable reply.
+   The turn deliberately does not report `done` until that message exists —
+   the adapter returning and the Run going terminal both happen earlier.
+
+   `blocked` is neither. A turn that stops to wait on a person — an
+   authorization to grant, a review somebody owes it — is not finished and
+   resumes where it stopped, so the stream stays open and the client keeps
+   watching. Treating it as terminal sends the reader to fetch a reply that
+   does not exist; treating it as ordinary work tells them nothing is
+   expected of them. `blocked_on` says which kind of waiting it is.
 
 There is no Chat-specific streaming endpoint and no polling execution path.
 

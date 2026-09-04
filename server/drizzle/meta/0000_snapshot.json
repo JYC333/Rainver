@@ -1,5 +1,5 @@
 {
-  "id": "d0ad3680-346d-4c0f-858c-89d703247ad3",
+  "id": "413ff39b-3fb9-4bcc-8510-6b4aacc5c67b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -3761,22 +3761,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "uq_agents_system_remote_dispatch_per_space": {
-          "name": "uq_agents_system_remote_dispatch_per_space",
-          "columns": [
-            {
-              "expression": "space_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "(((agent_kind)::text = 'system_remote_dispatch'::text) AND ((status)::text = 'active'::text))",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -3854,7 +3838,7 @@
       "checkConstraints": {
         "ck_agents_agent_kind": {
           "name": "ck_agents_agent_kind",
-          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_remote_dispatch'::character varying)::text])"
+          "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])"
         },
         "ck_agents_status": {
           "name": "ck_agents_status",
@@ -56428,6 +56412,30 @@
           "primaryKey": false,
           "notNull": false
         },
+        "parent_message_id": {
+          "name": "parent_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "path_depth": {
+          "name": "path_depth",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "branch_path": {
+          "name": "branch_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -56561,14 +56569,122 @@
               "nulls": "last"
             },
             {
-              "expression": "(metadata_json->>'run_id')",
+              "expression": "run_id",
+              "isExpression": false,
               "asc": true,
-              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "role = 'assistant' AND metadata_json->>'run_id' IS NOT NULL",
+          "where": "role = 'assistant' AND run_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_messages_parent_message_id": {
+          "name": "ix_messages_parent_message_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "parent_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_messages_session_path": {
+          "name": "ix_messages_session_path",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "path_depth",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_messages_branch_position": {
+          "name": "uq_messages_branch_position",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "branch_path",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "path_depth",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_messages_run_id": {
+          "name": "ix_messages_run_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -56635,6 +56751,38 @@
           "tableTo": "agents",
           "columnsFrom": [
             "sender_agent_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "messages_parent_message_scope_fkey": {
+          "name": "messages_parent_message_scope_fkey",
+          "tableFrom": "messages",
+          "tableTo": "messages",
+          "columnsFrom": [
+            "parent_message_id",
+            "space_id",
+            "session_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id",
+            "session_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "messages_run_scope_fkey": {
+          "name": "messages_run_scope_fkey",
+          "tableFrom": "messages",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id",
             "space_id"
           ],
           "columnsTo": [
@@ -56989,6 +57137,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "head_message_id": {
+          "name": "head_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -57107,6 +57261,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_sessions_head_message_id": {
+          "name": "ix_sessions_head_message_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "head_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -57196,6 +57371,23 @@
             "project_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "sessions_head_message_scope_fkey": {
+          "name": "sessions_head_message_scope_fkey",
+          "tableFrom": "sessions",
+          "tableTo": "messages",
+          "columnsFrom": [
+            "head_message_id",
+            "space_id",
+            "id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id",
+            "session_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -69526,12 +69718,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "queue_paused_at": {
-          "name": "queue_paused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "pending_archive_at": {
           "name": "pending_archive_at",
           "type": "timestamp with time zone",
@@ -69955,206 +70141,6 @@
         "ck_host_thread_events_event_type": {
           "name": "ck_host_thread_events_event_type",
           "value": "(event_type)::text = ANY (ARRAY[('assistant_text'::character varying)::text, ('assistant_thought'::character varying)::text, ('tool_activity_started'::character varying)::text, ('tool_activity_finished'::character varying)::text, ('status'::character varying)::text, ('diagnostic'::character varying)::text, ('plan_updated'::character varying)::text])"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.host_thread_messages": {
-      "name": "host_thread_messages",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(36)",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "host_task_thread_id": {
-          "name": "host_task_thread_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt": {
-          "name": "prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "model_provider_id": {
-          "name": "model_provider_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model": {
-          "name": "model",
-          "type": "varchar(256)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reasoning_effort": {
-          "name": "reasoning_effort",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by_user_id": {
-          "name": "created_by_user_id",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "ix_host_thread_messages_thread_id": {
-          "name": "ix_host_thread_messages_thread_id",
-          "columns": [
-            {
-              "expression": "host_task_thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_host_thread_messages_run_id": {
-          "name": "ix_host_thread_messages_run_id",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_host_thread_messages_task_id": {
-          "name": "ix_host_thread_messages_task_id",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "host_thread_messages_thread_id_fkey": {
-          "name": "host_thread_messages_thread_id_fkey",
-          "tableFrom": "host_thread_messages",
-          "tableTo": "host_threads",
-          "columnsFrom": [
-            "host_task_thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "host_thread_messages_run_id_fkey": {
-          "name": "host_thread_messages_run_id_fkey",
-          "tableFrom": "host_thread_messages",
-          "tableTo": "runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "host_thread_messages_task_id_fkey": {
-          "name": "host_thread_messages_task_id_fkey",
-          "tableFrom": "host_thread_messages",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "host_thread_messages_model_provider_id_fkey": {
-          "name": "host_thread_messages_model_provider_id_fkey",
-          "tableFrom": "host_thread_messages",
-          "tableTo": "model_providers",
-          "columnsFrom": [
-            "model_provider_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "ck_host_thread_messages_status": {
-          "name": "ck_host_thread_messages_status",
-          "value": "(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('dispatched'::character varying)::text, ('withdrawn'::character varying)::text])"
-        },
-        "ck_host_thread_messages_run_id_consistency": {
-          "name": "ck_host_thread_messages_run_id_consistency",
-          "value": "(status = 'dispatched') = (run_id IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

@@ -36,7 +36,7 @@ export function ConversationBackendSetupCard({
             Grant a server CLI credential
           </Link>
         )}
-        <Link to="/command-center?tab=hosts" target="_blank" rel="noreferrer" className="text-sm underline">
+        <Link to="/command-center" target="_blank" rel="noreferrer" className="text-sm underline">
           Pair or sign in on a host CLI
         </Link>
       </div>

@@ -15,12 +15,8 @@ import { projects } from "./projects.js";
  * since the read model is "everything said in this conversation", spanning
  * every run/turn dispatched into the thread.
  *
- * Reasoning has its own `assistant_thought` type. It was originally dropped
- * at normalization time with no event_type for it (C5), which held only while
- * every runtime reported reasoning on a separate ACP channel: a model that
- * inlines it in the message text instead (MiniMax and other `<think>`-tag
- * models) had its reasoning stored and displayed as the answer. Dropping it
- * now happens by choosing not to render, not by having nowhere to put it.
+ * Reasoning has its own `assistant_thought` type and follows ACP's explicit
+ * agent-thought channel; message text is never reclassified by inspecting it.
  */
 export const hostThreadEvents = pgTable("host_thread_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -42,19 +38,19 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// plan_updated: a JSON-serialized ACP plan snapshot (appended, never
 	// mutated — readers take the thread's latest one).
 	text: text(),
-	// tool_activity_started/finished: paired by toolCallId.
+	// tool_activity_started/finished: projected as one entry by toolCallId.
 	toolCallId: varchar("tool_call_id", { length: 128 }),
 	toolName: varchar("tool_name", { length: 128 }),
 	toolInputSummary: text("tool_input_summary"),
 	// ACP runtime replatform P3 (A9): tool_call.kind (execute/edit/read/...),
-	// set on tool_activity_started only — paired rows share toolCallId.
+	// initially set on tool_activity_started and patchable by finished updates.
 	toolKind: varchar("tool_kind", { length: 32 }),
 	// ACP runtime replatform P3 (A9): bounded tool-result content, set on
 	// tool_activity_finished only. Populated for claude and opencode;
 	// codex-acp 1.6.2 reports no result content (a known adapter asymmetry,
 	// not a bug — see the ACP runtime replatform plan §4).
 	toolResultSummary: text("tool_result_summary"),
-	// tool_activity_finished: 'succeeded' | 'failed' | 'in_progress' (ACP's
+	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's
 	// non-terminal status, absorbed as a same-shaped update — not a new
 	// event type). status: run lifecycle state ('run_started' |
 	// 'run_succeeded' | 'run_failed' | 'run_timeout').

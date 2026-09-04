@@ -1,34 +1,43 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bot, Loader2, Quote, Send, X } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Bot, Loader2, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { ApiRequestError, roomsApi, runsApi } from '../../../api/client'
-import { SpaceLink as Link } from '../../../core/spaceNav'
-import { useSpace } from '../../../contexts/SpaceContext'
-import { errMsg } from '../../../lib/utils'
+import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
+import { SpaceLink as Link } from '../../core/spaceNav'
+import { useSpace } from '../../contexts/SpaceContext'
+import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
   ChatActionPreview,
+  ConversationBackendCatalog,
   RoomConversation as RoomConversationRecord,
   RoomConversationSummaryResponse,
   RoomDetail,
   RoomMessage,
+  RunTurn,
   Run,
   SpaceMember,
-} from '../../../types/api'
-import { Badge } from '../../../components/ui/badge'
-import { Button } from '../../../components/ui/button'
-import { MarkdownMessage } from '../MarkdownMessage'
-import { ReferenceMessage, messageReference } from './ReferenceMessage'
-import { DisclosureDialog } from './DisclosureDialog'
-import { PickToolbar } from './PickToolbar'
-import { RoomActionPreviewCard, type RoomActionDecision } from '../RoomActionPreviewCard'
-import { RoomMessageComposer, emptyRoomMessageComposerValue } from '../RoomMessageComposer'
+} from '../../types/api'
+import { Button } from '../../components/ui/button'
+import { ReferenceMessage, messageReference } from '../agent_groups/conversation/ReferenceMessage'
+import { DisclosureDialog } from '../agent_groups/conversation/DisclosureDialog'
+import { PickToolbar } from '../agent_groups/conversation/PickToolbar'
+import { RoomActionPreviewCard, type RoomActionDecision } from '../agent_groups/RoomActionPreviewCard'
+import { MessageResponse } from '../../components/ai-elements/message'
+import { ConversationTurn } from './ConversationTurn'
+import { readBackTurnState, settledTurn } from './settledTurn'
+import { RoomMessageComposer, emptyRoomMessageComposerValue } from '../agent_groups/RoomMessageComposer'
+import {
+  ConversationSessionConfig,
+  mergeSessionConfig,
+  type SessionConfigSelection,
+} from './ConversationSessionConfig'
+import { ConversationComposer } from './ConversationComposer'
 
 /**
  * One conversation, rendered wherever a conversation is read.
  *
- * The full Room page and the Project chat panel both show the same Room
- * conversation. They used to do so with two implementations: the page's,
+ * The full Room page and the Project sidecar both show the same Conversation.
+ * They used to do so with two implementations: the page's,
  * with action cards, run progress and continuation after a decision, and the
  * panel's, a plain list with its own send and poll. Every feature then landed
  * on one side and was missing from the other — the panel had no way to decide
@@ -45,9 +54,13 @@ import { RoomMessageComposer, emptyRoomMessageComposerValue } from '../RoomMessa
  */
 
 export type RoutingMode = 'direct' | 'agent_coordination'
-export type RoomBackendSelection = { agent_id: string; runtime_profile_id: string; credential_profile_id: string | null }
+export type ConversationBackendSelection = {
+  agent_id: string
+  runtime_profile_id: string
+  credential_profile_id: string | null
+  session_config?: SessionConfigSelection[]
+}
 
-type RunProgress = { event_type: string; status: string; summary?: string | null }
 type PendingProposalContinuation = {
   proposalId: string
   action: RoomActionDecision
@@ -58,7 +71,7 @@ type PendingProposalContinuation = {
 
 const MESSAGE_PAGE_SIZE = 50
 
-export interface RoomConversationProps {
+export interface ConversationSurfaceProps {
   roomId: string
   /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
@@ -71,7 +84,9 @@ export interface RoomConversationProps {
   humans?: SpaceMember[]
   routingMode?: RoutingMode
   /** Which backend each recipient runs on before the Conversation is initialized. */
-  backendsFor?: (recipientAgentIds: string[]) => RoomBackendSelection[]
+  backendsFor?: (recipientAgentIds: string[]) => ConversationBackendSelection[]
+  /** Catalogs already loaded by a containing execution-settings surface. */
+  backendCatalogs?: Record<string, ConversationBackendCatalog>
   /** What the person is looking at; a hint the server states in the turn. */
   focusRefs?: Array<{ type: 'task'; id: string }>
   /** The conversation record the server returned with a send or a page — its title may have been generated. */
@@ -116,7 +131,7 @@ export interface RoomConversationProps {
   references?: ThreadReferencePick[]
 }
 
-export function RoomConversation({
+export function ConversationSurface({
   roomId,
   conversationId,
   detail: suppliedDetail,
@@ -125,6 +140,7 @@ export function RoomConversation({
   humans = [],
   routingMode = 'direct',
   backendsFor,
+  backendCatalogs: suppliedBackendCatalogs,
   focusRefs,
   onConversationUpdated,
   onBackendRequired,
@@ -139,7 +155,7 @@ export function RoomConversation({
   isOwner = false,
   emptyHint,
   references,
-}: RoomConversationProps) {
+}: ConversationSurfaceProps) {
   const { userId } = useSpace()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
   const [messages, setMessages] = useState<RoomMessage[]>([])
@@ -148,8 +164,11 @@ export function RoomConversation({
   const [summary, setSummary] = useState<RoomConversationSummaryResponse | null>(null)
   const [runs, setRuns] = useState<Record<string, Run>>({})
   const runsRef = useRef<Record<string, Run>>({})
-  const [runProgress, setRunProgress] = useState<Record<string, RunProgress>>({})
-  const [runDeltas, setRunDeltas] = useState<Record<string, string>>({})
+  // The turn each running Run is producing, so the Agent's work appears as
+  // the Agent speaking rather than as a badge under the person's message.
+  const [liveTurns, setLiveTurns] = useState<Record<string, RunTurn>>({})
+  /** Runs whose turn is in flight or already held, so a render does not re-ask. */
+  const fetchedTurns = useRef(new Set<string>())
   const streamControllers = useRef(new Map<string, AbortController>())
   const requestSequence = useRef(0)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -158,6 +177,8 @@ export function RoomConversation({
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
   const [sending, setSending] = useState(false)
+  const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
+  const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
   const sendingRef = useRef(false)
   const [continuation, setContinuation] = useState<PendingProposalContinuation | null>(null)
   /** Set when a send was refused for crossing an audience boundary. */
@@ -230,7 +251,7 @@ export function RoomConversation({
         .then(next => { if (sequence === requestSequence.current) setSummary(next) })
         .catch(() => { if (sequence === requestSequence.current) setSummary(null) })
     }
-    const runIds = uniqueIds(page.items.flatMap(message => metadataRunIds(message.metadata_json)))
+    const runIds = uniqueIds(page.items.flatMap(message => messageRunIds(message)))
     const idsToRefresh = runIds.filter(id => !runsRef.current[id] || !isTerminalRunStatus(runsRef.current[id]!.status))
     const results = await Promise.all(idsToRefresh.map(async id => {
       try { return await runsApi.get(id) } catch { return null }
@@ -240,8 +261,13 @@ export function RoomConversation({
       ...current,
       ...Object.fromEntries(results.filter((run): run is Run => Boolean(run)).map(run => [run.id, run])),
     }))
-    const terminalIds = results.flatMap(run => run && isTerminalRunStatus(run.status) ? [run.id] : [])
-    if (terminalIds.length > 0) clearTransientRuns(terminalIds, setRunProgress, setRunDeltas)
+    // Whether a turn still belongs on screen is decided in one place, where
+    // it is rendered: it stays until its reply is a message of its own.
+    // Dropping it here on the Run's status instead would take it away at an
+    // earlier and different moment — a failed Run writes no reply at all, so
+    // its turn would simply vanish along with the only account of what went
+    // wrong, and a succeeded one would blink out until the next poll brought
+    // the message back.
   }, [conversationId, roomId, variant])
 
   const loadOlderMessages = useCallback(async () => {
@@ -256,21 +282,37 @@ export function RoomConversation({
       if (streamControllers.current.has(runId)) continue
       const controller = new AbortController()
       streamControllers.current.set(runId, controller)
-      void runsApi.streamEvents(runId, {
+      void runsApi.streamTurn(runId, {
         signal: controller.signal,
-        onLifecycle: event => {
-          setRunProgress(current => ({ ...current, [runId]: event }))
-          if (event.event_type === 'run_finalized') {
-            streamControllers.current.delete(runId)
-            clearTransientRuns([runId], setRunProgress, setRunDeltas)
-            void loadMessages()
-          }
-        },
-        onTextDelta: delta => {
-          setRunDeltas(current => ({ ...current, [runId]: `${current[runId] ?? ''}${delta}` }))
+        onTurn: turn => {
+          setLiveTurns(current => ({ ...current, [runId]: turn }))
+          // A blocked turn is still open — it resumes when somebody decides —
+          // so the controller stays. Dropping it here would let the watch
+          // effect open a second stream for the same Run on its next run, and
+          // each one would drop its own controller again.
+          if (turn.state === 'working' || turn.state === 'blocked') return
+          streamControllers.current.delete(runId)
+          void loadMessages()
         },
       }).catch(error => {
-        if (!controller.signal.aborted) toast.error(errMsg(error))
+        if (controller.signal.aborted) return
+        toast.error(errMsg(error))
+        // A stream that died before the turn settled left a turn on screen
+        // saying the Agent is still working. Nothing else would ever correct
+        // it — the stream is gone, and the read-once effect skips any run a
+        // turn is already held for — so the hold is released and that effect
+        // reads the settled turn back once the Run is terminal.
+        setLiveTurns(current => {
+          const held = current[runId]
+          // Only a turn stranded mid-work. A `blocked` turn is not stale —
+          // it is waiting on a person and is the only thing on screen
+          // carrying the link to go and decide — and nothing would read it
+          // back, because the read-once effect skips a paused Run by design.
+          if (held?.state !== 'working') return current
+          const { [runId]: _dropped, ...rest } = current
+          return rest
+        })
+        fetchedTurns.current.delete(runId)
       }).finally(() => {
         if (streamControllers.current.get(runId) === controller) streamControllers.current.delete(runId)
       })
@@ -287,8 +329,8 @@ export function RoomConversation({
     setSummary(null)
     setHasOlderMessages(false)
     setRuns({})
-    setRunProgress({})
-    setRunDeltas({})
+    setLiveTurns({})
+    fetchedTurns.current.clear()
     referencesAttachedRef.current = false
     loadMessages()
       .catch(error => toast.error(errMsg(error)))
@@ -316,14 +358,50 @@ export function RoomConversation({
   }, [conversationId])
 
   useEffect(() => {
-    watchRuns(Object.values(runs).filter(run => !isTerminalRunStatus(run.status)).map(run => run.id))
+    // A paused Run is watched too: it is waiting on a person, not finished,
+    // and the stream carries the rest of the turn once they decide.
+    watchRuns(Object.values(runs)
+      .filter(run => !isTerminalRunStatus(run.status) || run.status === 'waiting_for_review')
+      .map(run => run.id))
   }, [runs, watchRuns])
+
+  // Runs whose reply is already a message here. Their turn has been said.
+  const repliedRunIds = new Set(messages.flatMap(message =>
+    message.role === 'assistant' ? messageRunIds(message) : []))
+
+  useEffect(() => {
+    // A terminal Run this surface never streamed — it failed, was cancelled
+    // or reaped, or the page was simply opened after it finished. Its turn is
+    // read once: an Agent reply renders *as* its turn, so without this every
+    // reply on a reloaded page would be a plain bubble with its work gone,
+    // and a Run that failed after writing its reply would lose both its steps
+    // and the fact that it failed.
+    for (const run of Object.values(runs)) {
+      if (!isTerminalRunStatus(run.status) || run.status === 'waiting_for_review') continue
+      if (liveTurns[run.id] || fetchedTurns.current.has(run.id)) continue
+      // Marked while the request is open, so a render mid-flight does not ask
+      // again — and released if it fails, so the next poll can. Keeping the
+      // mark on failure would turn one blip into permanent silence about a
+      // Run whose turn is the only account of what went wrong.
+      fetchedTurns.current.add(run.id)
+      void runsApi.turn(run.id)
+        // Settled on arrival, for the same reason the chat panel settles its
+        // history: the reply is written before `chat_completed`, so a turn
+        // read back can still say `working` on finished work — and a read is
+        // not a stream, so nothing here would ever correct it.
+        .then(turn => setLiveTurns(current => ({
+          ...current,
+          [run.id]: { ...turn, state: readBackTurnState(turn.state) },
+        })))
+        .catch(() => { fetchedTurns.current.delete(run.id) })
+    }
+  }, [runs, repliedRunIds, liveTurns])
 
   // The continuation status shows until the reply it waits for is visible.
   useEffect(() => {
     if (!continuation?.runIds.length) return
     const visible = messages.some(message =>
-      message.role === 'assistant' && metadataRunIds(message.metadata_json).some(runId => continuation.runIds.includes(runId)))
+      message.role === 'assistant' && messageRunIds(message).some(runId => continuation.runIds.includes(runId)))
     if (visible) setContinuation(null)
   }, [messages, continuation])
 
@@ -335,13 +413,82 @@ export function RoomConversation({
       container.scrollTo({ top: container.scrollHeight, behavior: 'auto' })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [messages, messagesLoading, continuation, runDeltas, runProgress])
+  }, [messages, messagesLoading, continuation, liveTurns])
 
   const managerAgentId = detail?.agent_members.find(member => member.role === 'manager')?.agent_id
   const roomAgents = detail?.agent_members.map(member => ({
     id: member.agent_id, name: member.agent_name, kind: member.agent_kind, status: member.status,
   })) ?? []
   const labelAgents = [...roomAgents, ...agents.filter(agent => !roomAgents.some(item => item.id === agent.id))]
+  const configurableAgentKey = roomAgents
+    .filter(agent => agent.status === 'active')
+    .map(agent => agent.id)
+    .sort()
+    .join(':')
+  // A persisted Conversation's binding is session-owned. The containing Room
+  // can supply chooser data for a draft, but that pre-initialization catalog
+  // must never override the catalog read back for the initialized session.
+  const backendCatalogs = conversationId
+    ? loadedBackendCatalogs
+    : { ...loadedBackendCatalogs, ...(suppliedBackendCatalogs ?? {}) }
+
+  useEffect(() => {
+    const agentIds = configurableAgentKey ? configurableAgentKey.split(':') : []
+    const requestedAgentIds = conversationId
+      ? agentIds
+      : agentIds.filter(agentId => !suppliedBackendCatalogs?.[agentId])
+    if (requestedAgentIds.length === 0) {
+      setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
+        const catalog = suppliedBackendCatalogs?.[agentId]
+        const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+        const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+        return [agentId, mergeSessionConfig(option?.session_config_options ?? [], catalog?.session_config ?? current[agentId] ?? [])]
+      })))
+      return
+    }
+    if (agentIds.length === 0) {
+      setLoadedBackendCatalogs({})
+      setSessionConfig({})
+      return
+    }
+    let cancelled = false
+    Promise.all(requestedAgentIds.map(async agentId => ({
+      agentId,
+      catalog: await agentsApi.conversationBackends(agentId, {
+        ...(conversationId ? { sessionId: conversationId } : {}),
+      }),
+    }))).then(entries => {
+      if (cancelled) return
+      const fetched = Object.fromEntries(entries.map(entry => [entry.agentId, entry.catalog]))
+      setLoadedBackendCatalogs(fetched)
+      const catalogs = { ...(suppliedBackendCatalogs ?? {}), ...fetched }
+      setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
+        const catalog = catalogs[agentId]
+        const backend = catalog.binding ?? catalog.options.find(option => option.usable !== false)
+        const option = catalog.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+        return [agentId, mergeSessionConfig(option?.session_config_options ?? [], catalog.session_config ?? current[agentId] ?? [])]
+      })))
+    }).catch(error => {
+      if (!cancelled) toast.error(errMsg(error))
+    })
+    return () => { cancelled = true }
+  }, [configurableAgentKey, conversationId, executionReady, suppliedBackendCatalogs])
+
+  const configuredBackendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] => {
+    const supplied = new Map((backendsFor?.(recipientAgentIds) ?? []).map(backend => [backend.agent_id, backend]))
+    return recipientAgentIds.flatMap(agentId => {
+      const catalog = backendCatalogs[agentId]
+      const fallback = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+      const backend = supplied.get(agentId) ?? (fallback ? {
+        agent_id: agentId,
+        runtime_profile_id: fallback.runtime_profile_id,
+        credential_profile_id: 'credential_profile_id' in fallback ? fallback.credential_profile_id ?? null : null,
+      } : null)
+      if (!backend) return []
+      const selected = sessionConfig[agentId] ?? []
+      return [{ ...backend, ...(selected.length ? { session_config: selected } : {}) }]
+    })
+  }, [backendCatalogs, backendsFor, sessionConfig])
 
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
@@ -374,7 +521,7 @@ export function RoomConversation({
         ...(variant === 'full' && routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
           : variant === 'full' ? { recipient_segments: null } : {}),
-        backends: backendsFor?.(recipientAgentIds) ?? [],
+        backends: configuredBackendsFor(recipientAgentIds),
         ...(focusRefs ? { focus_refs: focusRefs } : {}),
       })
       watchRuns(dispatched.run_ids)
@@ -417,7 +564,7 @@ export function RoomConversation({
       sendingRef.current = false
       setSending(false)
     }
-  }, [backendsFor, composer, conversationId, executionReady, focusRefs, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: RoomActionDecision) => {
@@ -432,7 +579,7 @@ export function RoomConversation({
       if (!conversationId) throw new Error('This conversation is no longer available')
       const dispatched = await roomsApi.continueAfterProposal(roomId, conversationId, {
         proposal_id: preview.proposal_id,
-        backends: backendsFor?.(managerAgentId ? [managerAgentId] : []) ?? [],
+        backends: configuredBackendsFor(managerAgentId ? [managerAgentId] : []),
       })
       setContinuation(current => current && current.proposalId === preview.proposal_id
         ? { ...current, phase: 'running', runIds: dispatched.run_ids }
@@ -448,7 +595,7 @@ export function RoomConversation({
       sendingRef.current = false
       setSending(false)
     }
-  }, [backendsFor, conversationId, managerAgentId, onBeforeContinue, roomId, watchRuns])
+  }, [configuredBackendsFor, conversationId, managerAgentId, onBeforeContinue, roomId, watchRuns])
 
   /** The pick, in the shape the server takes. Always from *this* conversation. */
   const picksFromSelection = useCallback((): ThreadReferencePick[] => (
@@ -556,26 +703,43 @@ export function RoomConversation({
             />
           )
           return (
-          <RoomMessageView
-            key={message.id}
-            message={message}
-            picked={picked.includes(message.id)}
-            pickable={canPick}
-            onPickedChange={next => setPicked(current => next
-              ? [...current, message.id]
-              : current.filter(id => id !== message.id))}
-            compact={compact}
-            viewerUserId={userId ?? null}
-            agents={labelAgents}
-            humans={humans}
-            runs={runs}
-            progress={runProgress}
-            deltas={runDeltas}
-            onActionDecision={continueAfterDecision}
-          />
+          <Fragment key={message.id}>
+            <RoomMessageView
+              message={message}
+              picked={picked.includes(message.id)}
+              pickable={canPick}
+              onPickedChange={next => setPicked(current => next
+                ? [...current, message.id]
+                : current.filter(id => id !== message.id))}
+              compact={compact}
+              viewerUserId={userId ?? null}
+              agents={labelAgents}
+              humans={humans}
+              turn={message.role === 'assistant'
+                ? messageRunIds(message).map(runId => liveTurns[runId]).find(Boolean)
+                : undefined}
+              onActionDecision={continueAfterDecision}
+            />
+            {/*
+              The turns this message started, as the Agent speaking after the
+              person — not as an attachment under what the person said. A turn
+              that has already produced its reply is a message of its own by
+              then, so only the ones still running are rendered here.
+            */}
+            {messageRunIds(message)
+              // A turn is shown until its reply is a message of its own —
+              // and then it is shown *as* that message (see `RoomMessageView`,
+              // which renders an Agent reply through the same component when
+              // a turn for it is held), so the steps fold above the reply
+              // instead of disappearing with it.
+              .filter(runId => liveTurns[runId] && !repliedRunIds.has(runId))
+              .map(runId => (
+                <RoomAgentTurn key={runId} runId={runId} turn={liveTurns[runId]!} compact={compact} />
+              ))}
+          </Fragment>
           )
         })}
-        {continuation && <ProposalContinuationStatus continuation={continuation} progress={runProgress} />}
+        {continuation && <ProposalContinuationStatus continuation={continuation} turns={liveTurns} />}
         <DisclosureDialog
           request={disclosure}
           humans={humans}
@@ -616,23 +780,45 @@ export function RoomConversation({
         )}
         {executionPreflight}
         {runSettings}
-        <RoomMessageComposer
-          value={composer}
-          onChange={setComposer}
-          agents={roomAgents}
-          members={detail?.agent_members ?? []}
-          // Setup gates sending, not drafting: a blocked/offline preflight
-          // must still let the user write and retain the message.
-          disabled={sending}
-          resetToken={resetToken}
-          onSubmit={() => void sendMessage()}
+        <ConversationComposer
+          editor={<RoomMessageComposer
+            value={composer}
+            onChange={setComposer}
+            agents={roomAgents}
+            members={detail?.agent_members ?? []}
+            // Setup gates sending, not drafting: a blocked/offline preflight
+            // must still let the user write and retain the message.
+            disabled={sending}
+            resetToken={resetToken}
+            onSubmit={() => void sendMessage()}
+            embedded
+          />}
+          controls={(
+            <>
+              {roomAgents.filter(agent => backendCatalogs[agent.id]).map(agent => {
+                const catalog = backendCatalogs[agent.id]!
+                const backend = catalog.binding ?? catalog.options.find(option => option.usable !== false)
+                const option = catalog.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+                if (!option?.session_config_options?.length) return null
+                return (
+                  <div key={agent.id} className="flex min-w-0 flex-wrap items-center gap-1">
+                    {roomAgents.length > 1 && <span className="px-1 text-[11px] text-muted-foreground">{agent.name}</span>}
+                    <ConversationSessionConfig
+                      options={option.session_config_options}
+                      value={sessionConfig[agent.id] ?? []}
+                      onChange={value => setSessionConfig(current => ({ ...current, [agent.id]: value }))}
+                      disabled={sending}
+                    />
+                  </div>
+                )
+              })}
+            </>
+          )}
+          note={!executionReady ? 'Configure the execution context before sending.' : undefined}
+          sending={sending}
+          sendDisabled={sending || !executionReady || !composer.text.trim()}
+          onSend={() => void sendMessage()}
         />
-        <div className="flex justify-end">
-          <Button size={compact ? 'sm' : 'default'} disabled={sending || !executionReady || !composer.text.trim()} onClick={() => void sendMessage()}>
-            {sending ? <Loader2 className="mr-1 size-4 animate-spin" /> : <Send className="mr-1 size-4" />}Send
-          </Button>
-          {!executionReady && <span className="mr-auto text-xs text-muted-foreground">Configure the execution context before sending.</span>}
-        </div>
       </div>
     </div>
   )
@@ -640,7 +826,7 @@ export function RoomConversation({
 
 function RoomMessageView({
   message, compact, picked, pickable, onPickedChange,
-  viewerUserId, agents, humans, runs, progress, deltas, onActionDecision,
+  viewerUserId, agents, humans, turn, onActionDecision,
 }: {
   message: RoomMessage
   compact: boolean
@@ -656,12 +842,10 @@ function RoomMessageView({
   viewerUserId: string | null
   agents: Array<{ id: string; name: string; kind?: string }>
   humans: SpaceMember[]
-  runs: Record<string, Run>
-  progress: Record<string, RunProgress>
-  deltas: Record<string, string>
+  /** The turn this reply came from, when one is held for it. */
+  turn?: RunTurn
   onActionDecision: (preview: ChatActionPreview, action: RoomActionDecision) => Promise<void>
 }) {
-  const runIds = metadataRunIds(message.metadata_json)
   const mine = message.role === 'user'
   const system = message.role === 'system'
   const human = humans.find(member => member.user_id === message.user_id)
@@ -701,7 +885,26 @@ function RoomMessageView({
           <span>{label}</span>
           <span>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
-        <MarkdownMessage content={message.content} className={mine ? '[&_a]:text-primary-foreground [&_code]:bg-primary-foreground/15' : ''} />
+        {/*
+          An Agent reply is its turn, when one is held: the reply with the
+          work that produced it folded above, which is what D3 asks for and
+          what a plain bubble cannot show.
+
+          The state is the turn's own. The server decides it in one place
+          (`turnReadModel.turnState`) with facts a client does not have — that
+          a `degraded` Run still carries a usable reply, that a chat Run
+          reaches `succeeded` before its reply is written — and re-deriving it
+          here from the Run's status produces a second, worse answer. Only the
+          prose is replaced, with what was actually saved.
+        */}
+        {turn
+          ? (
+            <ConversationTurn
+              turn={settledTurn(turn, turn.state, message.content)!}
+              runHref={`/runs/${turn.run_id}`}
+            />
+          )
+          : <MessageResponse>{message.content}</MessageResponse>}
         {previews.length > 0 && (
           <div className="mt-2 space-y-2" data-testid={`previews-${message.id}`}>
             {previews.map((preview, index) => (
@@ -713,42 +916,50 @@ function RoomMessageView({
             ))}
           </div>
         )}
-        {runIds.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-2">
-            {runIds.map(runId => (
-              <span key={runId} className="inline-flex flex-col items-start gap-1">
-                <Link to={`/runs/${runId}`} className="inline-flex items-center gap-1 text-xs hover:underline">
-                  <RoomRunStatusBadge run={runs[runId]} fallbackStatus={progress[runId]?.status ?? 'queued'} />
-                  {roomRunLinkLabel(runs[runId], progress[runId]?.status)}
-                </Link>
-                {progress[runId] && (
-                  <span className="text-[11px] text-muted-foreground">
-                    {progress[runId].summary || lifecycleLabel(progress[runId].event_type)}
-                  </span>
-                )}
-                {deltas[runId] && (
-                  <span className="max-w-md whitespace-pre-wrap text-xs text-muted-foreground">{deltas[runId]}</span>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   )
 }
 
-function ProposalContinuationStatus({ continuation, progress }: {
-  continuation: PendingProposalContinuation
-  progress: Record<string, RunProgress>
+/**
+ * An Agent turn in progress, as its own message.
+ *
+ * A Run a person's message started used to be shown under that message — a
+ * badge, a link, a status line and a box of streaming text. None of that is
+ * how a conversation reads: while the Agent works there was no Agent-side
+ * bubble at all, and after it replied the status stayed under the person.
+ * This is the Agent speaking, in the place the Agent speaks.
+ */
+function RoomAgentTurn({ runId, turn, compact }: {
+  runId: string
+  turn: RunTurn
+  compact: boolean
 }) {
-  const activeProgress = continuation.runIds.reduce<RunProgress | undefined>((latest, runId) => progress[runId] ?? latest, undefined)
+  return (
+    <div className="group flex justify-start pr-6" data-role="agent" data-testid={`turn-${runId}`}>
+      <div className={compact ? 'max-w-full' : 'max-w-[82%]'}>
+        <ConversationTurn turn={turn} runHref={`/runs/${runId}`} />
+      </div>
+    </div>
+  )
+}
+
+function ProposalContinuationStatus({ continuation, turns }: {
+  continuation: PendingProposalContinuation
+  turns: Record<string, RunTurn>
+}) {
+  // The newest step the follow-up turn has taken, which is the closest thing
+  // to a status while it runs.
+  const activeLabel = continuation.runIds.reduce<string | null>((latest, runId) => {
+    const step = [...(turns[runId]?.parts ?? [])].reverse().find(part => part.type === 'tool_call')
+    return step?.type === 'tool_call' ? step.name : latest
+  }, null)
   const actionLabel = continuation.action === 'accept' ? '已接受' : '已拒绝'
   const statusText = continuation.phase === 'failed'
     ? `后续处理未能启动：${continuation.error || '未知错误'}`
     : continuation.phase === 'submitting'
       ? `${actionLabel}，正在启动下一步…`
-      : activeProgress?.summary || (activeProgress ? lifecycleLabel(activeProgress.event_type) : `${actionLabel}，助手正在处理…`)
+      : activeLabel || `${actionLabel}，助手正在处理…`
   return (
     <div className="flex justify-start" role="status" aria-live="polite">
       <div className={`max-w-[82%] rounded-lg border px-3 py-2 ${continuation.phase === 'failed' ? 'border-destructive/40 bg-destructive/5' : 'border-border bg-muted/30'}`}>
@@ -784,52 +995,8 @@ function RoomSummaryFreshness({ summary, isOwner }: { summary: RoomConversationS
   )
 }
 
-function RoomRunStatusBadge({ run, fallbackStatus }: { run?: Run; fallbackStatus: string }) {
-  const status = run?.status ?? fallbackStatus
-  const authorization = status === 'waiting_for_review' && run?.error_json?.supervisor_review !== true
-  const supervisorHold = status === 'waiting_for_review' && run?.error_json?.supervisor_review === true
-  const presentation = authorization
-    ? { label: 'approval needed', variant: 'warning' as const }
-    : supervisorHold
-      ? { label: 'decision needed', variant: 'warning' as const }
-      : ({
-          queued: { label: 'waiting', variant: 'muted' as const },
-          running: { label: 'working', variant: 'warning' as const },
-          succeeded: { label: 'replied', variant: 'success' as const },
-          failed: { label: 'failed', variant: 'destructive' as const },
-          degraded: { label: 'replied with warning', variant: 'warning' as const },
-          cancelled: { label: 'cancelled', variant: 'muted' as const },
-          orphaned: { label: 'interrupted', variant: 'destructive' as const },
-          waiting_for_dependency: { label: 'waiting for collaborators', variant: 'warning' as const },
-          waiting_for_review: { label: 'input needed', variant: 'warning' as const },
-        }[status] ?? { label: status.replace(/_/g, ' '), variant: 'muted' as const })
-  return <Badge variant={presentation.variant}>{presentation.label}</Badge>
-}
-
-function roomRunLinkLabel(run: Run | undefined, fallbackStatus?: string): string {
-  const status = run?.status ?? fallbackStatus
-  if (status === 'waiting_for_review') return run?.error_json?.supervisor_review !== true ? 'Review request' : 'Resolve Run'
-  return 'Run details'
-}
-
-function lifecycleLabel(eventType: string): string { return eventType.replace(/_/g, ' ') }
-
 function isTerminalRunStatus(status: string): boolean {
   return ['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review'].includes(status)
-}
-
-function clearTransientRuns(
-  runIds: string[],
-  setProgress: React.Dispatch<React.SetStateAction<Record<string, RunProgress>>>,
-  setDeltas: React.Dispatch<React.SetStateAction<Record<string, string>>>,
-): void {
-  const remove = <T,>(current: Record<string, T>): Record<string, T> => {
-    const next = { ...current }
-    for (const runId of runIds) delete next[runId]
-    return next
-  }
-  setProgress(remove)
-  setDeltas(remove)
 }
 
 export function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
@@ -841,11 +1008,20 @@ export function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   })
 }
 
-export function metadataRunIds(metadata: Record<string, unknown> | null | undefined): string[] {
-  const value = metadata?.run_ids
-  if (Array.isArray(value)) return value.filter((id): id is string => typeof id === 'string')
-  const runId = metadata?.run_id
-  return typeof runId === 'string' ? [runId] : []
+/**
+ * Every Run this message is tied to.
+ *
+ * `run_id` is the column: the Run that produced an Agent reply, or the Run a
+ * person's message started. `metadata_json.run_ids` is the separate Room case
+ * where one dispatched message fanned out to several recipients.
+ */
+export function messageRunIds(message: {
+  metadata_json?: RoomMessage['metadata_json']
+  run_id?: string | null
+}): string[] {
+  const fanout = message.metadata_json?.run_ids
+  if (Array.isArray(fanout)) return fanout.filter((id): id is string => typeof id === 'string')
+  return message.run_id ? [message.run_id] : []
 }
 
 export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {

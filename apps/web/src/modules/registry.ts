@@ -284,12 +284,11 @@ export const MODULE_REGISTRY: Module[] = [
   {
     id: 'command_center', label: 'Command Center', path: '/command-center',
     section: 'agents', group: 'work', icon: 'server', accent: true,
-    description: 'Dispatch tasks to your registered hosts and review their work (ADR 0016).',
+    description: 'Pair machines, bind their providers, and manage what runs on them (ADR 0016).',
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 5,
-    hasSubRoutes: true,
     component: lazy(() => import('./command_center/CommandCenterModule')),
   },
   {

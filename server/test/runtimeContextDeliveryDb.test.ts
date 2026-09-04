@@ -13,6 +13,7 @@ import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormaliz
 import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost/deliveryAuthorizer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedConversationMessages } from "./support/domainSeeds.js";
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
@@ -306,7 +307,10 @@ describe("Context Event continuity and checkpoints", () => {
     const sessionId = randomUUID();
     const messageId = randomUUID();
     await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await db.pool.query(`INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES ($1,$2,$3,$4,'user','Use the unified gateway.',now())`, [messageId, SPACE, sessionId, USER]);
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [{ id: messageId, role: "user", content: "Use the unified gateway.", userId: USER }],
+    });
     await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
     const setupDecisionId = randomUUID();
     await db.pool.query(
@@ -434,11 +438,10 @@ describe("Context Event continuity and checkpoints", () => {
        VALUES ($1,$2,$3,'active',now(),now())`,
       [otherSessionId, SPACE, USER],
     );
-    await db.pool.query(
-      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at)
-       VALUES ($1,$2,$3,$4,'user','private other scope',now())`,
-      [otherMessageId, SPACE, otherSessionId, USER],
-    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: otherSessionId,
+      messages: [{ id: otherMessageId, role: "user", content: "private other scope", userId: USER }],
+    });
     const continuity = new RuntimeContextContinuityService(db.pool);
     await expect(continuity.ingest({
       invocation_id: RUN,
@@ -456,13 +459,14 @@ describe("Context Event continuity and checkpoints", () => {
     const currentId = randomUUID();
     const futureId = randomUUID();
     await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await db.pool.query(
-      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES
-       ($1,$4,$5,$6,'user','earlier',now()-interval '3 minutes'),
-       ($2,$4,$5,$6,'user','current',now()-interval '2 minutes'),
-       ($3,$4,$5,$6,'user','future',now()-interval '1 minute')`,
-      [earlierId, currentId, futureId, SPACE, sessionId, USER],
-    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [
+        { id: earlierId, role: "user", content: "earlier", userId: USER },
+        { id: currentId, role: "user", content: "current", userId: USER },
+        { id: futureId, role: "user", content: "future", userId: USER },
+      ],
+    });
     await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
     const continuity = new RuntimeContextContinuityService(db.pool, {
       async extract() {
@@ -500,13 +504,14 @@ describe("Context Event continuity and checkpoints", () => {
        VALUES ($1,$2,$3,'active',now(),now())`,
       [sessionId, SPACE, USER],
     );
-    await db.pool.query(
-      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,created_at) VALUES
-       ($1,$4,$5,$6,'user','earlier same timestamp',$7),
-       ($2,$4,$5,$6,'user','current same timestamp',$7),
-       ($3,$4,$5,$6,'user','future same timestamp',$7)`,
-      [earlierId, currentId, futureId, SPACE, sessionId, USER, timestamp],
-    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [
+        { id: earlierId, role: "user", content: "earlier same timestamp", userId: USER, createdAt: timestamp },
+        { id: currentId, role: "user", content: "current same timestamp", userId: USER, createdAt: timestamp },
+        { id: futureId, role: "user", content: "future same timestamp", userId: USER, createdAt: timestamp },
+      ],
+    });
 
     const visible = await loadConversationContinuityThroughMessage(db.pool, {
       spaceId: SPACE,
@@ -567,7 +572,10 @@ describe("Context Event continuity and checkpoints", () => {
     const sessionId = randomUUID();
     const assistantId = randomUUID();
     await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await db.pool.query(`INSERT INTO messages (id,space_id,session_id,sender_agent_id,role,content,created_at) VALUES ($1,$2,$3,$4,'assistant','done',now())`, [assistantId, SPACE, sessionId, AGENT]);
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [{ id: assistantId, role: "assistant", content: "done", senderAgentId: AGENT }],
+    });
     await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
     const continuity = new RuntimeContextContinuityService(db.pool);
     const first = await continuity.finalizeChatTurn({ invocationId: RUN, messageId: assistantId });
@@ -604,16 +612,17 @@ describe("Invocation Delivery and Snapshot persistence", () => {
        VALUES ($1,$2,$3,'active',now(),now())`,
       [sessionId, SPACE, USER],
     );
-    await db.pool.query(
-      `INSERT INTO messages
-         (id,session_id,space_id,user_id,sender_agent_id,role,content,metadata_json,created_at)
-       VALUES
-         ($1,$4,$5,$6,NULL,'user','Remember the blue launch code.','{}',now()-interval '3 minutes'),
-         ($2,$4,$5,NULL,$7,'assistant','I will remember blue.','{}',now()-interval '2 minutes'),
-         ($3,$4,$5,$6,NULL,'user','What code did I choose?',jsonb_build_object('run_id',$8::text),now()-interval '1 minute'),
-         ($9,$4,$5,$6,NULL,'user','This later turn must stay invisible.','{}',now()-interval '1 minute')`,
-      [priorMessageId, priorReplyId, MESSAGE, sessionId, SPACE, USER, AGENT, RUN, futureMessageId],
-    );
+    // The last turn sits after the triggering message on the same branch: the
+    // window is bounded by the trigger, so it must not appear in it.
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [
+        { id: priorMessageId, role: "user", content: "Remember the blue launch code.", userId: USER, metadata: {} },
+        { id: priorReplyId, role: "assistant", content: "I will remember blue.", senderAgentId: AGENT, metadata: {} },
+        { id: MESSAGE, role: "user", content: "What code did I choose?", userId: USER, runId: RUN, metadata: {} },
+        { id: futureMessageId, role: "user", content: "This later turn must stay invisible.", userId: USER, metadata: {} },
+      ],
+    });
     await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
@@ -1258,11 +1267,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,
       [threadSessionId, SPACE, USER],
     );
-    await db.pool.query(
-      `INSERT INTO messages (id,space_id,session_id,user_id,role,content,metadata_json,created_at)
-       VALUES ($1,$2,$3,$4,'user','Private question',$5::jsonb,now())`,
-      [MESSAGE, SPACE, threadSessionId, USER, JSON.stringify({ run_id: RUN })],
-    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: threadSessionId,
+      messages: [{ id: MESSAGE, role: "user", content: "Private question", userId: USER, runId: RUN }],
+    });
     const setupDecisionId = randomUUID();
     await db.pool.query(
       `INSERT INTO policy_decision_records (

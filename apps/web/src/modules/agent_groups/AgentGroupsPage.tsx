@@ -30,9 +30,9 @@ import { Select } from '../../components/ui/select'
 import { LimitedRoomDialog } from './LimitedRoomDialog'
 import { RoomRosterPanel } from './RoomRosterPanel'
 import { audienceLabel } from './audience'
-import { RoomConversation, type RoomBackendSelection, type RoutingMode } from './conversation/RoomConversation'
+import { ConversationSurface, type ConversationBackendSelection, type RoutingMode } from '../conversation/ConversationSurface'
 import { ConversationBackendSetupCard } from './conversation/ConversationBackendSetupCard'
-import { ConversationExecutionPreflight } from './conversation/ConversationExecutionPreflight'
+import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
 
 type BackendSelection = {
   runtime_profile_id: string
@@ -405,7 +405,7 @@ export default function AgentGroupsPage() {
   const roomAudience = detail
     ? audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count })
     : ''
-  const backendsFor = useCallback((recipientAgentIds: string[]): RoomBackendSelection[] =>
+  const backendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] =>
     conversationId ? [] :
     recipientAgentIds.flatMap(agent_id => {
       const selection = backendSelections[agent_id]
@@ -654,7 +654,7 @@ export default function AgentGroupsPage() {
                   {/* The conversation itself is the shared module the Project
                       chat panel also renders; this page adds only what is the
                       page's — routing and per-agent backends. */}
-                  <RoomConversation
+                  <ConversationSurface
                     roomId={detail.room.id}
                     // Null while the user is choosing the execution context
                     // for a new Conversation. The explicit setup action binds
@@ -682,6 +682,7 @@ export default function AgentGroupsPage() {
                     humans={spaceMembers}
                     routingMode={routingMode}
                     backendsFor={backendsFor}
+                    backendCatalogs={backendCatalogs}
                     isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
                     references={referencesForThisThread}
                     onReferencesRejected={() => setPendingReferences(null)}

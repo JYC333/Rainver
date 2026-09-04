@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Shield, Unplug } from 'lucide-react'
 import { toast } from 'sonner'
-import { roomsApi, sessionsApi } from '../../../api/client'
-import { SpaceLink as Link } from '../../../core/spaceNav'
-import { errMsg } from '../../../lib/utils'
+import { roomsApi, sessionsApi } from '../../api/client'
+import { SpaceLink as Link } from '../../core/spaceNav'
+import { errMsg } from '../../lib/utils'
 import type {
   ConversationAttachmentAccessMode,
   ConversationExecutionHostSummary,
@@ -14,12 +14,12 @@ import type {
   ConversationRuntimeChoice,
   RoomConversation as RoomConversationRecord,
   RoomDetail,
-} from '../../../types/api'
-import { Badge } from '../../../components/ui/badge'
-import { Button } from '../../../components/ui/button'
-import { Card } from '../../../components/ui/card'
-import { Label } from '../../../components/ui/label'
-import { Select } from '../../../components/ui/select'
+} from '../../types/api'
+import { Badge } from '../../components/ui/badge'
+import { Button } from '../../components/ui/button'
+import { Card } from '../../components/ui/card'
+import { Label } from '../../components/ui/label'
+import { Select } from '../../components/ui/select'
 
 export interface ConversationExecutionPreflightProps {
   projectId: string
@@ -344,7 +344,7 @@ export function ConversationExecutionPreflight({
         <p className="text-xs text-muted-foreground">Choose the Agent, Host, CLI installation, and workspace before the first message. No location will change without your confirmation.</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={busy} onClick={() => void openDraft()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}Configure conversation</Button>
-          <Link to="/command-center?tab=hosts" className="inline-flex items-center text-xs underline">Configure or reconnect Host</Link>
+          <Link to="/command-center" className="inline-flex items-center text-xs underline">Configure or reconnect Host</Link>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
       </Card>
@@ -385,7 +385,7 @@ export function ConversationExecutionPreflight({
       </div>
 
       {initialized ? (
-        <InitializedSummary summary={summary!} profiles={profiles} />
+        <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} />
       ) : (
         <div className="space-y-2">
           <div className="rounded border border-border bg-muted/20 px-2 py-1.5 text-xs">
@@ -440,7 +440,7 @@ export function ConversationExecutionPreflight({
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy || draftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}Confirm execution context</Button>
             {!manager && <Button size="sm" variant="outline" disabled={busy} onClick={() => void openDraft()}>Retry Agent setup</Button>}
-            <Link to="/command-center?tab=hosts" className="inline-flex items-center text-xs underline">Configure or reconnect Host</Link>
+            <Link to="/command-center" className="inline-flex items-center text-xs underline">Configure or reconnect Host</Link>
           </div>
         </div>
       )}
@@ -472,7 +472,11 @@ function SelectionField({ label, value, onChange, options, placeholder, disabled
   return <div className="space-y-1"><Label className="text-xs">{label}</Label><Select ariaLabel={label} value={value} onChange={onChange} options={[{ value: '', label: placeholder, disabled: true }, ...options]} disabled={disabled} /></div>
 }
 
-function InitializedSummary({ summary, profiles }: { summary: ConversationExecutionSummary; profiles: ConversationExecutionRuntimeProfile[] }) {
+function InitializedSummary({ summary, profiles, participants }: {
+  summary: ConversationExecutionSummary
+  profiles: ConversationExecutionRuntimeProfile[]
+  participants: RoomDetail['agent_members']
+}) {
   const host = summary.host
   const primary = summary.primary
   const runtime = summary.runtime
@@ -482,13 +486,19 @@ function InitializedSummary({ summary, profiles }: { summary: ConversationExecut
     <div className="space-y-1">
       <span className="font-medium">Agents / CLI</span>
       {runtimes.length > 0 ? runtimes.map(pinned => (
-        <SummaryRow key={pinned.agent_id} label={profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name ?? pinned.agent_id} value={`${pinned.adapter_type} · ${pinned.runtime_installation}`} />
+        <SummaryRow
+          key={pinned.agent_id}
+          label={participants.find(participant => participant.agent_id === pinned.agent_id)?.agent_name
+            ?? profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name
+            ?? 'Unknown Agent'}
+          value={`${pinned.adapter_type} · ${pinned.runtime_installation}`}
+        />
       )) : <SummaryRow label="Agent / CLI" value="Unavailable" />}
     </div>
     <SummaryRow label="Host" value={host ? `${host.host_name}${host.online ? ' · daemon online' : ' · daemon offline'}` : 'Unavailable'} tone={host?.online === false ? 'danger' : undefined} />
     <SummaryRow label="Primary cwd" value={primary?.display_path ?? (primary?.kind === 'managed' ? 'Managed workspace' : 'Unavailable')} />
     {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{summary.blocked_reason}</p>}
-    {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />Host daemon offline; the browser is still online. <Link to="/command-center?tab=hosts" className="underline">Reconnect Host</Link></div>}
+    {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />Host daemon offline; the browser is still online. <Link to="/command-center" className="underline">Reconnect Host</Link></div>}
     {!runtime && <p className="text-muted-foreground">This pinned runtime is unavailable. Start a new Conversation to choose another Host CLI.</p>}
   </div>
 }

@@ -107,10 +107,10 @@ describe("host_threads owner constraints", () => {
       adapterType: "claude_code",
       createdByUserId: OWNER,
     });
-    await expect(new PgHostThreadRepository(db.pool).getForLocation(taskThread.id, LOCATION))
+    await expect(new PgHostThreadRepository(db.pool).getForLocation(taskThread.id, LOCATION, TASK))
       .resolves.toMatchObject({ id: taskThread.id, task_id: TASK });
     await db.pool.query(`UPDATE host_threads SET status = 'closed' WHERE id = $1`, [taskThread.id]);
-    await expect(new PgHostThreadRepository(db.pool).getForLocation(taskThread.id, LOCATION)).resolves.toBeNull();
+    await expect(new PgHostThreadRepository(db.pool).getForLocation(taskThread.id, LOCATION, TASK)).resolves.toBeNull();
     await new PgHostThreadRepository(db.pool).recordRunOutcome(taskThread.id, {
       lastRunId: randomUUID(),
       vendorSessionId: "late-vendor-session",

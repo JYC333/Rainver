@@ -15,12 +15,45 @@ import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliAdapterType }
 
 type ConversationProtocolAdapter = VendorCliAdapterType;
 
+export interface AcpSessionConfigSelection {
+  id: string;
+  type: "select" | "boolean";
+  value: string | boolean;
+  category: string | null;
+}
+
+export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfigSelection[] {
+  const candidate = record(value).acp_session_config;
+  if (!Array.isArray(candidate)) return [];
+  return candidate.flatMap((entry) => {
+    const item = record(entry);
+    const id = stringField(item, "id");
+    const type = item.type === "select" || item.type === "boolean" ? item.type : null;
+    const category = typeof item.category === "string" ? item.category : item.category === null ? null : undefined;
+    const validValue = type === "select" ? typeof item.value === "string" : typeof item.value === "boolean";
+    return id && type && category !== undefined && validValue
+      ? [{ id, type, value: item.value as string | boolean, category }]
+      : [];
+  });
+}
+
+export function withAcpModelSelection(
+  selections: AcpSessionConfigSelection[],
+  model: string | null,
+): AcpSessionConfigSelection[] {
+  if (!model) return selections;
+  return [
+    ...selections.filter((selection) => selection.category !== "model"),
+    { id: "model", type: "select", value: model, category: "model" },
+  ];
+}
+
 export function createCliConversationController(input: {
   adapter_type: ConversationProtocolAdapter;
   prompt?: string;
   prompts?: string[];
   cwd: string;
-  model: string | null;
+  session_config?: AcpSessionConfigSelection[];
   sandbox_mode?: "read-only" | "workspace-write";
   runtime_session_id?: string | null;
   before_next_prompt?: (sessionId: string) => Promise<void>;
@@ -33,11 +66,8 @@ export function createCliConversationController(input: {
   on_thought_delta?: (delta: string) => void;
   /**
    * What this run actually executes against, when the caller already knows —
-   * a bound run's provider model. Distinct from `model`, which is what to ask
-   * for over ACP: the two differ whenever the runtime's identifier space is
-   * not the provider's. Claude sets no ACP model at all yet runs on a model
-   * the server chose; OpenCode is asked for `<provider>/<model>` but runs on
-   * `<model>`.
+   * a bound run's provider model. Distinct from the model-category ACP
+   * selection, whose identifier can live in the runtime's own namespace.
    *
    * When present it is the authority, because it is the server's own decision
    * — the environment and config it wrote are what the runtime obeys. Reading
@@ -45,13 +75,6 @@ export function createCliConversationController(input: {
    * resumed session, the previous turn's model.
    */
   attributed_model?: string | null;
-  /**
-   * How hard to have the model think, in the runtime's own vocabulary. Chosen
-   * independently of the model — ACP exposes them as two options — and applied
-   * as its own request, so a runtime that refuses it still answers with the
-   * model that was asked for.
-   */
-  reasoning_effort?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
    * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
@@ -79,12 +102,13 @@ type Send = (message: Record<string, unknown>) => void;
  * adapter replaced its stream-json path in P4 of the runtime replatform.
  */
 export class AcpController implements CliStdioController {
-  private phase: "initialize" | "session_new" | "set_model" | "set_effort" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
+  private phase: "initialize" | "session_new" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
   private resumeHandshakeFailed = false;
-  private requestedAcpModel: string | null = null;
-  private requestedEffort: string | null = null;
+  private configIndex = 0;
+  private activeConfigRequestId: number | null = null;
+  private advertisedConfigOptions: Record<string, unknown>[] = [];
   private sessionId: string | null = null;
   private text = "";
   private usage: CanonicalUsage | null = null;
@@ -103,37 +127,12 @@ export class AcpController implements CliStdioController {
     adapter_type: ConversationProtocolAdapter;
     prompts: string[];
     cwd: string;
-    model: string | null;
+    session_config?: AcpSessionConfigSelection[];
     runtime_session_id?: string | null;
     before_next_prompt?: (sessionId: string) => Promise<void>;
     on_text_delta?: (delta: string) => void;
-  /**
-   * Reasoning, on the channel a runtime uses when it keeps reasoning separate
-   * from its answer. Delivered apart from `on_text_delta` so the two never
-   * have to be told apart downstream by inspecting the text.
-   */
-  on_thought_delta?: (delta: string) => void;
-  /**
-   * What this run actually executes against, when the caller already knows —
-   * a bound run's provider model. Distinct from `model`, which is what to ask
-   * for over ACP: the two differ whenever the runtime's identifier space is
-   * not the provider's. Claude sets no ACP model at all yet runs on a model
-   * the server chose; OpenCode is asked for `<provider>/<model>` but runs on
-   * `<model>`.
-   *
-   * When present it is the authority, because it is the server's own decision
-   * — the environment and config it wrote are what the runtime obeys. Reading
-   * the runtime's echo instead would report an alias (`default`) or, on a
-   * resumed session, the previous turn's model.
-   */
-  attributed_model?: string | null;
-  /**
-   * How hard to have the model think, in the runtime's own vocabulary. Chosen
-   * independently of the model — ACP exposes them as two options — and applied
-   * as its own request, so a runtime that refuses it still answers with the
-   * model that was asked for.
-   */
-  reasoning_effort?: string | null;
+    on_thought_delta?: (delta: string) => void;
+    attributed_model?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
     on_permission_decision?: (record: PermissionDecisionRecord) => void;
   }) {
@@ -147,7 +146,11 @@ export class AcpController implements CliStdioController {
       method: "initialize",
       params: {
         protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        clientCapabilities: {
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false,
+          session: { configOptions: { boolean: {} } },
+        },
         clientInfo: { name: "rainver", version: "1" },
       },
     });
@@ -224,91 +227,38 @@ export class AcpController implements CliStdioController {
         this.fail(`${this.label()} ACP returned no session id`, closeStdin);
         return;
       }
-      if (this.input.model) {
-        const modelOption = modelConfigOption(record(message.result));
-        const modelValue = this.input.adapter_type === "claude_code"
-          ? normalizeModelOptionValue(this.input.model, modelOption)
-          : this.input.model;
-        if (!modelValue) {
-          this.selectedModel = this.input.model;
-          this.phase = "prompt";
-          this.prompt(send);
-        } else {
-          this.requestedAcpModel = modelValue;
-          this.phase = "set_model";
-          send({
-            jsonrpc: "2.0",
-            id: 3,
-            method: "session/set_config_option",
-            params: {
-              sessionId: this.sessionId,
-              configId: "model",
-              value: modelValue,
-            },
-          });
-        }
-      } else if (!this.startEffort(send)) {
+      this.captureConfigOptions(record(message.result));
+      if (!this.sendNextConfig(send, closeStdin)) {
         this.phase = "prompt";
         this.prompt(send);
       }
       return;
     }
-    if (message.id === 3 && this.phase === "set_model") {
-      const options = Array.isArray(record(message.result).configOptions)
-        ? record(message.result).configOptions as unknown[]
-        : [];
-      const modelOption = options
-        .map(record)
-        .find((option) => option.id === "model");
-      const appliedModel = stringField(modelOption ?? {}, "currentValue");
-      if (!appliedModel || (
-        this.input.adapter_type !== "claude_code"
-        && appliedModel !== this.requestedAcpModel
-      )) {
-        // Name both sides. Each runtime addresses models in its own identifier
-        // space — OpenCode as `<provider>/<model>`, Codex through the catalog
-        // the binding writes, Claude by bare name — so a rejection is nearly
-        // always a mismatch between spaces, and a message that reports neither
-        // one leaves nothing to compare.
+    if (this.phase === "set_config" && message.id === this.activeConfigRequestId) {
+      const selection = this.orderedConfig()[this.configIndex];
+      if (!selection || !Array.isArray(record(message.result).configOptions)) {
+        this.fail(`${this.label()} ACP returned no config options after applying a session option`, closeStdin);
+        return;
+      }
+      this.captureConfigOptions(record(message.result));
+      const appliedOption = this.advertisedConfigOptions.find((option) => option.id === selection.id);
+      if (!appliedOption || appliedOption.currentValue !== selection.value) {
         this.fail(
-          `${this.label()} ACP did not apply the requested model `
-            + `(asked for '${this.requestedAcpModel ?? "?"}', `
-            + `runtime is on '${appliedModel ?? "none"}')`,
+          `${this.label()} ACP did not apply session option '${selection.id}' `
+            + `(asked for '${String(selection.value)}', runtime is on `
+            + `'${String(appliedOption?.currentValue ?? "none")}')`,
           closeStdin,
         );
         return;
       }
-      // ACP model ids are often aliases ("sonnet", "opus", ...), while the
-      // provider-facing run model may be a concrete id or a compatible-model
-      // name. The request was normalized against the session's option list, so
-      // prefer what the caller knows this run executes against, then what it
-      // asked for, and only then the runtime's echo.
-      this.selectedModel = this.input.attributed_model ?? this.input.model ?? appliedModel;
-      if (!this.startEffort(send)) {
+      if (selection.category === "model" && !this.input.attributed_model) {
+        this.selectedModel = String(selection.value);
+      }
+      this.configIndex += 1;
+      if (!this.sendNextConfig(send, closeStdin)) {
         this.phase = "prompt";
         this.prompt(send);
       }
-      return;
-    }
-    if (message.id === EFFORT_REQUEST_ID && this.phase === "set_effort") {
-      // A runtime that will not take the effort is not a reason to lose the
-      // turn: the model is already right and the answer still arrives, just
-      // with the runtime's own effort. Report it and carry on.
-      const applied = stringField(
-        (Array.isArray(record(message.result).configOptions)
-          ? (record(message.result).configOptions as unknown[]).map(record)
-          : []).find((option) => option.id === effortConfigId(this.input.adapter_type)) ?? {},
-        "currentValue",
-      );
-      if (applied !== this.requestedEffort) {
-        this.input.on_protocol_event?.({
-          jsonrpc: "2.0",
-          method: "rainver/effort_not_applied",
-          params: { requested: this.requestedEffort, applied: applied ?? null },
-        });
-      }
-      this.phase = "prompt";
-      this.prompt(send);
       return;
     }
     if (message.id === 4 + this.promptIndex && this.phase === "prompt") {
@@ -390,7 +340,10 @@ export class AcpController implements CliStdioController {
           }
         }
       }
-      if (this.phase !== "set_model" && this.phase !== "set_effort" && this.phase !== "prompt") {
+      if (update.sessionUpdate === "config_option_update") {
+        this.captureConfigOptions(update);
+      }
+      if (this.phase !== "set_config" && this.phase !== "prompt") {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
       }
@@ -426,28 +379,50 @@ export class AcpController implements CliStdioController {
     if (!this.error) this.error = message;
   }
 
-  /**
-   * Asks the runtime for a reasoning effort, if one was requested.
-   *
-   * Sent as its own `set_config_option` rather than folded into the model:
-   * ACP exposes them as two options, and the two are chosen independently —
-   * the model is which brain, the effort is how long it gets to use it. The
-   * option id differs per runtime (`reasoning_effort` for Codex, `effort` for
-   * Claude), because each names its own.
-   *
-   * Returns whether a request went out; the caller prompts directly when not.
-   */
-  private startEffort(send: Send): boolean {
-    const effort = this.input.reasoning_effort;
-    const configId = effortConfigId(this.input.adapter_type);
-    if (!effort || !configId || !this.sessionId) return false;
-    this.requestedEffort = effort;
-    this.phase = "set_effort";
+  private orderedConfig(): AcpSessionConfigSelection[] {
+    const priority = new Map([
+      ["model", 0],
+      ["mode", 1],
+      ["thought_level", 2],
+      ["model_config", 3],
+    ]);
+    return [...(this.input.session_config ?? [])].sort((left, right) =>
+      (priority.get(left.category ?? "") ?? 4) - (priority.get(right.category ?? "") ?? 4));
+  }
+
+  private sendNextConfig(send: Send, closeStdin: () => void): boolean {
+    const selection = this.orderedConfig()[this.configIndex];
+    if (!selection) return false;
+    const option = this.advertisedConfigOptions.find((candidate) => candidate.id === selection.id);
+    if (!option || option.type !== selection.type || option.category !== selection.category) {
+      this.fail(`${this.label()} ACP did not advertise session option '${selection.id}'`, closeStdin);
+      return true;
+    }
+    if (selection.type === "select" && !configChoiceValues(option).includes(selection.value as string)) {
+      this.fail(
+        `${this.label()} ACP did not advertise value '${String(selection.value)}' for session option '${selection.id}'`,
+        closeStdin,
+      );
+      return true;
+    }
+    if (selection.type === "boolean" && typeof selection.value !== "boolean") {
+      this.fail(`${this.label()} ACP received an invalid boolean for session option '${selection.id}'`, closeStdin);
+      return true;
+    }
+    if (option.currentValue === selection.value) {
+      if (selection.category === "model" && !this.input.attributed_model) {
+        this.selectedModel = String(selection.value);
+      }
+      this.configIndex += 1;
+      return this.sendNextConfig(send, closeStdin);
+    }
+    this.phase = "set_config";
+    this.activeConfigRequestId = 3 + this.configIndex / 100;
     send({
       jsonrpc: "2.0",
-      id: EFFORT_REQUEST_ID,
+      id: this.activeConfigRequestId,
       method: "session/set_config_option",
-      params: { sessionId: this.sessionId, configId, value: effort },
+      params: { sessionId: this.sessionId, configId: selection.id, value: selection.value },
     });
     return true;
   }
@@ -528,8 +503,15 @@ export class AcpController implements CliStdioController {
     // decided the real one when it wrote the environment.
     if (this.input.attributed_model) return;
     const options = Array.isArray(result.configOptions) ? result.configOptions.map(record) : [];
-    const modelOption = options.find((option) => option.id === "model");
-    this.selectedModel = stringField(modelOption ?? {}, "currentValue") ?? this.input.model;
+    const modelOption = options.find((option) => option.category === "model");
+    this.selectedModel = stringField(modelOption ?? {}, "currentValue");
+  }
+
+  private captureConfigOptions(result: Record<string, unknown>): void {
+    if (Array.isArray(result.configOptions)) {
+      this.advertisedConfigOptions = result.configOptions.map(record);
+      this.captureSelectedModel(result);
+    }
   }
 
   private captureSubscriptionQuota(
@@ -582,56 +564,20 @@ function stringField(value: Record<string, unknown>, key: string): string | null
   return typeof value[key] === "string" && value[key] ? value[key] : null;
 }
 
-/** Codex and Claude each name their own effort option; OpenCode exposes none. */
-/** Between the model request (3) and the first prompt (4 + promptIndex). */
-const EFFORT_REQUEST_ID = 3.5;
-
-function effortConfigId(adapterType: ConversationProtocolAdapter): string | null {
-  if (adapterType === "codex_cli") return "reasoning_effort";
-  if (adapterType === "claude_code") return "effort";
-  return null;
+function configChoiceValues(option: Record<string, unknown>): string[] {
+  if (!Array.isArray(option.options)) return [];
+  return option.options.flatMap((entry) => {
+    const candidate = record(entry);
+    if (Array.isArray(candidate.options)) {
+      return candidate.options.map(record).map((choice) => stringField(choice, "value")).filter(isString);
+    }
+    const value = stringField(candidate, "value");
+    return value ? [value] : [];
+  });
 }
 
-function modelConfigOption(result: Record<string, unknown>): Record<string, unknown> | null {
-  const options = Array.isArray(result.configOptions) ? result.configOptions.map(record) : [];
-  return options.find((option) => option.id === "model") ?? null;
-}
-
-function normalizeModelOptionValue(
-  requested: string,
-  modelOption: Record<string, unknown> | null,
-): string | null {
-  // Some test doubles and older ACP implementations do not advertise config
-  // options. Preserve the old request shape for those implementations.
-  if (!modelOption) return requested;
-  const values = Array.isArray(modelOption.options)
-    ? modelOption.options.map(record).filter((option) => stringField(option, "value"))
-    : [];
-  if (values.length === 0) return stringField(modelOption, "currentValue") ?? requested;
-
-  const requestedLower = requested.trim().toLowerCase();
-  const exact = values.find((option) =>
-    stringField(option, "value")?.toLowerCase() === requestedLower
-    || stringField(option, "name")?.toLowerCase() === requestedLower,
-  );
-  if (exact) return stringField(exact, "value");
-
-  // Claude ACP exposes stable family aliases while Rainver stores the
-  // provider's concrete model name. Match the family before falling back to
-  // the session's current/default option, which keeps compatible providers
-  // working through ANTHROPIC_MODEL without sending an invalid ACP id.
-  const family = ["sonnet", "opus", "haiku", "fable"].find((candidate) =>
-    requestedLower.includes(candidate),
-  );
-  if (family) {
-    const familyOption = values.find((option) =>
-      stringField(option, "value")?.toLowerCase() === family
-      || stringField(option, "name")?.toLowerCase().includes(family),
-    );
-    if (familyOption) return stringField(familyOption, "value");
-  }
-  return stringField(modelOption, "currentValue")
-    ?? stringField(values[0]!, "value");
+function isString(value: string | null): value is string {
+  return value !== null;
 }
 
 function rpcErrorMessage(value: unknown): string {

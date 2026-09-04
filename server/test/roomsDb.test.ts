@@ -11,6 +11,7 @@ import { registerProposalsProjectIntegration } from "../src/modules/proposals/pr
 import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
 import type { SystemActionId } from "@rainver/protocol";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
+import { seedConversationMessages } from "./support/domainSeeds.js";
 
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
@@ -1172,7 +1173,7 @@ describe("Room workflow (real Postgres)", () => {
       { limit: 20, offset: 0 },
     );
     expect(reviewMessages.items.find((message) =>
-      message.metadata_json?.run_id === runId
+      message.run_id === runId
     )).toMatchObject({
       content: expect.stringContaining("I need your approval before I can continue."),
       metadata_json: { attention_kind: "authorization" },
@@ -1225,10 +1226,10 @@ describe("Room workflow (real Postgres)", () => {
       { limit: 20, offset: 0 },
     );
     expect(ownerMessages.items.filter((message) =>
-      message.metadata_json?.run_id === runId
+      message.run_id === runId
     )).toHaveLength(1);
     expect(ownerMessages.items.find((message) =>
-      message.metadata_json?.run_id === runId
+      message.run_id === runId
     )).toMatchObject({
       content: "Result persisted after speaker revocation.",
       metadata_json: { status: "succeeded" },
@@ -1820,31 +1821,25 @@ describe("Room workflow (real Postgres)", () => {
           AND container_kind = 'conversation'`,
       [conversation.id],
     );
-    await db.pool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, sender_agent_id, role,
-         content, metadata_json, created_at
-       ) VALUES (
-         'agent-message-1', 'space-1', $1, NULL, 'agent-1', 'assistant',
-         'My own prior answer.', jsonb_build_object('run_id', $2::text),
-         '2026-01-01T00:00:01.000Z'
-       )`,
-      [conversation.id, firstRuntime.id],
-    );
-    await db.pool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, sender_agent_id, role,
-         content, metadata_json, created_at
-       )
-       SELECT 'bulk-' || lpad(value::text, 3, '0'),
-              'space-1', $1, 'user-2', NULL, 'user',
-              'Bulk Room context ' || value::text,
-              '{}'::jsonb,
-              '2026-01-01T00:00:02.000Z'::timestamptz
-                + value * interval '1 millisecond'
-         FROM generate_series(0, 84) value`,
-      [conversation.id],
-    );
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [{
+        id: "agent-message-1", role: "assistant", senderAgentId: "agent-1",
+        content: "My own prior answer.", metadata: {}, runId: firstRuntime.id,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }],
+    });
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: Array.from({ length: 85 }, (_unused, index) => ({
+        id: `bulk-${String(index).padStart(3, "0")}`,
+        role: "user",
+        userId: "user-2",
+        content: `Bulk Room context ${index}`,
+        metadata: {},
+        createdAt: new Date(Date.parse("2026-01-01T00:00:02.000Z") + index).toISOString(),
+      })),
+    });
     const memberTurn = await service.sendMessage(member, created.room.id, conversation.id, {
       content: "Add the member-specific constraint.",
       backends: [{
@@ -1853,17 +1848,14 @@ describe("Room workflow (real Postgres)", () => {
         credential_profile_id: null,
       }],
     });
-    await db.pool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, sender_agent_id, role,
-         content, metadata_json, created_at
-       ) VALUES (
-         'agent-message-2', 'space-1', $1, NULL, 'agent-1', 'assistant',
-         'Member-owned answer from the same agent.',
-         jsonb_build_object('run_id', $2::text), now()
-       )`,
-      [conversation.id, memberTurn.run_ids[0]],
-    );
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [{
+        id: "agent-message-2", role: "assistant", senderAgentId: "agent-1",
+        content: "Member-owned answer from the same agent.", metadata: {},
+        runId: memberTurn.run_ids[0],
+      }],
+    });
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [memberTurn.run_ids[0]],
@@ -2893,21 +2885,133 @@ describe("Room workflow (real Postgres)", () => {
     expect(afterRetry.rows[0]?.total).toBe("1");
   });
 
+  it("keeps an on-path message in the replay window when a reference is stamped ahead of it", async (ctx) => {
+    if (!db.available || !service || !db.pool) return ctx.skip();
+    const testPool = db.pool;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Replay Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Replay thread");
+
+    // referenceService stamps an attached reference past the wall clock, so
+    // the message written after it carries an earlier timestamp. A replay
+    // window that bounded on the clock instead of the path would drop that
+    // message from the Agent's prompt while the transcript still showed it.
+    const ahead = new Date(Date.now() + 600_000).toISOString();
+    await seedConversationMessages(testPool, {
+      space: "space-1", session: conversation.id,
+      messages: [
+        { id: "replay-ref", role: "system", userId: "user-1", content: "Quoted material.",
+          metadata: { room_display: "reference", reference: { kind: "thread", trust: "domain_approved" } },
+          createdAt: ahead },
+        { id: "replay-after", role: "user", userId: "user-1", content: "About that material." },
+        { id: "replay-current", role: "user", userId: "user-1", content: "And the follow-up." },
+      ],
+    });
+    // The summary covers through the reference, so the window starts after it.
+    await testPool.query(
+      `INSERT INTO room_conversation_summary_versions
+         (id, space_id, room_id, session_id, version, status, summary_text,
+          covered_through_message_id, covered_through_created_at, covered_message_count,
+          source_token_estimate, summary_token_estimate, project_id, owner_user_id,
+          system_prompt_version, schema_version, created_at)
+       VALUES ('replay-sum', 'space-1', $1, $2, 1, 'active', 'Earlier material.',
+               'replay-ref', $3, 1, 10, 5, 'project-1', 'user-1', 'v1', 'v1', now())`,
+      [created.room.id, conversation.id, ahead],
+    );
+
+    const replay = await loadRoomConversationReplayThroughMessage(testPool, {
+      spaceId: "space-1", sessionId: conversation.id, currentMessageId: "replay-current",
+    });
+    // The summary must actually be found, or the clock filter is never
+    // reached and this proves nothing.
+    expect(replay.summary?.covered_through_message_id).toBe("replay-ref");
+    // `replay-after` is neither the boundary nor covered by the summary, so
+    // nothing short-circuits the filter for it: it is in the window only if
+    // the window bounds on the path rather than on the clock.
+    expect(replay.messages.map((message) => message.id)).toContain("replay-after");
+  });
+
+  it("stops sweeping a conversation once its watermark reaches the head", async (ctx) => {
+    if (!db.available || !service || !db.pool) return ctx.skip();
+    const testPool = db.pool;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Sweep Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Sweep thread");
+
+    // A reference stamped ahead of the wall clock (what referenceService's
+    // `base = max(now, existing + 1)` produces), then a message after it on
+    // the path but before it on the clock. Comparing the two by timestamp
+    // instead of by position is what made the sweep re-select this
+    // conversation forever, re-enqueueing a billed summary job every tick.
+    const ahead = new Date(Date.now() + 600_000).toISOString();
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [
+        { id: "sweep-ref", role: "system", userId: "user-1", content: "R".repeat(9000),
+          metadata: { room_display: "reference", reference: { kind: "thread", trust: "domain_approved" } },
+          createdAt: ahead },
+        { id: "sweep-after", role: "user", userId: "user-1", content: "A".repeat(9000) },
+      ],
+    });
+
+    // No provider stub: this exercises `reconcileMissingStates`, which only
+    // selects and re-requests — it never reaches the summary provider.
+    const summaries = new RoomConversationSummaryService(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
+      testPool,
+    );
+
+    // Establish the watermark at the future-stamped reference first, so the
+    // sweep below has to *advance* an existing row rather than insert a fresh
+    // one — the ON CONFLICT branch is where the comparison lives.
+    await requestRoomConversationSummary(testPool, {
+      spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
+      throughMessageId: "sweep-ref", throughCreatedAt: ahead,
+    });
+    await expect(testPool.query<{ requested_through_message_id: string }>(
+      "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-ref" }] });
+
+    // The sweep now has to move the watermark from the reference to the head,
+    // which is deeper on the path but earlier on the clock.
+    expect(await summaries.reconcileMissingStates()).toBe(1);
+    await expect(testPool.query<{ requested_through_message_id: string }>(
+      "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-after" }] });
+
+    // And having advanced, it finds nothing to do. A watermark compared on
+    // the clock would still be sitting on the reference here, and this
+    // conversation would be re-selected on every tick forever.
+    expect(await summaries.reconcileMissingStates()).toBe(0);
+
+    // A genuinely new message still triggers one.
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [{ id: "sweep-newer", role: "user", userId: "user-1", content: "N".repeat(7000) }],
+    });
+    expect(await summaries.reconcileMissingStates()).toBe(1);
+  });
+
   it("processes owner-funded summaries with strict output and preserves the active version on failure", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const testPool = db.pool;
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Summary Room" });
     const conversation = await seedConversation(owner, created.room.id, "Summary thread");
-    const firstMessageAt = "2026-01-01T00:00:00.000Z";
-    await db.pool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, role, content, metadata_json, created_at
-       ) VALUES
-         ('summary-message-1', 'space-1', $1, 'user-1', 'user', repeat('A', 7000), '{}'::jsonb, $2),
-         ('summary-message-2', 'space-1', $1, 'user-1', 'user', 'A second constraint.', '{}'::jsonb, $2::timestamptz + interval '1 second')`,
-      [conversation.id, firstMessageAt],
-    );
+    // After whatever the conversation already holds — the setup notice is a
+    // real message on the path, and a fixture timestamped before its own
+    // parent is a conversation that could not have happened.
+    const firstMessageAt = new Date(Date.now() + 1000).toISOString();
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [
+        { id: "summary-message-1", role: "user", userId: "user-1", content: "A".repeat(7000), metadata: {}, createdAt: firstMessageAt },
+        { id: "summary-message-2", role: "user", userId: "user-1", content: "A second constraint.", metadata: {},
+          createdAt: new Date(Date.parse(firstMessageAt) + 1000).toISOString() },
+      ],
+    });
 
     let response = JSON.stringify({ summary: "Initial durable Room summary." });
     const invocationTarget = {
@@ -2938,7 +3042,7 @@ describe("Room workflow (real Postgres)", () => {
     const summaries = new RoomConversationSummaryService(config, testPool, dependencies);
     await requestRoomConversationSummary(testPool, {
       spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-2", throughCreatedAt: "2026-01-01T00:00:01.000Z",
+      throughMessageId: "summary-message-2", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 1000).toISOString(),
     });
     await expect(testPool.query<{ status: string }>(
       `SELECT status FROM room_conversation_summary_states WHERE session_id = $1`,
@@ -2995,15 +3099,14 @@ describe("Room workflow (real Postgres)", () => {
       messages: [{ id: "summary-message-2" }],
     });
 
-    await testPool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, role, content, metadata_json, created_at
-       ) VALUES ('summary-message-3', 'space-1', $1, 'user-1', 'user', repeat('B', 7000), '{}'::jsonb, $2)`,
-      [conversation.id, "2026-01-01T00:00:02.000Z"],
-    );
+    await seedConversationMessages(testPool, {
+      space: "space-1", session: conversation.id,
+      messages: [{ id: "summary-message-3", role: "user", userId: "user-1",
+        content: "B".repeat(7000), metadata: {}, createdAt: new Date(Date.parse(firstMessageAt) + 2000).toISOString() }],
+    });
     await requestRoomConversationSummary(testPool, {
       spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-3", throughCreatedAt: "2026-01-01T00:00:02.000Z",
+      throughMessageId: "summary-message-3", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 2000).toISOString(),
     });
     await testPool.query(
       `UPDATE room_conversation_summary_states
@@ -3022,15 +3125,14 @@ describe("Room workflow (real Postgres)", () => {
       [conversation.id],
     )).resolves.toMatchObject({ rows: [{ covered_through_message_id: "summary-message-3" }] });
 
-    await testPool.query(
-      `INSERT INTO messages (
-         id, space_id, session_id, user_id, role, content, metadata_json, created_at
-       ) VALUES ('summary-message-4', 'space-1', $1, 'user-1', 'user', repeat('C', 7000), '{}'::jsonb, $2)`,
-      [conversation.id, "2026-01-01T00:00:03.000Z"],
-    );
+    await seedConversationMessages(testPool, {
+      space: "space-1", session: conversation.id,
+      messages: [{ id: "summary-message-4", role: "user", userId: "user-1",
+        content: "C".repeat(7000), metadata: {}, createdAt: new Date(Date.parse(firstMessageAt) + 3000).toISOString() }],
+    });
     await requestRoomConversationSummary(testPool, {
       spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-4", throughCreatedAt: "2026-01-01T00:00:03.000Z",
+      throughMessageId: "summary-message-4", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 3000).toISOString(),
     });
     response = "provider refusal, not JSON";
     await expect(summaries.process({ spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id }))
@@ -3435,14 +3537,16 @@ describe("Room workflow (real Postgres)", () => {
     // about it. Neither the reply nor a summary of the thread carries the
     // fence the original was wrapped in, so the label is all a later reader
     // has — and a rule that only looked at the picked rows would lose it.
-    await db.pool.query(
-      `INSERT INTO messages (id, space_id, session_id, role, content, metadata_json, created_at)
-       VALUES ($1, 'space-1', $2, 'system', 'Quoted transcript.', $3::jsonb, now())`,
-      [randomUUID(), source.conversation.id, JSON.stringify({
-        room_display: "reference",
-        reference: { kind: "imported_session", trust: "external_untrusted" },
-      })],
-    );
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: source.conversation.id,
+      messages: [{
+        id: randomUUID(), role: "system", content: "Quoted transcript.",
+        metadata: {
+          room_display: "reference",
+          reference: { kind: "imported_session", trust: "external_untrusted" },
+        },
+      }],
+    });
     const reply = await sessions.addRoomUserMessage(
       "space-1", "user-1", source.room.id, source.conversation.id,
       { content: "So the transcript says the parser was rewritten." },
@@ -3904,11 +4008,11 @@ describe("Room workflow (real Postgres)", () => {
     await seedConversation(owner, mainline.room.id);
     const topic = await openSpokenRoom(owner, { project_id: "project-1", title: "Tax season" });
     const topicSecond = await seedConversation(owner, topic.room.id, "Receipts");
-    await db.pool.query(
-      `INSERT INTO messages (id, space_id, session_id, user_id, role, content, created_at)
-       VALUES ($1, 'space-1', $2, 'user-1', 'user', 'Where are the March receipts?', now())`,
-      [randomUUID(), topicSecond.id],
-    );
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: topicSecond.id,
+      messages: [{ id: randomUUID(), role: "user", userId: "user-1",
+        content: "Where are the March receipts?" }],
+    });
 
     // user-2 was never invited to the topic Room. Reading the list enrols them
     // in the mainline — and only the mainline.

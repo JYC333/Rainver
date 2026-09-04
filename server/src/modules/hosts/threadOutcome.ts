@@ -1,7 +1,6 @@
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { PgHostThreadRepository } from "./threadRepository.js";
-import { advanceThreadQueue } from "./queueAdvance.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 
@@ -12,13 +11,16 @@ import { PgSessionRepository } from "../sessions/repository.js";
  * `finalizeChatTurn` precedent of a generic post-terminal hook gated on a
  * run shape (`agentRunHandler.ts`).
  *
- * P2 (C4) extends it to drive the message queue from the same hook: a
- * clean `succeeded` terminal tries to advance to the next queued message;
- * anything else (failed, cancelled, degraded, orphaned, timed out,
- * `waiting_for_review` — a plain non-zero exit can land there via the
- * ordinary conformance/verification path, not just server-host runs)
- * pauses the queue instead of silently firing the next message on top of
- * whatever just went wrong.
+ * It records the vendor session the run came back with, and says so in the
+ * Room when a resume was attempted and came back empty — a context reset is
+ * something the person needs to know about, because the Agent has forgotten
+ * what they were doing.
+ *
+ * It used to drive a per-thread message queue from here as well. That queue
+ * existed for the Command Center's thread page; with the page gone nothing
+ * could resume a paused one, so a remote Task run whose predecessor failed
+ * would have sat queued forever. A remote Task run is admitted like a server
+ * one now — one Run, created synchronously.
  */
 export async function recordHostThreadOutcome(
   config: ServerConfig,
@@ -82,17 +84,10 @@ export async function recordHostThreadOutcome(
             metadata: {
               host_thread_id: threadId,
               host_thread_event: "session_reset",
-              room_display: "system",
             },
           },
         );
       }
     }
-  }
-
-  if (completedRun.status === "succeeded") {
-    await advanceThreadQueue(pool, threadId);
-  } else {
-    await threads.pauseQueue(threadId);
   }
 }

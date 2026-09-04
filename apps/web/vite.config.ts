@@ -46,6 +46,10 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      // The shadcn CLI writes `@/…` imports into the components it copies, so
+      // the alias exists for those. Everything hand-written here stays on
+      // relative paths.
+      { find: /^@\//, replacement: `${resolve(projectRoot, 'src')}/` },
       { find: /^react$/, replacement: resolve(projectRoot, 'node_modules/react/index.js') },
       { find: /^react\/jsx-runtime$/, replacement: resolve(projectRoot, 'node_modules/react/jsx-runtime.js') },
       { find: /^react\/jsx-dev-runtime$/, replacement: resolve(projectRoot, 'node_modules/react/jsx-dev-runtime.js') },

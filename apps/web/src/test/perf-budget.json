@@ -5,8 +5,9 @@
   "maxTestMs": 20000,
   "tolerance": 2.0,
   "baseline": {
-    "files": 105,
-    "importMs": 45000,
-    "testMs": 120000
-  }
+    "files": 124,
+    "importMs": 170000,
+    "testMs": 220000
+  },
+  "$comment_baseline": "Refreshed 2026-09-03 with the conversation UI (plan P2). The 105-file figure it replaced was already stale \u2014 the suite held 123 files before this phase, which added one. importMs grew because every page test that reaches a conversation now loads a real markdown renderer (streamdown, ~260ms) where the hand-written block parser it replaced cost nothing; measured 147-240s across runs. testMs is raised for a different reason: it is a per-file sum, so it inflates with worker contention rather than with this change \u2014 AgentGroupsPage.test.tsx is 8s alone against 39s under full fan-out \u2014 and the previous 120s no longer described what the suite measures. Mermaid, LaTeX and streamdown's own code plugin were dropped rather than budgeted for; mermaid alone was ~950ms per importing file."
 }

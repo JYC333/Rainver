@@ -5,6 +5,18 @@ import { errMsg } from '../../lib/utils'
 import type { ChatActionPreview } from '../../types/api'
 
 export type RoomActionDecision = 'accept' | 'reject'
+
+/*
+ * Not AI Elements' `Confirmation` (plan P2), deliberately.
+ *
+ * That component is a presentational shell — a title, a request line, an
+ * accepted and a rejected state, two buttons. This card is those things plus
+ * the part that matters: it reconciles the Run's immutable action snapshot
+ * against the live Proposal on mount, so a decision another Room member
+ * already made cannot leave a stale pair of buttons for the next person to
+ * press. Swapping it would trade that for markup, and pull the AI SDK back
+ * into the tree for a component that renders from props.
+ */
 type RoomActionDisplayStatus = ChatActionPreview['status'] | 'superseded'
 
 export function RoomActionPreviewCard({

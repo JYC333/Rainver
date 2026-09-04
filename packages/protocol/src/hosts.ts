@@ -17,20 +17,46 @@ export const RuntimeOptionChoiceSchema = z.object({
   name: z.string().nullable(),
   /** What the choice resolves to, when the runtime said (e.g. what `default` means). */
   description: z.string().nullable(),
+  /** ACP select group label, when the Agent grouped this choice. */
+  group: z.string().nullable().default(null),
 });
 export type RuntimeOptionChoice = z.infer<typeof RuntimeOptionChoiceSchema>;
 
 /**
- * What a copy of a runtime says it can be set to, asked over ACP — never a
- * guessed list: effort levels differ per runtime, and model ids can carry
- * brackets that are part of the name. Empty lists with current values mean
- * the copy could not be asked and only its configured model/effort is known.
+ * One ACP session option exactly as the Agent reports it. Categories are UX
+ * hints, not a closed vocabulary; unknown categories remain renderable.
  */
+const RuntimeSessionConfigOptionBaseSchema = z.object({
+  id: z.string().min(1).max(256),
+  name: z.string().min(1).max(256),
+  description: z.string().max(2000).nullable(),
+  category: z.string().max(128).nullable(),
+});
+
+export const RuntimeSessionConfigOptionSchema = z.discriminatedUnion("type", [
+  RuntimeSessionConfigOptionBaseSchema.extend({
+    type: z.literal("select"),
+    current_value: z.string(),
+    options: z.array(RuntimeOptionChoiceSchema),
+  }),
+  RuntimeSessionConfigOptionBaseSchema.extend({
+    type: z.literal("boolean"),
+    current_value: z.boolean(),
+  }),
+]);
+export type RuntimeSessionConfigOption = z.infer<typeof RuntimeSessionConfigOptionSchema>;
+
+export const RuntimeSessionConfigSelectionSchema = z.object({
+  id: z.string().trim().min(1).max(256),
+  type: z.enum(["select", "boolean"]),
+  value: z.union([z.string().max(1000), z.boolean()]),
+  category: z.string().max(128).nullable(),
+}).strict();
+export type RuntimeSessionConfigSelection = z.infer<typeof RuntimeSessionConfigSelectionSchema>;
+
+/** What a copy of a runtime says its ACP session can be configured to. */
 export const RuntimeOptionsSchema = z.object({
-  models: z.array(RuntimeOptionChoiceSchema),
-  current_model: z.string().nullable(),
-  efforts: z.array(RuntimeOptionChoiceSchema),
-  current_effort: z.string().nullable(),
+  config_options: z.array(RuntimeSessionConfigOptionSchema),
 });
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>;
 
@@ -56,44 +82,6 @@ export const HostCapabilitiesSchema = z.object({
   installations: z.record(z.string(), z.array(RuntimeInstallationSchema)),
 });
 export type HostCapabilities = z.infer<typeof HostCapabilitiesSchema>;
-
-/** The server's name for a backend that is not a ModelProvider. */
-export const INHERIT_BACKEND = "inherit";
-export const AMBIENT_BACKEND = "ambient";
-
-/**
- * One backend a dispatch to a host copy can run on, as the server decides
- * it: `inherit` (the thread's own, or the host default), `ambient` (the
- * copy's own login), or a ModelProvider id — with whether it is usable and
- * why not, and the models/efforts it offers.
- */
-export const DispatchBackendSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  usable: z.boolean(),
-  reason: z.string().nullable(),
-  /** What `inherit` stands for: `ambient` or a provider id; null otherwise. */
-  resolves_to: z.string().nullable(),
-  models: z.array(RuntimeOptionChoiceSchema),
-  current_model: z.string().nullable(),
-  efforts: z.array(RuntimeOptionChoiceSchema),
-  current_effort: z.string().nullable(),
-});
-export type DispatchBackend = z.infer<typeof DispatchBackendSchema>;
-
-/** What a dispatch to a host can choose from (`GET /hosts/:id/dispatch-options`). */
-export const DispatchOptionsSchema = z.object({
-  adapters: z.array(z.object({
-    adapter_type: z.string(),
-    display_name: z.string(),
-    installations: z.array(RuntimeInstallationSchema.pick({ id: true, version: true, logged_in: true })),
-  })),
-  /** The effective selection: a thread's pin, else the request's, else the default. */
-  adapter_type: z.string().nullable(),
-  installation: z.string().nullable(),
-  backends: z.array(DispatchBackendSchema),
-});
-export type DispatchOptions = z.infer<typeof DispatchOptionsSchema>;
 
 export const HostExecutionTargetLocationSchema = z.object({
   id: IdSchema,
@@ -158,4 +146,3 @@ export const ManagedWorkspaceHeartbeatSchema = z.discriminatedUnion("container_k
   }).strict(),
 ]);
 export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeatSchema>;
-

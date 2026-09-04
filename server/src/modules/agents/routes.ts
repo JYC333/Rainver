@@ -531,33 +531,43 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const agentId = params(request).agentId ?? "";
-    const agent = await PgAgentChatRepository
+    const sessionId = stringValue(routeQuery(request).session_id);
+    const sessions = new PgSessionRepository(dbPool(context.config));
+    const visibleSession = sessionId
+      ? await sessions.getConversationForBackendSelection(identity.spaceId, identity.userId, sessionId)
+      : null;
+    if (sessionId && !visibleSession) {
+      return reply.code(404).send({ detail: "Session not found" });
+    }
+    const directAgent = await PgAgentChatRepository
       .fromConfig(context.config)
       .getAgentForChat(identity.spaceId, identity.userId, agentId);
-    if (!agent) return reply.code(404).send({ detail: "Agent not found" });
+    const roomParticipant = visibleSession?.room_id
+      ? await dbPool(context.config).query<{ present: boolean }>(
+          `SELECT true AS present
+             FROM room_agent_members
+            WHERE space_id = $1 AND room_id = $2 AND agent_id = $3 AND status = 'active'
+            LIMIT 1`,
+          [identity.spaceId, visibleSession.room_id, agentId],
+        )
+      : null;
+    if (!directAgent && !roomParticipant?.rows[0]?.present) {
+      return reply.code(404).send({ detail: "Agent not found" });
+    }
     const repository = new PgConversationBackendRepository(
       dbPool(context.config),
       new CliCredentialBroker(context.config),
     );
-    const sessionId = stringValue(routeQuery(request).session_id);
-    if (
-      sessionId
-      && !await new PgSessionRepository(dbPool(context.config))
-        .getConversationForBackendSelection(
-        identity.spaceId,
-        identity.userId,
-        sessionId,
-      )
-    ) {
-      return reply.code(404).send({ detail: "Session not found" });
-    }
-    const [options, binding] = await Promise.all([
+    const [options, binding, sessionConfig] = await Promise.all([
       repository.listOptions(identity.spaceId, identity.userId, agentId),
       sessionId
         ? repository.findBinding(identity.spaceId, identity.userId, sessionId, agentId)
         : Promise.resolve(null),
+      sessionId
+        ? latestConversationSessionConfig(dbPool(context.config), identity.spaceId, sessionId, agentId)
+        : Promise.resolve([]),
     ]);
-    return reply.send({ options, binding });
+    return reply.send({ options, binding, session_config: sessionConfig });
   });
 
   app.get("/api/v1/agents/:agentId/current-version", async (request, reply) => {
@@ -805,6 +815,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           agent_id: agent.id,
           requested: req.backend ?? null,
         });
+        const sessionConfig = validateConversationSessionConfig(
+          req.session_config ?? [],
+          backend.session_config_options ?? [],
+        );
         const hostDispatch = backend.execution_host_id
           ? await (transaction.db
             ? prepareHostConversationDispatch({
@@ -878,6 +892,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           projectId: req.project_id,
           visibility: creation.visibility,
           backend,
+          sessionConfig,
           hostDispatch,
           hostPromptContext: hostDispatch ? renderDirectHostPrompt(history, userMessage.id) : null,
         });
@@ -941,7 +956,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           user_message_id: accepted.userMessageId,
           status: "queued",
           event_stream_url:
-            `/api/v1/runs/${encodeURIComponent(accepted.runId)}/events/stream`,
+            `/api/v1/runs/${encodeURIComponent(accepted.runId)}/turn/stream`,
           backend: accepted.backend,
         }),
       );
@@ -995,6 +1010,7 @@ async function prepareChatRun(
     projectId?: string | null;
     visibility: "private" | "space_shared" | "selected_users";
     backend: ResolvedConversationBackend;
+    sessionConfig: NonNullable<protocol.ChatTurnRequest["session_config"]>;
     hostDispatch?: PreparedHostConversationDispatch | null;
     hostPromptContext?: string | null;
   },
@@ -1032,6 +1048,7 @@ async function prepareChatRun(
       ...(lightweightCliConversation
         ? { execution_mode: "conversation_lightweight.v1" }
         : {}),
+      ...(input.sessionConfig.length ? { acp_session_config: input.sessionConfig } : {}),
       chat_turn: {
         schema_version: "chat_turn.v1",
         session_id: input.sessionId,
@@ -1066,6 +1083,48 @@ async function prepareChatRun(
     ),
     ...(input.hostDispatch ? { host_thread_id: input.hostDispatch.host_thread.id } : {}),
   };
+}
+
+function validateConversationSessionConfig(
+  requested: NonNullable<protocol.ChatTurnRequest["session_config"]>,
+  advertised: NonNullable<ResolvedConversationBackend["session_config_options"]>,
+): NonNullable<protocol.ChatTurnRequest["session_config"]> {
+  const seen = new Set<string>();
+  return requested.map((selection) => {
+    if (seen.has(selection.id)) throw new ChatContextError(`Session option '${selection.id}' was selected more than once`, 422);
+    seen.add(selection.id);
+    const option = advertised.find((candidate) => candidate.id === selection.id);
+    if (!option || option.type !== selection.type || option.category !== selection.category) {
+      throw new ChatContextError(`Session option '${selection.id}' is not available for this backend`, 422);
+    }
+    if (option.type === "select") {
+      if (typeof selection.value !== "string" || !option.options.some((choice) => choice.value === selection.value)) {
+        throw new ChatContextError(`Value for session option '${selection.id}' is not available`, 422);
+      }
+    } else if (typeof selection.value !== "boolean") {
+      throw new ChatContextError(`Value for session option '${selection.id}' must be boolean`, 422);
+    }
+    return selection;
+  });
+}
+
+async function latestConversationSessionConfig(
+  db: Pool,
+  spaceId: string,
+  sessionId: string,
+  agentId: string,
+): Promise<NonNullable<protocol.ConversationBackendCatalog["session_config"]>> {
+  const result = await db.query<{ config: unknown }>(
+    `SELECT model_override_json->'acp_session_config' AS config
+       FROM runs
+      WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
+        AND model_override_json ? 'acp_session_config'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [spaceId, sessionId, agentId],
+  );
+  const parsed = protocol.ConversationBackendCatalogSchema.shape.session_config.safeParse(result.rows[0]?.config);
+  return parsed.success ? parsed.data ?? [] : [];
 }
 
 function agentChatServices(context: ModuleContext): AgentChatServices {

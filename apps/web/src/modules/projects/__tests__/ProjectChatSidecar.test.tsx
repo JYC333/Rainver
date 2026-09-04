@@ -26,7 +26,7 @@ vi.mock('../../../api/client', async () => {
   ApiRequestError,
   projectsApi: { mainlineRoom: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
-  runsApi: { get: vi.fn(), streamEvents: vi.fn() },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },
   roomsApi: {
     get: vi.fn(),
     summary: vi.fn(),
@@ -179,7 +179,7 @@ describe('Project chat sidecar', () => {
     expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(composer).toHaveValue('Please inspect the workspace.')
-    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/command-center?tab=hosts')
+    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/command-center')
     expect(screen.queryByRole('link', { name: /project runtime settings/i })).not.toBeInTheDocument()
   })
 

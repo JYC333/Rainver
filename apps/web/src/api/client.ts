@@ -48,6 +48,11 @@ import type {
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
+  ChatTurnRequest,
+  DiagnosticTurnPart,
+  RunTurn,
+  TurnPart,
+  TurnStreamFrame,
   ChatTurnOut,
   ClaimCandidatePacketCreateRequestInput,
   ClaimCandidatePacketCreateResponse,
@@ -144,15 +149,10 @@ import type {
   FileNode,
   GitStatus,
   Host,
-  HostDispatchResponse,
   HostPairingCode,
-  HostRecentThread,
   HostRuntimeAdapterOption,
   HostRuntimeProviderBinding,
   HostExecutionTargetsResponse,
-  HostThread,
-  HostThreadEvent,
-  HostThreadMessage,
   WorkspaceLocation,
   HomeSummaryOut,
   InformationDigest,
@@ -418,7 +418,6 @@ import type {
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
-  DispatchOptions,
 } from '../types/api'
 import type {
   ContentPublication,
@@ -543,131 +542,234 @@ const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => req
 const patch = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PATCH',  path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
 
+/**
+ * Reads an SSE body, yielding one `{ event, data }` per frame.
+ *
+ * Shared by the two turn readers below: the chat turn, which waits for the
+ * whole thing, and `streamTurnParts`, which hands parts to a renderer as they
+ * arrive.
+ */
+async function* readServerSentEvents(
+  response: Response,
+): AsyncGenerator<{ event: string | undefined; data: string }> {
+  if (!response.ok || !response.body) {
+    throw new ApiRequestError(`Run turn stream failed (${response.status})`, response.status)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const frames = buffer.split(/\r?\n\r?\n/)
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const lines = frame.split(/\r?\n/)
+        const data = lines.find(line => line.startsWith('data:'))?.slice(5).trim()
+        if (!data) continue
+        yield { event: lines.find(line => line.startsWith('event:'))?.slice(6).trim(), data }
+      }
+      if (done) return
+    }
+  } finally {
+    // Cancel rather than just release: a caller that returns from inside the
+    // loop (a finished turn) or throws on `server.error` would otherwise
+    // leave the body undrained and the connection open.
+    await reader.cancel().catch(() => {})
+  }
+}
+
+function turnStreamUrl(runId: string): string {
+  return `${BASE}/runs/${encodeURIComponent(runId)}/turn/stream`
+}
+
+function streamHeaders(spaceId?: string): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+  headers['X-Rainver-Space-Id'] = spaceId ?? _spaceId
+  return headers
+}
+
+/**
+ * Folds one stream frame into the turn so far.
+ *
+ * A snapshot replaces; a state change replaces the state; an appended or
+ * updated part lands at its own index, which is why both are one case — a
+ * tool call finishing writes over the part it started as.
+ *
+ * A `streamed` text part is the exception: it is live prose the projection
+ * does not hold, so it is kept at the end of the list rather than at an index
+ * the next projected part would claim. It survives only until the projection
+ * has prose of its own — the persisted reply says the same thing, and showing
+ * both reads the answer out twice.
+ */
+function applyTurnFrame(turn: RunTurn | null, frame: TurnStreamFrame): RunTurn | null {
+  if (frame.type === 'turn.snapshot') {
+    // The snapshot is the projection; anything streamed is superseded by it.
+    return frame.turn
+  }
+  if (!turn) return null
+  if (frame.type === 'turn.state_changed') {
+    return { ...turn, state: frame.state, blocked_on: frame.blocked_on }
+  }
+
+  const projected = turn.parts.filter(part => !(part.type === 'text' && part.streamed))
+  const held = turn.parts.find(part => part.type === 'text' && part.streamed)
+
+  if (frame.part.type === 'text' && frame.part.streamed) {
+    const live = frame.part.text ? frame.part : null
+    return { ...turn, parts: withLiveProse(projected, live), cursor: frame.cursor }
+  }
+  // At or one past the end. Anything further would leave a hole, and the
+  // consumers that scan backwards for the newest part dereference holes.
+  if (frame.part.index > projected.length) return turn
+  const parts = [...projected]
+  parts[frame.part.index] = frame.part
+  return { ...turn, parts: withLiveProse(parts, held ?? null), cursor: frame.cursor }
+}
+
+/**
+ * Puts the live prose back on the end of a projected list, unless the
+ * projection now has prose of its own.
+ *
+ * The retraction frame the server sends is a frame behind the projected reply
+ * it replaces, so a client that waited for it would show the answer twice in
+ * between. This condition is local and needs no such coordination.
+ */
+function withLiveProse(projected: TurnPart[], live: TurnPart | null): TurnPart[] {
+  if (!live || projected.some(part => part.type === 'text')) return projected
+  return [...projected, { ...live, index: projected.length }]
+}
+
+/**
+ * The live turn, as parts.
+ *
+ * `onTurn` receives the whole turn on every change rather than a patch: a
+ * turn is small, and handing a renderer the current state is simpler to hold
+ * correctly than replaying appends and updates into a local copy.
+ */
+export async function streamTurnParts(
+  runId: string,
+  options: {
+    spaceId?: string
+    signal?: AbortSignal
+    onTurn: (turn: RunTurn) => void
+  },
+): Promise<void> {
+  const response = await fetch(turnStreamUrl(runId), {
+    headers: streamHeaders(options.spaceId),
+    signal: options.signal,
+  })
+  let turn: RunTurn | null = null
+  for await (const { event, data } of readServerSentEvents(response)) {
+    const frame = JSON.parse(data) as TurnStreamFrame | { error?: string; message?: string }
+    if (event === 'server.error') {
+      const failure = frame as { error?: string; message?: string }
+      throw new ApiRequestError(failure.message ?? failure.error ?? 'Run turn stream failed', 502)
+    }
+    if (!('type' in frame)) continue
+    turn = applyTurnFrame(turn, frame)
+    if (turn) options.onTurn(turn)
+  }
+  // The server sends the settled state before it closes, so a stream that
+  // ends on `working` ended for some other reason — the poll hit a database
+  // error, the connection dropped, a proxy timed out. Resolving quietly here
+  // would leave the caller holding a turn that says the Agent is still
+  // working, on a reply that is finished, with nothing to correct it: the
+  // stream is gone and every read-back guard treats a held turn as current.
+  // Reported so the caller can go and read the turn again.
+  //
+  // `blocked` is deliberately not included. The server keeps that stream
+  // open on purpose — the turn resumes where it stopped once somebody
+  // decides — so it waits at human pace, and an idle timeout on that
+  // connection is the ordinary ending rather than a fault. Reporting it
+  // would make the caller drop the one turn that carries the approval link.
+  if (turn && turn.state === 'working') {
+    throw new ApiRequestError('Run turn stream ended before the turn settled', 502)
+  }
+}
+
 async function postChatTurn(
   path: string,
   body: unknown,
   options: RequestOptions & {
     onAccepted?: (accepted: ChatTurnAccepted) => void
-    onLifecycle?: (event: {
-      event_type: string
-      status: string
-      summary?: string | null
-    }) => void
-    onTextDelta?: (delta: string) => void
+    onTurn?: (turn: RunTurn) => void
   } = {},
 ): Promise<ChatTurnOut> {
   const accepted = await post<ChatTurnAccepted>(path, body, options)
   options.onAccepted?.(accepted)
-  const headers: Record<string, string> = {}
-  if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
-  headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
-  const response = await fetch(accepted.event_stream_url, { headers })
-  if (!response.ok || !response.body) {
-    throw new ApiRequestError(`Run event stream failed (${response.status})`, response.status)
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    buffer += decoder.decode(value, { stream: !done })
-    const frames = buffer.split(/\r?\n\r?\n/)
-    buffer = frames.pop() ?? ''
-    for (const frame of frames) {
-      const event = frame.split(/\r?\n/).find(line => line.startsWith('event:'))?.slice(6).trim()
-      const data = frame.split(/\r?\n/).find(line => line.startsWith('data:'))?.slice(5).trim()
-      if (!data) continue
-      const payload = JSON.parse(data) as {
-        delta?: string
-        error?: string
-        message?: string
-        payload?: {
-          event?: {
-            event_type?: string
-            status?: string
-            summary?: string | null
-            error_code?: string | null
-            error_message?: string | null
-            metadata_json?: {
-              session_id?: string
-              assistant_message_id?: string | null
-            }
-          }
-        }
-      }
-      if (event === 'server.error') {
-        throw new ApiRequestError(payload.message ?? payload.error ?? 'Run event stream failed', 502)
-      }
-      if (event === 'chat.text_delta') {
-        if (typeof payload.delta === 'string' && payload.delta) {
-          options.onTextDelta?.(payload.delta)
-        }
-        continue
-      }
-      if (event !== 'run.event_appended') continue
-      const runEvent = payload.payload?.event
-      if (!runEvent?.event_type || !runEvent.status) continue
-      options.onLifecycle?.({
-        event_type: runEvent.event_type,
-        status: runEvent.status,
-        summary: runEvent.summary,
-      })
-      if (runEvent.event_type === 'chat_completed') {
-        await reader.cancel()
-        if (runEvent.status !== 'succeeded') {
-          return {
-            schema_version: 'chat_turn_completion.v1',
-            session_id: accepted.session_id,
-            run_id: accepted.run_id,
-            ok: false,
-            error: runEvent.error_message ?? 'The assistant could not complete this turn.',
-            error_code: runEvent.error_code ?? 'run_failed',
-            assistant_message: null,
-          }
-        }
-        const messages = await get<Message[]>(
-          `/sessions/${encodeURIComponent(accepted.session_id)}/messages`,
-          { spaceId: options.spaceId },
-        )
-        const assistant = messages.find(message =>
-          message.role === 'assistant' &&
-          (
-            message.id === runEvent.metadata_json?.assistant_message_id ||
-            message.metadata_json?.run_id === accepted.run_id
-          ))
-        if (!assistant) {
-          throw new ApiRequestError('Chat completion message is unavailable', 502)
-        }
-        const artifactRefs = Array.isArray(assistant.metadata_json?.artifact_refs)
-          ? assistant.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string')
-          : []
-        const actionPreviews = Array.isArray(assistant.metadata_json?.action_previews)
-          ? assistant.metadata_json.action_previews as ChatTurnOut['action_previews']
-          : undefined
-        return {
-          schema_version: 'chat_turn_completion.v1',
-          session_id: accepted.session_id,
-          run_id: accepted.run_id,
-          ok: true,
-          reply: assistant.content,
-          assistant_message: {
-            schema_version: 'assistant_message.v1',
-            id: assistant.id,
-            session_id: accepted.session_id,
-            run_id: accepted.run_id,
-            content: assistant.content,
-            artifact_refs: artifactRefs,
-            tool_call_refs: actionPreviews?.flatMap(preview =>
-              preview.tool_call_id ? [preview.tool_call_id] : []) ?? [],
-            created_at: assistant.created_at,
-          },
-          ...(actionPreviews ? { action_previews: actionPreviews } : {}),
-        }
+  const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId) })
+
+  let turn: RunTurn | null = null
+  for await (const { event, data } of readServerSentEvents(response)) {
+    const frame = JSON.parse(data) as TurnStreamFrame | { error?: string; message?: string }
+    if (event === 'server.error') {
+      const failure = frame as { error?: string; message?: string }
+      throw new ApiRequestError(failure.message ?? failure.error ?? 'Run turn stream failed', 502)
+    }
+    if (!('type' in frame)) continue
+    turn = applyTurnFrame(turn, frame)
+    if (!turn) continue
+    options.onTurn?.(turn)
+    // A blocked turn has stopped, but it is not over: it resumes when the
+    // person decides, so the caller keeps watching rather than going to read
+    // a reply that has not been written.
+    if (turn.state === 'working' || turn.state === 'blocked') continue
+
+    // The turn is over. Its durable form is the assistant message the Run
+    // finalized into — the stream is what the person watched, the message is
+    // what the conversation keeps.
+    if (turn.state === 'failed') {
+      const failure = turn.parts.find(
+        (part): part is DiagnosticTurnPart => part.type === 'diagnostic' && part.level === 'error')
+      return {
+        schema_version: 'chat_turn_completion.v1',
+        session_id: accepted.session_id,
+        run_id: accepted.run_id,
+        ok: false,
+        error: failure?.text ?? 'The assistant could not complete this turn.',
+        error_code: failure?.error_code ?? 'run_failed',
+        assistant_message: null,
       }
     }
-    if (done) break
+    const messages = await get<Message[]>(
+      `/sessions/${encodeURIComponent(accepted.session_id)}/messages`,
+      { spaceId: options.spaceId },
+    )
+    const assistant = messages.find(message =>
+      message.role === 'assistant' && message.run_id === accepted.run_id)
+    if (!assistant) {
+      throw new ApiRequestError('Chat completion message is unavailable', 502)
+    }
+    const artifactRefs = Array.isArray(assistant.metadata_json?.artifact_refs)
+      ? assistant.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string')
+      : []
+    const actionPreviews = Array.isArray(assistant.metadata_json?.action_previews)
+      ? assistant.metadata_json.action_previews as ChatTurnOut['action_previews']
+      : undefined
+    return {
+      schema_version: 'chat_turn_completion.v1',
+      session_id: accepted.session_id,
+      run_id: accepted.run_id,
+      ok: true,
+      reply: assistant.content,
+      assistant_message: {
+        schema_version: 'assistant_message.v1',
+        id: assistant.id,
+        session_id: accepted.session_id,
+        run_id: accepted.run_id,
+        content: assistant.content,
+        artifact_refs: artifactRefs,
+        tool_call_refs: actionPreviews?.flatMap(preview =>
+          preview.tool_call_id ? [preview.tool_call_id] : []) ?? [],
+        created_at: assistant.created_at,
+      },
+      ...(actionPreviews ? { action_previews: actionPreviews } : {}),
+    }
   }
-  throw new ApiRequestError('Run event stream ended without chat completion', 502)
+  throw new ApiRequestError('Run turn stream ended without a finished turn', 502)
 }
 
 // ── Content access and targeted publication ───────────────────────────────
@@ -1101,9 +1203,9 @@ export const tasksApi = {
   update: (id: string, data: Record<string, unknown>) =>
     patch<Task>(`/tasks/${id}`, data),
   createRun: (taskId: string, body: TaskRunCreateBody = {}) =>
-    post<Run | HostDispatchResponse>(`/tasks/${taskId}/runs`, body),
-  createRunWithoutTask: (body: TaskRunCreateBody) =>
-    post<Run | HostDispatchResponse>('/tasks/runs', body),
+    // One Run, whichever branch admits it: the remote path creates its Run
+    // synchronously now, exactly as the server path does.
+    post<Run>(`/tasks/${taskId}/runs`, body),
   runs:   (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskRunListItem>>(`/tasks/${taskId}/runs?` + new URLSearchParams(params)),
   artifacts: (taskId: string, params: Record<string, string> = {}) =>
@@ -1201,19 +1303,16 @@ export const runsApi = {
   verifications: (id: string) => get<RunVerificationResult[]>(`/runs/${id}/verifications`),
   finalizations: (id: string) => get<RunFinalization[]>(`/runs/${id}/finalizations`),
   routeDecision: (id: string) => get<Record<string, unknown>>(`/runs/${id}/route-decision`),
-  streamEvents: (
+  /**
+   * The turn as it stands. For a surface showing a turn that has stopped —
+   * one waiting on a person, say — where streaming would poll forever.
+   */
+  turn: (id: string) => get<RunTurn>(`/runs/${encodeURIComponent(id)}/turn`),
+  /** The live turn, as parts. See `streamTurnParts`. */
+  streamTurn: (
     id: string,
-    options: {
-      spaceId?: string
-      signal?: AbortSignal
-      onLifecycle: (event: {
-        event_type: string
-        status: string
-        summary?: string | null
-      }) => void
-      onTextDelta?: (delta: string) => void
-    },
-  ) => streamRunLifecycle(id, options),
+    options: { spaceId?: string; signal?: AbortSignal; onTurn: (turn: RunTurn) => void },
+  ) => streamTurnParts(id, options),
 }
 
 export const authorizationRequestsApi = {
@@ -1221,83 +1320,6 @@ export const authorizationRequestsApi = {
   reject: (id: string) => post<AuthorizationRequest>(`/authorization-requests/${id}/reject`, {}),
 }
 
-async function streamRunLifecycle(
-  runId: string,
-  options: {
-    spaceId?: string
-    signal?: AbortSignal
-    onLifecycle: (event: {
-      event_type: string
-      status: string
-      summary?: string | null
-    }) => void
-    onTextDelta?: (delta: string) => void
-  },
-): Promise<void> {
-  const headers: Record<string, string> = {}
-  if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
-  headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
-  const response = await fetch(
-    `${BASE}/runs/${encodeURIComponent(runId)}/events/stream`,
-    { headers, signal: options.signal },
-  )
-  if (!response.ok || !response.body) {
-    throw new ApiRequestError(`Run event stream failed (${response.status})`, response.status)
-  }
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      buffer += decoder.decode(value, { stream: !done })
-      const frames = buffer.split(/\r?\n\r?\n/)
-      buffer = frames.pop() ?? ''
-      for (const frame of frames) {
-        const eventType = frame.split(/\r?\n/).find(line => line.startsWith('event:'))?.slice(6).trim()
-        const data = frame.split(/\r?\n/).find(line => line.startsWith('data:'))?.slice(5).trim()
-        if (!data) continue
-        const payload = JSON.parse(data) as {
-          delta?: string
-          error?: string
-          message?: string
-          payload?: {
-            event?: {
-              event_type?: string
-              status?: string
-              summary?: string | null
-            }
-          }
-        }
-        if (eventType === 'server.error') {
-          throw new ApiRequestError(
-            payload.message ?? payload.error ?? 'Run event stream failed',
-            502,
-          )
-        }
-        if (eventType === 'chat.text_delta') {
-          if (payload.delta) options.onTextDelta?.(payload.delta)
-          continue
-        }
-        if (eventType !== 'run.event_appended') continue
-        const event = payload.payload?.event
-        if (!event?.event_type || !event.status) continue
-        options.onLifecycle({
-          event_type: event.event_type,
-          status: event.status,
-          summary: event.summary,
-        })
-        if (event.event_type === 'run_finalized') {
-          await reader.cancel()
-          return
-        }
-      }
-      if (done) return
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
 
 // ── Plans / structured workflow execution ────────────────────────────────
 export const plansApi = {
@@ -1832,12 +1854,12 @@ export const agentsApi = {
         ConversationBackendBinding,
         'runtime_profile_id' | 'credential_profile_id'
       >
+      session_config?: NonNullable<ChatTurnRequest['session_config']>
     },
     options: {
       spaceId?: string
       onAccepted?: (accepted: ChatTurnAccepted) => void
-      onLifecycle?: (event: { event_type: string; status: string; summary?: string | null }) => void
-      onTextDelta?: (delta: string) => void
+      onTurn?: (turn: RunTurn) => void
     } = {},
   ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
   resetContext: (agentId: string) =>
@@ -1963,19 +1985,7 @@ export const hostsApi = {
   /** The owner's preferred CLI on this machine; null restores the built-in ordering. */
   setDefaultAdapter: (hostId: string, adapterType: string | null) =>
     post<{ host_id: string; default_adapter_type: string | null }>(`/hosts/${encodeURIComponent(hostId)}/default-adapter`, { adapter_type: adapterType }),
-  listThreads: (projectId: string) =>
-    get<{ items: HostThread[] }>(`/hosts/threads?project_id=${encodeURIComponent(projectId)}`),
-  /** Cross-project landing read (C10) — Project is a filter the caller applies via `listThreads`, not a precondition. */
-  listRecentThreads: (limit = 20) =>
-    get<{ items: HostRecentThread[] }>(`/hosts/threads/recent?limit=${limit}`),
   listRuntimeAdapters: () => get<{ items: HostRuntimeAdapterOption[] }>('/hosts/runtime-adapters'),
-  /** What a dispatch to this host can choose from — copies and usable backends — decided server-side. */
-  dispatchOptions: (hostId: string, params: { adapter_type?: string | null; installation?: string | null; thread_id?: string | null } = {}) => {
-    const query = new URLSearchParams()
-    for (const [key, value] of Object.entries(params)) if (value) query.set(key, value)
-    const suffix = query.toString() ? `?${query}` : ''
-    return get<DispatchOptions>(`/hosts/${encodeURIComponent(hostId)}/dispatch-options${suffix}`)
-  },
   /** One level of subdirectory names on an owned host — the daemon answers; lazy and bounded. */
   browseDirectories: (hostId: string, path?: string | null) =>
     post<{ path: string | null; parent: string | null; dirs: string[]; truncated: boolean }>(
@@ -2036,16 +2046,6 @@ export const hostsApi = {
       `/hosts/${encodeURIComponent(hostId)}/provider-proxy-url`,
       { base_url: baseUrl },
     ),
-  listMessages: (threadId: string) =>
-    get<{ items: HostThreadMessage[] }>(`/hosts/threads/${encodeURIComponent(threadId)}/messages`),
-  listEvents: (threadId: string, after: number) =>
-    get<{ items: HostThreadEvent[] }>(`/hosts/threads/${encodeURIComponent(threadId)}/events?after=${after}`),
-  withdrawMessage: (threadId: string, messageId: string) =>
-    post<HostThreadMessage>(`/hosts/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/withdraw`),
-  resumeQueue: (threadId: string) =>
-    post<{ thread_id: string; run_id: string | null; status: 'dispatched' | 'idle' }>(`/hosts/threads/${encodeURIComponent(threadId)}/resume-queue`),
-  cancel: (threadId: string) =>
-    post<{ run_id: string; status: string }>(`/hosts/threads/${encodeURIComponent(threadId)}/cancel`),
 }
 
 export const projectFolderExecutionConfigsApi = {

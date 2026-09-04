@@ -130,7 +130,8 @@ describe("Room contracts", () => {
       sender_agent_id: "agent-1",
       role: "assistant",
       content: "Reviewed.",
-      metadata_json: { run_id: "run-1" },
+      metadata_json: null,
+      run_id: "run-1",
       created_at: now,
     })).toMatchObject({ user_id: null, sender_agent_id: "agent-1" });
   });

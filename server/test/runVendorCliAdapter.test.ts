@@ -208,7 +208,15 @@ class FakeExecutor implements CliCommandExecutor {
    * prompt when it was given more than one.
    */
   secondTurnStdout = "";
-  sessionModelOptions: Array<Record<string, unknown>> | null = null;
+  sessionModelOptions: Array<Record<string, unknown>> | null = [{
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "default",
+    options: ["MiniMax-M3", "provider/model", "claude-sonnet", "claude-sonnet-4-6", "example-model"]
+      .map((value) => ({ value, name: value })),
+  }];
   /**
    * Simulates a `session/resume` RPC rejection (e.g. "Session not found") —
    * the controller's own `resume_handshake_failed` path, distinct from the
@@ -266,12 +274,15 @@ class FakeExecutor implements CliCommandExecutor {
       if (setConfigOption?.method === "session/set_config_option") {
         // Echo back whatever model was actually requested — the controller
         // fails closed if the applied value doesn't match what it asked for.
-        const requestedModel = (setConfigOption.params as { value?: unknown } | undefined)?.value;
+        const params = setConfigOption.params as { configId?: unknown; value?: unknown } | undefined;
+        const configId = params?.configId;
+        const requestedValue = params?.value;
         controller.receive({
           jsonrpc: "2.0",
-          id: 3,
+          id: setConfigOption.id,
           result: {
-            configOptions: [{ id: "model", currentValue: requestedModel }],
+            configOptions: (this.sessionModelOptions ?? []).map(option =>
+              option.id === configId ? { ...option, currentValue: requestedValue } : option),
           },
         }, send, close);
       }
@@ -1108,7 +1119,7 @@ describe("executeVendorCliAdapter", () => {
     }]);
   });
 
-  it("renders claude_code model and permission-bypass args only when policy allows", async () => {
+  it("renders claude_code permission-bypass settings only when policy allows", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-"));
     tmpPaths.push(sandbox);
     const broker = new FakeBroker();
@@ -1132,10 +1143,7 @@ describe("executeVendorCliAdapter", () => {
     expect(executor.calls[0].command).toEqual([
       process.execPath,
     ]);
-    expect(executor.protocolMessages).toContainEqual(expect.objectContaining({
-      method: "session/set_config_option",
-      params: expect.objectContaining({ configId: "model", value: "claude-sonnet" }),
-    }));
+    expect(executor.protocolMessages.some(message => message.method === "session/set_config_option")).toBe(false);
     expect(result.metadata_json).toMatchObject({
       adapter_type: "claude_code",
       permission_bypass_requested: true,
@@ -1147,7 +1155,7 @@ describe("executeVendorCliAdapter", () => {
     expect(claudeSettings.permissions?.deny).toContain("Task");
   });
 
-  it("normalizes a concrete Claude model to the ACP family option", async () => {
+  it("does not invent a Claude model selection from a provider model", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "rainver-claude-model-normalize-"));
     tmpPaths.push(sandbox);
     const executor = new FakeExecutor();
@@ -1171,10 +1179,7 @@ describe("executeVendorCliAdapter", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(executor.protocolMessages).toContainEqual(expect.objectContaining({
-      method: "session/set_config_option",
-      params: expect.objectContaining({ configId: "model", value: "sonnet" }),
-    }));
+    expect(executor.protocolMessages.some(message => message.method === "session/set_config_option")).toBe(false);
   });
 
   it("renders Claude's explicit resume command for a bound conversation session", async () => {
@@ -1561,7 +1566,7 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: "provider/model",
+      session_config: [{ id: "model", type: "select", value: "provider/model", category: "model" }],
       on_text_delta: (delta) => deltas.push(delta),
     })!;
     const sent: Record<string, unknown>[] = [];
@@ -1578,7 +1583,10 @@ describe("vendor structured event normalization", () => {
       closed = true;
     });
     controller.receive(
-      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [{
+        id: "model", name: "Model", category: "model", type: "select",
+        currentValue: "other/model", options: [{ value: "provider/model", name: "Provider model" }],
+      }] } },
       send,
       () => { closed = true; },
     );
@@ -1586,7 +1594,10 @@ describe("vendor structured event normalization", () => {
       jsonrpc: "2.0",
       id: 3,
       result: {
-        configOptions: [{ id: "model", currentValue: "provider/model" }],
+        configOptions: [{
+          id: "model", name: "Model", category: "model", type: "select",
+          currentValue: "provider/model", options: [{ value: "provider/model", name: "Provider model" }],
+        }],
       },
     }, send, () => {
       closed = true;
@@ -1667,7 +1678,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "continue",
       cwd: "/workspace",
-      model: null,
       runtime_session_id: "ses_existing-opaque",
     })!;
     const sent: Record<string, unknown>[] = [];
@@ -1735,7 +1745,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const sent: Record<string, unknown>[] = [];
     const send = (message: Record<string, unknown>) => sent.push(message);
@@ -1775,7 +1784,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const sent: Record<string, unknown>[] = [];
     const send = (message: Record<string, unknown>) => sent.push(message);
@@ -1815,7 +1823,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const sent: Record<string, unknown>[] = [];
     const send = (message: Record<string, unknown>) => sent.push(message);
@@ -1855,7 +1862,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const sent: Record<string, unknown>[] = [];
     const send = (message: Record<string, unknown>) => sent.push(message);
@@ -1893,7 +1899,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const sent: Record<string, unknown>[] = [];
     let closed = false;
@@ -1928,7 +1933,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
       on_protocol_event: (event) => events.push(event),
     })!;
     const sent: Record<string, unknown>[] = [];
@@ -1962,7 +1966,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const send = () => {};
     let closed = false;
@@ -2003,7 +2006,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "codex_cli",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const send = () => {};
     const close = () => {};
@@ -2043,7 +2045,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "codex_cli",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const send = () => {};
     const close = () => {};
@@ -2067,7 +2068,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     const send = () => {};
     let closed = false;
@@ -2108,7 +2108,7 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: "provider/model",
+      session_config: [{ id: "model", type: "select", value: "provider/model", category: "model" }],
     })!;
     const send = () => {};
     let closed = false;
@@ -2119,7 +2119,10 @@ describe("vendor structured event normalization", () => {
       close,
     );
     controller.receive(
-      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+      { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [{
+        id: "model", name: "Model", category: "model", type: "select",
+        currentValue: "old/model", options: [{ value: "provider/model", name: "Provider model" }],
+      }] } },
       send,
       close,
     );
@@ -2128,7 +2131,10 @@ describe("vendor structured event normalization", () => {
         jsonrpc: "2.0",
         id: 3,
         result: {
-          configOptions: [{ id: "model", currentValue: "different/model" }],
+          configOptions: [{
+            id: "model", name: "Model", category: "model", type: "select",
+            currentValue: "different/model", options: [{ value: "provider/model", name: "Provider model" }],
+          }],
         },
       },
       send,
@@ -2139,27 +2145,26 @@ describe("vendor structured event normalization", () => {
     // Both sides named: a rejection is nearly always a mismatch between the
     // runtime's identifier space and ours, and reporting neither leaves
     // nothing to compare.
-    expect(controller.result().error).toContain("OpenCode ACP did not apply the requested model");
+    expect(controller.result().error).toContain("OpenCode ACP did not apply session option 'model'");
     expect(controller.result().error).toContain("asked for 'provider/model'");
     expect(controller.result().error).toContain("runtime is on 'different/model'");
   });
 
-  it("asks for a reasoning effort as its own request, in the runtime's vocabulary", () => {
-    // ACP exposes model and effort as two options and each runtime names its
-    // own — `reasoning_effort` for Codex, `effort` for Claude. They are chosen
-    // independently: the model is which brain, the effort is how long it gets.
+  it("applies a generic thought-level option advertised by the runtime", () => {
     const sent: Record<string, unknown>[] = [];
     const controller = createCliConversationController({
       adapter_type: "codex_cli",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
-      reasoning_effort: "high",
+      session_config: [{ id: "reasoning_effort", type: "select", value: "high", category: "thought_level" }],
     })!;
     const send = (value: Record<string, unknown>) => { sent.push(value); };
     controller.start(send);
     controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
-    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => {});
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [{
+      id: "reasoning_effort", name: "Reasoning", category: "thought_level", type: "select",
+      currentValue: "medium", options: [{ value: "medium" }, { value: "high" }],
+    }] } }, send, () => {});
 
     const effortRequest = sent.find((frame) => frame.method === "session/set_config_option");
     expect(effortRequest).toMatchObject({
@@ -2169,44 +2174,39 @@ describe("vendor structured event normalization", () => {
     expect(sent.some((frame) => frame.method === "session/prompt")).toBe(false);
   });
 
-  it("keeps the turn when a runtime will not take the requested effort", () => {
-    // The model is already right and the answer still arrives — just with the
-    // runtime's own effort. Losing the turn over it would cost more than the
-    // setting is worth.
+  it("fails closed when a runtime does not apply an advertised config option", () => {
     const sent: Record<string, unknown>[] = [];
     const controller = createCliConversationController({
       adapter_type: "codex_cli",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
-      reasoning_effort: "high",
+      session_config: [{ id: "reasoning_effort", type: "select", value: "high", category: "thought_level" }],
     })!;
     const send = (value: Record<string, unknown>) => { sent.push(value); };
     let closed = false;
     controller.start(send);
     controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
-    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, () => {});
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [{
+      id: "reasoning_effort", name: "Reasoning", category: "thought_level", type: "select",
+      currentValue: "medium", options: [{ value: "medium" }, { value: "high" }],
+    }] } }, send, () => {});
     controller.receive({
       jsonrpc: "2.0",
-      id: 3.5,
-      result: { configOptions: [{ id: "reasoning_effort", currentValue: "medium" }] },
+      id: 3,
+      result: { configOptions: [{ id: "reasoning_effort", name: "Reasoning", category: "thought_level", type: "select", currentValue: "medium", options: [{ value: "medium" }, { value: "high" }] }] },
     }, send, () => { closed = true; });
 
-    expect(controller.result().error).toBeNull();
-    expect(closed).toBe(false);
-    expect(sent.some((frame) => frame.method === "session/prompt")).toBe(true);
+    expect(controller.result().error).toContain("did not apply session option 'reasoning_effort'");
+    expect(closed).toBe(true);
+    expect(sent.some((frame) => frame.method === "session/prompt")).toBe(false);
   });
 
-  it("asks for no effort when the runtime exposes none", () => {
-    // OpenCode has no effort option; sending one would be an invalid_params
-    // rejection for a setting it never offered.
+  it("does not invent a config request when no selection was supplied", () => {
     const sent: Record<string, unknown>[] = [];
     const controller = createCliConversationController({
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
-      reasoning_effort: "high",
     })!;
     const send = (value: Record<string, unknown>) => { sent.push(value); };
     controller.start(send);
@@ -2222,7 +2222,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     let closed = false;
     controller.receive(
@@ -2241,7 +2240,6 @@ describe("vendor structured event normalization", () => {
       adapter_type: "opencode",
       prompt: "hello",
       cwd: "/workspace",
-      model: null,
     })!;
     let closed = false;
 

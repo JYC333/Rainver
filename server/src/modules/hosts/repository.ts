@@ -401,13 +401,13 @@ export class PgHostRepository {
    * D7: a remote diff is a read-only run artifact, never a code-patch
    * proposal. Visibility is `space_shared` (project-scoped, since the row
    * also carries `project_id`/`project_folder_id` — see the `artifact`
-   * ontology entity's `contentAccessible` declaration), not `private`: P4's
-   * `GET /api/v1/hosts/threads` deliberately shows a thread to any Project
-   * reader, not just the host owner (a thread's visibility follows Project
-   * read access, not host ownership). A `private` artifact here would have
-   * let a non-owner reader see "Review diff" on a thread/run they can
-   * legitimately see, then get a false "no diff was uploaded" instead of an
-   * access-denied — found during the plan's final integration review.
+   * ontology entity's `contentAccessible` declaration), not `private`: a
+   * remote Run is visible to any Project reader, not just the host owner —
+   * its visibility follows Project read access, not host ownership. A
+   * `private` artifact here would have let a non-owner reader see "Review
+   * diff" on a run they can legitimately see, then get a false "no diff was
+   * uploaded" instead of an access-denied — found during the control-center
+   * plan's final integration review.
    */
   async recordDiffArtifact(
     run: RunForUpload,

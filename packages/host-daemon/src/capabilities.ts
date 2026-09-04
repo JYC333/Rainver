@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec } from "./tools.js";
+import type { RuntimeOptions } from "@rainver/protocol";
 import { homedir } from "node:os";
 
 /**
@@ -17,19 +18,6 @@ const ALWAYS_PROBED = ["git"] as const;
 /** A binary name the capability probe reports, as the adapter spec names it. */
 export type ProbedBinary = string;
 
-export interface RuntimeOption {
-  value: string;
-  name: string | null;
-  description: string | null;
-}
-
-export interface RuntimeOptions {
-  models: RuntimeOption[];
-  current_model: string | null;
-  efforts: RuntimeOption[];
-  current_effort: string | null;
-}
-
 /** One copy of a runtime on this machine. */
 export interface RuntimeInstallation {
   /** `own` or `managed:<version>`. */
@@ -37,11 +25,7 @@ export interface RuntimeInstallation {
   version: string | null;
   /** Whether its login state exists; null when the runtime declares no login. */
   logged_in: boolean | null;
-  /**
-   * What this copy says it can be set to, asked over ACP — or, when it could
-   * not be asked, just what its config pins (empty lists, current values).
-   * Null when neither was available.
-   */
+  /** What this copy reports through ACP; null when it could not be asked. */
   options: RuntimeOptions | null;
 }
 
@@ -102,6 +86,7 @@ function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
  * ask starts an agent process.
  */
 const OPTIONS_TTL_MS = 15 * 60 * 1000;
+const FAILED_OPTIONS_TTL_MS = 60 * 1000;
 const optionsCache = new Map<string, { at: number; value: RuntimeOptions | null }>();
 
 /** Exported for tests: the next `detectCapabilities` re-asks every runtime. */
@@ -109,12 +94,20 @@ export function __clearRuntimeOptionsCache(): void {
   optionsCache.clear();
 }
 
+/** A reconnect is a useful retry boundary, without throwing away valid catalogs. */
+export function clearFailedRuntimeOptionsCache(): void {
+  for (const [key, cached] of optionsCache) {
+    if (cached.value === null) optionsCache.delete(key);
+  }
+}
+
 async function runtimeOptions(
   key: string,
   ask: () => Promise<RuntimeOptions | null>,
 ): Promise<RuntimeOptions | null> {
   const cached = optionsCache.get(key);
-  if (cached && Date.now() - cached.at < OPTIONS_TTL_MS) return cached.value;
+  const ttl = cached?.value === null ? FAILED_OPTIONS_TTL_MS : OPTIONS_TTL_MS;
+  if (cached && Date.now() - cached.at < ttl) return cached.value;
   const value = await ask();
   optionsCache.set(key, { at: Date.now(), value });
   return value;
@@ -145,9 +138,7 @@ export async function detectCapabilities(
           id: OWN_INSTALLATION,
           version,
           logged_in: loggedIn(homedir(), lookup.login),
-          // The runtime's own answer needs no parsing; failing that, what its
-          // config pins is still better than nothing.
-          options: asked ?? await configuredOptions(lookup.runtime),
+          options: asked,
         });
       }
     }
@@ -169,115 +160,4 @@ export async function detectCapabilities(
     versions[bin] = version;
   }
   return { runtimes, versions, installations };
-}
-
-async function configuredOptions(bin: string): Promise<RuntimeOptions | null> {
-  const configured = await probeConfiguredModel(bin);
-  if (!configured?.model && !configured?.effort) return null;
-  return { models: [], current_model: configured.model, efforts: [], current_effort: configured.effort };
-}
-
-/**
- * The model each installed CLI is configured to use, read from that CLI's own
- * configuration.
- *
- * This is what the machine's own login will run on, and the control plane has
- * no other way to know it: an unbound run's model is the CLI's business, not
- * the server's. Without it the composer can only offer "this machine's login"
- * and leave the actual model — opus or sonnet, sol or luna — unstated at the
- * moment someone is choosing.
- *
- * It is the *configured* model, not a runtime-negotiated one: a session
- * switched with an in-CLI command can differ until the change is written back.
- * Read directly rather than by starting each runtime, because a capability
- * probe runs on every heartbeat and starting three agent processes for it
- * would cost far more than the answer is worth.
- */
-interface ConfiguredModel {
-  model: string | null;
-  /**
-   * Both CLIs spell effort the same way when it rides on a model id:
-   * `model[effort]` — `gpt-5.6-sol[high]`, `claude-fable-5[1m]`. Codex also
-   * accepts it as a config key of its own.
-   */
-  effort: string | null;
-}
-
-/** Splits `model[effort]`, which is how both CLIs encode the pair. */
-function splitModelEffort(value: string | null): ConfiguredModel {
-  if (!value) return { model: null, effort: null };
-  const match = /^(?<model>[^[]+?)\[(?<effort>[^\]]+)\]$/.exec(value.trim());
-  if (!match?.groups) return { model: value.trim() || null, effort: null };
-  return { model: match.groups.model!.trim() || null, effort: match.groups.effort!.trim() || null };
-}
-
-async function probeConfiguredModel(bin: string): Promise<ConfiguredModel | null> {
-  const { readFile } = await import("node:fs/promises");
-  const { homedir } = await import("node:os");
-  const { join } = await import("node:path");
-  const home = homedir();
-
-  const read = async (path: string): Promise<string | null> => {
-    try {
-      return await readFile(path, "utf8");
-    } catch {
-      return null;
-    }
-  };
-
-  if (bin === "claude") {
-    const raw = await read(process.env.CLAUDE_CONFIG_DIR
-      ? join(process.env.CLAUDE_CONFIG_DIR, "settings.json")
-      : join(home, ".claude", "settings.json"));
-    return raw ? splitModelEffort(jsonStringField(raw, "model")) : null;
-  }
-  if (bin === "codex") {
-    const raw = await read(join(process.env.CODEX_HOME ?? join(home, ".codex"), "config.toml"));
-    if (!raw) return null;
-    // Only the top-level key: a `model` inside a `[profiles.x]` table belongs
-    // to that profile, not to the default invocation.
-    const topLevel = raw.split(/^\s*\[/m)[0] ?? "";
-    const configured = splitModelEffort(/^\s*model\s*=\s*["']([^"']+)["']/m.exec(topLevel)?.[1] ?? null);
-    // Codex's own key wins over a bracket suffix: it is the one Codex reads.
-    const key = /^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m.exec(topLevel)?.[1];
-    return { model: configured.model, effort: key ?? configured.effort };
-  }
-  if (bin === "opencode") {
-    for (const name of ["opencode.json", "opencode.jsonc"]) {
-      const raw = await read(join(home, ".config", "opencode", name));
-      const model = raw ? jsonStringField(raw, "model") : null;
-      if (model) return splitModelEffort(model);
-    }
-    return null;
-  }
-  return null;
-}
-
-/**
- * A top-level string value, without parsing the whole document. OpenCode's
- * config is JSONC (comments are legal), so `JSON.parse` cannot be relied on;
- * matching the key at the outermost nesting level is enough for reading one
- * scalar and cannot be fooled by a same-named key inside a nested object.
- */
-function jsonStringField(raw: string, key: string): string | null {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  const pattern = new RegExp(`^\\s*"${key}"\\s*:\\s*"([^"]*)"`);
-  for (let i = 0; i < raw.length; i += 1) {
-    const ch = raw[i]!;
-    if (escaped) { escaped = false; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{" || ch === "[") { depth += 1; continue; }
-    if (ch === "}" || ch === "]") { depth -= 1; continue; }
-    if (depth === 1 && (ch === "," || ch === "{")) {
-      const match = pattern.exec(raw.slice(i + 1, i + 400));
-      if (match) return match[1] || null;
-    }
-  }
-  // A single-key document has no comma before it.
-  const first = new RegExp(`\\{\\s*"${key}"\\s*:\\s*"([^"]*)"`).exec(raw);
-  return first?.[1] || null;
 }

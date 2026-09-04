@@ -83,7 +83,7 @@ async function uploadArtifact(runId: string, name: string): Promise<string> {
 
 async function contextFor(runId: string): Promise<{
   spaceId: string; actorId: string; agentId: string; runId: string;
-  instructedByUserId: string; idempotencyKey: string;
+  instructedByUserId: string; projectId: string; idempotencyKey: string;
 }> {
   return {
     spaceId: SPACE,
@@ -91,6 +91,7 @@ async function contextFor(runId: string): Promise<{
     agentId: AGENT,
     runId,
     instructedByUserId: USER,
+    projectId: PROJECT,
     idempotencyKey: `${runId}:1:call-1`,
   };
 }
@@ -393,7 +394,7 @@ describe("declaring against a Task the Run may not write", () => {
       [outsider],
     );
 
-    await expect(requireProjectTask(db.pool!, SPACE, task, outsider)).rejects.toThrow();
+    await expect(requireProjectTask(db.pool!, SPACE, task, outsider, PROJECT)).rejects.toThrow();
   });
 });
 

@@ -243,20 +243,18 @@ else has it, or two people start the same work.
 ## 6. Entry point and transaction boundary
 
 `tasks/taskRunStatusProjection.ts` stays the entry point called by the runs and
-jobs repositories, so the host-thread queue lock is taken where it always was.
-It delegates the decision here because settling a Task writes work events and
-moves its Loop stage as well as its flow status, and those are one transaction
-rather than three modules agreeing afterwards.
+jobs repositories. It delegates the decision here because settling a Task
+writes work events and moves its Loop stage as well as its flow status, and
+those are one transaction rather than three modules agreeing afterwards.
 
-A settled Task has its queued host-thread messages withdrawn — whether it
-finished or stopped for review. Letting a queued message dispatch into a fresh
-Run behind that decision is what the withdrawal prevents.
-
-That queue-settling set (`waiting_for_review · blocked · done · cancelled`) is
-**not** the dispatch-refusal set (`blocked · done · cancelled`). A person may
-run a `waiting_for_review` Task again — re-running is one of the decisions the
-hold exists to ask for — and the first version of this layer conflated the two
-sets and made the hold a dead end.
+Settling used to do more: it took a host-thread queue lock and withdrew the
+Task's queued messages, so a queued message could not dispatch into a fresh Run
+behind a decision the person had just made. That queue is gone — a remote Task
+run is one Run created at admission — so there is no queued message to withdraw
+and no second lock to take. The dispatch-refusal set
+(`blocked · done · cancelled`) is now the only such set; a person may run a
+`waiting_for_review` Task again, because re-running is one of the decisions the
+hold exists to ask for.
 
 Every append-only surface that records who acted resolves its `actors` row
 through `db/actorResolver.ts`. Two partial unique indexes (one person per

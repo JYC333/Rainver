@@ -33,13 +33,12 @@ export interface HostThread {
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
-  /** control-center-phase2-plan.md P2 (C4): non-null while the message queue is paused. */
-  queue_paused_at: string | null;
+  /** Non-null while this thread's managed workspace is awaiting archive. */
   pending_archive_at: string | null;
 }
 
 const COLUMNS = `id, space_id, execution_host_id, workspace_location_id, workspace_mode, task_id, session_id, agent_id, container_kind, container_user_id, adapter_type, runtime_installation, vendor_session_id,
-  last_run_id, last_session_id, dispatch_lock_id, retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at, queue_paused_at, pending_archive_at`;
+  last_run_id, last_session_id, dispatch_lock_id, retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at, pending_archive_at`;
 
 function normalizeReturnedThread(row: HostThread): HostThread {
   const iso = (value: unknown): string | null => value instanceof Date
@@ -49,7 +48,6 @@ function normalizeReturnedThread(row: HostThread): HostThread {
     ...row,
     created_at: iso(row.created_at)!,
     updated_at: iso(row.updated_at)!,
-    queue_paused_at: iso(row.queue_paused_at),
     pending_archive_at: iso(row.pending_archive_at),
   };
 }
@@ -198,30 +196,22 @@ export class PgHostThreadRepository {
     return existing;
   }
 
-  /** Scoped by `workspace_location_id` so a thread cannot be resumed through a different Location than it was created for. */
-  async getForLocation(threadId: string, workspaceLocationId: string): Promise<HostThread | null> {
+  /**
+   * Scoped by both Location and Task so a caller cannot resume another Task's
+   * vendor session by borrowing its thread id. The row lock is intentional:
+   * Task admission checks the latest Run immediately after this read, and
+   * those two observations must describe one serialized thread state.
+   */
+  async getForLocation(threadId: string, workspaceLocationId: string, taskId: string): Promise<HostThread | null> {
     const result = await this.db.query<HostThread>(
       `SELECT ${COLUMNS} FROM host_threads
         WHERE id = $1 AND workspace_location_id = $2
+          AND task_id = $3
           AND task_id IS NOT NULL AND session_id IS NULL AND agent_id IS NULL
           AND status IN ('active', 'session_reset')
-        LIMIT 1`,
-      [threadId, workspaceLocationId],
-    );
-    return result.rows[0] ?? null;
-  }
-
-  /**
-   * Task queue consumers must not accept a direct/Conversation-owned or
-   * closed thread just because they hold its opaque id.
-   */
-  async getTaskById(threadId: string): Promise<HostThread | null> {
-    const result = await this.db.query<HostThread>(
-      `SELECT ${COLUMNS} FROM host_threads
-        WHERE id = $1 AND task_id IS NOT NULL AND session_id IS NULL AND agent_id IS NULL
-          AND status IN ('active', 'session_reset')
-        LIMIT 1`,
-      [threadId],
+        LIMIT 1
+        FOR UPDATE`,
+      [threadId, workspaceLocationId, taskId],
     );
     return result.rows[0] ?? null;
   }
@@ -437,88 +427,6 @@ export class PgHostThreadRepository {
     return result.rows[0] ?? null;
   }
 
-  /**
-   * Every thread across every remote workspace in a Project — the read side
-   * for the control center's work stream (grouped by thread, not bare run;
-   * ADR 0016 §7). Location-backed Task threads join through
-   * `workspace_locations` + `project_folders`; managed Conversation threads
-   * join through their Session because they intentionally have no Location.
-   */
-  async listForProject(spaceId: string, projectId: string): Promise<HostThread[]> {
-    const result = await this.db.query<HostThread>(
-      `SELECT t.id, t.space_id, t.execution_host_id, t.workspace_location_id, t.workspace_mode, t.task_id, t.session_id, t.agent_id,
-              t.container_kind, t.container_user_id,
-              wl.project_folder_id, COALESCE(wl.execution_host_id, t.execution_host_id) AS host_id,
-              t.adapter_type, t.runtime_installation, t.vendor_session_id,
-              t.last_run_id, t.last_session_id, t.dispatch_lock_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at, t.pending_archive_at
-         FROM host_threads t
-         LEFT JOIN workspace_locations wl ON wl.id = t.workspace_location_id
-         LEFT JOIN project_folders pf ON pf.id = wl.project_folder_id
-         LEFT JOIN sessions conversation
-           ON conversation.id = t.session_id AND conversation.space_id = t.space_id
-         JOIN projects p
-           ON p.id = COALESCE(pf.project_id, conversation.project_id)
-          AND p.space_id = $1
-        WHERE p.id = $2
-        ORDER BY t.updated_at DESC`,
-      [spaceId, projectId],
-    );
-    return result.rows;
-  }
-
-  /**
-   * P3 (C10): cross-project recent threads for the Command Center landing —
-   * every thread in the space *the caller can actually read the owning
-   * Project of*, most-recently-updated first, joined with the
-   * host/folder/project summary the landing card needs. Unlike
-   * `listForProject`, this has no `project_id` filter; the landing view
-   * demotes Project from a gate to an optional filter applied client-side or
-   * by the caller re-querying `listForProject` instead.
-   *
-   * The per-project readability rule is inlined here (mirroring
-   * `canReadProject` in `projects/access.ts`) rather than calling that
-   * function once per candidate row: this is a cross-project aggregate by
-   * design, and space membership alone is *not* the same bar — a household/
-   * team space's Projects each carry their own membership list, and a
-   * caller who can see the space's hosts must not thereby see every
-   * Project's thread activity in it.
-   */
-  async listRecentForSpace(
-    spaceId: string,
-    userId: string,
-    limit: number,
-  ): Promise<Array<HostThread & { project_id: string; project_name: string; folder_name: string }>> {
-    const result = await this.db.query<HostThread & { project_id: string; project_name: string; folder_name: string }>(
-      `SELECT t.id, t.space_id, t.execution_host_id, t.workspace_location_id, t.workspace_mode, t.task_id, t.session_id, t.agent_id,
-              t.container_kind, t.container_user_id,
-              wl.project_folder_id, COALESCE(wl.execution_host_id, t.execution_host_id) AS host_id,
-              t.adapter_type, t.runtime_installation, t.vendor_session_id,
-              t.last_run_id, t.last_session_id, t.dispatch_lock_id, t.status, t.created_by_user_id, t.created_at, t.updated_at, t.queue_paused_at, t.pending_archive_at,
-              p.id AS project_id, p.name AS project_name, COALESCE(pf.name, 'Managed workspace') AS folder_name
-         FROM host_threads t
-         LEFT JOIN workspace_locations wl ON wl.id = t.workspace_location_id
-         LEFT JOIN project_folders pf ON pf.id = wl.project_folder_id
-         LEFT JOIN sessions conversation
-           ON conversation.id = t.session_id AND conversation.space_id = t.space_id
-         JOIN projects p ON p.id = COALESCE(pf.project_id, conversation.project_id)
-         JOIN spaces s ON s.id = p.space_id
-        WHERE p.space_id = $1
-          AND p.deleted_at IS NULL
-          AND (
-            s.type = 'personal'
-            OR p.owner_user_id = $2
-            OR EXISTS (
-              SELECT 1 FROM project_members pm
-               WHERE pm.space_id = p.space_id AND pm.project_id = p.id AND pm.user_id = $2 AND pm.status = 'active'
-            )
-          )
-        ORDER BY t.updated_at DESC
-        LIMIT $3`,
-      [spaceId, userId, limit],
-    );
-    return result.rows;
-  }
-
   async recordRunOutcome(
     threadId: string,
     input: { lastRunId: string; vendorSessionId: string | null; sessionReset: boolean },
@@ -544,25 +452,4 @@ export class PgHostThreadRepository {
     );
   }
 
-  /**
-   * control-center-phase2-plan.md P2 (C4): a dispatched Run's terminal
-   * status was anything other than a clean success — hold the rest of the
-   * queue rather than silently firing the next message on top of whatever
-   * just went wrong. Idempotent: pausing an already-paused thread is a
-   * no-op (`queue_paused_at` is not overwritten with a later timestamp).
-   */
-  async pauseQueue(threadId: string): Promise<void> {
-    await this.db.query(
-      `UPDATE host_threads SET queue_paused_at = COALESCE(queue_paused_at, now()), updated_at = now() WHERE id = $1 AND status <> 'closed'`,
-      [threadId],
-    );
-  }
-
-  /** Explicit user action — the only way a paused queue clears (never automatic). */
-  async resumeQueue(threadId: string): Promise<void> {
-    await this.db.query(
-      `UPDATE host_threads SET queue_paused_at = NULL, updated_at = now() WHERE id = $1`,
-      [threadId],
-    );
-  }
 }

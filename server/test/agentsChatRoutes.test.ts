@@ -169,6 +169,64 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
 }
 
 describe("agents asynchronous chat-turn route", () => {
+  it("validates ACP session options against the resolved backend and persists them on the Run", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const queued: Array<Record<string, unknown>> = [];
+    __setAgentChatServicesFactoryForTests(() => services({
+      backends: {
+        async resolveBinding() {
+          return {
+            runtime_profile_id: "runtime-profile-1", adapter_type: "codex_cli",
+            execution_host_id: null, workspace_location_id: null, runtime_installation: "own",
+            credential_profile_id: null, binding_id: "binding-1",
+            runtime_state_key: "11111111-1111-4111-8111-111111111111",
+            runtime_session_id: null, runtime_context_fingerprint: null,
+            model_name: null, model_provider_id: null, runtime_config_json: {}, runtime_policy_json: {},
+            retired_runtime_state_key: null,
+            session_config_options: [{
+              id: "fast", name: "Fast mode", description: null, category: "model_config",
+              type: "boolean" as const, current_value: false,
+            }],
+          };
+        },
+      },
+      runs: {
+        async createQueuedRun(input) {
+          queued.push(input as unknown as Record<string, unknown>);
+          return { id: "run-1", space_id: "space-1", agent_id: input.agent_id, agent_version_id: "agent-version-1", status: "queued", mode: input.mode, prompt: input.prompt ?? null, instruction: null, project_folder_id: null, session_id: input.session_id ?? null, project_id: null, adapter_type: null, model_provider_id: null, required_sandbox_level: "none", trigger_origin: input.trigger_origin, started_at: null, ended_at: null };
+        },
+      },
+    }));
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
+
+    const response = await app.inject({
+      method: "POST", url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "Go", session_config: [{ id: "fast", type: "boolean", value: true, category: "model_config" }] },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(queued[0]?.model_override_json).toMatchObject({
+      acp_session_config: [{ id: "fast", type: "boolean", value: true, category: "model_config" }],
+    });
+  });
+
+  it("rejects a session option the resolved backend did not advertise", async () => {
+    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    let runCreated = false;
+    __setAgentChatServicesFactoryForTests(() => services({
+      runs: { async createQueuedRun() { runCreated = true; throw new Error("must not run"); } },
+    }));
+    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
+
+    const response = await app.inject({
+      method: "POST", url: "/api/v1/agents/agent-1/chat",
+      payload: { message: "Go", session_config: [{ id: "fast", type: "boolean", value: true, category: "model_config" }] },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(runCreated).toBe(false);
+  });
+
   it("applies the instructing user's Agent visibility before creating a turn", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-2" });
     const lookups: string[][] = [];
@@ -248,7 +306,7 @@ describe("agents asynchronous chat-turn route", () => {
       run_id: "run-1",
       user_message_id: "message-user-1",
       status: "queued",
-      event_stream_url: "/api/v1/runs/run-1/events/stream",
+      event_stream_url: "/api/v1/runs/run-1/turn/stream",
       backend: {
         runtime_profile_id: "runtime-profile-1",
         adapter_type: "model_api",

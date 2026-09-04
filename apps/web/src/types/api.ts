@@ -27,7 +27,14 @@ import type {
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
+  ChatTurnRequest,
   ContinueRoomAfterProposalRequest,
+  DiagnosticTurnPart,
+  RunTurn,
+  ToolCallTurnPart,
+  TurnPart,
+  TurnState,
+  TurnStreamFrame,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
   ClaimCandidatePacketCreateResponse,
@@ -57,6 +64,8 @@ import type {
   ConversationBackendBinding,
   ConversationBackendCatalog,
   ConversationBackendOption,
+  RuntimeSessionConfigOption,
+  RuntimeSessionConfigSelection,
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
   CreateRoomRequest,
@@ -283,7 +292,14 @@ export type {
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
+  ChatTurnRequest,
   ContinueRoomAfterProposalRequest,
+  DiagnosticTurnPart,
+  RunTurn,
+  ToolCallTurnPart,
+  TurnPart,
+  TurnState,
+  TurnStreamFrame,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
   ClaimCandidatePacketCreateResponse,
@@ -313,6 +329,8 @@ export type {
   ConversationBackendBinding,
   ConversationBackendCatalog,
   ConversationBackendOption,
+  RuntimeSessionConfigOption,
+  RuntimeSessionConfigSelection,
   CreateAgentRunGroupRequest,
   CreateAgentRunGroupResponse,
   CreateRoomRequest,
@@ -2154,6 +2172,10 @@ export interface Message {
   role: MessageRole
   content: string
   metadata_json: Record<string, unknown> | null
+  /** The message this one replies to; null only for a session's first. */
+  parent_message_id: string | null
+  /** The Run that produced this message, or that this message started. */
+  run_id: string | null
   created_at: string
 }
 
@@ -3484,8 +3506,6 @@ export type {
   ConversationRuntimeChoice,
   ConversationRuntimeSelection,
   ConversationWorkspaceMode,
-  DispatchBackend,
-  DispatchOptions,
   HostCapabilities,
   HostExecutionTarget,
   HostExecutionTargetAdapter,
@@ -3551,59 +3571,6 @@ export interface HostThread {
   created_by_user_id: string
   created_at: string
   updated_at: string
-  /** control-center-phase2-plan.md P2 (C4): non-null while the message queue is paused. */
-  queue_paused_at: string | null
-}
-
-/** control-center-phase2-plan.md P3 (C10): a `GET /hosts/threads/recent` row — cross-project, joined summary fields included. */
-export interface HostRecentThread extends HostThread {
-  project_id: string
-  project_name: string
-  folder_name: string
-}
-
-export type HostThreadMessageStatus = 'queued' | 'dispatched' | 'withdrawn'
-
-export interface HostThreadMessage {
-  id: string
-  host_task_thread_id: string
-  task_id?: string
-  prompt: string
-  status: HostThreadMessageStatus
-  /** The backend this message resolved to. Null means the machine's own login. */
-  model_provider_id: string | null
-  model: string | null
-  run_id: string | null
-  created_by_user_id: string
-  created_at: string
-  updated_at: string
-}
-
-export type HostThreadEventType =
-  | 'assistant_text'
-  | 'assistant_thought'
-  | 'tool_activity_started'
-  | 'tool_activity_finished'
-  | 'status'
-  | 'diagnostic'
-  | 'plan_updated'
-
-export interface HostThreadEvent {
-  id: string
-  host_task_thread_id: string
-  run_id: string
-  event_index: number
-  event_type: HostThreadEventType
-  text: string | null
-  tool_call_id: string | null
-  tool_name: string | null
-  tool_input_summary: string | null
-  /** ACP runtime replatform P3 (A9): set on tool_activity_started only. */
-  tool_kind: string | null
-  /** ACP runtime replatform P3 (A9): set on tool_activity_finished only; absent for codex (adapter asymmetry, not a bug). */
-  tool_result_summary: string | null
-  status: string | null
-  created_at: string
 }
 
 /** control-center-phase2-plan.md P3 (C6): a `GET /hosts/runtime-adapters` row. */
@@ -3634,18 +3601,6 @@ export interface HostRuntimeProviderBinding {
   /** null = the provider's own default model. */
   model: string | null
   updated_at: string
-}
-
-export interface HostDispatchResponse {
-  // control-center-phase2-plan.md P2 (C4): every send goes through the
-  // per-thread message queue — `message_id` always identifies the sent
-  // message; `run_id` is only set once something actually dispatched
-  // (`status: "dispatched"`), null while the message is still `"queued"`
-  // behind an active run or a paused thread.
-  message_id: string
-  thread_id: string
-  run_id: string | null
-  status: 'dispatched' | 'queued'
 }
 
 export interface ProjectFolderExecutionConfig {

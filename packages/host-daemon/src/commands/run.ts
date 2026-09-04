@@ -25,6 +25,7 @@ import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } fro
 import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
 import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
+import { clearFailedRuntimeOptionsCache } from "../capabilities.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
@@ -235,6 +236,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           // heartbeat interval later.
           runtimeProbes = frame.runtime_probes;
           lastRuntimeProbes = runtimeProbes;
+          // A failed ACP option probe must not survive a control-plane
+          // restart for fifteen minutes. Keep successful catalogs cached,
+          // but retry failures at this fresh connection boundary.
+          clearFailedRuntimeOptionsCache();
           sendHeartbeat();
           heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
           return;

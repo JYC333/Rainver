@@ -78,7 +78,6 @@ export * from "./machines.js";
 export * from "./hosts.js";
 export * from "./hostThreads.js";
 export * from "./hostThreadEvents.js";
-export * from "./hostThreadMessages.js";
 export * from "./hostRuntimeProviderBindings.js";
 export * from "./projectFolders.js";
 export * from "./workspaceLocations.js";

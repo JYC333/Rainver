@@ -172,7 +172,7 @@ describe("executeRemoteHostCliAdapter", () => {
     // Text arrives via the coalesced thread draft, not a duplicate from the
     // raw protocol-event path (threadEventNormalization.ts's
     // pushAcpProtocolEvent deliberately ignores agent_message_chunk).
-    expect(threadDrafts).toContainEqual({ event_type: "assistant_text", text: "done" });
+    expect(threadDrafts).toContainEqual({ event_type: "assistant_text", text: "done\n" });
     expect(threadDrafts.filter((d) => d.event_type === "assistant_text")).toHaveLength(1);
     // The initialize-response echo (forwarded for diagnostics by
     // AcpController) must not produce a spurious runtime event.
@@ -705,7 +705,10 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         id: 2,
         result: {
           sessionId: "session-1",
-          configOptions: [{ id: "model", currentValue: "opencode/big-pickle", options: [{ value: "rainver_provider/MiniMax-M3" }] }],
+          configOptions: [{
+            id: "model", name: "Model", category: "model", type: "select",
+            currentValue: "opencode/big-pickle", options: [{ value: "rainver_provider/MiniMax-M3", name: "MiniMax M3" }],
+          }],
         },
       })}\n`, launchIdOf(sink, "run-1"));
       await vi.waitUntil(() => sink.sent.length >= 4);

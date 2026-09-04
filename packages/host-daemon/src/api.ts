@@ -62,14 +62,7 @@ function askRuntimeOptions(probes: RuntimeProbe[]): AskRuntimeOptions {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.adapter_type);
       const options = await probeAcpOptions(launch.command, launch.args, launch.env, cwd);
-      return options
-        ? {
-            models: options.models,
-            current_model: options.currentModel,
-            efforts: options.efforts,
-            current_effort: options.currentEffort,
-          }
-        : null;
+      return options;
     } catch {
       return null;
     } finally {

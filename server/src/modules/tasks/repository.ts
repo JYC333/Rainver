@@ -29,15 +29,13 @@ import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
-import { PgHostThreadMessageRepository } from "../hosts/threadMessageRepository.js";
-import { advanceThreadQueue } from "../hosts/queueAdvance.js";
+import { dispatchToolAllowance } from "../systemActions/scenarioToolAllowance.js";
+import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
 import {
   resolveHostProviderBinding,
   type ProviderLookupPort,
 } from "../hosts/runtimeProviderBindingResolution.js";
 import {
-  lockTaskQueueForTerminalMutation,
-  withdrawQueuedTaskMessages,
 } from "./taskRunStatusProjection.js";
 import { responsibleUserSql } from "../projectWork/responsibility.js";
 import { linkTaskEntities } from "../projectWork/taskActions.js";
@@ -67,15 +65,6 @@ const DEFAULT_TASK_LIMITS = {
 } as const;
 const TASK_STATUSES = new Set<string>(PROTOCOL_TASK_STATUSES);
 /**
- * Statuses after which a still-queued message must not dispatch into a fresh
- * Run. `waiting_for_review` belongs here for the same reason the terminal ones
- * do: the Task is parked on someone's decision, and a queued message turning
- * into a Run behind that decision is the thing the queue lock exists to stop.
- */
-const TASK_QUEUE_SETTLING_STATUSES = new Set([
-  "waiting_for_review", "blocked", "done", "cancelled",
-]);
-/**
  * Statuses a new Run may not be dispatched from. `waiting_for_review` is
  * deliberately not here: the Task stopped for a person's decision, and "run
  * it again" is one of the decisions.
@@ -95,6 +84,43 @@ import {
   type TaskRow,
   type TaskRunListRow,
 } from "./taskRepositoryRows.js";
+
+/**
+ * The backend a thread last ran against, read from its own Runs.
+ *
+ * A thread keeps its backend across dispatches: re-resolving the Host default
+ * every time would move every existing thread onto a new backend the moment
+ * that default changed, and since the vendor session lives inside the
+ * provider's profile, each of them would silently lose its conversation.
+ *
+ * Read from the Run rather than from a message ledger, which is what the
+ * per-thread queue used to provide. `model_provider_id` is stamped on the Run
+ * at launch by `recordRemoteRunBackend` — the backend actually used, not the
+ * one predicted — so this inherits what really ran.
+ */
+async function threadRunBinding(
+  db: Queryable,
+  threadId: string,
+): Promise<{ provider_id: string | null; model: string | null; reasoning_effort: string | null } | null> {
+  const result = await db.query<{
+    model_provider_id: string | null;
+    model_override_json: Record<string, unknown> | null;
+  }>(
+    `SELECT model_provider_id, model_override_json FROM runs
+      WHERE host_task_thread_id = $1
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [threadId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const override = row.model_override_json ?? {};
+  return {
+    provider_id: row.model_provider_id,
+    model: typeof override.model === "string" ? override.model : null,
+    reasoning_effort: typeof override.reasoning_effort === "string" ? override.reasoning_effort : null,
+  };
+}
 
 export class PgTaskRepository {
   /**
@@ -398,49 +424,6 @@ export class PgTaskRepository {
     return taskOut(created);
   }
 
-  /** Creates the smallest durable Task needed when a composer has no task id. */
-  async createLightweightTaskAndRun(identity: SpaceUserIdentity, body: Record<string, unknown>) {
-    const prompt = optionalString(body.prompt);
-    if (!prompt) throw new HttpError(422, "prompt is required");
-    const admission = await withDbTransaction(this.pool, async (client) => {
-      const projectFolderId = optionalString(body.project_folder_id);
-      let projectId = optionalString(body.project_id);
-      let admissionBody = body;
-      if (projectFolderId) {
-        const folder = await client.query<{ project_id: string }>(
-          `SELECT project_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
-          [projectFolderId, identity.spaceId],
-        );
-        if (!folder.rows[0]) throw new HttpError(404, "Project Folder not found");
-        if (projectId && folder.rows[0].project_id !== projectId) {
-          throw new HttpError(409, "Project Folder does not belong to the selected Project");
-        }
-        projectId = folder.rows[0].project_id;
-      }
-      // The route performs a fast preflight, but the durable Task + Run write
-      // must re-check authority while holding the Project aggregate lock. This
-      // closes the revoke/archive race between authorization and admission.
-      if (projectId) {
-        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
-        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
-        admissionBody = { ...body, project_id: projectId, visibility: "space_shared" };
-      }
-      const title = optionalString(body.task_title) ?? prompt.slice(0, 120);
-      const task = await this.createTask(identity, {
-        title: title || "Workspace task",
-        description: optionalString(body.task_description),
-        project_folder_id: projectFolderId,
-        project_id: projectId,
-        task_type: "coding",
-        status: "ready",
-        visibility: "space_shared",
-        assigned_agent_id: optionalString(body.agent_id),
-      }, client);
-      return this.createTaskRunAdmission(identity, task.id, admissionBody, client);
-    });
-    return this.finishTaskRunAdmission(admission);
-  }
-
   async getTask(identity: SpaceUserIdentity, taskId: string) {
     const row = await getVisibleTaskRow(this.pool, identity, taskId);
     if (!row) return null;
@@ -457,12 +440,6 @@ export class PgTaskRepository {
     const now = new Date().toISOString();
     const requestedStatus = taskStatus(body.status);
     await withDbTransaction(this.pool, async (client) => {
-      // Queue lock first, row lock second — the order `requestTaskReview`
-      // takes them in. Taking them the other way round deadlocks a person
-      // closing a Task against an Agent asking for review on it.
-      if (requestedStatus && TASK_QUEUE_SETTLING_STATUSES.has(requestedStatus)) {
-        await lockTaskQueueForTerminalMutation(client, identity.spaceId, [taskId]);
-      }
       // Read under the same lock the write takes. Two concurrent closes that
       // both read `in_progress` outside the transaction both passed the close
       // gate and both wrote `task.accepted`; under the lock the second one
@@ -654,9 +631,6 @@ export class PgTaskRepository {
           changes: Object.fromEntries(responsibilityChange),
         });
       }
-      if (requestedStatus && TASK_QUEUE_SETTLING_STATUSES.has(requestedStatus)) {
-        await withdrawQueuedTaskMessages(client, identity.spaceId, [taskId]);
-      }
     });
     return (await this.getTask(identity, taskId))!;
   }
@@ -730,8 +704,10 @@ export class PgTaskRepository {
         throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");
       }
       if (target?.execution_host_kind === "remote") {
-        const remote = await this.prepareRemoteTaskRun(client, identity, task, target, body);
-        return { kind: "remote" as const, remote };
+        return await this.prepareRemoteTaskRun(client, identity, task, target, body, {
+          maxRuns,
+          taskPolicy,
+        });
       }
       if (target && !target.execution_ready) {
         throw new HttpError(409, "Workspace Location is not execution-ready");
@@ -809,35 +785,30 @@ export class PgTaskRepository {
     return transactionClient ? execute(transactionClient) : withDbTransaction(this.pool, execute);
   }
 
+  /**
+   * Both branches create a Run inside the admission transaction now, so there
+   * is nothing left to finish outside it. Kept as the single exit so callers
+   * do not have to know which branch ran.
+   */
   private async finishTaskRunAdmission(
     admission: Awaited<ReturnType<PgTaskRepository["createTaskRunAdmission"]>>,
   ) {
-    if (admission.kind === "server") return admission.run;
-    const advance = await advanceThreadQueue(this.pool, admission.remote.threadId, {
-      messageId: admission.remote.messageId,
-      timeoutMs: admission.remote.timeoutMs,
-    });
-    if (!advance.advanced && advance.reason === "task_authority_lost") {
-      throw new HttpError(409, "Project authority changed before dispatch; queued Task message was withdrawn");
-    }
-    const dispatched = advance.advanced && advance.message_id === admission.remote.messageId;
-    return {
-      message_id: admission.remote.messageId,
-      thread_id: admission.remote.threadId,
-      run_id: dispatched ? advance.run_id : null,
-      status: dispatched ? "dispatched" : "queued",
-    };
+    return admission.run;
   }
 
   /**
-   * The remote-host half of the merged dispatch endpoint (D5) — what used
-   * to be the former host-dispatch route. Unlike the server-host branch
-   * above, this never creates a Run synchronously: it enqueues a message on
-   * the Task's HostThread for `target.location_id` and lets
-   * `advanceThreadQueue` create the Run (and this Task's `task_runs` link)
-   * once nothing blocks it, exactly as the old route did — merging the
-   * routes did not merge the two adapters' execution shape (D5), only where
-   * a caller reaches them from.
+   * The remote-host half of the merged dispatch endpoint (D5).
+   *
+   * It creates one Run synchronously, exactly as the server branch above
+   * does — the two differ in what they stamp on the Run (the thread, the
+   * adapter, the installation and the vendor session to resume), not in
+   * when the Run comes into being.
+   *
+   * It used to enqueue a message on the Task's HostThread and let a queue
+   * create the Run once nothing blocked it. That queue existed for the
+   * Command Center's thread page, which paused it on any non-success and
+   * offered a Resume button; with the page gone nothing could resume one, so
+   * a remote Task run whose predecessor failed would have sat queued forever.
    */
   private async prepareRemoteTaskRun(
     client: Queryable,
@@ -845,6 +816,14 @@ export class PgTaskRepository {
     task: TaskRow,
     target: NonNullable<Awaited<ReturnType<PgWorkspaceLocationRepository["resolveDispatchTarget"]>>>,
     body: Record<string, unknown>,
+    /**
+     * The Task's budget inputs, resolved once by the admission above so both
+     * branches snapshot the same thing. A contract snapshot missing them is
+     * a Run that escapes its own caps: `budgetEnforcement` reads
+     * `budget_sources` to refuse an admission past `max_runs`, and a snapshot
+     * without them admits every time.
+     */
+    budget: { maxRuns: number | null; taskPolicy: Record<string, unknown> },
   ) {
     // The merged task-run admission gate above already locked the active
     // Project and verified the caller's writer access before either adapter
@@ -869,7 +848,7 @@ export class PgTaskRepository {
 
     const threads = new PgHostThreadRepository(client);
     const threadId = optionalString(body.thread_id);
-    let thread = threadId ? await threads.getForLocation(threadId, target.location_id) : null;
+    let thread = threadId ? await threads.getForLocation(threadId, target.location_id, task.id) : null;
     if (threadId && !thread) throw new HttpError(404, "Task thread not found for this Workspace Location");
     if (thread && thread.adapter_type !== adapterType) {
       throw new HttpError(409, "Task thread is pinned to a different runtime adapter");
@@ -895,9 +874,8 @@ export class PgTaskRepository {
       });
     }
 
-    const messages = new PgHostThreadMessageRepository(client);
     // A thread keeps the backend it last ran against. Without this, resolution
-    // re-reads the Host × adapter default every dispatch, so changing that
+    // re-reads the Host x adapter default every dispatch, so changing that
     // default moves every existing thread on the host onto a new backend —
     // and since the vendor session lives inside the new provider's profile,
     // each of them silently loses its conversation too. The Host default
@@ -905,9 +883,12 @@ export class PgTaskRepository {
     //
     // An explicit override still wins and becomes what the thread inherits
     // next time, which is how a user changes a thread's backend.
+    //
+    // Read from the thread's own last Run now that there is no message
+    // ledger to read it from.
     const inherited = Object.hasOwn(body, "model_provider_id")
       ? null
-      : await messages.currentBinding(thread.id);
+      : await threadRunBinding(client, thread.id);
 
     // Resolve and validate the model backend before the message is queued, so
     // an unusable provider fails this request rather than a run on someone's
@@ -945,7 +926,129 @@ export class PgTaskRepository {
       modelOverrideProvided: Object.hasOwn(body, "model") || Object.hasOwn(body, "reasoning_effort"),
     });
 
-    const message = await messages.enqueue(thread.id, task.id, prompt, identity.userId, binding);
+    // One Run at a time on a thread. Two concurrent Runs would both resume
+    // the same vendor session — the thread's whole reason to exist — and the
+    // second would corrupt what the first is holding. The queue enforced this
+    // by refusing to advance while the thread's latest Run was non-terminal;
+    // with the queue gone the admission is the only place left to say it.
+    //
+    // `isTerminalRunStatus` rather than a hand-rolled list, and only the
+    // latest Run: a hand-rolled copy here once missed `waiting_for_review`
+    // and deadlocked the thread after any Run that landed in review.
+    const latestRun = await client.query<{ status: string }>(
+      `SELECT status FROM runs WHERE host_task_thread_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [thread.id],
+    );
+    const latestStatus = latestRun.rows[0]?.status;
+    if (latestStatus && !isTerminalRunStatus(latestStatus)) {
+      throw new HttpError(409, "This thread already has a Run in flight; wait for it to finish");
+    }
+
+    // Not `thread.agent_id`: a Task thread's is always null — `getForLocation`
+    // selects on `agent_id IS NULL`, and `create` above never sets one — so
+    // reading it would imply a case that cannot occur. A Room specialist's
+    // Agent identity lives on its own Conversation thread, never this one.
+    const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
+    if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
+    await assertRunnableAgent(client, identity.spaceId, agentId);
+
+    // A dispatch to someone's own machine runs under that machine's trust,
+    // not in a sandbox the control plane owns — and the read model reads this
+    // to decide whether the adapter actually consumed the provider it
+    // recorded. Only a server-side execution host is sandboxed.
+    const trustMode = target.execution_host_kind === "server" ? "sandboxed" : "trusted_host";
+    // What a dispatched agent may call back with: the allowance belongs to
+    // the dispatch scenario rather than to whichever Agent the thread names.
+    // Without it a dispatched Run carries no grants at all and is offered no
+    // way to say what it did.
+    const allowance = dispatchToolAllowance(trustMode);
+
+    const run = await new PgRunRepository(client).createQueuedRun({
+      agent_id: agentId,
+      space_id: identity.spaceId,
+      user_id: identity.userId,
+      mode: "live",
+      // `system`, as the queue wrote it — and not decoration: `routeRun`
+      // skips this run_type, which is what keeps the router from stamping
+      // its own predicted provider over the backend this dispatch already
+      // resolved and validated.
+      run_type: "system",
+      trigger_origin: "manual",
+      project_folder_id: task.project_folder_id,
+      workspace_location_id: target.location_id,
+      trust_mode: trustMode,
+      host_task_thread_id: thread.id,
+      // Chosen and validated above; `remoteHostCliAdapter` reads it back off
+      // the Run to pick the runtime spec.
+      adapter_type: adapterType,
+      // Resolved above too. `resolveRemoteRunBinding` reads this back before
+      // launch to decide what the host is leased; left null it would fall
+      // through to the Host default the dispatch may have overridden.
+      model_provider_id: binding.provider_id ?? null,
+      project_id: task.project_id,
+      prompt,
+      instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
+      scenario_tool_allowance: [...allowance],
+      capabilities_json: [...allowance],
+      model_override_json: {
+        ...(binding.model ? { model: binding.model } : {}),
+        // Beside the model, never inside it: a model id can carry brackets of
+        // its own, so the pair cannot be recovered from one string.
+        ...(binding.reasoning_effort ? { reasoning_effort: binding.reasoning_effort } : {}),
+        // Which copy of the runtime on the host, from the thread's pin — only
+        // when it is not the machine's own.
+        ...(installation !== "own" ? { installation } : {}),
+        // Always, even when the decision was "no provider at all". This says
+        // the backend came from the dispatch rather than from a routing
+        // decision, and it is what `resolveRemoteRunBinding` reads to tell an
+        // admission that deliberately chose ambient login apart from a Run
+        // that never chose and should fall back to the Host default.
+        source: "request",
+        // The same shape the Room, delegation and direct-chat paths write:
+        // the Run is the one place the job handler reads its thread and the
+        // vendor session to resume from (`hostThreadDispatchInputs`).
+        host_thread: {
+          schema_version: "host_thread.v1",
+          thread_id: thread.id,
+          runtime_session_id: thread.vendor_session_id ?? null,
+        },
+      },
+      // The same snapshot the server branch writes. The two dispatch paths
+      // differ in where the work runs, never in what the Task's contract is.
+      contract_snapshot: {
+        source: { kind: "task", id: task.id },
+        project_id: task.project_id,
+        project_folder_id: task.project_folder_id,
+        acceptance_criteria_json: task.acceptance_criteria_json,
+        definition_of_done: task.definition_of_done,
+        required_outputs_json: task.required_outputs_json,
+        risk_level: task.risk_level,
+        max_runs: budget.maxRuns,
+        max_attempts: positiveIntegerOrNull(body.max_attempts)
+          ?? positiveIntegerOrNull(budget.taskPolicy.max_attempts),
+        max_cost: task.max_cost,
+        max_duration_seconds: task.max_duration_seconds,
+        budget_precedence: numberValue(budget.taskPolicy.budget_precedence),
+        budget_sources: budgetSourcesFromPolicy(budget.taskPolicy.budget_sources),
+        route_hints_json: contractRouteHints(task.policy_json),
+      },
+    });
+
+    const now = new Date().toISOString();
+    await client.query(
+      `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (task_id, run_id) DO NOTHING`,
+      [randomUUID(), identity.spaceId, task.id, run.id, optionalString(body.role) ?? "primary", now],
+    );
+    await new PgJobQueueRepository(client).ensureAgentRunJob({
+      job_type: "agent_run",
+      space_id: identity.spaceId,
+      user_id: identity.userId,
+      agent_id: agentId,
+      project_folder_id: task.project_folder_id,
+      payload: { run_id: run.id },
+    });
     if (body.set_task_in_progress !== false) {
       await client.query(
         `UPDATE tasks SET status = 'in_progress', updated_at = now() WHERE space_id = $1 AND id = $2`,
@@ -953,9 +1056,8 @@ export class PgTaskRepository {
       );
     }
     return {
-      messageId: message.id,
-      threadId: thread.id,
-      timeoutMs: numberValue(body.timeout_ms) ?? null,
+      kind: "remote" as const,
+      run: runToOut(run, null, { executes_remotely: true }),
     };
   }
 

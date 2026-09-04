@@ -61,15 +61,6 @@ export const hostThreads = pgTable("host_threads", {
 	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-	// control-center-phase2-plan.md P2 (C4): non-null when the thread's
-	// message queue is paused — set whenever a dispatched Run's terminal
-	// status is anything other than `succeeded` (failed, cancelled, timed
-	// out, orphaned...), never auto-cleared. A separate concern from
-	// `status`/`session_reset` (vendor session continuity): a thread can be
-	// `active` and queue-paused at the same time — the session is fine, the
-	// user just needs to look at what went wrong before the next queued
-	// message goes out.
-	queuePausedAt: timestamp("queue_paused_at", { withTimezone: true, mode: 'string' }),
 	pendingArchiveAt: timestamp("pending_archive_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_host_threads_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),

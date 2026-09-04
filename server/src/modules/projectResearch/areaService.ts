@@ -371,7 +371,7 @@ export class ProjectResearchAreaService {
     const finished = await new PgRunRepository(this.db).getRun(identity.spaceId, run.id);
     if (!finished || !["succeeded", "degraded"].includes(finished.status)) {
       const errorText = finished?.error_message ?? "The notebook chat run did not complete successfully.";
-      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, metadata: { run_id: run.id, error: true } });
+      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, run_id: run.id, metadata: { error: true } });
       return { session_id: session.id, run_id: run.id, ok: false, error: errorText, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
     }
 
@@ -408,7 +408,7 @@ export class ProjectResearchAreaService {
       }
     }
     await sessions.addMessage(identity.spaceId, identity.userId, session.id, {
-      role: "assistant", content: answer, metadata: { run_id: run.id, notebook_edit: notebookEdit },
+      role: "assistant", content: answer, run_id: run.id, metadata: { notebook_edit: notebookEdit },
     });
     return { session_id: session.id, run_id: run.id, ok: true, reply: answer, notebook_edit: notebookEdit, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
   }

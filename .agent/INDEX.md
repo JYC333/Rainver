@@ -43,6 +43,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 |---|---|
 | Implemented Runtime Context architecture and decision record | [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) · [modules/runtime-context.md](modules/runtime-context.md) · [decisions/0014-unified-runtime-context-engine.md](decisions/0014-unified-runtime-context-engine.md) |
 | Security and access boundary reference | [architecture/SECURITY_AND_ACCESS_BOUNDARIES.md](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md) |
+| How a conversation is stored and how an Agent's turn is read back (message tree, turn projection, the four states) | [architecture/CONVERSATION.md](architecture/CONVERSATION.md) |
 | Reuse / dependency policy and the canonical mechanism index (load before building anything substantial) | [architecture/REUSE_AND_DEPENDENCY_POLICY.md](architecture/REUSE_AND_DEPENDENCY_POLICY.md) |
 | Test layer and product invariant philosophy | [architecture/TESTING_STRATEGY.md](architecture/TESTING_STRATEGY.md) |
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |

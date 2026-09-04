@@ -181,9 +181,12 @@ export function outcomeForRun(
  * Settle every Task linked to this Run, if nothing else is still running for
  * them.
  *
- * Runs inside the caller's transaction, which already holds the host thread
- * queue lock, so a terminal transition cannot race a queued message into a new
- * Run between the decision and the write.
+ * Runs inside the caller's transaction. A terminal transition cannot race a
+ * new Run in behind the decision, because this writes the Task row and the
+ * dispatch admission takes `SELECT … FOR UPDATE` on that same row — under
+ * READ COMMITTED the two serialize. (It used to say the caller held a
+ * host-thread queue lock; that queue is gone, and the invariant now rests on
+ * the Task row alone.)
  */
 export async function settleTasksForRun(
   db: Queryable,

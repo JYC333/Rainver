@@ -12,25 +12,17 @@ export interface ThreadEventDraft {
 }
 
 const MAX_TOOL_RESULT_SUMMARY_CHARS = 200;
+const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
 
 /**
  * Turns a remote-host vendor CLI's ACP protocol traffic into the thread's
  * normalized conversation events, incrementally as it arrives.
  *
- * Text comes only from streamed deltas (`agent_message_chunk` —
- * see `pushAcpTextDelta`), coalesced into one `assistant_text` event per
- * completed line or tool-event boundary — never from a turn's final
- * consolidated message, which would duplicate the same text already seen
- * via deltas. Tool activity comes only from fully-formed lifecycle signals
- * (`tool_call`/`tool_call_update` — see `pushAcpProtocolEvent`) — never
- * from deltas.
- *
- * Reasoning arrives two ways and both become `assistant_thought`. A runtime
- * that keeps it on its own ACP channel feeds `pushAcpThoughtDelta`; a model
- * that inlines it in the message text as `<think>…</think>` — MiniMax and
- * other reasoning models do this, and no ACP channel separates it — is split
- * out of the text stream here. Without that split the reasoning was stored
- * and displayed as the answer itself.
+ * This is deliberately a thin ACP projection, matching Zed's thread model:
+ * agent-message and agent-thought chunks stay on the channel the protocol
+ * assigned, in arrival order; ToolCall creates or replaces an entry and
+ * ToolCallUpdate carries patch fields for that same id. It never infers
+ * reasoning from message text.
  */
 export function createThreadEventNormalizer(): {
   pushStderr(chunk: string): ThreadEventDraft[];
@@ -40,90 +32,49 @@ export function createThreadEventNormalizer(): {
   finish(): ThreadEventDraft[];
 } {
   let stderrBuffer = "";
-  let textSegment = "";
-  let thoughtSegment = "";
-  // Whether the message stream is currently inside an inlined <think> block.
-  // Streamed deltas split the tags at arbitrary points, so this cannot be
-  // decided per chunk.
-  let insideInlineThink = false;
-  // A partial tag held back across chunks: "<thi" at the end of one delta is
-  // not text, it is the start of a tag whose rest has not arrived.
-  let pendingTag = "";
+  let assistantSegment: {
+    kind: "assistant_text" | "assistant_thought";
+    text: string;
+  } | null = null;
 
-  const OPEN_TAG = "<think>";
-  const CLOSE_TAG = "</think>";
-
-  function flushSegment(kind: "assistant_text" | "assistant_thought"): ThreadEventDraft[] {
-    const buffered = kind === "assistant_text" ? textSegment : thoughtSegment;
-    if (!buffered) return [];
-    if (kind === "assistant_text") textSegment = "";
-    else thoughtSegment = "";
-    return [{ event_type: kind, text: buffered }];
+  function flushAssistantSegment(): ThreadEventDraft[] {
+    if (!assistantSegment?.text) return [];
+    const draft = { event_type: assistantSegment.kind, text: assistantSegment.text };
+    assistantSegment = null;
+    return [draft];
   }
 
   function flushTextSegment(): ThreadEventDraft[] {
-    return [...flushSegment("assistant_thought"), ...flushSegment("assistant_text")];
+    return flushAssistantSegment();
   }
 
   function appendDelta(
     kind: "assistant_text" | "assistant_thought",
     text: string,
   ): ThreadEventDraft[] {
-    if (kind === "assistant_text") textSegment += text;
-    else thoughtSegment += text;
-    let rest = kind === "assistant_text" ? textSegment : thoughtSegment;
-    if (!rest.includes("\n")) return [];
     const drafts: ThreadEventDraft[] = [];
+    if (assistantSegment && assistantSegment.kind !== kind) {
+      drafts.push(...flushAssistantSegment());
+    }
+    if (!assistantSegment) assistantSegment = { kind, text: "" };
+    assistantSegment.text += text;
+    let rest = assistantSegment.text;
+    if (!rest.includes("\n")) return drafts;
     // A chunk can carry more than one completed line.
     let at = rest.indexOf("\n");
     while (at !== -1) {
-      const line = rest.slice(0, at);
+      const line = rest.slice(0, at + 1);
       if (line) drafts.push({ event_type: kind, text: line });
       rest = rest.slice(at + 1);
       at = rest.indexOf("\n");
     }
-    if (kind === "assistant_text") textSegment = rest;
-    else thoughtSegment = rest;
+    assistantSegment.text = rest;
+    if (!rest) assistantSegment = null;
     return drafts;
-  }
-
-  /**
-   * The longest suffix of `value` that could still grow into `tag`. Holding it
-   * back is what keeps a tag split across two deltas from being emitted as
-   * text one character at a time.
-   */
-  function partialTagSuffix(value: string, tag: string): number {
-    const max = Math.min(value.length, tag.length - 1);
-    for (let length = max; length > 0; length -= 1) {
-      if (tag.startsWith(value.slice(value.length - length))) return length;
-    }
-    return 0;
   }
 
   function pushAcpTextDelta(delta: string): ThreadEventDraft[] {
-    if (!delta) return [];
-    const drafts: ThreadEventDraft[] = [];
-    let rest = pendingTag + delta;
-    pendingTag = "";
-    for (;;) {
-      const tag = insideInlineThink ? CLOSE_TAG : OPEN_TAG;
-      const at = rest.indexOf(tag);
-      if (at === -1) break;
-      const before = rest.slice(0, at);
-      if (before) drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", before));
-      // Whatever was buffered belongs to the side being left, and must not be
-      // merged into the first line of the side being entered.
-      drafts.push(...flushSegment(insideInlineThink ? "assistant_thought" : "assistant_text"));
-      insideInlineThink = !insideInlineThink;
-      rest = rest.slice(at + tag.length);
-    }
-    const held = partialTagSuffix(rest, insideInlineThink ? CLOSE_TAG : OPEN_TAG);
-    if (held > 0) {
-      pendingTag = rest.slice(rest.length - held);
-      rest = rest.slice(0, rest.length - held);
-    }
-    if (rest) drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", rest));
-    return drafts;
+    return delta ? appendDelta("assistant_text", delta) : [];
   }
 
   function pushAcpThoughtDelta(delta: string): ThreadEventDraft[] {
@@ -135,31 +86,39 @@ export function createThreadEventNormalizer(): {
     const update = recordValue(recordValue(event.params).update);
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
     if (update.sessionUpdate === "tool_call") {
+      const status = acpToolStatus(stringValue(update.status)) ?? "pending";
       return [
         ...flushTextSegment(),
         {
           event_type: "tool_activity_started",
           tool_call_id: callId,
           tool_name: stringValue(update.title ?? update.name),
-          tool_input_summary: null,
+          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
           // ACP runtime replatform P3 (A9): the 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
           tool_kind: stringValue(update.kind),
+          tool_result_summary: summarizeToolResultContent(update.content)
+            ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
+          status,
         },
       ];
     }
     if (update.sessionUpdate === "tool_call_update") {
       const status = stringValue(update.status);
-      if (status !== "completed" && status !== "failed" && status !== "in_progress") return [];
+      if (status !== null && !["pending", "in_progress", "completed", "failed"].includes(status)) return [];
       return [
         ...flushTextSegment(),
         {
           event_type: "tool_activity_finished",
           tool_call_id: callId,
-          status: status === "failed" ? "failed" : status === "in_progress" ? "in_progress" : "succeeded",
+          tool_name: stringValue(update.title ?? update.name),
+          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
+          tool_kind: stringValue(update.kind),
+          status: acpToolStatus(status),
           // A9: absorbed for claude/opencode; codex-acp 1.6.2 reports none
           // (a known adapter asymmetry, not a bug).
-          tool_result_summary: summarizeToolResultContent(update.content),
+          tool_result_summary: summarizeToolResultContent(update.content)
+            ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
         },
       ];
     }
@@ -189,13 +148,6 @@ export function createThreadEventNormalizer(): {
 
   function finish(): ThreadEventDraft[] {
     const drafts: ThreadEventDraft[] = [];
-    // An unterminated tag at end of stream is text the model actually sent,
-    // not framing: emitting it is better than losing the last few characters
-    // of a turn to a tag that never closed.
-    if (pendingTag) {
-      drafts.push(...appendDelta(insideInlineThink ? "assistant_thought" : "assistant_text", pendingTag));
-      pendingTag = "";
-    }
     drafts.push(...flushTextSegment());
     if (stderrBuffer.trim()) drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
     stderrBuffer = "";
@@ -203,6 +155,25 @@ export function createThreadEventNormalizer(): {
   }
 
   return { pushStderr, pushAcpTextDelta, pushAcpThoughtDelta, pushAcpProtocolEvent, finish };
+}
+
+function acpToolStatus(status: string | null): string | null {
+  if (status === null) return null;
+  if (status === "failed") return "failed";
+  if (status === "completed") return "succeeded";
+  if (status === "pending") return "pending";
+  return "in_progress";
+}
+
+function summarizeJson(value: unknown, maxChars: number): string | null {
+  if (value === undefined || value === null) return null;
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    return null;
+  }
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
 /**

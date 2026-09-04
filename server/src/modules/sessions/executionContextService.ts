@@ -531,23 +531,44 @@ export class ConversationExecutionContextService {
       : [];
     const initializedRuntimeAvailability = context.state === "initialized"
       ? await Promise.all(initializedBindings.map(async (binding) => {
-          const candidate = availableRuntimeProfiles.find((profile) =>
-            profile.agent_id === binding.agent_id && profile.runtime_profile_id === binding.runtime_profile_id);
+          const agentName = participantAgents.find((agent) => agent.agent_id === binding.agent_id)?.agent_name
+            ?? "Unknown Agent";
+          if (!visibleParticipantAgentIds.includes(binding.agent_id)) {
+            return { agentName, usable: false, reason: "The pinned Agent is no longer accessible in this Conversation" };
+          }
+          // Candidate profiles answer a different question: what may be
+          // selected for a new Conversation right now. Continuity for an
+          // initialized Conversation is persisted separately and must be
+          // restored from its binding + Host thread. In particular, a server
+          // or daemon restart must not turn a temporary catalog miss into a
+          // claim that the pinned runtime disappeared.
+          const profile = await repository.getRuntimeProfile(
+            identity.spaceId,
+            binding.agent_id,
+            binding.runtime_profile_id,
+          );
           const thread = await repository.getConversationThread(identity.spaceId, session.id, binding.agent_id);
-          if (!candidate || !thread) {
-            return { agentId: binding.agent_id, usable: false, reason: "The pinned CLI runtime or Host thread is unavailable" };
+          if (!profile || !thread) {
+            return { agentName, usable: false, reason: "The persisted runtime binding or Host thread is missing" };
           }
           const stillPinned = thread.execution_host_id === context.execution_host_id
             && thread.workspace_mode === context.primary_workspace_mode
             && thread.workspace_location_id === context.primary_workspace_location_id
-            && candidate.execution_host_id === thread.execution_host_id
-            && candidate.workspace_mode === thread.workspace_mode
-            && candidate.workspace_location_id === thread.workspace_location_id
-            && candidate.adapter_type === thread.adapter_type
-            && candidate.runtime_installation === thread.runtime_installation;
+            && profile.execution_host_id === thread.execution_host_id
+            && profile.workspace_mode === thread.workspace_mode
+            && profile.workspace_location_id === thread.workspace_location_id
+            && profile.adapter_type === thread.adapter_type
+            && profile.runtime_installation === thread.runtime_installation;
+          const pinnedHost = hosts.find((host) => host.id === thread.execution_host_id) ?? null;
+          const pinnedLocation = thread.workspace_location_id
+            ? locations.find((location) => location.id === thread.workspace_location_id) ?? null
+            : null;
+          const availability = runtimeAvailability(profile, pinnedHost, pinnedLocation, {
+            allowStaleLocation: context.primary_workspace_location_id === pinnedLocation?.id,
+          });
           return stillPinned
-            ? { agentId: binding.agent_id, usable: candidate.usable, reason: candidate.reason }
-            : { agentId: binding.agent_id, usable: false, reason: "The runtime profile no longer matches the pinned Host, CLI, or Primary Workspace" };
+            ? { agentName, usable: availability.usable, reason: availability.reason }
+            : { agentName, usable: false, reason: "The runtime profile no longer matches the pinned Host, CLI, or Primary Workspace" };
         }))
       : [];
     const executableLocations = activeLocations.filter((location) => location.execution_ready && locationIsOnline(location));
@@ -873,7 +894,7 @@ function draftBlockReason(
 
 function initializedBlockReason(
   summary: ConversationExecutionSummary,
-  boundRuntimes: Array<{ agentId: string; usable: boolean; reason: string | null }>,
+  boundRuntimes: Array<{ agentName: string; usable: boolean; reason: string | null }>,
 ): string | null {
   if (!summary.host) return "Execution Host is unavailable";
   if (!summary.host.online) return "Execution Host is offline; reconnect it before sending";
@@ -881,7 +902,7 @@ function initializedBlockReason(
   if (!summary.primary) return "The pinned Primary Workspace is unavailable";
   const unavailable = boundRuntimes.find((runtime) => !runtime.usable);
   if (unavailable) {
-    return `Pinned CLI runtime for Agent '${unavailable.agentId}' is unavailable${unavailable.reason ? `: ${unavailable.reason}` : ""}`;
+    return `Pinned CLI runtime for Agent '${unavailable.agentName}' is unavailable${unavailable.reason ? `: ${unavailable.reason}` : ""}`;
   }
   return null;
 }

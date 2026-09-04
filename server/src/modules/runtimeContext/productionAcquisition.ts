@@ -417,7 +417,7 @@ export async function loadAuthorizedCurrentContextMessage(
 ): Promise<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null } | undefined> {
   return (await db.query<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null }>(
     `SELECT message.content, message.role, message.created_at,
-            message.metadata_json->>'run_id' AS metadata_run_id
+            message.run_id AS metadata_run_id
        FROM messages message
        JOIN sessions session ON session.id=message.session_id AND session.space_id=message.space_id
        LEFT JOIN room_user_members room_member
@@ -428,7 +428,7 @@ export async function loadAuthorizedCurrentContextMessage(
         AND (
           (message.role='user' AND message.user_id=$4
             AND session.room_id IS NULL AND session.user_id=$4
-            AND message.metadata_json->>'run_id'=$5)
+            AND message.run_id=$5)
           OR (message.role='user' AND message.user_id=$4
             AND session.room_id IS NOT NULL AND room_member.user_id IS NOT NULL)
           OR (message.role='system'
@@ -894,7 +894,7 @@ async function loadInvocationRun(
   }
   const messageRun = !invocationId && request.turn.current_message_ref.type === "message"
     ? (await db.query<{ run_id: string | null }>(
-        `SELECT metadata_json->>'run_id' AS run_id
+        `SELECT run_id
            FROM messages
           WHERE id=$1 AND space_id=$2 AND user_id=$3 AND role='user'`,
         [request.turn.current_message_ref.id, request.identity.spaceId, request.identity.userId],

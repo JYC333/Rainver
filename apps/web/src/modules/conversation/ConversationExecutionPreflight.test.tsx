@@ -1,17 +1,17 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentsApi, roomsApi, sessionsApi } from '../../../api/client'
+import { agentsApi, roomsApi, sessionsApi } from '../../api/client'
 import { ConversationExecutionPreflight } from './ConversationExecutionPreflight'
-import type { ConversationExecutionPreflightResponse, RoomDetail } from '../../../types/api'
+import type { ConversationExecutionPreflightResponse, RoomDetail } from '../../types/api'
 
-vi.mock('../../../api/client', () => ({
+vi.mock('../../api/client', () => ({
   agentsApi: { listRuntimeProfiles: vi.fn() },
   roomsApi: { get: vi.fn(), createConversation: vi.fn() },
   sessionsApi: { executionContext: vi.fn(), initializeExecution: vi.fn(), mutateExecutionAttachments: vi.fn() },
 }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ userId: 'user-1' }) }))
+vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ userId: 'user-1' }) }))
 
 const host = {
   host_id: 'host-1', host_name: 'Laptop', host_kind: 'remote', online: true,
@@ -244,14 +244,14 @@ describe('ConversationExecutionPreflight', () => {
     renderPanel()
     expect(await screen.findByText(/reports no usable CLI installation/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Confirm execution context' })).toBeDisabled()
-    expect(screen.getByRole('link', { name: 'Configure or reconnect Host' })).toHaveAttribute('href', '/command-center?tab=hosts')
+    expect(screen.getByRole('link', { name: 'Configure or reconnect Host' })).toHaveAttribute('href', '/command-center')
   })
 
   it('explains an offline Host as a daemon issue, not a browser issue', async () => {
     vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse(false) as never)
     renderPanel()
     expect(await screen.findByText(/browser is still online/i)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Reconnect Host' })).toHaveAttribute('href', '/command-center?tab=hosts')
+    expect(screen.getByRole('link', { name: 'Reconnect Host' })).toHaveAttribute('href', '/command-center')
     expect(screen.getByText(/Execution Host is offline/)).toBeInTheDocument()
   })
 
@@ -267,6 +267,17 @@ describe('ConversationExecutionPreflight', () => {
     expect(screen.getByText('Primary cwd')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Collapse execution context' }))
     expect(screen.queryByText('Primary cwd')).not.toBeInTheDocument()
+  })
+
+  it('uses the participant name when the pinned profile is temporarily absent from the selectable catalog', async () => {
+    const response = initializedResponse() as ConversationExecutionPreflightResponse
+    response.available_runtime_profiles = []
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
+    expect(screen.getByText('Project Agent')).toBeInTheDocument()
+    expect(screen.queryByText('agent-1')).not.toBeInTheDocument()
   })
 
   it('changes attachment access explicitly and keeps cwd unchanged', async () => {

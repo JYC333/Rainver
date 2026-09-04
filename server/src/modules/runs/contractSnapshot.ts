@@ -137,7 +137,7 @@ export function contractRouteHints(value: unknown): unknown {
   return record.route_hints_json ?? record.route_hints ?? null;
 }
 
-/** Shared by every admission path (`PgTaskRepository.createTaskRun`, `hosts/queueAdvance.ts`) that reads a Task's `policy_json.budget_sources`. */
+/** Shared by every admission path (`PgTaskRepository.createTaskRun`, both branches) that reads a Task's `policy_json.budget_sources`. */
 export function budgetSourcesFromPolicy(value: unknown): RunBudgetSource[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is RunBudgetSource => {

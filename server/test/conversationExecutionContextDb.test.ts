@@ -185,6 +185,16 @@ describe("Conversation execution schema", () => {
       },
     );
     expect(initialized).toMatchObject({ state: "initialized", host: { host_id: HOST }, primary: { kind: "managed" } });
+    // The service is stateless: recreating it models a server process restart.
+    // The Conversation must recover from its persisted binding and Host thread,
+    // without allocating replacement identities.
+    const afterRestart = await new ConversationExecutionContextService(db.pool)
+      .preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
+    expect(afterRestart.summary).toMatchObject({
+      can_send: true,
+      blocked_reason: null,
+      runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME },
+    });
     await db.pool.query(`UPDATE agent_runtime_profiles SET adapter_type = 'codex_cli' WHERE id = $1`, [RUNTIME]);
     const preflight = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
     expect(preflight.summary).toMatchObject({

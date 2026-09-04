@@ -1,19 +1,19 @@
 /**
  * Streaming edge routes.
  *
- * - GET /api/v1/runs/:runId/events/stream
+ * - GET /api/v1/runs/:runId/turn/stream
  *
- * Query:
- * - `from_event_index` starts replay at an index (default 0).
- * - `tail=false` replays available events and closes instead of polling.
+ * The turn arrives as an ordered list of parts: a snapshot of everything so
+ * far, then a frame per change. Which event log the Run wrote to is not part
+ * of the contract — see `turnStream.ts`.
  */
 
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { streamRunEvents } from "./service.js";
+import { streamRunTurn } from "./turnStream.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.get("/api/v1/runs/:runId/events/stream", async (request, reply) =>
-    streamRunEvents(context.config, request, reply),
+  app.get("/api/v1/runs/:runId/turn/stream", async (request, reply) =>
+    streamRunTurn(context.config, request, reply),
   );
 }
