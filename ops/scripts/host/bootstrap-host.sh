@@ -5,6 +5,16 @@ REPOSITORY_DOWNLOAD_ROOT="${RAINVER_HOST_RELEASE_DOWNLOAD_ROOT:-https://github.c
 release_channel="${RAINVER_HOST_UPDATE_CHANNEL:-stable}"
 original_args=("$@")
 
+download_file() {
+  local url="$1"
+  local output="$2"
+  if [[ -t 2 ]]; then
+    curl --fail --location --progress-bar "$url" --output "$output"
+  else
+    curl --fail --location --silent --show-error "$url" --output "$output"
+  fi
+}
+
 while (($# > 0)); do
   case "$1" in
     --channel)
@@ -29,12 +39,8 @@ temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rainver-host-bootstrap.XXXXXX")"
 trap 'rm -rf "$temp_dir"' EXIT
 
 echo "Resolving the Rainver Host ${release_channel} installer..."
-curl --fail --location --silent --show-error \
-  "$release_base_url/install-host.sh" \
-  --output "$temp_dir/install-host.sh"
-curl --fail --location --silent --show-error \
-  "$release_base_url/SHA256SUMS" \
-  --output "$temp_dir/SHA256SUMS"
+download_file "$release_base_url/install-host.sh" "$temp_dir/install-host.sh"
+download_file "$release_base_url/SHA256SUMS" "$temp_dir/SHA256SUMS"
 
 installer_hash="$(awk '$2 == "install-host.sh" { print $1; exit }' "$temp_dir/SHA256SUMS")"
 if [[ ! "$installer_hash" =~ ^[0-9a-fA-F]{64}$ ]]; then

@@ -3,6 +3,7 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 importers:
 
@@ -183,7 +184,7 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@22.19.20)(jsdom@25.0.1)(vite@6.4.2(@types/node@22.19.20)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.2)(tsx@4.23.12)(yaml@2.9.0))
 
-  packages/host-daemon:
+  packages/host-adapters:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.70.0
@@ -191,6 +192,9 @@ importers:
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2
+
+  packages/host-daemon:
+    dependencies:
       '@rainver/agent-cli':
         specifier: workspace:*
         version: link:../agent-cli
@@ -201,6 +205,12 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
+      '@agentclientprotocol/claude-agent-acp':
+        specifier: 0.70.0
+        version: 0.70.0(@anthropic-ai/sdk@0.117.1(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
+      '@agentclientprotocol/codex-acp':
+        specifier: 1.6.2
+        version: 1.6.2
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.20

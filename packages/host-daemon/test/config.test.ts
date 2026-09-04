@@ -2,7 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig, requireConfig, saveConfig } from "../src/config.js";
+import { configPath, loadConfig, removeConfig, requireConfig, saveConfig } from "../src/config.js";
+import { runService } from "../src/commands/run.js";
 
 let dir: string;
 
@@ -19,6 +20,12 @@ afterEach(async () => {
 describe("daemon config", () => {
   it("returns null before registration", async () => {
     expect(await loadConfig()).toBeNull();
+  });
+
+  it("lets the private daemon exit cleanly when a revoked service has no registration", async () => {
+    const lines: string[] = [];
+    await expect(runService({ log: (line) => lines.push(line) })).resolves.toBeUndefined();
+    expect(lines).toEqual(["not registered; exiting without reconnecting"]);
   });
 
   it("rejects requireConfig before registration with an actionable message", async () => {
@@ -47,6 +54,12 @@ describe("daemon config", () => {
     const { stat } = await import("node:fs/promises");
     const info = await stat(configPath());
     expect(info.mode & 0o777).toBe(0o600);
+  });
+
+  it("removes only the registration config", async () => {
+    await saveConfig({ server_url: "http://localhost:4000", host_id: "host-1", token: "secret-token", workspaces: {} });
+    await removeConfig();
+    expect(await loadConfig()).toBeNull();
   });
 
   it("throws on a malformed config file instead of silently treating it as unregistered", async () => {

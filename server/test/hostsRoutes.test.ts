@@ -193,6 +193,42 @@ describe("hosts routes", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("lets a bearer-authenticated host revoke itself and invalidates that token", async (ctx) => {
+    if (!db.available || !app || !db.pool) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/pairing-codes",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+      payload: { name: "Self Unregistering Host" },
+    });
+    const register = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO },
+    });
+    const { host_id: hostId, token } = register.json();
+
+    const noAuth = await app.inject({ method: "POST", url: "/api/v1/hosts/me/revoke" });
+    expect(noAuth.statusCode).toBe(401);
+
+    const revoke = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/me/revoke",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(revoke.statusCode).toBe(204);
+
+    const row = await db.pool.query("SELECT status, token_hash FROM hosts WHERE id = $1", [hostId]);
+    expect(row.rows[0]).toMatchObject({ status: "revoked", token_hash: null });
+    const reuse = await app.inject({
+      method: "GET",
+      url: "/api/v1/hosts/me/workspaces",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(reuse.statusCode).toBe(401);
+  });
+
   it("registers, lists, and removes a daemon-registered workspace by host bearer token", async (ctx) => {
     if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());

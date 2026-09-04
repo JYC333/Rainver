@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { register } from "./commands/register.js";
 import { workspaceAdd, workspaceList, workspaceRemove } from "./commands/workspace.js";
-import { runService } from "./commands/run.js";
 import { updateHost, type UpdateHostOptions } from "./commands/update.js";
+import { unregisterHost } from "./commands/unregister.js";
 import { daemonVersion } from "./version.js";
 import { startInstalledService } from "./service.js";
 
@@ -32,6 +32,16 @@ async function main(argv: string[]): Promise<void> {
     const result = await register({ serverUrl: requireFlag(argv, "server"), pairingCode: requireFlag(argv, "code") });
     console.log(`Registered as '${result.name}' (host ${result.host_id}).`);
     if (await startInstalledService()) console.log("Rainver Host background service started.");
+    return;
+  }
+
+  if (command === "unregister") {
+    const localOnly = argv.includes("--local-only");
+    const result = await unregisterHost({ localOnly });
+    if (result.remote === "revoked") console.log("Revoked this host on the control plane.");
+    else if (result.remote === "already_invalid") console.log("The control plane had already revoked or forgotten this host.");
+    else console.warn("Local-only unregister: revoke this host in Rainver's Hosts panel to invalidate its server-side credential.");
+    console.log("Removed the local registration. Run 'rainver-host register' to pair again.");
     return;
   }
 
@@ -66,11 +76,6 @@ async function main(argv: string[]): Promise<void> {
     throw new Error("usage: rainver-host workspace <add|list|remove>");
   }
 
-  if (command === "run") {
-    await runService();
-    return;
-  }
-
   if (command === "update") {
     const enableAutoUpdate = argv.includes("--auto-update");
     const disableAutoUpdate = argv.includes("--no-auto-update");
@@ -99,12 +104,12 @@ async function main(argv: string[]): Promise<void> {
   }
 
   throw new Error(
-    "usage: rainver-host <register|workspace|run|update|version>\n" +
+    "usage: rainver-host <register|unregister|workspace|update|version>\n" +
       "  register --server <url> --code <pairing-code>\n" +
+      "  unregister [--local-only]\n" +
       "  workspace add <path> --project <project_id> [--name <name>]\n" +
       "  workspace list\n" +
       "  workspace remove <workspace_id>\n" +
-      "  run\n" +
       "  update [--channel <stable|edge|nightly>] [--auto-update|--no-auto-update]\n" +
       "  version",
   );

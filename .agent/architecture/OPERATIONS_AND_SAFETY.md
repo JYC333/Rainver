@@ -13,6 +13,7 @@ parent is `RAINVER_ROOT` (default `~/.rainver-data`), used only by `ops/scripts/
 
 ```
 RAINVER_HOME/
+  .env         Deployment settings and secrets (sensitive recovery archive only)
   db/postgres/ Live PostgreSQL data directory (bind-mounted into the postgres container; never archived)
   db/dumps/    pg_dump custom-format dump files (written by ops/scripts/db/dump.sh)
   storage/     Artifact storage files
@@ -20,6 +21,7 @@ RAINVER_HOME/
   config/      Runtime configuration
   workspaces/  Project Folder files
   backups/     Backup archives (auto-pruned to BACKUP_RETENTION_COUNT)
+  credential-backups/ Sensitive recovery archives (operator-managed; never in normal backups)
   logs/        Application logs (optional; excluded from backup by default)
   sandboxes/   Ephemeral sandbox state and stable CLI conversation cwd state (never backed up)
   cache/       Ephemeral cache, including isolated CLI conversation HOME state (never backed up)
@@ -97,11 +99,13 @@ curl -X POST http://localhost:3000/api/v1/system/backups/manual -H "X-API-Key: <
 
 Use `ops/scripts/system/backup.sh` when app services are stopped. It produces the same archive format as `BackupService` (PostgreSQL snapshot + file data + `backup_manifest.json`). PostgreSQL must be running.
 
-Credential state is separate: `ops/scripts/system/backup-credentials.sh` writes a
-credential-only archive and `restore-credentials.sh` restores it explicitly. Normal restore
-never overwrites `secrets/`. Local data and credential archives protect against deletion only,
-not host loss; encrypt both separately with GPG and copy them offsite, with the passphrase
-stored separately, before claiming host-loss protection.
+Sensitive recovery state is separate: `ops/scripts/system/backup-credentials.sh` writes an
+archive containing `secrets/` plus the mode `.env` as `instance.env`, and
+`restore-credentials.sh` restores `secrets/` explicitly while publishing `.env.restored` for
+review by default. `--restore-env` is required to replace the active `.env`. Normal restore
+never overwrites either sensitive location. Local data and sensitive archives protect against
+deletion only, not host loss; encrypt both separately with GPG and copy them offsite, with the
+passphrase stored separately, before claiming host-loss protection.
 
 ```bash
 ops/scripts/system/backup.sh --mode dev
@@ -235,8 +239,8 @@ Dogfooding must stop immediately on any of these:
 
 ## Security Notes
 
-- Normal backup archives exclude `secrets/`; credential archives contain
-  `secrets/provider_keys.key` and CLI login state and are sensitive material.
+- Normal backup archives exclude `secrets/` and `.env`; sensitive recovery archives contain
+  `secrets/provider_keys.key`, CLI login state, the mode environment, and its deployment secrets.
 - Archive permissions: `600` (owner only). Output directory: `700`.
 - No raw secret values are written to stdout, logs, or manifests.
 - For offsite storage: encrypt the data and credential archives separately with

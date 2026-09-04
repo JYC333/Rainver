@@ -20,6 +20,7 @@ on:
       - .github/workflows/host-daemon-release.yml
       - ops/scripts/host/bootstrap-host.sh
       - ops/scripts/host/install-host.sh
+      - packages/host-adapters/**
       - packages/host-daemon/**
       - packages/agent-cli/**
       - packages/folder-read/**
@@ -99,24 +100,37 @@ jobs:
           pnpm --filter @rainver/folder-read build
           pnpm --filter @rainver/host-daemon build
 
-      - name: Assemble self-contained Linux archive
+      - name: Assemble Linux release assets
         shell: bash
         run: |
           set -euo pipefail
           build_sha="$(git rev-parse HEAD)"
-          mkdir -p release deploy "package/rainver-host/node/bin"
-          pnpm --filter @rainver/host-daemon deploy --prod --legacy deploy/app
+          mkdir -p release deploy package/rainver-host package/rainver-host-node/bin package/rainver-host-adapters
+          # The base daemon has no vendor runtime or ACP adapter payload.
+          pnpm --filter @rainver/host-daemon deploy --prod --no-optional deploy/app
           printf '%s\n' "$build_sha" > deploy/app/BUILD_ID
+          node deploy/app/dist/cli.js --version
           cp -a deploy/app "package/rainver-host/app"
           cp "deploy/app/BUILD_ID" "package/rainver-host/BUILD_ID"
-          cp -L "$(command -v node)" "package/rainver-host/node/bin/node"
+
+          # Adapters are downloaded only after a matching vendor CLI is found.
+          pnpm --filter @rainver/host-adapters deploy --prod --no-optional deploy/adapters
+          printf '%s\n' "$build_sha" > deploy/adapters/BUILD_ID
+          node --input-type=module -e "await import('./deploy/adapters/node_modules/@agentclientprotocol/claude-agent-acp/dist/lib.js')"
+          cp -a deploy/adapters/. package/rainver-host-adapters/
+
+          # Node is a shared fallback. Hosts with their own compatible Node do
+          # not download it, and retained daemon releases do not duplicate it.
+          cp -L "$(command -v node)" package/rainver-host-node/bin/node
           tar -czf "release/rainver-host-linux-${{ matrix.arch }}.tar.gz" -C package rainver-host
+          tar -czf "release/rainver-host-adapters-linux-${{ matrix.arch }}.tar.gz" -C package rainver-host-adapters
+          tar -czf "release/rainver-host-node-linux-${{ matrix.arch }}.tar.gz" -C package rainver-host-node
 
       - name: Upload archive for publishing
         uses: actions/upload-artifact@v4
         with:
           name: rainver-host-linux-${{ matrix.arch }}
-          path: release/rainver-host-linux-${{ matrix.arch }}.tar.gz
+          path: release/*.tar.gz
           compression-level: 0
           if-no-files-found: error
 
@@ -142,7 +156,7 @@ jobs:
       - name: Prepare rolling release assets
         run: |
           cp ops/scripts/host/install-host.sh release/install-host.sh
-          (cd release && sha256sum install-host.sh rainver-host-linux-*.tar.gz > SHA256SUMS)
+          (cd release && sha256sum install-host.sh rainver-host-*.tar.gz > SHA256SUMS)
 
       - name: Move the rolling channel tag
         env:

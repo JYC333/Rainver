@@ -142,7 +142,8 @@ request to the configured `openai_compatible_base_url`.
 The master key is a **local-file symmetric key**, not KMS/HSM-managed. Consequences:
 
 - Whoever can read both `RAINVER_HOME/secrets/provider_keys.key` and the database can decrypt all
-  keys — keep credential-only archives separate from normal DB/data backups; combining them
+  keys — keep sensitive recovery archives (`secrets/` plus the reviewed mode `.env` snapshot)
+  separate from normal DB/data backups; combining them
   carries decryptable material.
 - This is appropriate for a single self-hosted instance. Stronger setups (multi-tenant, compliance)
   would move to envelope encryption with a KMS (KMS-wrapped master key, per-space derived subkeys).

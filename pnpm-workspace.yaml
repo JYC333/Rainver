@@ -3,6 +3,12 @@ packages:
   - server
   - apps/*
 
+# pnpm deploy requires injected workspace packages to build a self-contained
+# production dependency graph. Keep injected copies current after local builds.
+injectWorkspacePackages: true
+syncInjectedDepsAfterScripts:
+  - build
+
 allowBuilds:
   '@google/genai': true
   cpu-features: true

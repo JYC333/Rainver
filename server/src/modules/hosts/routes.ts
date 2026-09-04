@@ -125,6 +125,12 @@ function bearerToken(request: FastifyRequest): string | null {
   return header.slice("Bearer ".length).trim() || null;
 }
 
+/** Applies the process-local consequences shared by owner revoke and host self-revoke. */
+function cutOffRevokedHost(hostId: string): void {
+  sharedHostConnectionRegistry.closeConnection(hostId, 1008, "host_revoked");
+  providerProxyLeases.revokeHost(hostId);
+}
+
 /**
  * What a daemon's hello/heartbeat frame contributes to its host row.
  *
@@ -576,11 +582,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // A daemon that was already connected when its token was revoked would
     // otherwise keep executing dispatched runs and heartbeating on its live
     // socket indefinitely — only a future reconnect would be blocked.
-    sharedHostConnectionRegistry.closeConnection(hostId, 1008, "host_revoked");
-    // Cutting the socket stops new work, but an in-flight provider lease is
-    // reachable over plain HTTP and would keep spending this space's provider
-    // credential from a machine that was just cut off.
-    providerProxyLeases.revokeHost(hostId);
+    // Cutting the socket stops new work; revoking leases also stops an
+    // in-flight bound runtime from spending server-held provider credentials.
+    cutOffRevokedHost(hostId);
     return reply.code(204).send();
   });
 
@@ -591,6 +595,25 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!token || !hostsRepo) return null;
     return hostsRepo.authenticate(token);
   }
+
+  // Host-bearer self-revocation lets `rainver-host unregister` complete both
+  // sides without borrowing a browser session. The token is valid for this
+  // Host only, and revoke is terminal, so it cannot affect another row.
+  app.post("/api/v1/hosts/me/revoke", async (request, reply) => {
+    const requestId = resolveRequestId(request);
+    reply.header(REQUEST_ID_HEADER, requestId);
+    const hosts = hostRepositoryFromConfig(context.config);
+    if (!hosts) {
+      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
+    }
+    const host = await authenticateHost(request, hosts);
+    if (!host) return reply.code(401).send({ detail: "Invalid host token" });
+    if (!host.owner_user_id) return reply.code(403).send({ detail: "The server host cannot unregister through the daemon API" });
+    const revoked = await hosts.revoke(host.owner_user_id, host.id);
+    if (!revoked) return reply.code(401).send({ detail: "Invalid host token" });
+    cutOffRevokedHost(host.id);
+    return reply.code(204).send();
+  });
 
   app.post("/api/v1/hosts/me/workspaces", async (request, reply) => {
     const requestId = resolveRequestId(request);

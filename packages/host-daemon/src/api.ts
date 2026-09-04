@@ -9,6 +9,7 @@ import { resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
+import { ensurePackagedAdapter } from "./adapterInstallation.js";
 
 export class ApiError extends Error {
   constructor(
@@ -80,7 +81,14 @@ async function helloInfo(
   serverUrl?: string,
   probes?: RuntimeProbe[],
 ): Promise<HostHelloInfo> {
-  const capabilities = await detectCapabilities(probes ? askRuntimeOptions(probes) : undefined, probes ?? []);
+  const capabilities = await detectCapabilities(
+    probes ? askRuntimeOptions(probes) : undefined,
+    probes ?? [],
+    async (lookup) => {
+      const command = probes?.find(candidate => candidate.adapter_type === lookup.adapter_type)?.argv[0];
+      return command ? ensurePackagedAdapter(command) : true;
+    },
+  );
   const currentPlatform = platform();
   const environment_kind = currentPlatform === "win32"
     ? "windows_native"
@@ -109,6 +117,14 @@ export async function registerHost(serverUrl: string, pairingCode: string): Prom
   return request<RegisterResult>(`${serverUrl}/api/v1/hosts/register`, {
     method: "POST",
     body: JSON.stringify({ pairing_code: pairingCode, ...info }),
+  });
+}
+
+/** Revokes the bearer token that authenticates this daemon and its live socket. */
+export async function revokeCurrentHost(serverUrl: string, token: string): Promise<void> {
+  await request<void>(`${serverUrl}/api/v1/hosts/me/revoke`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
   });
 }
 

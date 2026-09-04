@@ -8,7 +8,7 @@ import {
   type RuntimeProbe,
 } from "@rainver/protocol";
 import { helloInfo } from "../api.js";
-import { configDir, loadConfig, requireConfig } from "../config.js";
+import { configDir, loadConfig, removeConfig } from "../config.js";
 import {
   handleLaunch,
   handleStdin,
@@ -16,6 +16,7 @@ import {
   handleTerminate,
   hasInFlightRuns,
   resolveAcpLaunch,
+  stopAllRunsForRevocation,
   sweepStaleRunProfiles,
   type LaunchFrame,
   type LaunchWorkspace,
@@ -29,11 +30,15 @@ import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } fro
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
 import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 import { clearFailedRuntimeOptionsCache } from "../capabilities.js";
+import { disableInstalledService } from "../service.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const UPDATE_RESTART_POLL_MS = 30_000;
+// The installed unit uses Restart=on-failure: update is an intentional
+// restart, while a revoked/unregistered daemon returns zero and stays down.
+const UPDATE_RESTART_EXIT_CODE = 75;
 /** What the last `hello_ack` said about runtimes; see `helloInfo`. */
 let lastRuntimeProbes: RuntimeProbe[] | undefined;
 
@@ -137,9 +142,13 @@ export function toAmbientImportRequest(
  * until the process is killed, exactly like a systemd/launchd-managed
  * service is expected to.
  */
-export async function runService(options: { log?: (line: string) => void } = {}): Promise<never> {
+export async function runService(options: { log?: (line: string) => void } = {}): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
-  const config = await requireConfig();
+  const config = await loadConfig();
+  if (!config) {
+    log("not registered; exiting without reconnecting");
+    return;
+  }
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
   // A run outlives a single WebSocket connection (§5 — "an interrupted
   // connection while a run is active keeps the process alive"); see
@@ -152,7 +161,16 @@ export async function runService(options: { log?: (line: string) => void } = {})
       const result = await connectOnce(config.server_url, config.token, log, sink, config.workspaces);
       if (result === "update") {
         log("latest release is installed and the host is idle; restarting into it");
-        process.exit(0);
+        process.exit(UPDATE_RESTART_EXIT_CODE);
+      }
+      if (result === "revoked") {
+        stopAllRunsForRevocation(log);
+        await disableInstalledService().catch((error) => {
+          log(`could not disable the revoked service: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        await removeConfig();
+        log("registration revoked by the control plane; removed local credentials and stopped reconnecting");
+        return;
       }
       reconnectDelay = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
@@ -168,7 +186,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update"> {
+export function isRevocationClose(code: number, reason: string): boolean {
+  return code === 1008 && (reason === "host_revoked" || reason === "invalid_token");
+}
+
+function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update" | "revoked"> {
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
@@ -445,6 +467,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       sink.unbindIfCurrent(sendOnThisConnection);
+      if (isRevocationClose(event.code, event.reason)) {
+        resolve("revoked");
+        return;
+      }
       // A launch message already queued when close() was requested may have
       // registered a child before this event. Reconnect and retry later in
       // that case; the marker stays in place and no Run is interrupted.

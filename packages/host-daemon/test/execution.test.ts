@@ -311,7 +311,7 @@ describe("handleLaunch", () => {
     expect(codex.env).toEqual({ CODEX_PATH: "codex", NO_BROWSER: "1" });
     const claude = resolveAcpLaunch("claude-agent-acp", []);
     expect(claude.args).toEqual([resolveAcpEntrypoint("claude-agent-acp")]);
-    expect(claude.env).toEqual({});
+    expect(claude.env).toEqual({ CLAUDE_CODE_EXECUTABLE: "claude" });
   });
 
   it("spawns codex_cli's pinned codex-acp dependency through node rather than a PATH lookup, without setting CODEX_PATH for other adapters", async () => {

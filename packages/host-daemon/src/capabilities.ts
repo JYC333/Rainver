@@ -115,11 +115,13 @@ async function runtimeOptions(
 
 /** Asks one copy for its options; the caller decides how (`api.ts`). */
 export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
+export type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
 
 export async function detectCapabilities(
   askOptions?: AskRuntimeOptions,
   /** What the server can dispatch to; nothing until `hello_ack` says. */
   lookups: readonly RuntimeLookup[] = [],
+  ensureOwnRuntime?: EnsureOwnRuntime,
 ): Promise<DaemonCapabilities> {
   const runtimes: ProbedBinary[] = [];
   const installations: Record<string, RuntimeInstallation[]> = {};
@@ -131,6 +133,7 @@ export async function detectCapabilities(
     if (lookup.runtime) {
       const version = await probeVersion(lookup.runtime);
       if (version !== null) {
+        if (ensureOwnRuntime && !(await ensureOwnRuntime(lookup))) continue;
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
         const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;

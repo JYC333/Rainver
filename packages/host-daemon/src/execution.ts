@@ -10,6 +10,7 @@ import { collectOutputFiles } from "./outputFiles.js";
 import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
+import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 
 export interface LaunchWorkspace {
   kind: "location" | "managed";
@@ -89,28 +90,9 @@ export function substitutePlaceholders(value: string, placeholders: Record<strin
  * resolves its own installed copy and spawns it through `node` rather than
  * relying on PATH lookup.
  */
-const ACP_ADAPTER_ENTRYPOINTS: Readonly<Record<string, string>> = {
-  // Resolve the published bin entrypoints explicitly. Claude ACP's package
-  // intentionally has no default export, so resolving its package root is
-  // not equivalent to resolving the executable that its `bin` field names.
-  "claude-agent-acp": "@agentclientprotocol/claude-agent-acp/dist/index.js",
-  "codex-acp": "@agentclientprotocol/codex-acp/dist/index.js",
-};
-
-const acpEntrypoints = new Map<string, string | null>();
-
 /** Exported for direct testing; not part of this package's public API surface. */
 export function resolveAcpEntrypoint(command: string): string | null {
-  if (!Object.hasOwn(ACP_ADAPTER_ENTRYPOINTS, command)) return null;
-  if (acpEntrypoints.has(command)) return acpEntrypoints.get(command)!;
-  try {
-    const entrypoint = createRequire(import.meta.url).resolve(ACP_ADAPTER_ENTRYPOINTS[command]!);
-    acpEntrypoints.set(command, entrypoint);
-    return entrypoint;
-  } catch {
-    acpEntrypoints.set(command, null);
-    return null;
-  }
+  return resolvePackagedAdapter(command);
 }
 
 /** What actually gets spawned for an ACP argv: the vendor CLI as-is, or a bundled adapter through `node`. */
@@ -140,7 +122,7 @@ export function resolveAcpLaunch(
     if (!tool) throw new Error(`This daemon does not have ${adapterType} ${installation} installed.`);
     return { command: tool.command, args: [...tool.args, ...args], env: { ...tool.env, HOME: tool.home } };
   }
-  if (!ACP_ADAPTER_ENTRYPOINTS[rawCommand]) return { command: rawCommand, args, env: {} };
+  if (!isPackagedAdapter(rawCommand)) return { command: rawCommand, args, env: {} };
   const entrypoint = resolveAcpEntrypoint(rawCommand);
   if (!entrypoint) throw new Error(`This daemon does not have the ${rawCommand} adapter installed.`);
   const env: Record<string, string> = {};
@@ -153,6 +135,10 @@ export function resolveAcpLaunch(
     // confusing drift.
     env.CODEX_PATH = "codex";
     env.NO_BROWSER = "1";
+  } else if (rawCommand === "claude-agent-acp") {
+    // Bundle the ACP bridge, not a second vendor runtime. Capability probing
+    // already finds the trusted host's own Claude installation on PATH.
+    env.CLAUDE_CODE_EXECUTABLE = "claude";
   }
   return { command: process.execPath, args: [entrypoint, ...args], env };
 }
@@ -178,10 +164,20 @@ const launchingRuns = new Set<string>();
  * not delivered".
  */
 const finishingRuns = new Set<string>();
+let registrationRevoked = false;
 
 /** A release updater may restart the daemon only after all Run work is settled. */
 export function hasInFlightRuns(): boolean {
   return activeRuns.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0;
+}
+
+/** A revoked host must stop every trusted-host process, including its process group, immediately. */
+export function stopAllRunsForRevocation(log: (line: string) => void = () => {}): void {
+  registrationRevoked = true;
+  for (const [runId, active] of activeRuns) {
+    log(`run ${runId}: terminating because this host was revoked`);
+    terminateWithEscalation(active.child, true, log);
+  }
 }
 
 /**
@@ -334,6 +330,10 @@ export async function handleLaunch(
   send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
 ): Promise<void> {
+  if (registrationRevoked) {
+    send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
+    return;
+  }
   launchingRuns.add(frame.run_id);
   try {
     await launchRun(frame, send, log);
@@ -475,6 +475,12 @@ async function launchRun(
       });
       return;
     }
+  }
+
+  if (registrationRevoked) {
+    await rm(runDir(frame.run_id), { recursive: true, force: true });
+    send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
+    return;
   }
 
   const child: ChildProcess = spawn(command, spawnArgs, {

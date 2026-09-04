@@ -83,7 +83,7 @@ export default function HostProviderBindings({
             ? (host.capabilities_json?.runtimes?.length
                 // Something is on PATH, just nothing that can be dispatched to.
                 ? `None of this host's runtimes (${host.capabilities_json.runtimes.join(', ')}) can be dispatched to remotely, so there is no backend to choose.`
-                : 'This host has not reported an installed runtime yet. Start the daemon (rainver-host run) and wait for its next heartbeat.')
+                : 'This host has not reported an installed runtime yet. Start the rainver-host systemd service and wait for its next heartbeat.')
             : `None of this host's runtimes (${presentAdapters.map(a => a.display_name).join(', ')}) takes a ModelProvider, so there is no backend to choose.`}
         </p>
       </div>

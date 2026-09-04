@@ -180,6 +180,7 @@ Multi-user dogfooding requires each user to authenticate with their own credenti
 
 ```
 RAINVER_HOME/          (default: ~/.rainver-data/dev/)
+  .env                     Deployment settings and secrets
   db/                      PostgreSQL data volume + pg_dump archives
   storage/                 Artifact storage files
   secrets/                 Encrypted provider key files
@@ -190,8 +191,9 @@ RAINVER_HOME/          (default: ~/.rainver-data/dev/)
 ```
 
 Backups are stored at `RAINVER_HOME/backups/` by default. Normal archives contain `db/`,
-`storage/`, `config/`, and `workspaces/`. Logs optional. `secrets/` uses the separate
-credential archive workflow. `backups/` and `sandboxes/` are always excluded.
+`storage/`, `config/`, and `workspaces/`. Logs optional. `secrets/` and the mode `.env` use the
+separate sensitive recovery archive workflow; the environment is stored as `instance.env` and
+restored to `.env.restored` for review by default. `backups/` and `sandboxes/` are always excluded.
 
 ### Allowed runtime adapters for RC
 
@@ -818,8 +820,9 @@ Backup manifest inspected: <yes / no>
 
 ## Security Notes
 
-- `secrets/provider_keys.key` is included only in explicit credential archives. Keep those
-  separate from normal data archives and treat them as sensitive. Archive permissions: `600`.
+- `secrets/provider_keys.key` and the mode `.env` are included only in explicit sensitive
+  recovery archives. Keep those separate from normal data archives and treat them as sensitive.
+  Archive permissions: `600`; the environment restores to `.env.restored` unless explicitly activated.
 - No raw secret values are written to stdout, logs, or `backup_manifest.json`.
 - For offsite storage: encrypt data and credential archives separately before transferring;
   until both exist off-host, local backups protect deletion but not host loss.

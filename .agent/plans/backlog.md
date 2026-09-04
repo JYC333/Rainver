@@ -322,6 +322,27 @@ part of what the delivery renders, not a mutation applied after it.
 
 ## 8. Execution Runtime
 
+### One Host daemon cannot connect to multiple Rainver servers
+
+Recorded 2026-09-04. The installed daemon currently owns one
+`~/.rainver-host/config.json` containing a single `server_url`, `host_id`,
+token, and workspace map, and the CLI refuses a second registration. Supporting
+multiple servers is intentionally deferred; it should be a real multi-instance
+model rather than an array added to the existing singleton config.
+
+- [ ] Introduce named profiles with isolated server credentials and workspace
+  mappings.
+- [ ] Run profiles as independent systemd instances (for example,
+  `rainver-host@work.service`) so connection, restart, logs, and failure state
+  do not affect another server.
+- [ ] Make `register`, `unregister`, `workspace`, `status`, and `update`
+  explicitly profile-aware, including safe defaults and unambiguous output.
+- [ ] Cover per-profile credential isolation, simultaneous connections,
+  revocation, service lifecycle, and upgrades.
+
+Constraint: one server's revoke, outage, or configuration cleanup must never
+stop another profile or expose its token or workspace mappings.
+
 ### A bound remote run's egress snapshot records `local_cli`
 
 Carried out of the retired remote-host provider-binding plan (P2,

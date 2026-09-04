@@ -115,6 +115,9 @@ Unauthenticated (the pairing code itself is the one-time credential):
 Host-bearer-token authenticated (`Authorization: Bearer <token>`, never a
 user session — the daemon has no session to present):
 
+- `POST /api/v1/hosts/me/revoke` — terminally revokes the calling Host's own
+  token. This is the server half of `rainver-host unregister`; the token has
+  no authority over another Host.
 - `POST /api/v1/hosts/me/workspaces` — `{ project_id, name, display_path? }`,
   requires the host owner to hold Project write access
   (`PgProjectFolderRepository.createRemoteWorkspace`); creates a logical
@@ -866,12 +869,15 @@ real local path is ever written down.
 
 - `rainver-host register --server <url> --code <pairing-code>` — exchanges
   the pairing code for a bearer token.
+- `rainver-host unregister` — revokes this Host on the control plane, stops
+  its systemd service, and removes the local bearer credential and workspace
+  path map. `--local-only` skips remote revocation with an explicit warning.
 - `rainver-host workspace add <path> --project <project_id> [--name <name>]`
   — registers a pre-existing local directory (no mkdir/clone/scan, unlike the
   server-host `create` flow). Requires an explicit `project_id` in phase 1 —
   no cross-space "my projects" picker exists yet.
 - `rainver-host workspace list` / `workspace remove <id>`.
-- `rainver-host run` — service mode: opens the WS connection, sends
+- The private `dist/daemon.js` systemd entrypoint opens the WS connection, sends
   `hello`, including workspace status reports, then `heartbeat` once on
   `hello_ack` (now knowing the server's `runtime_probes`) and every 15s after;
   reconnects with exponential backoff
@@ -898,12 +904,15 @@ real local path is ever written down.
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it.
+  A `host_revoked` or `invalid_token` policy close is terminal rather than a
+  reconnect: the daemon removes its local registration, terminates active Run
+  process groups, and exits successfully so systemd does not restart it.
 
 Linux distribution uses three rolling public GitHub Releases: `host-stable`
 from `master`, `host-edge` from each relevant `dev` push, and `host-nightly`
-from the scheduled `dev` build. Each has separate x64/arm64 archives, an
-embedded Node runtime, SHA-256 manifest, and `install-host.sh`; a target host
-therefore needs neither a source checkout nor Node/pnpm. A channel-neutral
+from the scheduled `dev` build. Each has separate x64/arm64 base, adapter, and
+fallback-Node assets, a SHA-256 manifest, and `install-host.sh`; a target host
+therefore needs neither a source checkout nor pnpm. A channel-neutral
 `host-installer` bootstrap published from `master` is the single public install
 URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
@@ -920,6 +929,16 @@ implementation detail. The package version is read from package metadata, while 
 archive's `BUILD_ID` appends the publishing commit to `daemon_version`, so the
 rolling channel remains diagnosable without numbered release tags. See
 `packages/host-daemon/README.md`.
+
+The base release excludes both vendor CLI binaries and ACP adapter packages.
+It prefers a compatible system Node.js 24 and downloads a single shared Node
+fallback only when required, so retained daemon builds do not duplicate the
+runtime. When heartbeat discovery later finds `codex` or `claude` on the
+captured PATH, the daemon invokes the installed updater to download and verify
+the channel's separate adapter pack before reporting that runtime. The bridges
+then use the PATH-resolved vendor executable (`CODEX_PATH` and
+`CLAUDE_CODE_EXECUTABLE` respectively); an absent vendor CLI makes only that
+runtime unavailable.
 
 Managed Agent workspaces are derived only on the daemon: a launch frame names
 `workspace.kind = managed`, an Agent id, and either a Conversation or
@@ -956,11 +975,10 @@ machine already has).
   removed server-side directly — shown, not reconciled.
 - **Host name squatting**: `uq_hosts_owner_name` has no status filter, so an
   abandoned `pending_pairing` row (expired, never exchanged) or a `revoked`
-  host permanently occupies its name — there is no automatic cleanup. The
-  owner can see the stuck row via `GET /api/v1/hosts` and revoke it manually
-  to free the name (`revoke()` does not filter by current status, so this
-  works even on a `pending_pairing` row); a scheduled sweep of expired
-  `pending_pairing` rows is a reasonable P2+ addition, not required for P1.
+  host permanently occupies its name — there is no automatic cleanup, and a
+  later pairing currently needs a different display name. A cleanup policy
+  for expired pending rows and retained revoked audit rows is a reasonable
+  P2+ addition, not required for P1.
 - Remote proposal/apply governance, content synchronization, divergence
   detection, quota probing, and real Windows-native/WSL hardware verification
   remain deferred. Location `execution_ready` is persisted and heartbeat-

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -51,4 +51,9 @@ export async function requireConfig(): Promise<DaemonConfig> {
 export async function saveConfig(config: DaemonConfig): Promise<void> {
   await mkdir(dirname(configPath()), { recursive: true, mode: 0o700 });
   await writeFile(configPath(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+/** Removes only the registration credential and workspace-path map, not installed tools or managed workspaces. */
+export async function removeConfig(): Promise<void> {
+  await rm(configPath(), { force: true });
 }

@@ -1,8 +1,16 @@
 # Rainver Host (Linux)
 
 `rainver-host` connects a machine you own to a Rainver control plane and runs
-as a systemd user service. The release archive includes its own Node runtime;
-the target machine does not need this repository, pnpm, or Node.js.
+as a systemd user service. The target machine does not need this repository or
+pnpm. The installer uses an existing Node.js 24 installation when available;
+otherwise it downloads one shared fallback runtime that is not duplicated by
+daemon updates.
+
+Vendor runtimes are not bundled: install the official `codex`, `claude`, or
+other CLI you intend to use on the host. Rainver checks the host's captured
+`PATH` every heartbeat. When Codex or Claude appears later, its small ACP
+adapter pack is downloaded, checksum-verified, and enabled automatically
+before that runtime is reported as available.
 
 ## Install and pair
 
@@ -20,7 +28,23 @@ rainver-host register --server https://rainver.example.com --code <pairing-code>
 ```
 
 Successful registration enables and starts the systemd user service. There is
-no need to keep the terminal open or run `rainver-host run` yourself.
+no need to keep the terminal open; the daemon entrypoint is private to the
+installed systemd unit rather than a public `rainver-host` command.
+
+To disconnect this machine permanently, revoke the server-side credential,
+stop the service, and remove the local registration in one command:
+
+```bash
+rainver-host unregister
+```
+
+Revoking the Host from Rainver's Hosts panel also stops the daemon from
+reconnecting and removes its local registration the next time it receives the
+revocation or attempts to connect. If the control plane is permanently
+unreachable, `rainver-host unregister --local-only` removes only the local
+registration; revoke the old Host in the Web UI separately.
+Revoked rows remain visible as audit history. Under the current Host-name
+uniqueness rule, use a different machine display name if you pair it again.
 
 Automatic updates are opt-in. They check the selected release channel every
 six hours, verify its SHA-256 checksum, switch the installed version atomically,

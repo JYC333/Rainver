@@ -52,7 +52,8 @@ The bundled PostgreSQL containers have stable names per mode:
 | `$RAINVER_ROOT/<mode>/db/postgres` | Live PostgreSQL data directory (bind-mounted into the postgres container) | **No** — never archived. The database is captured logically via `pg_dump`. |
 | `$RAINVER_ROOT/<mode>/db/dumps` | `pg_dump` custom-format dump files written by `ops/scripts/db/dump.sh` | Operator-managed; not part of the system archive |
 | `storage/`, `artifacts/`, `config/`, `workspaces/` | Non-credential file data | Yes |
-| `secrets/` | Credential master key and CLI login state | **No** — separate credential archive only |
+| `secrets/` | Credential master key and CLI login state | **No** — separate sensitive recovery archive only |
+| `.env` | Deployment settings and secrets | **No** — snapshotted as `instance.env` in the sensitive recovery archive |
 | `logs/` | Application logs | Optional (`BACKUP_INCLUDE_LOGS=true`) |
 | `backups/`, `cache/`, `sandboxes/` | Archives / ephemeral | No |
 
@@ -88,10 +89,11 @@ The server reads these on startup and registers its backup tick with the server 
 
 `backups/`, `cache/`, `sandboxes/`, and the live `db/postgres` directory are never included.
 
-**Credential separation:** normal archives never contain `secrets/`. Use
-`ops/scripts/system/backup-credentials.sh` for an explicit credential-only archive and
-`restore-credentials.sh` to restore it separately. This prevents one ordinary data archive
-from containing both the encrypted provider-key database rows and their decryption key.
+**Sensitive-state separation:** normal archives never contain `secrets/` or the mode `.env`.
+Use `ops/scripts/system/backup-credentials.sh` for an explicit sensitive recovery archive and
+`restore-credentials.sh` to restore it separately. The archive contains `secrets/` plus an
+`instance.env` snapshot. This prevents one ordinary data archive from containing both the
+encrypted provider-key database rows and their decryption key or deployment secrets.
 
 ### Archive naming
 
@@ -177,10 +179,10 @@ ops/scripts/system/backup.sh --mode dev --output /mnt/backups
 
 This runs `pg_dump` inside the postgres container, copies the file data, writes a `backup_manifest.json` with the same schema as `BackupService` (including `backup_interval_hours` and `backup_retention_count`, read from `BACKUP_INTERVAL_HOURS` / `BACKUP_RETENTION_COUNT` in the mode `.env`, defaulting to `24` / `7`), and produces `system-<timestamp>.tar.gz`. It starts PostgreSQL automatically if needed and stops it afterward only if backup started it. By default, `ops/scripts/system/backup.sh` refuses to run while `frontend`, `server`, or `deployer` are active because file data can change during the backup. Use `BackupService` or `POST /api/v1/system/backups/manual` for online backup while the server is running.
 
-## Separate credential backup
+## Separate sensitive recovery backup
 
-Credential state is deliberately excluded from every normal data archive. With app services
-stopped, create and restore it explicitly:
+Credential state and the mode `.env` are deliberately excluded from every normal data archive.
+With app services stopped, create and restore them explicitly:
 
 ```bash
 ops/scripts/system/backup-credentials.sh --mode dev
@@ -191,10 +193,25 @@ ops/scripts/system/restore-credentials.sh \
   --mode dev --force
 ```
 
-The credential archive contains only `secrets/` plus a
-`credential_backup_manifest.json`. It is mode `0600`, but it is not encrypted by default.
-Normal data restore never overwrites `secrets/`; restore the credential archive as a separate
-operator decision before starting the app.
+The sensitive archive contains `secrets/`, an `instance.env` snapshot, and
+`credential_backup_manifest.json` (`rainver-credentials.v1`). It is mode `0600`, but it is not
+encrypted by default. Normal data restore never overwrites either sensitive location; restore
+this archive as a separate operator decision before starting the app.
+
+By default, `restore-credentials.sh` restores `secrets/` and publishes the environment snapshot
+as `$RAINVER_ROOT/<mode>/.env.restored` for review. It never silently replaces the active `.env`.
+On a fresh replacement host the command can run before an active `.env` exists; it checks for
+running services through Docker's Compose labels in that case.
+After checking target-specific IPs, URLs, paths, and ports, either merge it manually or explicitly
+restore it as the active environment:
+
+```bash
+ops/scripts/system/restore-credentials.sh \
+  <credential-archive.tar.gz> --mode prod --force --restore-env
+```
+
+Generated `.server.env` and `.runner.env` files are not archived; the ops scripts recreate them
+from the reviewed mode `.env`.
 
 ### Manual encrypted offsite copy (required for host-loss protection)
 
@@ -305,8 +322,9 @@ curl -s "http://localhost:3000/api/v1/runs/<run_id>/steps?space_id=personal"   #
 
 ## Security considerations
 
-- Normal data archives exclude `secrets/`. Credential archives contain the master key and
-  CLI login state and must be handled as high-sensitivity material.
+- Normal data archives exclude `secrets/` and `.env`. Sensitive recovery archives contain the
+  master key, CLI login state, database/internal tokens, and deployment configuration, and must
+  be handled as high-sensitivity material.
 - Archive permissions are set to `600` (owner only) and the output directory to `700`.
   **`chmod 600` is necessary but is not encryption** — it only restricts other local
   users; it does nothing once the file leaves the machine.

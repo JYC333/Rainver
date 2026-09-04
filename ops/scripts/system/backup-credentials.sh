@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Create a separate credential archive containing only RAINVER_HOME/secrets.
-# This archive is intentionally never created by BackupService or backup.sh.
-# Stop app writers first so CLI login state and the master key are copied consistently.
+# Create a separate sensitive recovery archive containing RAINVER_HOME/secrets
+# and a review-only snapshot of the mode .env. This archive is intentionally
+# never created by BackupService or backup.sh. Stop app writers first so CLI
+# login state, the master key, and deployment secrets are copied consistently.
 #
 # Usage:
 #   ops/scripts/system/backup-credentials.sh [--mode dev|test|prod] [--output DIR] [--force-running]
@@ -30,6 +31,10 @@ local_compose_init "$MODE"
 
 if [[ ! -d "$MODE_ROOT/secrets" ]]; then
   echo "ERROR: credential directory not found: $MODE_ROOT/secrets" >&2
+  exit 1
+fi
+if [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]]; then
+  echo "ERROR: mode environment file is missing or not a regular file: $ENV_FILE" >&2
   exit 1
 fi
 
@@ -64,6 +69,7 @@ verify_staging=""
 trap 'rm -rf "$staging"; [[ -z "$verify_staging" ]] || rm -rf "$verify_staging"; rm -f "$archive_tmp"' EXIT
 
 cp -a "$MODE_ROOT/secrets" "$staging/secrets"
+install -m 600 "$ENV_FILE" "$staging/instance.env"
 python3 - "$staging/credential_backup_manifest.json" "$MODE_ROOT" <<'PY'
 import json
 import sys
@@ -74,7 +80,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
         "backup_format": "rainver-credentials.v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_root": sys.argv[2],
-        "included_paths": ["secrets/"],
+        "included_paths": ["secrets/", "instance.env"],
     }, fh, indent=2)
     fh.write("\n")
 PY
@@ -83,11 +89,12 @@ tar -czf "$archive_tmp" -C "$staging" .
 tar -tzf "$archive_tmp" >/dev/null
 verify_staging="$(mktemp -d -t rainver-credential-backup-verify-XXXXXX)"
 python3 "$SCRIPT_DIR/safe_extract.py" "$archive_tmp" "$verify_staging" \
-  secrets credential_backup_manifest.json
+  secrets instance.env credential_backup_manifest.json
 rm -rf "$verify_staging"
 verify_staging=""
 archive="$(python3 "$SCRIPT_DIR/atomic_ops.py" publish "$archive_tmp" "$archive")"
 archive_tmp=""
 echo "[credential-backup] done: $archive"
 echo "[credential-backup] encrypt before offsite transfer; keep the passphrase separate"
+echo "[credential-backup] includes a sensitive snapshot of $ENV_FILE"
 echo "[credential-backup] restore with: ops/scripts/system/restore-credentials.sh $archive --mode $MODE"

@@ -136,9 +136,10 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # Stop frontend, server, and deployer first; postgres must remain running.
 ./ops/scripts/system/restore.sh <archive.tar.gz> [--mode dev|test|prod] [--force] [--force-running]
 
-# Credential material is intentionally separate from normal data archives.
+# Sensitive credential and deployment environment material is intentionally separate from normal data archives.
 ./ops/scripts/system/backup-credentials.sh [--mode dev|test|prod]
-./ops/scripts/system/restore-credentials.sh <credential-archive.tar.gz> [--mode dev|test|prod] [--force]
+# Defaults to restoring secrets and publishing .env.restored for operator review.
+./ops/scripts/system/restore-credentials.sh <credential-archive.tar.gz> [--mode dev|test|prod] [--force] [--restore-env]
 ```
 
 See [docs/BACKUP_AND_RESTORE.md](../docs/BACKUP_AND_RESTORE.md) for the full model.
@@ -223,6 +224,9 @@ rainver-host register --server https://rainver.example.com --code <pairing-code>
 rainver-host update --auto-update
 rainver-host update
 rainver-host update --channel edge
+
+# Disconnect this machine permanently:
+rainver-host unregister
 ```
 
 See `packages/host-daemon/README.md` for service/log commands and the

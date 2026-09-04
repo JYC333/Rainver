@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { startInstalledService } from "../src/service.js";
+import { disableInstalledService, startInstalledService, stopInstalledService } from "../src/service.js";
 
 describe("installed host service", () => {
   it("starts systemd after an installed CLI registers", async () => {
@@ -12,5 +12,17 @@ describe("installed host service", () => {
     const run = vi.fn(async () => {});
     await expect(startInstalledService({}, run)).resolves.toBe(false);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("disables and stops systemd when an installed CLI unregisters", async () => {
+    const run = vi.fn(async () => {});
+    await expect(stopInstalledService({ RAINVER_HOST_INSTALL_ROOT: "/opt/rainver-host" }, run)).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith("systemctl", ["--user", "disable", "--now", "rainver-host.service"]);
+  });
+
+  it("can disable a revoked service from inside the daemon without stopping its caller", async () => {
+    const run = vi.fn(async () => {});
+    await expect(disableInstalledService({ RAINVER_HOST_INSTALL_ROOT: "/opt/rainver-host" }, run)).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith("systemctl", ["--user", "disable", "rainver-host.service"]);
   });
 });

@@ -42,6 +42,15 @@ describe("capability discovery", () => {
       }
     }
   });
+
+  it("does not advertise a vendor runtime until its adapter is ready", async () => {
+    const lookup: RuntimeLookup[] = [{ adapter_type: "test_adapter", runtime: "git", login: null }];
+    const unavailable = await detectCapabilities(undefined, lookup, async () => false);
+    expect(unavailable.installations.test_adapter).toBeUndefined();
+
+    const available = await detectCapabilities(undefined, lookup, async () => true);
+    expect(available.installations.test_adapter?.[0]?.id).toBe("own");
+  });
 });
 
 describe("what a runtime says it can be set to", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseServerFrame } from "../src/commands/run.js";
+import { isRevocationClose, parseServerFrame } from "../src/commands/run.js";
 
 // `hello_ack.runtime_probes` is what decides which binary this daemon spawns
 // for an adapter; the shape is the shared contract's, not a local parser's.
@@ -35,5 +35,14 @@ describe("runtime probes in hello_ack", () => {
         expect(parsed.ok, JSON.stringify(malformed)).toBe(false);
       }
     }
+  });
+});
+
+describe("terminal WebSocket closes", () => {
+  it("treats explicit token revocation as terminal but reconnects after unrelated policy closes", () => {
+    expect(isRevocationClose(1008, "host_revoked")).toBe(true);
+    expect(isRevocationClose(1008, "invalid_token")).toBe(true);
+    expect(isRevocationClose(1008, "not_authenticated")).toBe(false);
+    expect(isRevocationClose(1000, "host_revoked")).toBe(false);
   });
 });
