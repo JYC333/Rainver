@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import type { InstanceOperationsPolicy } from "../settings/index.js";
 import { type BackupManifest, serializeManifest } from "./manifest.js";
 
 const execFileAsync = promisify(execFile);
@@ -54,7 +55,17 @@ export interface BackupEntry {
 }
 
 export class BackupService {
-  constructor(private readonly config: ServerConfig) {}
+  constructor(
+    private readonly config: ServerConfig,
+    private readonly policy: Pick<
+      InstanceOperationsPolicy,
+      "backup_interval_hours" | "backup_retention_count" | "backup_include_logs"
+    > = {
+      backup_interval_hours: config.backupIntervalHours,
+      backup_retention_count: config.backupRetentionCount,
+      backup_include_logs: config.backupIncludeLogs,
+    },
+  ) {}
 
   async createBackup(kind: "auto" | "manual"): Promise<string> {
     if (!this.config.backupDatabaseUrl) {
@@ -89,8 +100,8 @@ export class BackupService {
           included_paths: included,
           excluded_paths: excluded,
           db_snapshot_method: "pg_dump_custom",
-          backup_interval_hours: this.config.backupIntervalHours,
-          backup_retention_count: this.config.backupRetentionCount,
+          backup_interval_hours: this.policy.backup_interval_hours,
+          backup_retention_count: this.policy.backup_retention_count,
           warnings,
           ...versionMetadata,
         };
@@ -143,7 +154,7 @@ export class BackupService {
     try {
       releaseLock = await acquireLock(join(backupRoot, ".backup.lock"));
       const autoBackups = (await this.listBackups()).filter((entry) => entry.kind === "auto");
-      const toPrune = autoBackups.slice(this.config.backupRetentionCount);
+      const toPrune = autoBackups.slice(this.policy.backup_retention_count);
       const pruned: string[] = [];
       for (const entry of toPrune) {
         const fullPath = join(backupRoot, entry.name);
@@ -199,7 +210,7 @@ export class BackupService {
     }
 
     const logsSource = join(dataRoot, "logs");
-    if (this.config.backupIncludeLogs && (await pathExists(logsSource))) {
+    if (this.policy.backup_include_logs && (await pathExists(logsSource))) {
       await cp(logsSource, join(staging, "logs"), { recursive: true, force: true });
       await assertSafeBackupTree(join(staging, "logs"));
       included.push("logs/");
@@ -272,10 +283,27 @@ export async function assertSafeBackupTree(root: string): Promise<void> {
   }
 }
 
-export async function runScheduledBackup(config: ServerConfig): Promise<void> {
-  const service = new BackupService(config);
+export async function runScheduledBackup(
+  config: ServerConfig,
+  policy?: InstanceOperationsPolicy,
+): Promise<void> {
+  const service = new BackupService(config, policy);
   await service.createBackup("auto");
   await service.pruneOldBackups();
+}
+
+export function automaticBackupIsDue(
+  entries: readonly BackupEntry[],
+  intervalHours: number,
+  now: Date = new Date(),
+): boolean {
+  const latestCreatedAt = entries.reduce((latest, entry) => {
+    if (entry.kind !== "auto") return latest;
+    const createdAt = Date.parse(entry.created_at);
+    return Number.isFinite(createdAt) ? Math.max(latest, createdAt) : latest;
+  }, Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(latestCreatedAt)) return true;
+  return latestCreatedAt + intervalHours * 60 * 60 * 1000 <= now.getTime();
 }
 
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {

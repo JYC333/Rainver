@@ -4,7 +4,7 @@ import { getDbPool } from "../../db/pool.js";
 import { startSchedulerRegistry, type ScheduledTask } from "./registry.js";
 import { scanDailyReportsAndEnqueue } from "../dailyReports/scheduler.js";
 import { scanAutomationsAndFire } from "../automations/scheduler.js";
-import { runScheduledBackup } from "../backups/service.js";
+import { automaticBackupIsDue, BackupService, runScheduledBackup } from "../backups/service.js";
 import { pruneSupersededCustomSourceHandlerArtifacts } from "../sources/customSources/customSourceArtifactRetention.js";
 import { runDueMemoryMaintenanceJobs } from "../memory/maintenanceJobs.js";
 import { withDbTransaction } from "../routeUtils/common.js";
@@ -25,6 +25,7 @@ import { AutonomyRecoveryService } from "../autonomy/recoveryService.js";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning.js";
 import { RoomConversationSummaryService } from "../rooms/conversationSummaryService.js";
 import { RoomConversationTitleService } from "../rooms/conversationTitleService.js";
+import { readInstanceOperationsPolicy } from "../settings/index.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -219,12 +220,14 @@ export function startBackgroundServices(
     });
   }
 
-  if (config.contentAccessLogRetentionEnabled && config.databaseUrl) {
+  if (config.databaseUrl) {
     tasks.push({
       name: "content_access_log_retention",
       intervalSeconds: config.contentAccessLogPruneIntervalSeconds,
       run: async () => {
-        const deleted = await pruneContentAccessLogs(config);
+        const settings = await readInstanceOperationsPolicy(config);
+        if (!settings.content_access_log_retention_enabled) return;
+        const deleted = await pruneContentAccessLogs(config, settings.content_access_log_retention_days);
         if (deleted > 0) log?.info(`[scheduler] content_access_log pruned ${deleted} row(s)`);
       },
       runOnStart: false,
@@ -270,17 +273,31 @@ export function startBackgroundServices(
   }
 
   if (config.backupEnabled) {
+    let firstBackupTick = true;
     tasks.push({
       name: "backup_scheduler",
-      intervalSeconds: config.backupIntervalHours * 3600,
+      // Policy is DB-backed and may change without a restart. A small fixed
+      // reconciler cadence checks whether the configured interval is due.
+      intervalSeconds: 300,
       // A dump legitimately runs far longer than the default reporting
       // deadline; without this a normal backup would be reported as a stall.
-      timeoutSeconds: Math.max(3600, config.backupIntervalHours * 3600),
+      timeoutSeconds: 3600,
       run: async () => {
-        await runScheduledBackup(config);
+        const settings = await readInstanceOperationsPolicy(config);
+        const isFirstTick = firstBackupTick;
+        firstBackupTick = false;
+        if (isFirstTick && !settings.backup_on_startup) return;
+        const service = new BackupService(config, settings);
+        if (!isFirstTick && !automaticBackupIsDue(
+          await service.listBackups(),
+          settings.backup_interval_hours,
+        )) return;
+        await runScheduledBackup(config, settings);
         log?.info("[scheduler] backup_scheduler completed tick");
       },
-      runOnStart: config.backupOnStartup,
+      // Always reconcile once at boot; the DB-backed setting decides whether
+      // that first pass creates an archive.
+      runOnStart: true,
       awaitRunOnStart: false,
     });
   }
@@ -334,11 +351,14 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
   for (const row of spaces.rows) await orchestrator.reconcileAll(row.space_id);
 }
 
-export async function pruneContentAccessLogs(config: ServerConfig): Promise<number> {
+export async function pruneContentAccessLogs(
+  config: ServerConfig,
+  retentionDays = config.contentAccessLogRetentionDays,
+): Promise<number> {
   if (!config.databaseUrl) return 0;
   const db = getDbPool(config.databaseUrl);
   const cutoff = new Date(
-    Date.now() - config.contentAccessLogRetentionDays * 24 * 60 * 60 * 1000,
+    Date.now() - retentionDays * 24 * 60 * 60 * 1000,
   ).toISOString();
   const result = await db.query(
     `DELETE FROM content_access_logs WHERE accessed_at < $1`,

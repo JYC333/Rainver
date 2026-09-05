@@ -104,6 +104,58 @@ describe("compose server config", () => {
     }
   });
 
+  it("uses distinct loopback-only production host ports by default", () => {
+    const prodServer = serverServiceBlock("prod");
+    const prodFrontend = frontendServiceBlock("prod");
+
+    expect(prodFrontend).toContain(
+      '"${RAINVER_WEB_BIND:-127.0.0.1}:${RAINVER_WEB_PORT:-28400}:80"',
+    );
+    expect(prodServer).toContain(
+      "PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-28421}",
+    );
+    expect(prodServer).toContain(
+      '"${PROVIDER_PROXY_BIND:-127.0.0.1}:${PROVIDER_PROXY_PORT:-28421}:${PROVIDER_PROXY_PORT:-28421}"',
+    );
+    expect(prodFrontend).not.toContain('"80:80"');
+    expect(prodFrontend).not.toContain('"3000:5173"');
+    expect(prodServer).not.toContain("PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}");
+  });
+
+  it("keeps runtime product policy and internal defaults out of every env template", () => {
+    for (const mode of ["dev", "test", "prod"] as const) {
+      const template = readFileSync(join(repoRoot, "ops", "env", `.env.${mode}.example`), "utf8");
+      for (const key of [
+        "BACKUP_INTERVAL_HOURS",
+        "BACKUP_RETENTION_COUNT",
+        "BACKUP_INCLUDE_LOGS",
+        "BACKUP_ON_STARTUP",
+        "SERVER_DAILY_REPORT_SCHEDULER_ENABLED",
+        "SERVER_DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS",
+        "SERVER_AUTOMATION_SCHEDULER_ENABLED",
+        "SERVER_AUTOMATION_SCHEDULER_INTERVAL_SECONDS",
+        "SERVER_MEMORY_ACCESS_LOG_RETENTION_ENABLED",
+        "SERVER_MEMORY_ACCESS_LOG_RETENTION_DAYS",
+        "SERVER_MEMORY_ACCESS_LOG_PRUNE_INTERVAL_SECONDS",
+        "SERVER_INTAKE_EXTRACTION_SCHEDULER_ENABLED",
+        "SERVER_INTAKE_EXTRACTION_SCHEDULER_INTERVAL_SECONDS",
+        "SERVER_LOG_LEVEL",
+        "SERVER_REQUEST_TIMEOUT_MS",
+        "RUNTIME_TOOLS_ROOT",
+        "DEFAULT_USER_ID",
+        "REFLECTOR_MODE",
+        "MAX_CONCURRENT_DOCKER_RUNS",
+        "WORKSPACE_ROOT",
+        "SANDBOX_ROOT",
+      ]) {
+        expect(template, `${mode} template contains ${key}`).not.toContain(key);
+      }
+    }
+    const template = readFileSync(join(repoRoot, "ops", "env", ".env.prod.example"), "utf8");
+    expect(template).toContain("BACKUP_ENABLED=true");
+    expect(template).toContain("INSTANCE_ADMIN_EMAIL=owner@example.com");
+  });
+
   it("builds the local protocol package before installing frontend dependencies", () => {
     const dockerfile = readFileSync(
       join(repoRoot, "apps", "web", "Dockerfile"),

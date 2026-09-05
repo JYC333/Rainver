@@ -67,13 +67,14 @@ In `$RAINVER_ROOT/<mode>/.env`:
 
 ```
 BACKUP_ENABLED=true
-BACKUP_INTERVAL_HOURS=24
-BACKUP_RETENTION_COUNT=7
-BACKUP_INCLUDE_LOGS=false
-BACKUP_ON_STARTUP=true
 ```
 
-The server reads these on startup and registers its backup tick with the server scheduler registry. `BACKUP_ON_STARTUP=true` triggers an immediate backup in the background after the server starts; it does not block readiness or dependent services while `pg_dump` and archive compression run.
+The server reads this deployment capability on startup and registers its backup
+reconciler with the server scheduler registry. Configure the interval, retained
+automatic archive count, log inclusion, and startup backup behavior in
+**Instance Settings → Operations & retention**. These database-backed policies
+take effect without restarting the server. A startup backup runs in the
+background and does not block readiness or dependent services.
 
 ### Archive contents
 
@@ -150,7 +151,8 @@ log a strong warning. See `server/src/modules/backups/guard.ts`.
 ### Overlap protection and retention
 
 - Local advisory lock file `backups/.backup.lock` prevents overlapping backups across server processes on the same host.
-- Auto backups: the latest `BACKUP_RETENTION_COUNT` (default 7) are kept; older ones are pruned after each run. Manual backups are never pruned automatically.
+- Auto backups: the latest configured count (default 7) are kept; older ones
+  are pruned after each run. Manual backups are never pruned automatically.
 
 ### API
 

@@ -42,7 +42,7 @@ services:
       # proxy reachable from that machine, which needs a port that survives a
       # restart. Fixed here so the published mapping below is stable; the
       # in-network sandbox path is unaffected either way.
-      - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}
+      - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-28421}
       # PROVIDER_PROXY_EXTERNAL_BASE_URL is deliberately NOT set here: an
       # `environment:` entry overrides `env_file`, so declaring it would
       # silently blank out whatever the deployment put in `.server.env`.
@@ -52,7 +52,7 @@ services:
       # Loopback by default: reachable from this machine only. Widening this
       # bind is the deliberate step that exposes lease traffic to the local
       # network, and it is plaintext until a TLS entry exists.
-      - "${PROVIDER_PROXY_BIND:-127.0.0.1}:${PROVIDER_PROXY_PORT:-8021}:${PROVIDER_PROXY_PORT:-8021}"
+      - "${PROVIDER_PROXY_BIND:-127.0.0.1}:${PROVIDER_PROXY_PORT:-28421}:${PROVIDER_PROXY_PORT:-28421}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,7 +113,9 @@ services:
     # service (see apps/web/nginx.conf). Build context is the repo root because
     # official plugin frontend source lives under plugins/official/*/web.
     ports:
-      - "80:80"
+      # Loopback by default so a production instance in WSL is local-only
+      # unless the operator deliberately exposes it to the LAN or a reverse proxy.
+      - "${RAINVER_WEB_BIND:-127.0.0.1}:${RAINVER_WEB_PORT:-28400}:80"
     depends_on:
       server:
         condition: service_healthy

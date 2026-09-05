@@ -5072,5 +5072,7 @@ export type {
   ThreadReferenceProvenance,
   ThreadReferenceDisclosureRequired,
   ProjectConversationsResponse,
+  InstanceOperationsSettings,
+  InstanceOperationsSettingsUpdate,
 } from '@rainver/protocol'
 export type { ProjectBoardResponse as ProjectBoard, TaskWorkViewResponse as TaskWorkView } from '@rainver/protocol'

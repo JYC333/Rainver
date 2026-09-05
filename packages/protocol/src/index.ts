@@ -62,6 +62,7 @@ export * from "./runtimeHost.js";
 
 // Token usage metering contracts
 export * from "./usage.js";
+export * from "./instanceOperations.js";
 
 // Targeted cross-space publication snapshots and imports
 export * from "./publications.js";

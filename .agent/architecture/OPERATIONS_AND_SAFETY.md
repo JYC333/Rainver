@@ -31,20 +31,17 @@ RAINVER_HOME/
 
 `BackupService` (`server/src/modules/backups/service.ts`) is the canonical full-system backup mechanism. It runs automatically on the server scheduler and writes a structured manifest into every archive. The full procedure lives in [docs/BACKUP_AND_RESTORE.md](../../docs/BACKUP_AND_RESTORE.md).
 
-**Enable in `$RAINVER_ROOT/<mode>/.env`:**
+**Enable the deployment capability in `$RAINVER_ROOT/<mode>/.env`:**
 
 ```
 BACKUP_ENABLED=true
-BACKUP_INTERVAL_HOURS=24
-BACKUP_RETENTION_COUNT=7
-BACKUP_INCLUDE_LOGS=false
-BACKUP_ON_STARTUP=true
 ```
 
 Without `BACKUP_ENABLED=true`, no automatic backups are created. For dogfooding, this setting is required.
-`BACKUP_ON_STARTUP=true` triggers the first automatic backup in the background
-after server startup; readiness and dependent services must not wait for
-the archive to finish.
+The instance admin manages interval, retained automatic archive count, log
+inclusion, startup backup behavior, and content-access-log retention from
+**Instance Settings → Operations & retention**. Those policies use the shared
+instance-scoped settings store and take effect without a server restart.
 
 **What is backed up:**
 
@@ -86,7 +83,8 @@ read-only-context staging directory or generated vendor context file exists.
 
 **Local overlap protection:** `backups/.backup.lock` (local lock file with stale-lock recovery). Fails closed if `pg_dump` fails.
 
-**Retention:** Latest `BACKUP_RETENTION_COUNT` auto archives kept; older pruned. Manual archives never pruned automatically.
+**Retention:** The configured number of latest auto archives are kept; older
+ones are pruned. Manual archives are never pruned automatically.
 
 **Every BackupService archive contains `backup_manifest.json`** with format version, kind, timestamp, source root, included/excluded paths, db snapshot method, and warnings.
 

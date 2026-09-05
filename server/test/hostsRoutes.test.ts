@@ -619,11 +619,16 @@ describe("hosts routes", () => {
       installations: {
         claude_code: [{
           id: "own", version: "2.1.0", logged_in: true,
-          options: { config_options: [{
-            id: "model", name: "Model", description: null, category: "model", type: "select",
-            current_value: "sonnet",
-            options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
-          }] },
+          options: {
+            config_options: [{
+              id: "model", name: "Model", description: null, category: "model", type: "select",
+              current_value: "sonnet",
+              options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
+            }],
+            auth_methods: [],
+            cli_login_available: false,
+            authenticated: null,
+          },
         }],
       },
     });

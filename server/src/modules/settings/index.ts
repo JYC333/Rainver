@@ -14,3 +14,9 @@ export {
   type ScopedSettingsScopeType,
   type ScopedSettingsWriteOptions,
 } from "./scopedSettings.js";
+export {
+  InstanceOperationsSettingsService,
+  instanceOperationsDefaults,
+  readInstanceOperationsPolicy,
+  type InstanceOperationsPolicy,
+} from "./instanceOperations.js";

@@ -145,6 +145,8 @@ import type {
   ExtractedEvidence,
   ExtractionJob,
   Feature,
+  InstanceOperationsSettings,
+  InstanceOperationsSettingsUpdate,
   FileContent,
   FileNode,
   GitStatus,
@@ -3430,6 +3432,12 @@ export const academicApi = {
 // ── Features ──────────────────────────────────────────────────────────────
 export const featuresApi = {
   list: () => get<Feature[]>('/features'),
+}
+
+export const instanceOperationsApi = {
+  get: () => get<InstanceOperationsSettings>('/system/instance-settings'),
+  update: (body: InstanceOperationsSettingsUpdate) =>
+    put<InstanceOperationsSettings>('/system/instance-settings', body),
 }
 
 // ── Auth / Identity ───────────────────────────────────────────────────────

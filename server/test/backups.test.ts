@@ -7,6 +7,7 @@ import {
   BACKUP_DATA_DIRS,
   BackupError,
   BackupService,
+  automaticBackupIsDue,
   assertSafeBackupTree,
 } from "../src/modules/backups/service.js";
 import { loadConfig } from "../src/config.js";
@@ -40,6 +41,15 @@ describe("backup policy guard", () => {
     });
     enforceBackupPolicy(config, { warn });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Automatic backups are DISABLED"));
+  });
+});
+
+describe("automatic backup scheduling", () => {
+  it("uses the database-backed interval against the latest automatic archive", () => {
+    const entries = [{ name: "auto.tar.gz", kind: "auto" as const, created_at: "2026-09-05T10:00:00.000Z", size_bytes: 1 }];
+    expect(automaticBackupIsDue(entries, 12, new Date("2026-09-05T21:59:59.000Z"))).toBe(false);
+    expect(automaticBackupIsDue(entries, 12, new Date("2026-09-05T22:00:00.000Z"))).toBe(true);
+    expect(automaticBackupIsDue([], 12, new Date("2026-09-05T22:00:00.000Z"))).toBe(true);
   });
 });
 

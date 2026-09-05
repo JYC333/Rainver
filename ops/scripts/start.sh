@@ -5,7 +5,7 @@
 #   ./ops/scripts/start.sh              — dev (default)
 #   ./ops/scripts/start.sh --dev        — dev (web 3000, API via /api/v1)
 #   ./ops/scripts/start.sh --test       — test (web 3100, API via /api/v1)
-#   ./ops/scripts/start.sh --prod       — prod (web/nginx 80 proxies /api to internal server)
+#   ./ops/scripts/start.sh --prod       — prod (web 28400 → nginx 80 → internal server)
 #   ./ops/scripts/start.sh --build      — same as above with image rebuild
 #
 # Data layout: $RAINVER_ROOT/<mode>/ (e.g. ~/.rainver-data/dev). Override the host-side

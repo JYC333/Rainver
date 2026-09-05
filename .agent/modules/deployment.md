@@ -58,6 +58,17 @@ does not and cannot verify database proposal state by itself.
 - The deployer socket is private to the privileged sidecar and is never exposed on TCP.
 - Filesystem permissions are defense in depth, not proof of human approval.
 - The deployer never reads or writes the application database or user memory.
+- Production Compose publishes the Nginx frontend on `127.0.0.1:28400` and the
+  provider proxy on `127.0.0.1:28421` by default. Operators may override the
+  bind addresses and ports through `RAINVER_WEB_*` and `PROVIDER_PROXY_*` in
+  the production environment file; widening a bind is an explicit exposure.
+- Nginx accepts any Host name (`server_name _`); `FRONTEND_URL` controls auth
+  redirects, not a Host allowlist. Domain deployments therefore enforce the
+  public hostname and TLS at their reverse-proxy edge.
+- The dev, test, and production env templates contain deployment inputs only. Backup
+  capability/root/database access stay in env; backup schedule/retention and
+  content-access-log retention are instance-scoped product settings managed by
+  an instance admin in the UI.
 - The instance must not be exposed directly to the public internet; TLS termination, rate
   limiting, and general CSRF-token hardening are prerequisites for reconsidering that rule.
 

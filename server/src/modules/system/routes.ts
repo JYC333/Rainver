@@ -20,7 +20,10 @@ import {
   isDatabaseReachable,
 } from "./statusService.js";
 import { getDbPool } from "../../db/pool.js";
-import { resolveIdentity } from "../routeUtils/common.js";
+import { jsonBody, resolveIdentity } from "../routeUtils/common.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
+import { InstanceOperationsSettingsUpdateSchema } from "@rainver/protocol";
+import { InstanceOperationsSettingsService } from "../settings/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const health = async (_request: FastifyRequest, reply: FastifyReply) => {
@@ -62,6 +65,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       enabled: true,
     })),
   );
+
+  app.get("/api/v1/system/instance-settings", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
+    return reply.send(await new InstanceOperationsSettingsService(context.config).get());
+  });
+
+  app.put("/api/v1/system/instance-settings", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
+    const parsed = InstanceOperationsSettingsUpdateSchema.safeParse(jsonBody(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "Invalid instance operations settings" });
+    return reply.send(await new InstanceOperationsSettingsService(context.config).update(identity.userId, parsed.data));
+  });
 }
 
 async function isSpaceOwnerOrAdmin(

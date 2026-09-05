@@ -5,6 +5,7 @@ import { InstanceRuntimeToolsPanel } from '../runtime_tools/RuntimeToolsPage'
 import AcpRegistryPanel from '../runtime_tools/AcpRegistryPanel'
 import { CustomSourceRunnerSettingsPanel } from './CustomSourceRunnerSettingsPanel'
 import { SourceCatalogPanel } from './SourceCatalogPanel'
+import { OperationsSettingsPanel } from './OperationsSettingsPanel'
 
 export default function InstanceSettingsPage() {
   const { currentUser } = useAuth()
@@ -39,6 +40,7 @@ export default function InstanceSettingsPage() {
         </Card>
       ) : (
         <>
+          <OperationsSettingsPanel />
           <SourceCatalogPanel />
           <CustomSourceRunnerSettingsPanel />
           <InstanceRuntimeToolsPanel />

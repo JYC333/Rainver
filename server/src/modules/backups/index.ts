@@ -6,5 +6,5 @@ export const backupsModule: ServerModule = {
   registerRoutes,
 };
 
-export { BackupService, runScheduledBackup } from "./service.js";
+export { BackupService, automaticBackupIsDue, runScheduledBackup } from "./service.js";
 export { enforceBackupPolicy, BackupPolicyError } from "./guard.js";

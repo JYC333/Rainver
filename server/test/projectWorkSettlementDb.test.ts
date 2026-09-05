@@ -79,13 +79,17 @@ async function taskRow(taskId: string): Promise<{ status: string; completed_at: 
   return result.rows[0]!;
 }
 
-async function eventKinds(taskId: string): Promise<string[]> {
-  const result = await db.pool!.query<{ event_kind: string }>(
-    `SELECT event_kind FROM project_work_events
-      WHERE space_id = $1 AND subject_id = $2 ORDER BY created_at, id`,
+async function eventKindCounts(taskId: string): Promise<Record<string, number>> {
+  // Several causally linked events can share a millisecond. Their v4 UUIDs
+  // make a stable cursor tie-breaker, not an insertion-order sequence.
+  const result = await db.pool!.query<{ event_kind: string; event_count: string }>(
+    `SELECT event_kind, count(*)::text AS event_count
+       FROM project_work_events
+      WHERE space_id = $1 AND subject_id = $2
+      GROUP BY event_kind`,
     [SPACE, taskId],
   );
-  return result.rows.map((row) => row.event_kind);
+  return Object.fromEntries(result.rows.map((row) => [row.event_kind, Number(row.event_count)]));
 }
 
 beforeEach(async () => {
@@ -152,9 +156,11 @@ describe("run settlement", () => {
     expect(row.status).toBe("done");
     expect(row.completed_at).not.toBeNull();
     // Acceptance is recorded as its own fact, not inferred from the status.
-    expect(await eventKinds(task)).toEqual([
-      "task.run_settled", "task.accepted", "task.stage_changed",
-    ]);
+    expect(await eventKindCounts(task)).toEqual({
+      "task.run_settled": 1,
+      "task.accepted": 1,
+      "task.stage_changed": 1,
+    });
     const loop = await db.pool!.query<{ current_stage_key: string }>(
       `SELECT current_stage_key FROM task_loop_states WHERE task_id = $1`,
       [task],
@@ -292,7 +298,7 @@ describe("run settlement", () => {
     await projectTaskStatusFromRun(db.pool!, SPACE, finished);
 
     expect((await taskRow(task)).status).toBe("in_progress");
-    expect(await eventKinds(task)).toEqual([]);
+    expect(await eventKindCounts(task)).toEqual({});
   });
 
   it("waits while a Run is still being recovered from a crash", async (ctx) => {
@@ -342,9 +348,11 @@ describe("run settlement", () => {
     // The second settlement had different facts, so it is a second event —
     // a key without the outcome swallowed it and left a status change with
     // nothing in the stream saying why.
-    expect(await eventKinds(task)).toEqual([
-      "task.run_settled", "task.stage_changed", "task.run_settled", "task.accepted", "task.stage_changed",
-    ]);
+    expect(await eventKindCounts(task)).toEqual({
+      "task.run_settled": 2,
+      "task.accepted": 1,
+      "task.stage_changed": 2,
+    });
   });
 
   it("records a settlement once however often it is replayed", async (ctx) => {
@@ -363,9 +371,11 @@ describe("run settlement", () => {
     await projectTaskStatusFromRun(db.pool!, SPACE, run);
     await projectTaskStatusFromRun(db.pool!, SPACE, run);
 
-    expect(await eventKinds(task)).toEqual([
-      "task.run_settled", "task.accepted", "task.stage_changed",
-    ]);
+    expect(await eventKindCounts(task)).toEqual({
+      "task.run_settled": 1,
+      "task.accepted": 1,
+      "task.stage_changed": 1,
+    });
   });
 
   it("leaves a Task that a person already finished alone", async (ctx) => {
@@ -380,7 +390,7 @@ describe("run settlement", () => {
     await projectTaskStatusFromRun(db.pool!, SPACE, run);
 
     expect((await taskRow(task)).status).toBe("done");
-    expect(await eventKinds(task)).toEqual([]);
+    expect(await eventKindCounts(task)).toEqual({});
   });
 
   it("does not settle a finished Run that has not been finalized", async (ctx) => {
@@ -398,7 +408,7 @@ describe("run settlement", () => {
 
     await projectTaskStatusFromRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("in_progress");
-    expect(await eventKinds(task)).toEqual([]);
+    expect(await eventKindCounts(task)).toEqual({});
 
     await finalize(run);
     await projectTaskStatusFromRun(db.pool!, SPACE, run);
@@ -446,7 +456,7 @@ describe("run settlement", () => {
 
     await projectTaskStatusFromRun(db.pool!, SPACE, planning);
     expect((await taskRow(task)).status).toBe("in_progress");
-    expect(await eventKinds(task)).toEqual([]);
+    expect(await eventKindCounts(task)).toEqual({});
   });
 
   it("lets a person run a Task again after it stopped for review", async (ctx) => {
