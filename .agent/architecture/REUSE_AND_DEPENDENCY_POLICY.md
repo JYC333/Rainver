@@ -30,9 +30,13 @@ package for it" is a decision on its own.
 
 ## 1. Mandatory Pre-Implementation Search
 
-Before writing a new feature, a refactor, or any substantial helper, complete
-all six steps. This is not optional and it is not satisfied by recall — run the
-searches in the working tree.
+Before implementing substantial new behavior, a refactor that introduces or
+replaces a shared mechanism, or a substantial helper, complete the applicable
+searches below in the working tree. Search the owning area first and expand by
+concept; a listed directory is not a requirement to read all its files. For a
+small fix within an existing mechanism, inspect that mechanism and its relevant
+tests rather than repeating an unrelated repository/dependency survey. Section 9
+defines when a written Reuse / Dependency Check is required.
 
 1. **Same module.** Read the owning module's directory listing and its
    `index.ts` facade. Something adjacent usually already exists.

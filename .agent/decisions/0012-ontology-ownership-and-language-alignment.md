@@ -1,126 +1,41 @@
 # ADR 0012: Ontology Ownership And Language-Layer Alignment
 
 Date: 2026-08-04
-Rewritten: 2026-08-27
 
 ## Status
 
 Accepted.
 
-Supersedes decisions 1, 2, and the cross-domain half of decision 3 in
-[ADR 0011](0011-inquiry-domain-model.md), which was rewritten to its remaining
-scope (Inquiry domain modelling and Workflow node extension) on 2026-08-04.
+Supersedes the original 2026-07-23 separation of Project-domain roots and
+relationships in [ADR 0011](0011-inquiry-domain-model.md). The current ADR 0011
+already reflects this decision and governs the domain-specific application.
+This statement does not supersede its current aligned decisions 1–3.
 
 Current state of the implemented ontology lives in
 [`architecture/ONTOLOGY.md`](../architecture/ONTOLOGY.md). This document holds
-the decision and its reasoning only; behaviour changes update that document,
-not this one.
+the decision and its reasoning only; implementation changes update that document. Changes to an accepted decision
+update its scope/status and affected ADR references as well.
 
 ## Context
 
-`space_objects` was introduced as a shared identity/status/visibility root for
-Knowledge items, Notes, Sources, and Claims. ADR 0011 then decided that new
-Project-owned domains (Inquiry Thread, Experiment, Decision Case) would *not*
-be `space_objects` rows, on the grounds that the shared root carried too much
-and that domain shapes differ. An audit of the implemented schema and services
-found that reasoning does not hold, and that the split had produced concrete
-defects.
+A shared root should centralize identity and governance without absorbing
+individual domains' data or lifecycle. Separate Project-domain roots had
+duplicated identity columns while omitting visibility and provenance; separate
+link tables duplicated `object_relations`. Conversely, subtype-dependent root
+constraints and table-wide proposal gating coupled otherwise independent domains.
+The decision removes those couplings rather than splitting the shared authority.
 
-**The root table carries no domain data.** Every domain field already lived in
-an extension table. The root shares *identity and visibility*, not *shape*.
-Differing domain shapes argue for separate extension tables, not a separate
-root.
+Registry declarations replace divergent per-mechanism type lists. The distinction
+between ontology objects and other entities is essential: execution bindings,
+curated evidence, UI navigation, and memory relations are not interchangeable
+semantic edges and are not absorbed merely because they link two records.
+`memory_relations` remains outside the ontology with its disposition deferred;
+see [ONTOLOGY §8](../architecture/ONTOLOGY.md). Evolvable asset kinds likewise
+are not entity types and must not be forced into an Entity interface.
 
-**Root membership never implied proposal gating.** Six modules inserted
-`space_objects` rows directly without a proposal. Only `knowledge_items` and
-`claims` were gated. The belief that joining the root meant accepting
-Knowledge's governance was simply inaccurate.
-
-**The split duplicated the shared columns and dropped the governance ones.**
-`inquiry_threads` re-declared `id`, `space_id`, `owner_user_id`,
-`created_by_user_id`, and the timestamps, but had no `visibility`,
-`access_level`, `created_by_agent_id`, `created_by_run_id`, `archived_at`, or
-`deleted_at`. Threads were therefore outside the single-read-gate model that
-`CONTEXT_AND_RETRIEVAL_LAYER.md` invariants 2–4 depend on, had no per-object
-visibility, and had no FK-level agent/run provenance.
-
-**Two real couplings did exist**, and they are what this ADR actually fixes:
-
-- `ck_space_objects_status_by_type` branched on `object_type`, so every new
-  domain had to edit a root-table constraint. Inquiry has two orthogonal
-  states that cannot share one `status` column.
-- `object_relations`'s sole writer was `knowledge/proposalApplier.ts`, and the
-  proposal gate was a property of the *table* rather than of the *edge*.
-  Thread parent/child structure is a direct, high-frequency user action and
-  does not belong behind Knowledge's review flow.
-
-**Domain link tables duplicated the canonical edge table.**
-`inquiry_thread_relations` was a column-for-column subset of
-`object_relations` with no domain-specific attributes, and four of its seven
-values were literally the same tokens. `inquiry_thread_note_links` pointed at
-`notes.object_id` — one endpoint was already an ontology object. Both existed
-only because Thread was not a `space_objects` row.
-
-**The Language layer had three conflicting relation vocabularies** —
-`object_relations` CHECK (15 values), `space_object_kind_relation_hints` CHECK
-(18), `inquiry_thread_relations` CHECK (7) — mirrored in the protocol as two
-unrelated enums. The consequence was a live defect: a hint could be declared
-for a type `object_relations` would reject on write, and a real edge type
-(`authored_by`) could not have a hint at all. Nothing detected the drift.
-
-**Type membership was recorded in three unaligned lists** —
-`CONTENT_RESOURCE_DEFINITIONS` (table granularity),
-the `retrieval_object_type` enum (subtype granularity), and
-`GraphProjectionRepository`'s assumption — operating at different granularity
-and therefore impossible to cross-validate. Each new domain had to be added to
-each, with no mechanism to catch an omission.
-
-### Audit scope
-
-This ADR's audit covered the Language layer: `object_type`, relation
-vocabulary, and the type lists consumed by the read gate, retrieval, and graph
-projection. Recording what it did *not* cover prevents the audit's silence
-from being read as a clean bill of health.
-
-**Deliberately separate, not drift.** Six of B12A's seven durable-link tables
-are not competing with `object_relations`: `knowledge_item_sources` /
-`claim_sources` are curated citation and evidence paths, `provenance_links` /
-`evidence_links` are lineage and candidate association, `note_links` is UI
-navigation with no graph authority, and `relation_source_links.link_type` is a
-target discriminator, not a semantic vocabulary. Only
-`inquiry_thread_relations` and `inquiry_thread_note_links` — which duplicate
-`object_relations`'s columns *and* vocabulary — are absorbed.
-
-**Four further type lists, resolved during implementation.**
-`context_snapshot_items.item_type` and `cards.source_type` are entity lists and
-became `ContextIncludable` / `CardSourceable` declarations, each keeping the
-stored token separate from the entity type because the stored strings differ.
-Two of their members were not entities at all: `manual_context` is a sentinel
-for inline text, and `idea` had no table and no writer, so it was dropped.
-`provenance_links.source_type` was not examined initially and turned out worst
-— the list existed four times and two copies silently dropped what they did
-not recognise; audited 2026-08-06 and settled as `ProvenanceSourceable`.
-`evolution_strategy_assets.target_type` is **not** an entity list and stays
-independent: its members name evolvable asset kinds and `system` is a query
-wildcard, so modelling it as an interface would force non-entities into the
-registry to satisfy a surface resemblance.
-
-**`memory_relations` was missed entirely.** Found 2026-08-27. It is a fourth
-relation vocabulary with a live 8-value CHECK overlapping `object_relations`
-in five values, unconstrained polymorphic endpoint columns, one writer and no
-reader. It is not absorbed — `memory_entries` is an independent root, so its
-edges cannot live in `object_relations` — and its disposition is deferred.
-Recorded in `architecture/ONTOLOGY.md` §8 so the next audit does not
-rediscover it.
-
-### Comparison basis
-
-The reference model is the Palantir Foundry Ontology's Language / Engine /
-Toolchain decomposition. The Action and Security columns are already met or
-exceeded here (`SYSTEM_ACTION_REGISTRY` carries denser metadata than a Foundry
-Action Type; proposals are a first-class reviewed entity rather than
-submission criteria embedded in an action). The Data column is where this
-system diverges and the Language layer is where the divergence is fixable.
+The vocabulary is informed by the Foundry Language / Engine / Toolchain
+separation. Borrowed terminology does not imply feature parity or transfer
+Rainver's policy and proposal authority to another model.
 
 ## Decision
 
@@ -184,11 +99,6 @@ about the world. Execution bindings have their own tables (`task_runs`,
 `task_artifacts`, `task_proposals`, `task_entity_links`), their own
 vocabulary, and their own readers.
 
-*Added 2026-08-27.* This question was left implicit, and its absence made the
-second question below read as a universal test. Under that reading `task`
-qualifies — it has independent identity, is referenced by other domains, and
-has its own visibility — while decision 6 lists it as an independent root. The
-two were not in conflict; the scope qualifier was missing.
 
 **Within a joining domain, which of its tables become objects?** Only
 aggregate roots: independent identity, referenced by other domains, or needs
@@ -307,12 +217,6 @@ does not narrow access — it removes the Project gate entirely and leaves only
 visibility. A forgotten Project is a silent disclosure, not a stricter
 default.
 
-*Corrected 2026-08-27.* This originally said the invariant is "enforced by
-constraint, not by convention". That is not implementable alongside decision
-2: the constraint would have to name which subtypes are Project-owned, and the
-root may not branch on `object_type`. The implementation enforces it at a
-single write path instead, and the ADR text was simply never updated to say
-so.
 
 The enforcement is therefore: **one writer, plus a test that no second writer
 appears.** `spaceObjectWriter.ts` is the only builder of
@@ -339,41 +243,26 @@ Remaining requirements:
   per-link-type governance) and B12C is replaced; ontology rules are added for
   field placement, ontology membership, and the code/data boundary.
 - ADR 0011 is rewritten to its remaining scope. Its Workflow node extension,
-  database-reset cutover, and registered Overview/Attention adapter decisions
-  carry forward unaffected.
+  data-preservation boundary, and registered Attention adapter decisions
+  remain in ADR 0011. Project Mode wording is governed by ADR 0019.
 - Inquiry gains per-object visibility, which it did not have. This is a
   capability increase and requires the default above.
 - `graphService.getCombinedProjectGraph`'s manual union of two projections is
   removed once Threads are ontology objects.
-- Schema changes use the existing full-environment reset. No legacy-row
-  migration path is built.
-- Current-state description moves to `architecture/ONTOLOGY.md`. This ADR is
-  no longer the place implementation changes are recorded — which is what
-  drove it to six layered amendments and let two of its statements drift from
-  the code without anyone noticing.
+- Schema changes follow [BOUNDARIES B59](../BOUNDARIES.md): a baseline reset
+  is conditional on having no data to preserve and requires authorization for
+  any deletion. Otherwise use a migration that preserves existing data.
+- Current implementation detail belongs in `architecture/ONTOLOGY.md`.
 
 ## Non-Goals
 
 - Dynamic schema packs, or moving ontology definitions into per-space data.
 - An Object Set query language, a typed client SDK, or Workshop-style
   application construction from the ontology.
-- Ontology branching, releases, or staged rollout. The cutover is a database
-  reset.
+- Ontology branching, releases, or staged rollout. Data preservation still
+  follows B59; this non-goal grants no reset permission.
 - Converting capabilities/prompts into ontology-bound Functions.
 - Renaming `SYSTEM_ACTION_REGISTRY` or Proposal to Foundry vocabulary.
 - A second generic relation table, or dual-writing any semantic edge.
 - User-facing self-service modelling. If ever adopted, the migration path is
   to seed registry entries as data rows, not to move the registry into data.
-
-## Revision history
-
-- **2026-08-04** — accepted.
-- **2026-08-05 / 08-06 / 08-12** — decision 3 keyed governance on endpoint
-  pairs as well as link type; decision 8's binding half landed and its
-  "auditability" and "agent surface" reasons were both corrected; the advice
-  entry point moved to the client.
-- **2026-08-27** — rewritten. Current state extracted to
-  `architecture/ONTOLOGY.md`; six layered amendments folded into the decisions
-  they modify; three defects fixed: decision 4's missing scope question,
-  decision 10's unimplementable enforcement claim, and `memory_relations`
-  missing from the audit scope.

@@ -1,7 +1,6 @@
 # ADR 0003: Agent Memory Writes Are Bounded and Reviewable, Not Pre-Approved
 
 Date: 2026-05 (original)
-Rewritten: 2026-08-28
 
 ## Status
 
@@ -9,46 +8,17 @@ Accepted.
 
 ## Context
 
-In early versions agents wrote memory directly. That produced unreviewed,
-low-quality memories with no audit trail, took control of what the Agent
-"believes" long-term away from the user, and made bad memories hard to find
-and prune. The 2026-05 decision answered with a gate: every memory change
-became a proposal a person approves before it applies.
-
-The gate fixed provenance and control at the volume of 2026-05. It does not
-survive the product ADR 0010 describes, in which an Agent carries daily work
-and memory changes arrive by the dozen: a person cannot review every one, so
-either the Agent stops learning or the person stops reading and approves in
-bulk. The second is what happens, and a gate that is approved without reading
-protects nothing while still costing the ceremony. The person's own archive
-of an entry they created also raises a proposal for themself to approve.
-
-In this deployment the gate has never been exercised: `memory_entries` holds
-no rows and no memory proposal has ever been created. Room and chat Agents
-have no memory-write action at all — only `memory.retrieval.search` and
-`memory.retrieval.brief` — and the pipelines that do draft memory proposals
-(daily reports, activity extraction, run materialization) have produced none.
-The Agent does not learn; the only thing it retains across sessions is the
-derived runtime-context checkpoint of ADR 0014, which is reference context,
-not memory. The bottleneck is therefore not the person reviewing writes; it
-is that no write path exists for the person to be a bottleneck on. This ADR
-defines that path and its governance together, so the path does not arrive
-first and the governance later.
-
-Meanwhile the schema grew the properties that make pre-approval unnecessary
-for most writes: every entry is a version (`supersedes_memory_id`,
-`root_memory_id`), carries provenance (`created_by`, `source_id`,
-`source_trust`, `created_from_proposal_id`, session and run), and has
-`visibility`, `sensitivity_level`, `subject_user_id` and `scope_type`
-columns that say exactly what a write would expose. A write with those
-properties is reversible and attributable — which is what the 2026-05 gate
-was standing in for.
+Memory needs provenance, versioning, visibility controls, and a practical way
+for a person to inspect and reverse writes. Requiring separate approval for
+every low-risk entry creates a repetitive queue that obscures the decisions
+that actually widen reach. This ADR keeps approval for those decisions and
+requires bounded, attributable, reversible writes for the rest.
 
 ## Decision
 
-**Agents write memory within bounds and under review-after; a person
-approves in advance only the writes that change reach.** This applies ADR
-0017 to memory.
+**Agents write memory within bounds and under review-after.** The conditions
+in section 1 and the Agent's `requires_proposal` policy determine which writes
+need approval in advance. This applies ADR 0017 to memory.
 
 ### 1. Gated writes (a proposal, approved per instance)
 
@@ -73,7 +43,8 @@ normal-sensitivity entry, or revising one it authored — applies directly,
 subject to:
 
 - **always a new version**, never in place: the prior version is retained
-  and one action restores it;
+  and restoration archives the superseding version before restoring the prior
+  one; two versions on the same chain must not be active together;
 - **provenance is mandatory**: session, run, rationale, and `created_by =
   agent:<id>`; a write without them is rejected at the applier, not
   approved by a person;
@@ -88,11 +59,11 @@ subject to:
   by its members, and the way to clear it — archiving what was written — is
   only available to the owner of those entries. It counts within the session,
   or within the Run where there is none: a conversation outside a Room has no
-  session, and an unbounded surface is what this exists to prevent;
+  session. Count active entries plus pending proposals for that person and
+  scope; ordinary revision does not increase the count, and archiving reduces it;
 - **an Agent's memory policy may still opt into `requires_proposal`**, which
-  restores the 2026-05 gate for that Agent. This is a real enforcement point
-  in the applier, not the context-widening heuristic the earlier text called
-  one.
+  requires proposal approval for that Agent even when the other conditions
+  permit direct application. The canonical applier enforces it.
 
 ### 3. The counterpart: memory is observable and undoable
 
@@ -115,10 +86,8 @@ write under this ADR.
 
 ## Consequences
 
-- Room and chat Agents gain a memory-write action (`memory.remember`, or a
-  capture of the same shape) that lands in the applier under §1/§2. Until it
-  exists this ADR governs nothing, which was the situation before this ADR
-  was implemented.
+- Room and chat memory-write actions land in the canonical applier under
+  sections 1 and 2; adapters, jobs, and routes do not insert memory directly.
 - The proposal applier remains the only writer of `memory_entries`; §2
   writes go through it with the acting Agent as author and no approver, and
   the applier enforces §1 and §2's conditions — no adapter, job or route
@@ -128,30 +97,3 @@ write under this ADR.
   than by pre-approval; a bad memory is found and reversed, not prevented by
   a queue nobody reads.
 - B10 is rewritten to state this decision.
-
-## Revision history
-
-- **2026-05** — accepted: agents do not directly write active memory; every
-  change is a proposal a person approves.
-- **2026-08-27** — rewritten for current names; decision unchanged.
-- **2026-08-28** — rewritten and accepted under ADR 0017: pre-approval kept only
-  for writes that widen reach; other Agent writes bounded, versioned and
-  reviewable after. The 2026-05 reasoning (control, audit, quality) is kept;
-  the mechanism delivering it changes because the original one no longer
-  delivers it at volume.
-- **2026-08-28** — implemented. Three corrections from the implementation: §3's
-  "Space activity" is the Project's updates, the surface that exists; and the
-  circuit breaker counts what still stands — active entries plus pending
-  proposals from that session — so ordinary revision does not walk toward the
-  limit and archiving what an over-eager session wrote is what lets it write
-  again.
-  The breaker is also per person within a session, for the reason §2 now
-  states. "One action restores it" is the pair of actions the version chain
-  actually allows: archive the version that replaced it, then restore the one
-  it replaced — a single Restore while the newer version still stands is
-  refused, because two active rows on one chain have no answer to which one
-  the memory is.
-- **2026-08-28** — two corrections after implementation review: §1 names
-  another Agent's content as well as a person's (an Agent revises what *it*
-  wrote), and §2's breaker counts within the Run where a conversation has no
-  session.

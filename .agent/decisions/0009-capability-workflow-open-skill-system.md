@@ -1,7 +1,6 @@
 # ADR 0009: Capability And Open Skill Framework
 
 Date: 2026-06-20
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -96,12 +95,3 @@ mandatory and `NormalizedSkill` must gain no new consumers.
 - Full marketplace; arbitrary third-party code execution; runtime
   hot-loading of server code; native web search provider; research product
   UI; capability executor rewrite.
-
-## Revision history
-
-- **2026-06-20** — accepted with normalized skills as a canonical
-  representation and a workflow template layer.
-- **2026-08-14** — two amendments: the package became the content authority
-  (decision 3) and the workflow template layer was removed (decision 4).
-- **2026-08-27** — rewritten. Amendments folded in; the Consequences bullet
-  that still promised "conversion to capability candidates" struck.

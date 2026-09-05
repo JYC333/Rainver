@@ -19,15 +19,6 @@ function filesBelow(root: string, extension: string): string[] {
   });
 }
 
-function markdownSection(text: string, heading: string): string {
-  const marker = `## ${heading}`;
-  const start = text.indexOf(marker);
-  if (start < 0) throw new Error(`Missing Markdown section: ${heading}`);
-  const bodyStart = start + marker.length;
-  const next = text.indexOf("\n## ", bodyStart);
-  return text.slice(bodyStart, next < 0 ? undefined : next).trim();
-}
-
 function localMarkdownTargets(file: string): string[] {
   const text = readFileSync(file, "utf8");
   return [...text.matchAll(/\[[^\]]+\]\(([^)#]+)(?:#[^)]+)?\)/g)]
@@ -104,15 +95,10 @@ describe("repository agent guide invariants", () => {
     const claude = readFileSync(join(repoRoot, "CLAUDE.md"), "utf8");
     const index = readFileSync(join(agentRoot, "INDEX.md"), "utf8");
 
-    expect(markdownSection(claude, "Start Here")).toBe(
-      markdownSection(codex, "Required Context"),
-    );
-    expect(markdownSection(claude, "Source Of Truth")).toBe(
-      markdownSection(codex, "Source Of Truth"),
-    );
-    expect(markdownSection(claude, "Repo Rules")).toBe(markdownSection(codex, "Repo Rules"));
-    expect(markdownSection(claude, "Working Pattern")).toBe(
-      markdownSection(codex, "Working Pattern"),
+    // Only the vendor-facing title differs. Compare the entire body so new
+    // sections cannot silently give one coding agent different instructions.
+    expect(claude.split("\n").slice(1).join("\n")).toBe(
+      codex.split("\n").slice(1).join("\n"),
     );
 
     for (const requiredPath of [

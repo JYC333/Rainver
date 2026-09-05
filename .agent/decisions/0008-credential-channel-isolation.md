@@ -1,7 +1,6 @@
 # ADR 0008: Credential Channel Isolation
 
 Date: 2026-06-02
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -53,8 +52,9 @@ Therefore:
 - the in-process API channel may serve **any** provider, Anthropic included,
   as long as the key is passed in process and never written to the
   environment;
-- a vendor-neutral `model_api` adapter (native, no tools, no file sandbox,
-  `credential_mode = model_provider_api_key`) is sanctioned;
+- vendor-neutral managed API adapters are sanctioned; their model calls stay
+  in-process, governed tool calls use the System Action boundary, and they
+  provide no file sandbox merely by selecting a provider;
 - the subscription channel serves only its credential owner; login, quota
   refresh, and disconnect additionally require the instance admin, and
   invocation checks ownership before decrypting or refreshing.
@@ -77,7 +77,9 @@ Consistent with the dual funding paths of
 execution shape alone would make a user's paid subscription unreachable for
 conversation:
 
-- tool-using, filesystem, or agentic work uses a CLI adapter;
+- filesystem execution uses a supported CLI adapter and its host boundary;
+  managed API agent loops may use explicitly granted server-side tools; tool
+  use alone does not require a CLI or permit arbitrary filesystem access;
 - no-tools text generation may use either channel — the in-process API
   channel by default, a local CLI when the user is spending subscription
   capacity rather than API budget;
@@ -128,14 +130,3 @@ executing machine.
   and also supplies CLI provider mode through the proxy. A CLI runtime cannot
   replace it; `model_api` is its projection into the Run domain, not a
   competitor to the CLI runtimes.
-
-## Revision history
-
-- **2026-06-02** — accepted, reframing "Anthropic is CLI-only" as channel
-  isolation.
-- **2026-08-14** — litellm replaced by the managed chat adapter; managed
-  subscription OAuth channel added under the same rule.
-- **2026-08-24** — "local proxy" corrected to "proxy"; lease scope stated.
-- **2026-08-27** — rewritten. Both amendments folded in; the
-  `vendorCliAdapter.ts` pointer corrected to `cliSubprocessEnv.ts`; the
-  retired reflector reference dropped.

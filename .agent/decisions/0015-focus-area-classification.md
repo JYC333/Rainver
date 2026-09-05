@@ -39,7 +39,8 @@ add safety, it would add a second place where "who can see this" is decided.
 ## Decision
 
 **1. A focus area is a user-created durable aggregation.** It aggregates what
-already exists — Projects, Notes, Knowledge — and produces no data of its own.
+already exists — Projects, Notes, Knowledge — and owns only classification
+metadata, not those domains' business data.
 Creating one is a few clicks; it needs no code, no migration, no deployment.
 
 **2. Three concepts, told apart by who creates them and when.**

@@ -1,7 +1,11 @@
 # Documentation
 
-This is the index for design and operations docs. The root
-[README.md](../README.md) is the project quick start and development guide.
+This is the human-facing index for design and operations docs. The root
+[README.md](../README.md) is the project quick start. Coding agents start with
+[AGENTS.md](../AGENTS.md) or [CLAUDE.md](../CLAUDE.md), then use
+[the development context index](../.agent/INDEX.md) to select relevant guides.
+These repository documents are independent of Rainver's product-runtime
+context and Skills; an operations guide describes procedures, not runtime prompts.
 
 ## Start Here
 

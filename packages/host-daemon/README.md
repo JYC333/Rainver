@@ -119,3 +119,13 @@ marked as GitHub's Latest Release; edge and nightly are prereleases. `BUILD_ID`
 contains the source commit, and the daemon reports
 `<package-version>+<short-build-id>` to the control plane, so installed builds
 remain diagnosable without numbered release tags.
+
+## Development guidance
+
+Before changing this package, follow [repository instructions](../../AGENTS.md)
+and read the [Hosts guide](../../.agent/modules/hosts.md), especially its Host
+daemon and WebSocket sections. Use the `host-daemon` bundle in
+[context-bundles.yaml](../../.agent/context-bundles.yaml), adding the import or
+folder-access bundles when relevant; [COMMANDS](../../.agent/COMMANDS.md)
+is the command reference. This README describes installation and operation;
+command examples do not authorize deploying or changing an existing host.

@@ -1,7 +1,6 @@
 # ADR 0011: Inquiry Domain Model And Workflow Node Extension
 
 Date: 2026-07-23
-Rewritten: 2026-08-04 (scope), 2026-08-27 (form), 2026-08-28 (decision 6)
 
 ## Status
 
@@ -9,8 +8,9 @@ Accepted. Decisions on ontology ownership, the root contract, definition
 authority, interfaces, and naming belong to
 [ADR 0012](0012-ontology-ownership-and-language-alignment.md); this ADR
 settles how the Inquiry, Experiment, and Decision Case domains sit on top of
-that ontology, what engine fixed workflows run on, and how Modes project into
-the Project Overview.
+that ontology, what engine fixed workflows run on, and how domains contribute
+attention. Project type and conversation pacing follow
+[ADR 0019](0019-project-has-no-type-field.md).
 
 ## Context
 
@@ -78,22 +78,18 @@ handler, no LLM run spawned; `actionNodeRegistry`), **Model** (the existing
 one mechanism serves every domain review use instead of a new proposal type
 per use).
 
-### 5. Schema cutover is a database reset
+### 5. Schema changes follow the repository data-preservation boundary
 
-A full-environment cutover between schema-affecting changes uses the existing
-`ops/scripts/db/reset-postgres.sh` + start scripts, matching the repo's
-single-baseline `schema:generate` convention. No legacy-row migration or
-compatibility path; old rows are not preserved.
+Use [BOUNDARIES B59](../BOUNDARIES.md) and
+[COMMANDS](../COMMANDS.md) for schema changes. The single-baseline/reset
+convention applies only while no deployment holds data that must be preserved.
+This ADR does not authorize deleting instance data; once preservation matters,
+use real migrations.
 
-### 6. Modes are a wording axis; domains reach the shell through attention
+### 6. Domains reach the shell through attention
 
-Four Modes — `research`, `delivery`, `operations`, `learning` — describe how
-a Project advances. Asking is how research starts and deciding is where it
-ends, so neither "inquiry" nor "decision" is a Mode; both were absorbed into
-`research`.
-
-A Mode changes the Loop's stage wording and the Assistant's framing, and
-nothing else. The one registry a domain contributes to the Project shell is
+A Project has no Mode/type field; its shared Loop and conversation pacing are
+specified by [ADR 0019](0019-project-has-no-type-field.md). A domain contributes to
 the attention registry (`projectAttentionRegistry`): Inquiry, Decisions,
 Tasks, Automations and research operations each register an adapter that says
 what needs a person, and that list is what Pulse, the shell sidebar and the
@@ -131,30 +127,3 @@ mirroring the `ProposalApplierRegistry` dispatch model.
 - A second generic or authoritative relation table.
 - Delivery/Operations schema beyond composing existing Task / Run /
   Automation / Alert modules.
-
-## Revision history
-
-- **2026-07-23** — accepted, holding the opposite of decisions 1–3:
-  Project-domain aggregates as their own root tables, domain FK link tables,
-  and `retrieval_edges` as cross-domain association.
-- **2026-08-04** — decisions 1–3 reversed by ADR 0012 after an audit found
-  the shared root carries no domain data, root membership never implied
-  proposal gating, the split duplicated shared columns while dropping
-  governance ones, and the domain link tables were column-for-column
-  duplicates of `object_relations`. Rewritten to remaining scope.
-- **2026-08-07** — Modes and entities split into two registries (decision
-  6).
-- **2026-08-27** — rewritten in form: the 08-07 amendment folded into
-  decision 6, the History section folded here, decision 1's enforcement
-  claim aligned with ADR 0012 decision 10 (single writer plus test, not a
-  database constraint). Code comments citing "ADR 0011 decision N" with older
-  numbering are audited when the corresponding code is touched.
-- **2026-08-27 (later)** — decision 6 rewritten again: the Mode projection
-  and entity summary registries were removed with the Project workbench, once
-  the front page stopped duplicating the sidebar and nothing consumed them.
-  Modes are a wording axis; domains reach the shell through the attention
-  registry only.
-- **2026-08-28** — decision 6 gains a definition of "needs a
-  person" by reference to ADR 0017 §4. Until then each adapter decided for
-  itself, and one Room turn's six-way decomposition became six attention
-  items for one decision.

@@ -1,7 +1,6 @@
 # ADR 0013: Personal And Team Content Boundary
 
 Date: 2026-08-06
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -47,7 +46,9 @@ against a deliberate insider are out of scope.
    paste event, a URL, the Area being viewed — never from the previous
    capture.
 3. **Creation context determines Space, scope, and visibility together.**
-   Inside a Project → that Project's Space, that Project, `space_shared`. No
+   For shared work inside a Project → that Project's Space, that Project,
+   `space_shared`; marginalia follows decisions 4–5 and limited conversations
+   follow [ADR 0018](0018-room-as-visibility-boundary.md). No
    Project context → personal Space, no scope, `private`. Resource type does
    not enter into it; the user expresses sharing intent once, by choosing
    where to act.
@@ -80,8 +81,10 @@ against a deliberate insider are out of scope.
 6. **One ladder** — only me → in this project → whole Space — over the
    unchanged two-axis mechanism. `selected_users` is an explicit per-person
    share outside the ladder.
-7. **No draft state inside a Project.** Putting something into a Project *is*
-   sharing it. Marginalia is not a draft of team content; it is a different
+7. **A draft lifecycle is not a privacy boundary for Project content.**
+   Filing shared work into a Project shares it. This does not prohibit the
+   explicit Conversation setup draft required by ADR 0018, which initializes
+   execution and creates no message or Run. Marginalia is not a draft of team content; it is a different
    kind of object with its own visibility, and promoting it is an explicit
    relocation, not a state change. Lifecycle state stays where a domain
    genuinely needs it and is never overloaded onto visibility.
@@ -190,14 +193,3 @@ Tracked with triggers in
 orphaned `private` rows after a member leaves; explicit consent to
 `oversight_mode` when joining an existing Space; detail-read auditing beyond
 Task, Activity, Artifact, and note/`space_object`.
-
-## Revision history
-
-- **2026-08-06** — accepted (19 decisions).
-- **2026-08-11** — capture destinations: ownership and pipeline separated;
-  hand-typed capture inside a Project settled as marginalia.
-- **2026-08-12** — relocation outward: move vs copy, `member_copy_out_enabled`.
-- **2026-08-27** — rewritten. Both amendments folded into decisions 4, 5,
-  and 9; decisions renumbered 1–22; the threat model widened to name
-  accidental concealment, which the 08-11 amendment had identified as the
-  mirror failure.

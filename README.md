@@ -189,6 +189,8 @@ module, frontend page, and migrations:
 
 ## Documentation
 
+- Coding-agent instructions: [Codex](AGENTS.md) / [Claude Code](CLAUDE.md) — start here before implementation
+- [Agent context and module map](.agent/INDEX.md)
 - [Documentation Index](docs/README.md)
 - [Architecture](.agent/ARCHITECTURE.md)
 - [Backup and Restore](docs/BACKUP_AND_RESTORE.md)

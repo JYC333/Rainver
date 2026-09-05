@@ -1,7 +1,6 @@
 # ADR 0007: Managed Multi-CLI Runtime Usage
 
 Date: 2026-05-06
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -11,8 +10,9 @@ Current mechanism lives in
 [`modules/runtime-adapters.md`](../modules/runtime-adapters.md),
 [`architecture/RUNTIME_ADAPTER_STANDARD.md`](../architecture/RUNTIME_ADAPTER_STANDARD.md),
 and [`architecture/EXECUTION_MODEL.md`](../architecture/EXECUTION_MODEL.md).
-This document holds the decisions and their reasoning; behaviour changes
-update those documents, not this one.
+This document holds decisions and their reasoning. Implementation detail
+changes update those guides; changes to the decisions also update the affected
+ADR scope and cross-references.
 
 ## Context
 
@@ -99,9 +99,11 @@ and stays manual otherwise.
 ### 6. Three surfaces, one runtime-session mechanism
 
 A CLI Run is reachable from a Task or automation dispatch, a direct
-conversation, or a Room. All three prepare context through the Runtime
-Context Gateway ([ADR 0014](0014-unified-runtime-context-engine.md)); they
-differ in execution preparation, not in context authority.
+conversation, or a Room. On the server host, all three prepare context through
+the Runtime Context Gateway ([ADR 0014](0014-unified-runtime-context-engine.md)).
+The HOME, credential-profile, and Gateway continuity mechanisms below describe
+server-host execution; remote trusted hosts use ADR 0016 sections 2 and 4,
+with host-owned login/session state and no server-brokered Runtime Context.
 
 - **Conversation.** The backend is chosen per user per session and resolves
   the signed-in speaker's own credential profile, so subscription capacity is
@@ -167,19 +169,3 @@ ADR 0016's trusted-host model.
 - Reimplementing any vendor's agent harness or tool loop.
 - Programmatic driving of consumer subscriptions beyond what each vendor's
   terms permit ([ADR 0010](0010-agent-workbench-product-direction.md)).
-
-## Revision history
-
-- **2026-05-06** — accepted as the multi-CLI MVP with per-vendor stream
-  parsers, a `GenericCliRuntimeAdapter`, and vendor context files compiled
-  into the sandbox.
-- **2026-06 → 2026-08** — per-vendor usage extraction, runtime sessions,
-  Rooms, read-only mounts, and provider bindings added as amendments.
-- **2026-08-22** — ACP runtime replatform replaced every vendor-specific
-  protocol path.
-- **2026-08-27** — rewritten. The architecture box of retired class names,
-  the three-vendor usage and resume tables, the vendor context-file table
-  (contradicted [ADR 0014](0014-unified-runtime-context-engine.md)
-  decision 12), the `GenericCliRuntimeAdapter` claim, and the Codex
-  `app-server` sandbox flag are removed; decisions 3 and 6 record what
-  replaced them.

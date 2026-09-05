@@ -241,11 +241,13 @@ Name security tests after the invariant they protect, e.g.
 
 ## Flake Attribution
 
-A rotating handful of failures across different files each run is a contention
-signal, not a regression. Re-run the failing file alone and stash the change: a
-file that fails at 30s under full fan-out and passes in under a second by itself
-is not testing what its failure claims. Two patterns have produced such flakes
-here: assuming the order in which concurrent fakes are reached, and attaching a
+Failures rotating across files may indicate contention; this alone does not
+rule out a regression. Re-run only the failing file first. If baseline comparison
+is needed, use an isolated checkout and preserve the current uncommitted work;
+do not automatically stash or reset it. A file that passes alone but times out
+under full fan-out needs concurrency and timing investigation before attribution.
+Two patterns have produced such flakes here: assuming the order in which
+concurrent fakes are reached, and attaching a
 rejection handler one event-loop turn after the commit that triggers the
 rejection (Vitest 4 counts that as an unhandled error).
 

@@ -1,12 +1,17 @@
-# Agent Context Index
+# Repository Development Context Index
+
+This index routes repository development work. Start with [AGENTS.md](../AGENTS.md)
+or [CLAUDE.md](../CLAUDE.md); these files and `.agent/` are not product-runtime
+context inputs. See section 9 for the separation.
 
 ## 1. Repository Context
 
 Rainver is a space-based, multi-user, agent-first system for personal, family, and small-team
 use within a single deployment instance. It has a server backend (PostgreSQL),
 a React/Vite frontend (PWA), and a server-authoritative control plane: canonical state, orchestration,
-memory (written only through a proposal → approval workflow), and policy/credential enforcement all
-live on the server. Agent execution itself runs on one or more **execution hosts** registered to the
+memory (written through the canonical applier under
+[ADR 0003](decisions/0003-memory-proposal-flow.md)), and policy/credential
+enforcement all live on the server. Agent execution itself runs on one or more **execution hosts** registered to the
 control plane — the server host (strictly isolated, bubblewrap sandboxed, the default and only host
 in a single-machine deployment) or a personal machine the user owns and has paired (trusted-host mode,
 native execution, no sandbox isolation). See
@@ -20,7 +25,7 @@ durable position on this boundary.
 
 **Source of truth hierarchy:**
 
-1. **Code** — implementation truth; always wins over docs
+1. **Code** — evidence of current implementation, not permission to override safety or accepted architectural constraints
 2. `server/src/db/schema/` — database schema authoring source
 3. `server/migrations/` — generated/applied database SQL artifacts
 4. `server/src/` — backend implementation, including the active gateway route registry and modules
@@ -198,6 +203,7 @@ Load only the module docs relevant to your task.
 | Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
 | Sandbox execution | [modules/sandbox.md](modules/sandbox.md) |
 | Execution hosts (control plane + host daemon), pairing, workspace registration | [modules/hosts.md](modules/hosts.md) |
+| Imported CLI sessions and thread references | [modules/imported-sessions.md](modules/imported-sessions.md) |
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |
 | Credentials | [modules/credentials.md](modules/credentials.md) |
@@ -218,11 +224,19 @@ Load only the module docs relevant to your task.
 
 ## 5. Decision Records
 
+ADRs record accepted scope, decisions, rationale, and essential trade-offs.
+Keep superseding relationships explicit in both affected records; a later
+number alone does not override unrelated decisions. Keep implementation
+inventories in architecture/module guides and pending work in the deferred
+register. Editing chronology and completed execution steps belong in Git,
+not in rules a coding agent must follow. Preserve unique safety constraints
+when shortening a decision; do not delete an ADR merely because it is old.
+
 | ADR | Summary |
 |---|---|
 | [0001](decisions/0001-space-model.md) | Space as product-level isolation boundary |
 | [0002](decisions/0002-agent-model.md) | Agent is a separate model from User |
-| [0003](decisions/0003-memory-proposal-flow.md) | Agent memory writes are bounded, versioned and reviewable after; a person pre-approves only writes that widen reach (visibility, sensitivity, another person, human-authored content) or come from an unattended origin (rewritten 2026-08-28 under ADR 0017) |
+| [0003](decisions/0003-memory-proposal-flow.md) | Agent memory writes use the canonical applier, provenance/versioning, and ADR 0003 approval conditions, including Agent-specific proposal-only policy |
 | [0004](decisions/0004-context-wrapper.md) | Vendor context files and vendor runtime sessions are never source of truth; repository guides are development-time material only |
 | [0005](decisions/0005-desktop-runtime.md) | The desktop is a browser client or an ADR 0016 execution host, never the control plane; Tauri scaffold kept but unbuilt |
 | [0006](decisions/0006-plugin-module-architecture.md) | Module architecture (ServerModule registry, MODULE_REGISTRY) and official optional module control plane (PluginHost, diary) |
@@ -230,13 +244,13 @@ Load only the module docs relevant to your task.
 | [0008](decisions/0008-credential-channel-isolation.md) | Credential channel isolation |
 | [0009](decisions/0009-capability-workflow-open-skill-system.md) | Capability, Workflow, and Open Skill framework |
 | [0010](decisions/0010-agent-workbench-product-direction.md) | Personal + small-team Agent Workbench direction, dual funding paths, ACP-peer CLI runtime stance |
-| [0011](decisions/0011-inquiry-domain-model.md) | Project domain aggregate roots (Inquiry Thread, Experiment, Decision Case) are `space_objects` rows; their internal tables stay domain-private; cross-aggregate edges use `object_relations`; `WorkflowExecution` node_kind extended for Action/Model/Checkpoint. Rewritten 2026-08-04 — decisions 1-3 reversed by ADR 0012 |
+| [0011](decisions/0011-inquiry-domain-model.md) | Project domain aggregate roots (Inquiry Thread, Experiment, Decision Case) are `space_objects` rows; their internal tables stay domain-private; cross-aggregate edges use `object_relations`; `WorkflowExecution` node_kind extended for Action/Model/Checkpoint. Domain ownership follows ADR 0012; Project type and pacing follow ADR 0019 |
 | [0012](decisions/0012-ontology-ownership-and-language-alignment.md) | `ontology` module owns `space_objects`/`object_relations`/object profiles; root contract drops `status`; aggregate-root membership rule; definition authority is code in registerable registries; Interface as an explicit primitive; Link Type / Object Profile naming; Action `applies_to` |
 | [0013](decisions/0013-personal-team-content-boundary.md) | Personal vs team content boundary: creation context decides Space/scope/visibility, capture lands in the personal Space, filing is a transformation, Run-level context taint narrows derived output, cross-person read auditing; amends ADR 0001 for per-user aggregated cross-Space reads |
-| [0014](decisions/0014-unified-runtime-context-engine.md) | Accepted clean cutover to one Runtime Context Gateway for Agent task context, with separate Retrieval/Policy/Usage authorities, typed deliveries, event/checkpoint continuity, product-owned Project context, and per-work-scope CLI isolation |
+| [0014](decisions/0014-unified-runtime-context-engine.md) | One server-host Runtime Context Gateway for Agent task context; remote trusted-host delivery follows ADR 0016, with separate Retrieval/Policy/Usage authorities, typed deliveries, event/checkpoint continuity, product-owned Project context, and per-work-scope CLI isolation |
 | [0015](decisions/0015-focus-area-classification.md) | Focus area is a user-created classification, not a second access scope: it aggregates Projects/Notes/Knowledge, participates in no access decision, and is told apart from a module by whether the thing needs code. Internal identifier `focus_area`; `domain` is reserved for this codebase's DDD vocabulary |
-| [0016](decisions/0016-control-plane-execution-hosts.md) | An instance is one control plane plus N execution hosts (`hosts` table; every Project Folder bound to one host); two-tier trust — server host keeps strict sandbox isolation unchanged, a paired personal host runs a thin daemon in trusted-host mode (native execution, no sandbox, own login state); paths are host-owned, never control-plane authority; remote propose→apply governance for in-place execution is explicitly deferred, not settled |
-| [0017](decisions/0017-authorization-by-cost-not-authorship.md) | Authorization follows cost, reversibility, exposure and trigger origin — not authorship: an exhaustive hard-gate list (self-modification, reach-widening memory, real checkout, exposure, money above bounded defaults, credentials/deployment, Project direction) is pre-approved per instance; every other Project-internal write executes from a `manual` origin under bounds (fan-out ≤ 5/turn, spend at the pipeline default with the remainder offered once) and is reviewed after via Updates with undo; a default flips from proposal to direct only once that review exists |
+| [0016](decisions/0016-control-plane-execution-hosts.md) | An instance is one control plane plus N execution hosts (Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder; one Folder may have Locations on several hosts); two-tier trust — server host keeps strict sandbox isolation unchanged, a paired personal host runs a thin daemon in trusted-host mode (native execution, no sandbox, own login state); paths are host-owned, never control-plane authority; remote propose→apply governance for in-place execution is explicitly deferred, not settled |
+| [0017](decisions/0017-authorization-by-cost-not-authorship.md) | Authorization follows cost, reversibility, exposure and trigger origin — not authorship: an exhaustive hard-gate list (self-modification, reach-widening memory, real checkout, exposure, money above bounded defaults, credentials/deployment, Project direction) is pre-approved per instance; every other Project-internal write executes from a `manual` origin under bounds (fan-out safety ceiling ≤ 5/turn, narrower conversation pacing under ADR 0019, spend at the pipeline default with the remainder offered once) and is reviewed after via Updates with undo; a default flips from proposal to direct only once that review exists |
 | [0018](decisions/0018-room-as-visibility-boundary.md) | A Room is a visibility boundary, not a topic: its roster answers who may see, per-message recipients answer who is asked. The layer is invisible in the product until a visibility decision has to be made, and a limited Room gives non-members no existence signal. The mainline Room is created with the Project like its Brief v1; Assistant provisioning and Conversation execution setup happen through an explicit draft action before the first message |
 | [0019](decisions/0019-project-has-no-type-field.md) | A Project has no type field; its kind is derived from the goal and what it holds, and the conversation advances one step at a time |
 
@@ -244,30 +258,18 @@ Load only the module docs relevant to your task.
 
 ## 6. Current Work
 
-Planned work lives in the documents below, each with one job, plus one
-specification per active convergence under `plans/`. Reorganized 2026-08-13 from
-six overlapping files; a specification is retired into current-state
-architecture and the defer register once nothing in it can be advanced.
+Planned work has one durable routing entry per purpose:
 
 | Document | Holds |
 |---|---|
-| Thread references (a reference is a message: content picked from another thread or an imported session, copied once with provenance) | Shipped and retired 2026-08-29 (`10a02a31`, `60b86670`, `92375c49`, `27f12464`; ledger in git history). Current state: [modules/rooms.md](modules/rooms.md) §Thread References, [modules/imported-sessions.md](modules/imported-sessions.md), [architecture/SECURITY_AND_ACCESS_BOUNDARIES.md](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md) §3; deferrals in [tasks/deferred-register.md](tasks/deferred-register.md). Delivered R1.3, R1.4 and R1.7, and removed the live `imported_session` explicit reference |
-| [plans/backlog.md](plans/backlog.md) | Real work with no trigger condition, pulled on demand |
-| [tasks/deferred-register.md](tasks/deferred-register.md) | Everything waiting on a recorded trigger, the standing enablement gates, watch items, and parked ideas — including this repo's "Project kernel — P2" section: the Machine/ExecutionHost/WorkspaceLocation topology plan's deferred Project-control-plane decisions (`primary_mode` deletion, registry merge, Project Steward, Room). That plan's P0 (cleanup) and P1 (topology, Task-as-spine dispatch) shipped and are retired — commits `d0b6b3c5`, `0dcd91ca`. |
-| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | The unattended execution specification — DEFERRED; entry evidence is expected to come from the retired execution-topology plan's P1 real-usage window |
-| Ambient CLI session import (a paired host's own Claude Code / Codex / OpenCode history for a bound folder) | Shipped and retired 2026-08-28 (`293023c3`, `d162aabf`, `178bd9a8`; ledger in git history). Current state: [modules/imported-sessions.md](modules/imported-sessions.md); leftovers in [plans/backlog.md](plans/backlog.md) §9 |
-| Remote-host provider binding (host×adapter provider binding, proxy reachability, daemon-side materialization) | Shipped and retired 2026-08-28 (`404b1b87` and following; ledger in git history). Current state: [modules/hosts.md](modules/hosts.md) "Model-backend binding"; open real-host acceptance in [tasks/deferred-register.md](tasks/deferred-register.md) (multi-host section); actionable leftovers in [plans/backlog.md](plans/backlog.md) §8 |
+| [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
+| [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
+| [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
 
-Do not create competing task files, and do not reintroduce a "current focus"
-document. One existed and was removed: a file whose job is to declare what is
-being worked on requires continuous maintenance that never happened, so it
-repeatedly declared work nobody was doing — which is worse than declaring
-nothing. What is scheduled is visible in Git and in the plan documents
-themselves. Observable instance state (what is installed, what has run, what has
-failed) is not written down at all; query the instance, because a recorded
-snapshot only rots. An approved multi-phase implementation may keep a
-short-lived execution ledger under `plans/`, but it is retired into current-state
-architecture as soon as its phases are complete.
+Do not create competing task lists or a separate "current focus" document.
+An approved phased implementation may use a temporary execution ledger; retire
+it into the relevant current-state guides when complete. Query live instance
+state when needed rather than treating a recorded snapshot as current fact.
 
 ---
 
@@ -288,8 +290,11 @@ Long-term architecture information must live in `.agent/architecture/` or `.agen
 
 ## 8. Context Loading Guidance for Agents
 
-Use the smallest relevant bundle from [context-bundles.yaml](context-bundles.yaml). Do not
-load all docs for every task.
+Select the smallest relevant bundle from [context-bundles.yaml](context-bundles.yaml)
+and read its relevant documents before editing. Prefer a detailed domain bundle
+over a broad primary bundle; `default` is a fallback. The YAML owns bundle
+membership; this table is a task-routing summary, not a second exhaustive list.
+Read cross-cutting policies when triggered even if the selected bundle omits them.
 
 | Task type | Load |
 |---|---|
@@ -298,6 +303,7 @@ load all docs for every task.
 | Frontend / home / UI change | `frontend-product` bundle: `product-shell.md`, `frontend-layout.md`, `client-server-protocol.md`, module doc |
 | Any new subsystem, shared mechanism, or new dependency | `REUSE_AND_DEPENDENCY_POLICY.md` + the owning module doc |
 | Testing change | `TESTING_STRATEGY.md` + the specific test file's domain doc |
+| Host daemon / pairing / host transport | `host-daemon`; add `imported-cli-history` for imports or `project-folder-artifact` for folder access |
 | Runtime / agent / run change | `runtime-agent` bundle: `EXECUTION_MODEL.md`, `RUNS_AND_OUTPUTS.md`, `agents.md`, `BOUNDARIES.md` |
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
 | Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `project-files.md` |
@@ -305,39 +311,33 @@ load all docs for every task.
 | Picking up planned work | `plans/backlog.md` + `tasks/deferred-register.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |
 
-Additional agent rules:
-- Never write to `instance/` from code in `core/`.
-- Never write active memory directly — use proposals.
-- Never turn Runtime Context into vendor context files; adapters consume the accepted Delivery directly.
-- Read `BOUNDARIES.md` before making structural changes.
-- Search for an existing implementation, dependency, and test fixture before building a new one;
-  `architecture/REUSE_AND_DEPENDENCY_POLICY.md` is the source of truth for that decision.
-- New backend routes go in `server/src/modules/<module>/routes.ts` and
-  the module is registered in `server/src/gateway/routeRegistry.ts`.
-- New frontend pages go in `apps/web/src/modules/<module>/`, registered in
-  `apps/web/src/modules/registry.ts`.
-- Do not treat `.agent/reports/` content as durable source of truth.
-- `.agent/architecture/` docs describe **current state**. Do not add target-state aspirations
-  without a scoped implementation task.
-- `server/test/agentGuides.test.ts` keeps bundle targets, relative links, INDEX coverage,
-  and the shared core of `AGENTS.md` / `CLAUDE.md` from drifting. Update the canonical
-  guide structure and its invariant together when intentionally changing these rules.
+Development workflow and authorization rules live in the synchronized
+[AGENTS.md](../AGENTS.md) / [CLAUDE.md](../CLAUDE.md) bodies. Product invariants
+live in [BOUNDARIES.md](BOUNDARIES.md) and the owning guides; new module/route
+work follows [MODULE_DEVELOPMENT_GUIDE.md](architecture/MODULE_DEVELOPMENT_GUIDE.md),
+including its official-plugin exceptions. Do not duplicate those rules here.
+
+`server/test/agentGuides.test.ts` checks bundle targets, relative links, INDEX
+coverage, and equality of the complete AGENTS/CLAUDE bodies (excluding titles).
+Update that invariant when intentionally changing the guide structure.
 
 ---
 
-## 9. Vendor Context and Conversion Plan
+## 9. Development Guides Versus Product Runtime
 
-**Current state:** `CLAUDE.md` and `AGENTS.md` are hand-maintained adapter files that point
-AI coding assistants toward the right entry points. They are not canonical architecture docs.
+`CLAUDE.md` and `AGENTS.md` are hand-maintained repository development entry
+points. `.agent/` holds development policies, architecture references, and task
+routes; `docs/` and package READMEs also provide human-facing operations guidance.
 
-**Intended future model:**
+These are development-time instructions, not generated runtime artifacts. Their
+routing and task-scoping instructions apply to repository work; canonical
+architecture and accepted decisions define the product boundaries. If code and
+those boundaries disagree, report the discrepancy rather than interpreting
+implementation truth as permission to bypass a boundary.
 
-| Source (canonical) | Generated output |
-|---|---|
-| `.agent/INDEX.md` | Section headers in `CLAUDE.md` / `AGENTS.md` |
-| `.agent/context-bundles.yaml` | Task-type context directives in vendor files |
-| `.agent/architecture/*.md` | Current-state architecture constraints for repository work; never implicit runtime prompt input |
-
-Generated files (`CLAUDE.md`, `AGENTS.md`, sandbox prompt files, runtime-specific context
-files) are **disposable adapter outputs**, not canonical docs. When they conflict with
-`.agent/architecture/`, the architecture docs win. See [ADR 0004](decisions/0004-context-wrapper.md).
+Server-host runtime context uses the Runtime Context Gateway; remote trusted
+hosts use ADR 0016's prompt/tool delivery. Neither path discovers repository
+vendor files as implicit runtime authority. See
+[ADR 0004](decisions/0004-context-wrapper.md). Runtime-only vendor control files
+or Skill artifacts are owned by their product subsystems, not by this
+development index. Repository guides are maintained independently of runtime delivery artifacts.

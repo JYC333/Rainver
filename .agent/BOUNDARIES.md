@@ -118,8 +118,9 @@ and the `space_objects` writer guard are what keep them enforced; a new domain
 joining the ontology registers into the same registries rather than
 re-implementing the rules.
 
-**B12C** — A domain table becomes a `space_objects` row if and only if it is an
-**aggregate root**: it has independent identity, is referenced by other
+**B12C** — Within a domain that participates in cross-domain semantic
+relations (ADR 0012 decision 4), a table becomes a `space_objects` row only
+when it is an **aggregate root**: it has independent identity, is referenced by other
 domains, or needs its own visibility. Revision histories, event streams, typed
 state rows, per-user working state, and internal configuration are not objects
 — they are internal structure of an aggregate and stay domain-private. Project
@@ -223,7 +224,9 @@ closed on request, mount, connection, or namespace failure; there is no
 application-server subprocess fallback.
 
 **B14** — Runtime Context Delivery is the only model-visible context input for
-managed Runs and CLI invocations. Adapters may render an accepted Delivery at
+server-host managed Runs and CLI invocations. Remote trusted-host Runs use
+ADR 0016's prompt/tool delivery without server-brokered Runtime Context; this
+exception cannot be used by a server-host adapter. Adapters may render an accepted Delivery at
 their invocation boundary but must not fetch, reorder, rebudget, cache, or copy
 it into vendor context files. Vendor control files used solely to disable an
 unsupported runtime feature may exist only in the private execution sandbox;
@@ -232,7 +235,10 @@ context outputs or sources of truth.
 
 **B15** — Formal agent runs (automated, tracked, sandbox-enforced) must go through Rainver managed mode. IDE plugin usage is assist/manual mode — it is not tracked the same way.
 
-**B16** — Windows desktop is not a full runtime. The agent loop runs in Linux/WSL/server. A desktop app, if built later, is only a launcher/control panel. See [0005](decisions/0005-desktop-runtime.md).
+**B16** — The control plane runs on Linux/WSL/server. A personal desktop may
+serve as a trusted execution host under ADR 0016, subject to supported host
+platforms; it is not another control plane. A native desktop app is a
+launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 ---
 
@@ -542,6 +548,6 @@ code.
 
 ## Open-Source Boundary
 
-**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`) and by bounds set before the work runs (fan-out ≤ 5 per turn; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
+**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`) and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into `core/`; see B1/B2.

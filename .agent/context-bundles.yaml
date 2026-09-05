@@ -2,6 +2,9 @@
 #
 # Maps task types to the minimal set of docs and code roots an agent should load.
 # Do not load all bundles for every task — use the smallest relevant set.
+# Prefer a detailed domain bundle when a primary bundle spans unrelated work.
+# Actually read the relevant docs before editing; code_roots scope searches.
+# default is a fallback, not a mandatory addition to every bundle.
 #
 # This file routes development-time coding agents only. Product runtime,
 # RuntimeContextGateway, adapters, and sandboxes must never read this file or
@@ -447,3 +450,16 @@ space:
     - server/src/config.ts
     - server/src/modules/spaces
     - server/src/modules/runtimeContext
+
+# Host transport, daemon lifecycle, pairing and update implementation.
+# Add imported-cli-history for imports; project-folder-artifact for folder reads.
+host-daemon:
+  docs:
+    - .agent/modules/hosts.md
+    - packages/host-daemon/README.md
+    - .agent/decisions/0016-control-plane-execution-hosts.md
+    - .agent/BOUNDARIES.md
+  code_roots:
+    - packages/host-daemon/src
+    - server/src/modules/hosts
+    - packages/protocol/src/hostWire.ts

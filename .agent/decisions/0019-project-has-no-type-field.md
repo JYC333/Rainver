@@ -4,7 +4,10 @@ Date: 2026-09-03
 
 ## Status
 
-Accepted.
+Accepted. Supersedes the Mode/wording portion of
+[ADR 0011](0011-inquiry-domain-model.md) decision 6 and narrows conversational
+pacing within [ADR 0017](0017-authorization-by-cost-not-authorship.md) bounds.
+ADR 0015 navigation classification and ADR 0011 domain ownership remain valid.
 
 Current state lives in [`architecture/PROJECTS.md`](../architecture/PROJECTS.md)
 (the Project kernel), [`architecture/PROJECT_WORK.md`](../architecture/PROJECT_WORK.md)
@@ -42,7 +45,10 @@ opposite of tracking; it is the system setting the pace.
 1. **A Project has no type field.** `projects.primary_mode`,
    `project_brief_versions.primary_mode`, `project_mode_transitions`, the
    transition API, the Settings dropdown and the protocol schemas are removed.
-   Nothing may reintroduce a stored classification of a Project. Every
+   Nothing may reintroduce a stored Project type/Mode that selects behavior.
+   `focus_area_id` remains the navigation classification of
+   [ADR 0015](0015-focus-area-classification.md); it is not a Project type,
+   execution mode, or access scope. Every
    Project has the same kernel (Brief, Decisions, Instruction), the same
    objects (Task, Inquiry Thread, Research Operation, Source, Note, Files &
    Code), the same Loop, the same Board and the same Room; every Area is
@@ -63,7 +69,8 @@ opposite of tracking; it is the system setting the pace.
    ordinary turns, when the person asks for a decomposition or a plan the
    Agent creates at most three objects per turn and names the rest; when they
    did not ask, at most one. These bounds live in the Room's policy text and
-   the continuation instruction, and are the only place pacing is decided.
+   the continuation instruction. Execution safety bounds from ADR 0017 still
+   apply independently; the prompt-level pacing is not a replacement for them.
 
 4. **The Loop has one wording.** The five stage keys — `frame`, `plan`,
    `act`, `verify`, `conclude` — are the labels, in every Project.
@@ -81,9 +88,10 @@ opposite of tracking; it is the system setting the pace.
   Project is about. `WORK_LOOP_STAGE_LABELS` is one table.
 - The accepted-definition continuation and `QUESTION_DECOMPOSITION_ACTION_POLICY`
   / `PLAN_ACTION_POLICY` carry the pacing bounds in decision 3.
-- The single-file schema baseline was rewritten; per
-  `server/migrations/README.md`, a database that already applied the old
-  baseline is recreated.
+- Schema maintenance follows [BOUNDARIES B59](../BOUNDARIES.md) and
+  `server/migrations/README.md`. Recreating a database is conditional on having
+  no data to preserve and authorization for deletion; otherwise preserve data
+  through a migration.
 - Every Area stays visible from birth. Nothing governs Area visibility, and
   nothing should: three Areas are the only place their data can be created,
   so hiding one until it has data would make it unreachable forever.

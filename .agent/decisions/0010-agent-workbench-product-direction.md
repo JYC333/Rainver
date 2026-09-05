@@ -1,7 +1,6 @@
 # ADR 0010: Personal + Small-Team Agent Workbench Direction
 
 Date: 2026-07-11
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -44,8 +43,10 @@ selected by task shape rather than by a universal API-first rule
   wrapper) or through Rainver's in-process managed subscription OAuth channel
   ([ADR 0008](0008-credential-channel-isolation.md)); it is never routed
   through another vendor's runtime.
-- Managed API work continues through `model_api` / `ts_agent_host` and the
-  provider invocation architecture; nothing routes API calls through a CLI.
+- Managed API work uses `model_api` / `ts_agent_host` and the in-process
+  provider invocation boundary. Separately, a CLI may use an explicit
+  ModelProvider proxy binding under ADR 0008; that does not replace the managed
+  API path or release the upstream key to the CLI.
 - Provider capability, remaining subscription allowance, API cost, latency,
   sandbox level, audit needs, and vendor terms all participate in routing.
   Routing must expose allowance, cost, and failure state without conflating
@@ -68,18 +69,3 @@ selected by task shape rather than by a universal API-first rule
   volume.
 - Self-evolution stays subordinate to human-reviewed reliability and real
   use.
-
-## Revision history
-
-- **2026-07-11** — accepted, with OpenCode planned as a third CLI runtime
-  under a retired orchestration plan's track "C1.5".
-- **2026-08-27** — rewritten. Runtime stance restated for the ACP
-  replatform (OpenCode is now a peer, not a "third optional" adapter; the
-  "Router preference" vocabulary never corresponded to code); the retired
-  plan reference removed; the 2026-07-11 vendor-terms checkpoint and the
-  dogfooding checkpoint (a 30-day usage test with no recorded review) both
-  removed — a point-in-time terms survey and a validation exercise are not
-  architectural decisions.
-- **2026-08-28** — the subscription bullet corrected to admit the managed
-  subscription OAuth channel that ADR 0008 already defines; the 08-27
-  wording had contradicted it.

@@ -1,16 +1,14 @@
 # ADR 0016: Control Plane And Execution Hosts, Two-Tier Trust
 
 Date: 2026-08-21
-Rewritten: 2026-08-30
 
 ## Status
 
-Accepted. P0/P1 topology and control-plane implementation are complete
-(commits `d0b6b3c5`, `0dcd91ca`); the ACP runtime replatform (A1–A3, retired
-2026-08-23) and the remote provider-binding work built on it. P2 (Project
-kernel) is deferred by decision; see
-[`tasks/deferred-register.md`](../tasks/deferred-register.md). Current state
-lives in [`modules/hosts.md`](../modules/hosts.md).
+Accepted. Defines the remote trusted-host exception to the server-host
+Gateway and isolation requirements of ADR 0014. Current implementation lives
+in [modules/hosts.md](../modules/hosts.md); pending Project-kernel work and
+real-host acceptance gates remain in
+[tasks/deferred-register.md](../tasks/deferred-register.md).
 
 ## Context
 
@@ -116,8 +114,9 @@ invariant.
 **Login state does not.** Subscription/OAuth login state is produced by a
 vendor login on a machine's disk and cannot be brokered. The credential
 broker's CLI HOME continuity model, subscription-egress allowlists,
-login-state brokering, remote multi-account selection, and remote vendor
-login remain server-host-only. A remote Run with no binding is a native CLI
+and login-state brokering remain server-host-only. Remote installation
+selection and owner-initiated login terminals follow section 6; relaying a
+terminal does not copy or broker login state from the server. A remote Run with no binding is a native CLI
 invocation using whatever the machine is already logged into; the control
 plane supplies the rendered task prompt and an approval preset (headless
 mode requires one).
@@ -271,32 +270,3 @@ probing, and full local-first replication are likewise out of scope.
   `ARCHITECTURE.md`, `modules/mobile-client.md`,
   `modules/sync-and-conflicts.md`, and ADRs 0005, 0008, 0014 — are scoped to
   the server host and point here.
-
-## Revision history
-
-- **2026-08-21** — accepted; daemon role narrowed the same day after
-  evaluating `opencode serve`.
-- **2026-08-22** — one ACP transport instead of per-runtime endpoints.
-- **2026-08-24** — explicit ModelProvider bindings extend to remote hosts;
-  B67 added; provider-proxy "local" wording swept across `.agent/`.
-- **2026-08-26** — managed installations and relayed login terminals.
-- **2026-08-27** — rewritten. Four amendments folded into decisions 4–6;
-  the amended-documents ledger reduced to the Consequences list and extended
-  to ADRs 0005 and 0014, which the original sweeps had missed.
-- **2026-08-28** — §4 gains the Run-scoped tool surface: a dispatched Run
-  receives an identity for calling Rainver back, and the command and Skill to
-  do it with, materialized into its own directory on the host. Reachability,
-  not a trust-model change — the identity is not a provider credential and
-  selects no backend, so ADR 0008 and B67 are untouched, and nothing goes onto
-  `PATH`.
-- **2026-08-30** — the owner-only rule covers live remote Folder reads; the
-  `folder_read` pull channel and shared `@rainver/folder-read` policy keep
-  paths host-owned while returning bounded tree/file/Git data to Files & Code.
-- **2026-08-30** — Room specialists are host-bound Agent records with one
-  owner-only Conversation × Agent host thread; Room prompt context remains
-  prompt content and never becomes server-brokered Runtime Context.
-- **2026-08-30** — managed workspaces add daemon-derived shared Conversation
-  or direct-owner directories, archive/restore/sweep lifecycle, and direct chat;
-  the control plane stores only the host, workspace mode, and opaque container
-  identity. Room removal and direct-session deletion archive rather than
-  delete, and reset retires vendor continuity without touching the directory.

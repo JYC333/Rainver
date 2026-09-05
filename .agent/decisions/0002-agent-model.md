@@ -1,7 +1,6 @@
 # ADR 0002: Agent Is A Separate Model From User
 
 Date: 2026-05 (original)
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -60,12 +59,3 @@ capacity.
   `agent_id` (the executing agent).
 - Memory policy on the Agent restricts which memory scopes it may read,
   enforced at the Runtime Context and memory read boundaries.
-
-## Revision history
-
-- **2026-05** — accepted.
-- **2026-07** — per-message instructing human added with Rooms.
-- **2026-08-27** — rewritten. Column enumeration removed (it had drifted:
-  `can_delegate` / `max_delegation_depth` no longer exist, several policy
-  columns were missing); "workspace-owned" replaced by Project-bound; the
-  retired `ContextBuilder` name dropped.

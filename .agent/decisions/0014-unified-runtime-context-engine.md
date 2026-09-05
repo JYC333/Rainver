@@ -1,12 +1,10 @@
 # ADR 0014: One Runtime Context Gateway, Separate Retrieval Authority
 
 Date: 2026-08-08
-Rewritten: 2026-08-27
 
 ## Status
 
-Accepted; the clean cutover landed 2026-08-10 (commit `a98f6752` holds the
-phase evidence). Current state lives in
+Accepted. Remote trusted-host scope is defined by ADR 0016. Current state lives in
 [`architecture/MEMORY_CONTEXT_RUNTIME.md`](../architecture/MEMORY_CONTEXT_RUNTIME.md)
 and [`modules/runtime-context.md`](../modules/runtime-context.md); this
 document holds the decisions and their reasoning.
@@ -41,8 +39,9 @@ authorities.
 
 ### 1. The Runtime Context Gateway is the only product context port
 
-Every Chat, Run, Room recipient, Automation, managed Agent invocation, and
-local CLI delivery that executes a user task uses `RuntimeContextGateway`:
+For server-host execution, every Chat, Run, Room recipient, Automation,
+managed Agent invocation, and local CLI delivery that executes a user task
+uses `RuntimeContextGateway`:
 `preview`, `prepareInvocation`, `acknowledgeDelivery`, `ingestRuntimeEvent`,
 `finalizeInvocation`. No caller assembles model-visible context, invokes a
 compiler, or applies an adapter-owned budget outside it.
@@ -55,6 +54,13 @@ into Runtime Context or trigger recursive retrieval. An executable inventory
 of every production entrypoint (`runtimeContext/invocationInventory.ts`)
 is compared against source imports by boundary tests so a new bypass cannot
 land unseen.
+
+Remote trusted-host Runs follow [ADR 0016](0016-control-plane-execution-hosts.md)
+sections 2 and 4: the control plane supplies authorized task/conversation prompt
+content and any granted Run tool surface, without server-brokered Runtime
+Context retrieval, window planning, or continuity. This exception does not
+extend to server-host execution or authorize reading repository guides as
+runtime context.
 
 The gateway is a facade: planning, policy resolution, explicit reference
 resolution, retrieval coordination, window allocation, rendering, continuity,
@@ -215,8 +221,10 @@ requires a separate explicit adapter decision.
 
 A paired personal execution host runs under
 [ADR 0016](0016-control-plane-execution-hosts.md)'s trusted-host model, where
-this decision's isolation guarantees do not apply; the Gateway and delivery
-contract apply there unchanged.
+this decision's isolation and server-brokered Gateway delivery do not apply.
+Remote prompt and tool delivery follow ADR 0016; host ownership, tool grants,
+provider channel isolation, and the ban on implicit repository-guide context
+still apply.
 
 ## Authorization
 
@@ -228,15 +236,11 @@ Context Setup — the scope owner within governing policy. Every mutation
 records actor, previous version, new version, and typed diff. Revalidation
 occurs at preview, preparation, and delivery.
 
-## Clean cutover
+## Single authority
 
-No compatibility layer, dual read, fallback, or alias for the replaced
-architecture. Implementation deleted Context Profile, Context Pack, routing
-manifest, file-bundle/touched-file routing, manual-context stub, Context
-Digest, SessionSummary/condenser, duplicate Chat preparation, lightweight CLI
-context bypass, adapter-local budget, pre-render Context Snapshot, and
-unisolated worktree execution. Schema changes were authored in final Drizzle
-shape and folded into the canonical baseline.
+Do not reintroduce a parallel server-host context compiler, adapter-local
+planner, or fallback that bypasses the Gateway. Remote trusted-host execution
+uses only the explicit ADR 0016 exception described in decision 1.
 
 ## Consequences
 
@@ -248,13 +252,3 @@ shape and folded into the canonical baseline.
   authority.
 - Project context is editable by product users without treating repository
   docs as runtime configuration.
-
-## Revision history
-
-- **2026-08-08** — accepted.
-- **2026-08-10** — clean cutover completed.
-- **2026-08-27** — rewritten. Decision 12 scoped to the server host — ADR
-  0016's amendment sweep had missed this document; the isolation mechanism
-  named as bubblewrap under the sandbox-runner rather than "Docker or an
-  equivalent"; the invocation inventory recorded as the enforcement of
-  decision 1.

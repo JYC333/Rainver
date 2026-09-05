@@ -1,70 +1,50 @@
-# ADR 0004: Vendor Files And Vendor Sessions Are Never Source Of Truth
+# ADR 0004: Vendor Files And Vendor Sessions Are Never Runtime Authority
 
-Date: 2026-05 (original)
-Rewritten: 2026-08-27 to its remaining scope
+Date: 2026-05
 
 ## Status
 
-Accepted. The original mechanism (a `ContextCompiler` generating `CLAUDE.md`
-/ `AGENTS.md` into the sandbox) was removed by
-[ADR 0014](0014-unified-runtime-context-engine.md) decision 12; runtime
-context is now delivered as protocol messages. What remains here is the
-principle that mechanism served.
+Accepted. Runtime delivery follows [ADR 0014](0014-unified-runtime-context-engine.md)
+for server-host execution and [ADR 0016](0016-control-plane-execution-hosts.md)
+for remote trusted hosts.
 
 ## Context
 
-Claude Code reads `CLAUDE.md`, Codex reads `AGENTS.md`, Cursor reads
-`.cursorrules`. Early versions put architecture decisions and user
-preferences directly in those files, which locked context into vendor formats,
-let the CLI agent edit its own "source of truth", and severed the link between
-those edits and long-term memory. A later generation generated the files per
-run; ADR 0014 replaced generation with protocol delivery. Both changes leave
-the same principle standing.
+Vendor formats and resumable CLI sessions may help deliver context, but they
+cannot own Rainver's memory, Project state, permissions, or audit history.
+Repository development instructions are maintained independently of that
+product-runtime delivery system.
 
 ## Decision
 
-### 1. Vendor context files carry no authority
+### 1. Repository guides are development documents
 
-Rainver's authority for model-visible context is the Runtime Context Gateway
-(ADR 0014) over memory, Project context, and retrieval. A vendor-format file
-is at most a rendering artifact of an accepted delivery; it is never read
-back as truth.
-
-`CLAUDE.md`, `AGENTS.md`, `.agent/**`, and similar files that exist in a real
-Project Folder or in this repository are human-authored development documents.
+`AGENTS.md`, `CLAUDE.md`, and `.agent/**` guide development of a checkout.
 The product server, gateway, adapters, sandboxes, tests, and acceptance gate
-must not read them as runtime authority, and an agent's edits to them inside a
-sandbox never propagate to memory or Project context except through the
-ordinary proposal path.
+must not discover or read them as implicit runtime authority. An explicit
+import may create a reviewed product object under ADR 0014; editing a guide
+does not change product memory, Project Instructions, or Policy.
+
+Runtime-only vendor control files and Skill layouts follow their owning
+adapter and Skill contracts. They are delivery artifacts, not a second source
+of truth and not outputs generated from repository development guides.
 
 ### 2. Vendor runtime sessions are disposable caches
 
-A vendor CLI may hold a resumable session with prior turns. Resume is a
-capacity optimisation, never the authority:
-
-- Rainver always retains the ability to rebuild the conversation from its own
-  messages, event ledger, checkpoints, and snapshots (ADR 0014 decisions
-  10–11). A backend switch, invalidated session, or required context
-  re-injection degrades to rebuild; resume is never required for correctness.
-- Knowledge produced in a resumed session reaches Rainver only through tool
-  calls that create proposals or through declared Run Exchange outputs. It is
-  never harvested by reading vendor session state.
-- Memory writes still require proposal approval ([ADR 0003](0003-memory-proposal-flow.md)).
+Resume is an optimization, never the authoritative record. Server-host
+continuity is reconstructed through ADR 0014's ledger, checkpoints, and
+accepted deliveries; remote host sessions follow ADR 0016. Vendor session
+state grants no write authority and is not harvested as canonical memory.
+Knowledge enters the product only through governed tool calls or declared
+Run Exchange outputs. Memory writes use ADR 0003's canonical applier,
+provenance, and conditional approval rules.
 
 ## Consequences
 
-- Supporting a future vendor that can only accept a generated file requires
-  an explicit adapter decision and conformance boundary; it is not a fallback.
-- Run-specific context is always composed fresh per invocation and recorded
-  as an Invocation Snapshot; nothing run-specific is written into a real
-  Project Folder.
-
-## Revision history
-
-- **2026-05** — accepted with the `ContextCompiler` mechanism.
-- **2026-08-10** — mechanism removed by ADR 0014's clean cutover.
-- **2026-08-26** — vendor-session and read-only-mount sections added.
-- **2026-08-27** — rewritten to the remaining principle. The compiler,
-  target list, and per-vendor file table are gone; the read-only-mount
-  paragraph is dropped because that staging directory no longer holds a
-  vendor file (mechanism in `modules/runtime-adapters.md`).
+- Server-host context delivery uses protocol messages. A vendor requiring a
+  different file-based delivery needs an explicit adapter decision; repository
+  guides are not a fallback context source.
+- Remote Run tool/Skill materialization and its cleanup are scoped by ADR 0016;
+  they do not authorize overwriting development guides in the host checkout.
+- Development-guide validation may read these files as documentation, never
+  as product-runtime input or authority.

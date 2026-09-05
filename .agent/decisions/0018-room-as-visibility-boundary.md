@@ -18,39 +18,12 @@ This decision is about what opening a second Room *means*.
 
 ## Context
 
-Rooms shipped with rosters, a manager agent, per-message recipient selection,
-and a membership join on every read. What the product surfaces of that is not
-the boundary but a filing metaphor: the conversation list has a **"Topic
-Rooms"** heading and a **"New topic Room"** button, `/projects/:id/rooms` is
-described as the Project's primary workspace, and the top navigation has a
-Rooms entry — while the chat panel silently binds to whichever Room happened
-to be created first. The word the interface teaches is "topic", which is the
-one meaning a Room does not have.
-
-Three symptoms of the same gap surfaced together.
-
-**Nobody could say when to open a second Room.** Asked why one might, the
-honest answers available were "different agents get involved" and "a different
-topic" — but the first is already served by per-message `recipient_segments`
-inside one Room, and the second competes with conversation, which is already
-"one thread". Neither answer distinguishes a Room from something the system
-already has.
-
-**A Project could exist with no Room at all.** The mainline is not created
-with the Project; the first Room created becomes it. The chat panel therefore
-carries an empty state ("This Project has no conversation yet") whose button
-creates a *Room*, and every other caller wanting to put something in the
-mainline has to handle its absence. Ambient CLI session import found this the
-hard way: "Continue in Rainver" on a freshly bound Project — the feature's own
-typical path — failed with "This Project has no mainline Room".
-
-**Opening a Room creates an empty conversation.** A Project that has been
-spoken to once has one Room and one conversation; a Project that has not has
-neither; and a Room opened to establish the channel — rather than to say
-something — carries a "New conversation" nobody wrote.
-
-The layer was three deep in the data and two deep in the product, and the
-missing middle was where the meaning should have been.
+Conversations group a thread of discussion; Rooms define its audience. Treating
+both as topic containers creates a redundant filing choice and leaves no clear
+reason to open a second Room. Audience must be chosen once at the container
+boundary, while execution choices are reviewed in an explicit Conversation
+draft. A Project also needs a guaranteed mainline so callers do not depend on
+which Room was created first.
 
 ## Decision
 
@@ -126,18 +99,10 @@ not a member of the Project is excluded from a Room's Runs whatever their
 `oversight_mode`. The carve-out reaches only an admin already inside the
 Project.
 
-When this was written the two Run paths disagreed for exactly that person:
-`getVisibleRun` carried a room-membership join and 404'd, while `listRuns`
-carried only the content predicate and listed the Runs the detail page denied.
-They now share one predicate, and so do the Home Run, Proposal and Artifact
-lists and the Project Pulse counts — a list must not show what its detail page
-then 404s on. Oversight reaching Run metadata is intended; reaching it from one
-surface and not another was not.
-
-The trap that statement sets, worth keeping: a test written with a Space owner
-*outside* the Project passes without touching the behaviour at issue, because
-the Project scope conjunct already excludes them. The subject has to be an
-oversight-eligible admin who is a member of the Project.
+Run detail/list, Home work-product lists, and Project Pulse counts use the
+same content predicate. Oversight tests must use an eligible admin who is
+inside the Project; an admin outside it is excluded by Project scope and does
+not exercise this exception. Room messages still require membership.
 
 ### 4. The mainline Room is created with the Project
 
@@ -177,8 +142,9 @@ initialized Conversation remains pinned to its own execution context.
   the people who need it.
 - Roster management remains a real surface, reached from the conversation list
   section it governs rather than from top-level navigation.
-- Every read path that lists conversations, Runs, or attention items must keep
-  its membership join. Making the layer invisible in the interface must not
+- Conversation reads and conversation-attention paths retain Room membership
+  gates; Run/Proposal/Artifact reads retain their shared content predicate and
+  the decision 3 oversight exception. Making the layer invisible in the interface must not
   make it invisible in the predicates — the two are opposite properties, and
   a section that renders "nothing" for a non-member is not the same as a query
   that returns nothing.
@@ -188,16 +154,9 @@ initialized Conversation remains pinned to its own execution context.
 ## Non-goals
 
 - Room as a topic container, or a Rooms page as a navigation destination.
-- Any existence signal about a limited Room to a non-member.
+- Any existence signal about a limited Room or its conversations to a
+  non-member, except the explicitly permitted oversight access to work-product
+  metadata in decision 3. Oversight never admits Room messages.
 - Preventing conversation creation while another conversation is empty.
 - Changing how a Room executes a message (ADR 0007 decision 6).
 - Merging the Room layer away.
-
-## Revision history
-
-- **2026-08-29** — proposed and accepted the same day.
-- **2026-08-29** — implemented: the Room boundary work (mainline created with
-  the Project, conversations created through an explicit draft/setup action, the Room layer invisible
-  until a visibility decision is made) and, on top of it, thread references —
-  content copied once between threads with a server-enforced disclosure
-  confirmation. Current state: [`modules/rooms.md`](../modules/rooms.md).

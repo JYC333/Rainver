@@ -1,7 +1,6 @@
 # ADR 0001: Space As Product-Level Isolation Boundary
 
 Date: 2026-05 (original)
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -92,13 +91,3 @@ hence constraint 3.
   there is no general mechanism for widening.
 - Personal Spaces are high-traffic by design (ADR 0013), which is why the
   aggregated read had to exist rather than being avoided.
-
-## Revision history
-
-- **2026-05** — accepted.
-- **2026-08-06** — the last consequence narrowed from Space-centred to
-  user-centred by ADR 0013's aggregated read; five constraints recorded.
-- **2026-08-27** — rewritten. Amendment folded into decision 3. "Workspace"
-  replaced by Project / Project Folder (renamed 2026-07-25) and the retired
-  `ContextBuilder` name replaced by the mechanisms that enforce the rule
-  today.

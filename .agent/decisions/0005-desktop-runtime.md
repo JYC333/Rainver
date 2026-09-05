@@ -1,7 +1,6 @@
 # ADR 0005: The Desktop Is A Client Or An Execution Host, Not The Control Plane
 
 Date: 2026-05 (original)
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -44,11 +43,3 @@ machine may do, not where the control plane lives.
   with that ADR's trust model and owner-only rule, not as a server runtime.
 - Documentation and setup guides target WSL2 + Compose for the control plane
   and the host daemon for personal machines.
-
-## Revision history
-
-- **2026-05** — accepted as "Windows desktop is not a full runtime".
-- **2026-08-27** — rewritten. The "no Windows-native agent execution path"
-  consequence was contradicted by ADR 0016 (whose amendment sweep missed this
-  document); "Docker-based sandbox" replaced by the actual bubblewrap
-  isolation.

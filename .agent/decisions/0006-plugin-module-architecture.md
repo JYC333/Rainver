@@ -1,7 +1,6 @@
 # ADR 0006: Module Architecture And Official Optional Modules
 
 Date: 2026-05-06 (module structure), 2026-06-18 (optional module control plane)
-Rewritten: 2026-08-27
 
 ## Status
 
@@ -93,7 +92,7 @@ reusable `requireOfficialPluginEnabled()` guard.
 
 A domain that needs another module's behaviour uses an explicit service,
 repository, internal route, protocol contract, or registry (for example
-`ProposalApplierRegistry`, the Project overview registries of
+`ProposalApplierRegistry`, the Project attention registry of
 [ADR 0011](0011-inquiry-domain-model.md)) — never an import of an unrelated
 module's route file. Which modules currently depend on which is described in
 `.agent/modules/` and enforced by boundary tests where one exists; this ADR
@@ -124,14 +123,3 @@ isolation; true hot load/unload without restart.
 - **Conditional `SERVER_MODULES` at startup** — rejected; see decision 2.
 - **Full download/install package system at once** — deferred; the package
   format and startup contract are implemented, remote download is the gap.
-
-## Revision history
-
-- **2026-05-06** — module structure accepted.
-- **2026-06-18** — official optional module control plane added.
-- **2026-08-27** — rewritten. Deployment-profile motivation (personal / team
-  / enterprise) removed — nothing in code corresponds to it; a self-reference
-  left over from ADR renumbering fixed; the diary plugin's route and table
-  inventory moved out (it is implementation detail, and a second built-in
-  plugin now exists); the frozen cross-module import allowlist replaced by
-  decision 4, because nothing enforced it and it had silently grown.
