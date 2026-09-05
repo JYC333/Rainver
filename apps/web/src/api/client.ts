@@ -2004,8 +2004,11 @@ export const hostsApi = {
    * the copy's login command on a PTY and this relays it, frame by frame,
    * until the command exits. Type through `loginInput`.
    */
-  async *loginStream(hostId: string, adapterType: string, installation: string): AsyncGenerator<RuntimeLoginEvent> {
-    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/stream`
+  async *loginStream(hostId: string, adapterType: string, installation: string, target?: HostLoginTarget | null): AsyncGenerator<RuntimeLoginEvent> {
+    const query = target?.kind === 'acp'
+      ? `?auth_method_id=${encodeURIComponent(target.methodId)}`
+      : target?.kind === 'cli' ? '?login_action=cli' : ''
+    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/stream${query}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
@@ -2213,6 +2216,10 @@ export type RuntimeLoginEvent =
   | { type: 'hint'; text: string }
   | { type: 'exit'; exit_code: number; logged_in: boolean | null }
   | { type: 'error'; message: string }
+
+export type HostLoginTarget =
+  | { kind: 'acp'; methodId: string }
+  | { kind: 'cli' }
 
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
 export interface RuntimeInstallResult {

@@ -3511,6 +3511,7 @@ export type {
   HostExecutionTargetAdapter,
   HostExecutionTargetLocation,
   HostExecutionTargetsResponse,
+  RuntimeAuthMethod,
   RuntimeInstallation,
   RuntimeOptionChoice,
   RuntimeOptions,

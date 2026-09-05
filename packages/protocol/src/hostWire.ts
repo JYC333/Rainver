@@ -28,7 +28,7 @@ import {
   AmbientSessionImportSchema,
   AmbientTrimLimitsSchema,
 } from "./ambientSessions.js";
-import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema } from "./hosts.js";
+import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 
 // ---------------------------------------------------------------------------
 // Shared pieces
@@ -75,9 +75,10 @@ export const RuntimeDistributionSchema = z.discriminatedUnion("kind", [
 export type RuntimeDistribution = z.infer<typeof RuntimeDistributionSchema>;
 
 /**
- * Everything the control plane knows about one runtime adapter, sent in
- * `hello_ack`. The daemon holds no copy: a runtime it can dispatch to is one
- * the server told it how to look for, ask, install, and log into.
+ * Everything the control plane knows about one runtime adapter, sent in the
+ * initial `hello_ack` and refreshed by `heartbeat_ack`. The daemon holds no
+ * independent catalog: a runtime it can dispatch to is one the server told it
+ * how to look for, ask, install, and log into.
  */
 export const RuntimeProbeSchema = z.object({
   adapter_type: z.string().min(1),
@@ -234,6 +235,12 @@ export const HostLoginOpenFrameSchema = z.object({
   adapter_type: z.string().min(1),
   installation: z.string().min(1),
   login: RuntimeLoginSpecSchema.nullable(),
+  /** Normal ACP launch program; required when a machine-owned copy uses ACP auth. */
+  argv: z.array(z.string()).optional(),
+  /** Selected from this installation's last ACP initialize response. */
+  auth_method: RuntimeAuthMethodSchema.nullable().optional(),
+  /** Rainver-owned compatibility flow; mutually exclusive with `auth_method`. */
+  login_action: z.literal("cli").nullable().optional(),
 });
 export const HostAmbientImportFrameSchema = z.object({
   type: z.literal("ambient_import"),
@@ -268,7 +275,10 @@ const managedWorkspaceActionFields = {
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello_ack"), host_id: IdSchema, runtime_probes: z.array(RuntimeProbeSchema) }),
-  z.object({ type: z.literal("heartbeat_ack") }),
+  // The catalog can change while a daemon stays connected (for example when
+  // an ACP registry agent is enabled), so every acknowledgement refreshes the
+  // probes instead of making a reconnect part of installation.
+  z.object({ type: z.literal("heartbeat_ack"), runtime_probes: z.array(RuntimeProbeSchema).optional() }),
   z.object({ type: z.literal("error"), detail: z.string() }),
   HostLaunchFrameSchema,
   z.object({ type: z.literal("terminate"), run_id: IdSchema, force: z.boolean() }),

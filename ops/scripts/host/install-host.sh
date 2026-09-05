@@ -11,7 +11,8 @@ original_args=("$@")
 download_file() {
   local url="$1"
   local output="$2"
-  if [[ -t 2 ]]; then
+  local show_progress="${3:-false}"
+  if [[ "$show_progress" == true && -t 2 ]]; then
     curl --fail --location --progress-bar "$url" --output "$output"
   else
     curl --fail --location --silent --show-error "$url" --output "$output"
@@ -25,6 +26,7 @@ esac
 auto_update="preserve"
 ensure_adapters=false
 resolved_installer=false
+update_mode=false
 release_channel="${RAINVER_HOST_UPDATE_CHANNEL:-}"
 if [[ -z "$release_channel" && -f "$INSTALL_ROOT/channel" ]]; then
   release_channel="$(tr -d '\r\n' < "$INSTALL_ROOT/channel")"
@@ -43,7 +45,7 @@ EOF
 
 while (($# > 0)); do
   case "$1" in
-    --update) shift ;;
+    --update) update_mode=true; shift ;;
     --ensure-adapters) ensure_adapters=true; shift ;;
     --resolved-installer) resolved_installer=true; shift ;;
     --channel) release_channel="${2:-}"; shift 2 ;;
@@ -81,6 +83,44 @@ esac
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rainver-host-install.XXXXXX")"
 trap 'rm -rf "$temp_dir"' EXIT
 
+configure_auto_update() {
+  local installed_script="$1"
+  if [[ "$auto_update" == "enable" ]]; then
+    local updater_exec
+    updater_exec="${installed_script//\\/\\\\}"; updater_exec="${updater_exec//\"/\\\"}"
+    cat > "$SYSTEMD_DIR/rainver-host-update.service" <<EOF
+[Unit]
+Description=Update Rainver execution host to the latest release
+
+[Service]
+Type=oneshot
+ExecStart="$updater_exec" --update
+EOF
+    cat > "$SYSTEMD_DIR/rainver-host-update.timer" <<'EOF'
+[Unit]
+Description=Check for a Rainver Host update
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=6h
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  elif [[ "$auto_update" == "disable" ]]; then
+    systemctl --user disable --now rainver-host-update.timer >/dev/null 2>&1 || true
+    rm -f "$SYSTEMD_DIR/rainver-host-update.service" "$SYSTEMD_DIR/rainver-host-update.timer"
+  fi
+
+  systemctl --user daemon-reload
+  if [[ "$auto_update" == "enable" ]]; then
+    systemctl --user enable --now rainver-host-update.timer
+  fi
+}
+
+echo "Checking Rainver Host ${release_channel} release metadata..."
 download_file "$RELEASE_BASE_URL/install-host.sh" "$temp_dir/install-host.sh"
 download_file "$RELEASE_BASE_URL/SHA256SUMS" "$temp_dir/SHA256SUMS"
 installer_hash="$(awk '$2 == "install-host.sh" { print $1; exit }' "$temp_dir/SHA256SUMS")"
@@ -98,8 +138,14 @@ fi
 
 download_and_verify() {
   local asset="$1"
+  local description="${2:-}"
   local expected_hash
-  download_file "$RELEASE_BASE_URL/$asset" "$temp_dir/$asset"
+  if [[ -n "$description" ]]; then
+    echo "Downloading ${description}..."
+    download_file "$RELEASE_BASE_URL/$asset" "$temp_dir/$asset" true
+  else
+    download_file "$RELEASE_BASE_URL/$asset" "$temp_dir/$asset"
+  fi
   expected_hash="$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$temp_dir/SHA256SUMS")"
   if [[ ! "$expected_hash" =~ ^[0-9a-fA-F]{64}$ ]]; then
     echo "SHA256SUMS has no valid entry for $asset." >&2
@@ -108,10 +154,54 @@ download_and_verify() {
   printf '%s  %s\n' "$expected_hash" "$temp_dir/$asset" | sha256sum --check --status
 }
 
+# A rolling release publishes its build id as a tiny checksummed asset. Check
+# that before downloading Node, the daemon archive, or the optional adapter
+# pack. The full archive still carries BUILD_ID and is checked against this
+# value after extraction.
+if [[ "$ensure_adapters" == false ]]; then
+  download_and_verify "BUILD_ID"
+  latest_build_id="$(tr -d '\r\n' < "$temp_dir/BUILD_ID")"
+  if [[ ! "$latest_build_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Release has an invalid build id." >&2
+    exit 1
+  fi
+
+  installed_build_id=""
+  installed_channel=""
+  if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+    installed_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+  fi
+  if [[ -f "$INSTALL_ROOT/channel" ]]; then
+    installed_channel="$(tr -d '\r\n' < "$INSTALL_ROOT/channel")"
+  fi
+
+  if [[ "$update_mode" == true \
+    && "$installed_build_id" == "$latest_build_id" \
+    && "$installed_channel" == "$release_channel" \
+    && -f "$INSTALL_ROOT/current/app/dist/cli.js" \
+    && -x "$BIN_DIR/rainver-host" \
+    && -x "$INSTALL_ROOT/rainver-host-daemon" \
+    && -f "$SYSTEMD_DIR/rainver-host.service" ]]; then
+    install -m 755 "$temp_dir/install-host.sh" "$INSTALL_ROOT/install-host.sh"
+    if [[ "$auto_update" != "preserve" ]]; then
+      configure_auto_update "$INSTALL_ROOT/install-host.sh"
+    fi
+    echo "Rainver Host ${release_channel} ($latest_build_id) is already up to date."
+    echo "No runtime or release archives were downloaded."
+    echo "Update channel: $release_channel"
+    if [[ "$auto_update" == "enable" ]]; then
+      echo "Automatic latest updates: enabled"
+    elif [[ "$auto_update" == "disable" ]]; then
+      echo "Automatic latest updates: disabled"
+    fi
+    exit 0
+  fi
+fi
+
 install_adapter_pack() {
   local asset="rainver-host-adapters-linux-${release_arch}.tar.gz"
   local unpacked="$temp_dir/unpacked-adapters"
-  download_and_verify "$asset"
+  download_and_verify "$asset" "Rainver Host adapters for linux-${release_arch}"
   mkdir -p "$unpacked"
   tar -xzf "$temp_dir/$asset" -C "$unpacked"
   local payload="$unpacked/rainver-host-adapters"
@@ -158,8 +248,8 @@ if [[ -n "$node_command" ]]; then
 fi
 if [[ "$node_major" != "24" ]]; then
   node_asset="rainver-host-node-linux-${release_arch}.tar.gz"
-  echo "No compatible system Node.js found; downloading the shared Node.js runtime..."
-  download_and_verify "$node_asset"
+  echo "No compatible system Node.js found."
+  download_and_verify "$node_asset" "shared Node.js runtime for linux-${release_arch}"
   mkdir -p "$temp_dir/unpacked-node"
   tar -xzf "$temp_dir/$node_asset" -C "$temp_dir/unpacked-node"
   node_payload="$temp_dir/unpacked-node/rainver-host-node"
@@ -178,8 +268,7 @@ else
 fi
 
 asset="rainver-host-linux-${release_arch}.tar.gz"
-echo "Downloading Rainver Host ${release_channel} for linux-${release_arch}..."
-download_and_verify "$asset"
+download_and_verify "$asset" "Rainver Host ${release_channel} for linux-${release_arch}"
 
 mkdir -p "$temp_dir/unpacked"
 tar -xzf "$temp_dir/$asset" -C "$temp_dir/unpacked"
@@ -191,6 +280,10 @@ fi
 build_id="$(tr -d '\r\n' < "$payload/BUILD_ID")"
 if [[ ! "$build_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Downloaded release has an invalid build id." >&2
+  exit 1
+fi
+if [[ "$build_id" != "$latest_build_id" ]]; then
+  echo "Downloaded release build id does not match the published release metadata." >&2
   exit 1
 fi
 payload_version="$("$node_command" "$payload/app/dist/cli.js" --version)"
@@ -240,8 +333,18 @@ printf '#!/usr/bin/env bash\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER
   "$INSTALL_ROOT/current/app/dist/cli.js" > "$BIN_DIR/rainver-host"
 chmod 755 "$BIN_DIR/rainver-host"
 
+service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
+mkdir -p "$(dirname "$service_env")"
+if [[ ! -f "$service_env" ]]; then
+  escaped_path="${PATH//\\/\\\\}"; escaped_path="${escaped_path//\"/\\\"}"
+  escaped_config="${CONFIG_DIR//\\/\\\\}"; escaped_config="${escaped_config//\"/\\\"}"
+  printf 'PATH="%s"\nRAINVER_HOST_CONFIG_DIR="%s"\n' "$escaped_path" "$escaped_config" > "$service_env"
+  chmod 600 "$service_env"
+fi
+
 daemon_launcher="$INSTALL_ROOT/rainver-host-daemon"
-printf '#!/usr/bin/env bash\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q\n' \
+printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q\n' \
+  "$service_env" \
   "$INSTALL_ROOT" \
   "$release_channel" \
   "$INSTALL_ROOT/adapters/current" \
@@ -252,17 +355,7 @@ chmod 755 "$daemon_launcher"
 installed_script="$INSTALL_ROOT/install-host.sh"
 install -m 755 "$temp_dir/install-host.sh" "$installed_script"
 
-service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
-mkdir -p "$(dirname "$service_env")"
-if [[ ! -f "$service_env" ]]; then
-  escaped_path="${PATH//\\/\\\\}"; escaped_path="${escaped_path//\"/\\\"}"
-  escaped_config="${CONFIG_DIR//\\/\\\\}"; escaped_config="${escaped_config//\"/\\\"}"
-  printf 'PATH="%s"\nRAINVER_HOST_CONFIG_DIR="%s"\n' "$escaped_path" "$escaped_config" > "$service_env"
-  chmod 600 "$service_env"
-fi
-
 unit_exec="${daemon_launcher//\\/\\\\}"; unit_exec="${unit_exec//\"/\\\"}"
-unit_env="${service_env//\\/\\\\}"; unit_env="${unit_env//\"/\\\"}"
 cat > "$SYSTEMD_DIR/rainver-host.service" <<EOF
 [Unit]
 Description=Rainver execution host
@@ -271,7 +364,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile="$unit_env"
 ExecStart="$unit_exec"
 Restart=on-failure
 RestartSec=5
@@ -281,38 +373,7 @@ KillMode=control-group
 WantedBy=default.target
 EOF
 
-if [[ "$auto_update" == "enable" ]]; then
-  updater_exec="${installed_script//\\/\\\\}"; updater_exec="${updater_exec//\"/\\\"}"
-  cat > "$SYSTEMD_DIR/rainver-host-update.service" <<EOF
-[Unit]
-Description=Update Rainver execution host to the latest release
-
-[Service]
-Type=oneshot
-ExecStart="$updater_exec" --update
-EOF
-  cat > "$SYSTEMD_DIR/rainver-host-update.timer" <<'EOF'
-[Unit]
-Description=Check for a Rainver Host update
-
-[Timer]
-OnBootSec=10m
-OnUnitActiveSec=6h
-RandomizedDelaySec=30m
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-elif [[ "$auto_update" == "disable" ]]; then
-  systemctl --user disable --now rainver-host-update.timer >/dev/null 2>&1 || true
-  rm -f "$SYSTEMD_DIR/rainver-host-update.service" "$SYSTEMD_DIR/rainver-host-update.timer"
-fi
-
-systemctl --user daemon-reload
-if [[ "$auto_update" == "enable" ]]; then
-  systemctl --user enable --now rainver-host-update.timer
-fi
+configure_auto_update "$installed_script"
 
 if systemctl --user is-active --quiet rainver-host.service; then
   if [[ "$changed" == true ]]; then

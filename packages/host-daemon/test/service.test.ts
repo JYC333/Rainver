@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { disableInstalledService, startInstalledService, stopInstalledService } from "../src/service.js";
 
 describe("installed host service", () => {
-  it("starts systemd after an installed CLI registers", async () => {
+  it("enables and restarts systemd after registration so an existing daemon reloads the token", async () => {
     const run = vi.fn(async () => {});
     await expect(startInstalledService({ RAINVER_HOST_INSTALL_ROOT: "/opt/rainver-host" }, run)).resolves.toBe(true);
-    expect(run).toHaveBeenCalledWith("systemctl", ["--user", "enable", "--now", "rainver-host.service"]);
+    expect(run.mock.calls).toEqual([
+      ["systemctl", ["--user", "enable", "rainver-host.service"]],
+      ["systemctl", ["--user", "restart", "rainver-host.service"]],
+    ]);
   });
 
   it("does not manage a service when running from a source checkout", async () => {

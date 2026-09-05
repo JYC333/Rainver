@@ -426,7 +426,7 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
   `home/` so its login state is separate from the machine's and from every
   other copy. Removal deletes the directory.
 
-`hello_ack.runtime_probes` is the daemon's whole catalog, one entry per
+`hello_ack.runtime_probes` is the daemon's initial whole catalog, one entry per
 adapter: the PATH binary to look for (`runtime`, null for a registry agent),
 the launch `argv`, the `distribution` to install a managed copy from (a
 builtin spec names its ACP registry entry — `distribution: { registry_id }` —
@@ -434,15 +434,21 @@ resolved by the acpAgents refresh loop, persisted in instance settings and
 read from memory, never fetched on the hello path; a registry agent carries
 a snapshot), and the `login` knowledge (`credentials.login` in the spec:
 command, `managed_command` inside a tree, `home_subdir`, `credential_file`).
-The server-host login adapters read the same spec fields.
+The server-host login adapters read the same spec fields. Every
+`heartbeat_ack` carries the current catalog again; when enabling an ACP agent
+changes it, the connected daemon adopts the new probes and immediately sends a
+fresh heartbeat, so installing an agent never requires a daemon reconnect.
 
 A runtime on a host has **one identity: adapter type × copy**, and
 everything about a copy lives on the copy. The capability report is
 `{ runtimes, versions, installations }`: `installations[adapter_type]` holds
-one `{ id, version, logged_in, options }` per copy (`logged_in` from the
-credential file in that copy's HOME, null when the runtime declares no
-login; `options.config_options` is exactly what that copy advertised over
-ACP). `runtimes`/`versions`
+one `{ id, version, logged_in, options }` per copy (`logged_in` comes from
+the configured credential file for built-ins, otherwise from whether ACP
+session setup succeeds when the Agent advertises authentication;
+`options.config_options` and `options.auth_methods` are the generic ACP
+capabilities that copy advertised; `options.cli_login_available` is a separate
+Rainver compatibility capability and is never represented as an ACP method).
+`runtimes`/`versions`
 are the plain PATH inventory (vendor binaries and git), for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
 `HostCapabilitiesSchema`), so server and web share one definition and the
@@ -474,19 +480,43 @@ against the host's `installations`, and stamps it into the Run's
 `model_override_json` so the launch frame names it; the daemon launches a
 managed copy from its manifest with `HOME` set to that copy's home.
 
-**Login** is a terminal, not a parser: `GET
+**Login** follows the runtime's declared mechanism: `GET
 /api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`
-(host owner, SSE) opens `login_open { session_id, adapter_type, installation,
-login }` on the daemon, which runs the copy's login command — `login.command`
-for `own`, the manifest's rendered `login_command` for a managed copy, or the
-user's shell when the runtime declares none — on a PTY from `script(1)` (no
-native addon to build on the host; Windows unsupported for now), with `HOME`
+(host owner, SSE) opens `login_open` on the daemon. Built-ins with an explicit
+login spec continue to run that command. Otherwise every method returned by
+ACP `initialize.authMethods` is exposed without a vendor allowlist: missing
+type is normalized to Agent Auth, which invokes ACP `authenticate` with the
+advertised method id; Terminal Auth appends the advertised args and env to
+the installed Agent's normal command and runs it to completion before the
+capability is probed again. The daemon advertises ACP Terminal Auth only when
+the host can actually provide the required PTY. Terminal commands use a PTY
+from `script(1)` (no native addon to build on the host; Windows unsupported for now), with `HOME`
 set to that copy's home and any ambient `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
-removed so the vendor flow actually runs. Output comes back as
+removed. Output comes back as
 `login_output` frames (`{ type: "output" }` on the stream, escape codes
-stripped in the UI); typed text goes through `POST .../login/input` →
+stripped in the UI); http(s) URLs in that output render as a short clickable
+**Open login link** rather than exposing an unbroken raw URL; typed text goes
+through `POST .../login/input` →
 `login_input`; the command's exit is `login_exit { exit_code, logged_in }`,
-after which the daemon heartbeats so `installations[].logged_in` is current.
+after which the daemon clears that copy's ACP capability cache and heartbeats
+so both `installations[].logged_in` and its advertised auth methods are current.
+Some Agents advertise Agent Auth but wait indefinitely for credentials their
+own CLI must create first. A managed installation without an explicit login
+spec is probed with its fixed top-level `login --help`; when that succeeds,
+Rainver reports a separate restricted **CLI login** compatibility capability
+without altering any Agent Auth or Terminal Auth method the Agent advertised.
+The login request selects either an ACP method id or this Rainver-owned action,
+never a synthetic ACP method. It runs only that
+installation's fixed executable entry plus the
+`login` subcommand in the same isolated HOME; it accepts terminal input but
+does not expose a shell or a remotely supplied command. New manifests preserve
+the executable-entry prefix separately from ACP arguments, so this also works
+for package-backed Agents. Older binary manifests safely imply an empty prefix;
+older Node package manifests must be reinstalled. After five seconds without
+an Agent Auth response, the stream points the user to CLI login instead of
+appearing silently stuck. When neither an explicit adapter login command nor a
+selected ACP method/CLI action exists, both the server route and daemon fail
+closed; the login endpoint never falls back to a host shell.
 One session per host × adapter × copy; a new stream supersedes the old, and a
 closed stream sends `login_close`. The server-host login engine
 (`providers/cli/loginEngine.ts`) is unchanged and still owns the server host's
@@ -504,14 +534,39 @@ machine's own installs are still never touched.
 
 In the UI (command center → Hosts) this is host-major: each remote host card
 has an **Agents** section listing only the agents that host has a copy of,
-with log-in / remove, and an "Add agent…" picker for the rest of the catalog.
-No agent is labelled "built-in": the builtin CLIs and registry agents differ
-only in server-side capability (provider binding, subagent lockdown, usage),
-which is not a host concern. The catalog itself is the instance admin's
-**ACP registry** panel on Instance Settings (`modules/runtime_tools/AcpRegistryPanel`),
-next to the server-host runtime tools it is the sibling of: enabled agents
-(Disable, refused while installed anywhere) and a search of the registry to
-Enable more — an instance-level decision that needs no host.
+with source (`own`/`managed`), a cleaned version number that does not repeat
+the Agent name, log-in / remove, and an "Add agent…"
+picker for the enabled catalog. The card does not repeat the raw PATH runtime
+inventory above this list (and does not surface the daemon's Git utility as an
+Agent). The host×adapter **Model source** is rendered inside that same Agent
+row rather than in a disconnected backend grid: adapters with a supported
+ModelProvider binding get a selector whose ambient option reads **Agent-managed
+account**; generic registry Agents such as Cursor remain visible and state
+**Agent-managed · no Rainver override**, because ACP authentication does not
+describe how Rainver should inject an arbitrary ModelProvider into the Agent's
+config. This describes Rainver's integration boundary, not whether the Agent's
+own product settings support BYOK. Agent name, copies, login actions and Model
+source share one compact row; copy controls scroll horizontally if the viewport
+cannot hold them rather than turning every normal desktop row into two lines.
+Login remains per installation while Model source remains per host×adapter;
+the visual grouping does not collapse those two authority scopes. For
+an instance admin, the same picker lazily reads the whole ACP registry: search
+results remain visible while installing and after installation, with explicit
+**Installing…** and **Installed** states. A not-yet-enabled entry offers one
+**Enable & install** action: the server first snapshots and enables it
+instance-wide, then installs its managed copy on that host. An enabled entry
+that is absent from this host offers **Install**. A failed install leaves the
+successfully enabled catalog entry visible and reports the partial outcome;
+the picker never sends an arbitrary registry distribution directly to the
+daemon. Non-admin host owners see only the already-enabled catalog. No agent is labelled "built-in": the builtin
+CLIs and registry agents differ only in server-side capability (provider
+binding, subagent lockdown, usage), which is not a host concern.
+
+The instance admin's **ACP registry** panel on Instance Settings
+(`modules/runtime_tools/AcpRegistryPanel`) remains the instance-wide management
+surface next to the server-host runtime tools: enabled agents (Disable, refused
+while installed anywhere) and a registry search to Enable an entry without
+installing it on a particular host.
 
 Direct Agent chat, Room, and Project sidecar expose the selected installation's
 generic ACP options through the shared composer. The request stores selected
@@ -548,10 +603,10 @@ The allowlist is the same shape the server host uses in `cliSubprocessEnv.ts`.
 A run with **no** binding keeps the machine's environment untouched, exactly as
 before.
 
-- `GET /api/v1/hosts/runtime-adapters` (P3, C6) — static catalog of
-  remote-eligible adapters (`implemented` + ACP protocol — since the ACP
-  runtime replatform, that's all three: `claude_code`, `codex_cli`,
-  `opencode`), sourced from `listRuntimeAdapterSpecs()`. Session-authenticated
+- `GET /api/v1/hosts/runtime-adapters` (P3, C6) — catalog of remote-eligible
+  adapters (`implemented` + ACP protocol): the builtin specs plus dynamic
+  adapters for instance-enabled ACP registry entries, sourced from
+  `listRuntimeAdapterSpecs()`. Session-authenticated
   only (`getCurrentUser`, no space scoping — the catalog carries no per-user
   or per-space data). The single source of truth the frontend reads instead
   of re-deriving the dispatch route's own ACP-only eligibility rule a third
@@ -918,14 +973,27 @@ URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
 `~/.local/share/rainver-host/releases/`, atomically moves `current`, installs a
 systemd user unit, and captures the installing user's PATH for CLI discovery.
+The daemon launcher loads the owner-only `service.env` itself before Node
+starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose
+quoted-path handling can silently discard the captured PATH and reduce
+discovery to system directories.
 The one-time installer needs no pairing arguments: the installed
-`rainver-host register` command exchanges the code and then enables/starts the
-service. `--auto-update` optionally installs a six-hour systemd timer;
+`rainver-host register` command exchanges the code and then enables and
+restarts the service. Restarting is required even when the unit is already
+active because the daemon holds the server URL and bearer token it loaded at
+process start; this also makes the fresh WebSocket `hello_ack` deliver the
+complete runtime-probe catalog before capability detection. `--auto-update`
+optionally installs a six-hour systemd timer;
 updates request a daemon restart only when no Run is launching, executing, or
-uploading. After the one-time installer bootstrap, `rainver-host update`
-owns manual updates, channel selection, and the optional timer toggle; the
-selected channel persists locally and the installer path remains an internal
-implementation detail. The package version is read from package metadata, while a release
+uploading. Each channel also publishes its checksummed `BUILD_ID` as a small
+standalone asset. An update compares it with the active build before fetching
+Node, daemon, or adapter archives and returns immediately on a match; changing
+the timer setting still takes effect on that no-op path. The archive's own
+`BUILD_ID` must match the standalone metadata before installation. After the
+one-time installer bootstrap, `rainver-host update` owns manual updates,
+channel selection, and the optional timer toggle; the selected channel
+persists locally and the installer path remains an internal implementation
+detail. The package version is read from package metadata, while a release
 archive's `BUILD_ID` appends the publishing commit to `daemon_version`, so the
 rolling channel remains diagnosable without numbered release tags. See
 `packages/host-daemon/README.md`.

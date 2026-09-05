@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import type { RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
+import type { RuntimeAuthMethod, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
+import { terminalAuthAvailable } from "./terminalAuth.js";
 
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
@@ -47,6 +48,26 @@ function selectChoices(value: unknown): RuntimeOptionChoice[] {
   });
 }
 
+/** ACP defaults a missing method type to protocol-driven Agent Auth. */
+export function parseAcpAuthMethods(value: unknown): RuntimeAuthMethod[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw): RuntimeAuthMethod[] => {
+    const method = record(raw);
+    const id = stringOrNull(method.id);
+    const name = stringOrNull(method.name) ?? id;
+    const type = method.type === "terminal" ? "terminal" : method.type === undefined || method.type === "agent" ? "agent" : null;
+    if (!id || !name || !type) return [];
+    return [{
+      id,
+      name,
+      description: stringOrNull(method.description),
+      type,
+      args: Array.isArray(method.args) ? method.args.filter((item): item is string => typeof item === "string") : [],
+      env: Object.fromEntries(Object.entries(record(method.env)).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+    }];
+  });
+}
+
 /** Defensive ACP-wire parser, exported so the protocol shape is testable without spawning a CLI. */
 export function parseAcpSessionOptions(resultValue: unknown): RuntimeOptions {
   const result = record(resultValue);
@@ -74,6 +95,24 @@ export function parseAcpSessionOptions(resultValue: unknown): RuntimeOptions {
   return { config_options: parsed };
 }
 
+/** ACP's explicit signal that session creation is blocked on authentication. */
+export function isAcpAuthRequiredError(value: unknown): boolean {
+  return record(record(value).data).reason === "auth_required";
+}
+
+export function parseAcpSessionProbeResult(
+  result: unknown,
+  error: unknown,
+  authMethods: RuntimeAuthMethod[],
+): RuntimeOptions | null {
+  if (error !== undefined && !isAcpAuthRequiredError(error)) return null;
+  return {
+    ...parseAcpSessionOptions(result),
+    auth_methods: authMethods,
+    authenticated: error === undefined,
+  };
+}
+
 /**
  * Opens one ACP session purely to read its `configOptions`, then kills it.
  *
@@ -95,6 +134,7 @@ export function probeAcpOptions(
   timeoutMs = 20_000,
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
+    let authMethods: RuntimeAuthMethod[] = [];
     let settled = false;
     const finish = (value: RuntimeOptions | null) => {
       if (settled) return;
@@ -135,11 +175,17 @@ export function probeAcpOptions(
         let message: Record<string, unknown>;
         try { message = JSON.parse(line); } catch { continue; }
         if (message.id === 1) {
+          if (message.error) {
+            finish(null);
+            continue;
+          }
+          authMethods = parseAcpAuthMethods(record(message.result).authMethods)
+            .filter((method) => method.type !== "terminal" || terminalAuthAvailable());
           send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd, mcpServers: [] } });
           continue;
         }
         if (message.id === 2) {
-          finish(parseAcpSessionOptions(message.result));
+          finish(parseAcpSessionProbeResult(message.result, message.error, authMethods));
         }
       }
     });
@@ -154,8 +200,10 @@ export function probeAcpOptions(
         protocolVersion: 1,
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
+          ...(terminalAuthAvailable() ? { auth: { terminal: true } } : {}),
           session: { configOptions: { boolean: {} } },
         },
+        clientInfo: { name: "rainver-host", version: "1" },
       },
     });
   });

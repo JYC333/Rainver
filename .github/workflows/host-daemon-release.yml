@@ -155,8 +155,9 @@ jobs:
 
       - name: Prepare rolling release assets
         run: |
+          git rev-parse HEAD > release/BUILD_ID
           cp ops/scripts/host/install-host.sh release/install-host.sh
-          (cd release && sha256sum install-host.sh rainver-host-*.tar.gz > SHA256SUMS)
+          (cd release && sha256sum BUILD_ID install-host.sh rainver-host-*.tar.gz > SHA256SUMS)
 
       - name: Move the rolling channel tag
         env:

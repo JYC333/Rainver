@@ -27,9 +27,13 @@ installed CLI:
 rainver-host register --server https://rainver.example.com --code <pairing-code>
 ```
 
-Successful registration enables and starts the systemd user service. There is
-no need to keep the terminal open; the daemon entrypoint is private to the
-installed systemd unit rather than a public `rainver-host` command.
+Successful registration enables and restarts the systemd user service so an
+already-running daemon immediately reloads the new server URL, Host id, and
+token. There is no need to restart it manually or keep the terminal open; the
+daemon entrypoint is private to the installed systemd unit rather than a
+public `rainver-host` command. After the WebSocket `hello` succeeds, the
+server returns its runtime-probe catalog and the daemon reports every matching
+CLI on the service's captured `PATH`.
 
 To disconnect this machine permanently, revoke the server-side credential,
 stop the service, and remove the local registration in one command:
@@ -47,9 +51,12 @@ Revoked rows remain visible as audit history. Under the current Host-name
 uniqueness rule, use a different machine display name if you pair it again.
 
 Automatic updates are opt-in. They check the selected release channel every
-six hours, verify its SHA-256 checksum, switch the installed version atomically,
-and ask the daemon to restart only after all launching, running, and uploading
-Runs have finished.
+six hours. The updater first verifies the channel's small `BUILD_ID` asset and
+returns immediately when that build is already active, without downloading the
+Node runtime, daemon release archive, or adapter pack. For a new build it
+verifies every downloaded asset's SHA-256 checksum, switches the installed
+version atomically, and asks the daemon to restart only after all launching,
+running, and uploading Runs have finished.
 The active and previous builds are retained; older rolling builds are removed.
 
 Without automatic updates, update manually at any time:
@@ -89,10 +96,10 @@ systemctl --user list-timers rainver-host-update.timer
 ```
 
 The service runs as the installing user, never as root. It captures that
-user's `PATH` on first installation so it can discover the same `git` and
-agent CLI executables after the terminal closes. Edit
-`~/.config/rainver-host/service.env` and restart the service if those paths
-later change.
+user's `PATH` on first installation, and the generated daemon launcher loads
+`~/.config/rainver-host/service.env` before Node starts, so discovery does not
+depend on systemd's default PATH or its `EnvironmentFile` path parsing. Edit
+that file and restart the service if those paths later change.
 
 On a headless machine where the user logs in only over SSH, enable systemd
 lingering once if the service must remain alive after the final logout:

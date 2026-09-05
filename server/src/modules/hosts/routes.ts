@@ -26,7 +26,7 @@ import { assertProjectWriter, assertProjectReadable } from "../projects/access.j
 import { getDbPool } from "../../db/pool.js";
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
-import { hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
+import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -416,6 +416,36 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const probe = acpRuntimeProbe(adapterType);
     if (!probe) return reply.code(422).send({ detail: `Unknown runtime adapter '${adapterType}'` });
+    const authMethodId = typeof (request.query as Record<string, unknown>).auth_method_id === "string"
+      ? String((request.query as Record<string, unknown>).auth_method_id)
+      : null;
+    const rawLoginAction = (request.query as Record<string, unknown>).login_action;
+    const loginAction = rawLoginAction === "cli" ? "cli" as const : null;
+    if (rawLoginAction !== undefined && !loginAction) {
+      return reply.code(400).send({ detail: "login_action must be 'cli'" });
+    }
+    if (authMethodId && loginAction) {
+      return reply.code(400).send({ detail: "Choose either auth_method_id or login_action" });
+    }
+    const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
+    const authMethods = hostInstallationAuthMethods(host.rows[0]?.capabilities_json, adapterType, installation);
+    const cliLoginAvailable = hostInstallationCliLoginAvailable(host.rows[0]?.capabilities_json, adapterType, installation);
+    const authMethod = authMethodId ? authMethods.find((candidate) => candidate.id === authMethodId) ?? null : null;
+    if (authMethodId && !authMethod) {
+      return reply.code(422).send({ detail: `Authentication method '${authMethodId}' is not advertised by this installation` });
+    }
+    if (loginAction && !cliLoginAvailable) {
+      return reply.code(422).send({ detail: "CLI login is not available for this installation" });
+    }
+    if (!probe.login && !authMethod && !loginAction) {
+      let selectionDetail = "This installation does not advertise a supported login method";
+      if (authMethods.length > 0 && cliLoginAvailable) selectionDetail = "auth_method_id or login_action is required for this installation";
+      else if (authMethods.length > 0) selectionDetail = "auth_method_id is required for this installation";
+      else if (cliLoginAvailable) selectionDetail = "login_action is required for this installation";
+      return reply.code(422).send({
+        detail: selectionDetail,
+      });
+    }
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -429,7 +459,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (previous) sharedHostConnectionRegistry.closeLoginSession(resolved.hostId, previous);
     const sessionId = sharedHostConnectionRegistry.openLoginSession(
       resolved.hostId,
-      { adapter_type: adapterType, installation, login: probe.login },
+      { adapter_type: adapterType, installation, login: probe.login, argv: probe.argv, auth_method: authMethod, login_action: loginAction },
       (event) => {
         emit(event);
         if (event.type === "exit") {
@@ -444,7 +474,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply;
     }
     activeLoginSessions.set(key, sessionId);
-    if (probe.login?.hint) emit({ type: "hint", text: probe.login.hint });
+    const hint = authMethod?.description ?? probe.login?.hint;
+    if (hint) emit({ type: "hint", text: hint });
     reply.raw.once("close", () => {
       if (activeLoginSessions.get(key) === sessionId) {
         activeLoginSessions.delete(key);
@@ -810,7 +841,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           switch (frame.type) {
             case "heartbeat": {
               await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
-              frameSink.send({ type: "heartbeat_ack" });
+              frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes() });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), authenticatedHostId)
                 .catch(() => undefined);
               // Standing consent on a Location is what makes a new terminal

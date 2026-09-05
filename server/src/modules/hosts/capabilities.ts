@@ -2,6 +2,7 @@ import {
   HostCapabilitiesSchema,
   type HostCapabilities,
   type RuntimeInstallation,
+  type RuntimeAuthMethod,
   type RuntimeOptionChoice,
   type RuntimeOptions,
   type RuntimeSessionConfigOption,
@@ -17,7 +18,7 @@ import {
  * server ship together, so obsolete capability layouts are rejected instead
  * of maintaining a second interpretation path.
  */
-export type { HostCapabilities, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
+export type { HostCapabilities, RuntimeAuthMethod, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
 export { OWN_INSTALLATION } from "@rainver/protocol";
 
 function record(value: unknown): Record<string, unknown> {
@@ -59,11 +60,31 @@ function configOptions(value: unknown): RuntimeSessionConfigOption[] {
     return [];
   });
 }
+function authMethods(value: unknown): RuntimeAuthMethod[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): RuntimeAuthMethod[] => {
+    const entry = record(item);
+    if (typeof entry.id !== "string" || typeof entry.name !== "string" || (entry.type !== "agent" && entry.type !== "terminal")) return [];
+    return [{
+      id: entry.id,
+      name: entry.name,
+      description: typeof entry.description === "string" ? entry.description : null,
+      type: entry.type,
+      args: strings(entry.args),
+      env: stringMap(entry.env),
+    }];
+  });
+}
 function options(value: unknown): RuntimeOptions | null {
   if (!value || typeof value !== "object") return null;
   const entry = record(value);
   return Array.isArray(entry.config_options)
-    ? { config_options: configOptions(entry.config_options) }
+    ? {
+        config_options: configOptions(entry.config_options),
+        auth_methods: authMethods(entry.auth_methods),
+        cli_login_available: entry.cli_login_available === true,
+        authenticated: typeof entry.authenticated === "boolean" ? entry.authenticated : null,
+      }
     : null;
 }
 function installation(value: unknown): RuntimeInstallation | null {
@@ -101,4 +122,22 @@ export function hostInstallationOptions(
 ): RuntimeSessionConfigOption[] {
   return normalizeHostCapabilities(capabilities).installations[adapterType]
     ?.find((copy) => copy.id === installationId)?.options?.config_options ?? [];
+}
+
+export function hostInstallationAuthMethods(
+  capabilities: unknown,
+  adapterType: string,
+  installationId: string,
+): RuntimeAuthMethod[] {
+  return normalizeHostCapabilities(capabilities).installations[adapterType]
+    ?.find((copy) => copy.id === installationId)?.options?.auth_methods ?? [];
+}
+
+export function hostInstallationCliLoginAvailable(
+  capabilities: unknown,
+  adapterType: string,
+  installationId: string,
+): boolean {
+  return normalizeHostCapabilities(capabilities).installations[adapterType]
+    ?.find((copy) => copy.id === installationId)?.options?.cli_login_available === true;
 }

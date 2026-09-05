@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec } from "./tools.js";
+import { installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec, type ToolManifest } from "./tools.js";
 import type { RuntimeOptions } from "@rainver/protocol";
 import { homedir } from "node:os";
+import { terminalAuthAvailable } from "./terminalAuth.js";
 
 /**
  * The daemon discovers whatever the machine already has installed — it
@@ -92,6 +93,7 @@ const optionsCache = new Map<string, { at: number; value: RuntimeOptions | null 
 /** Exported for tests: the next `detectCapabilities` re-asks every runtime. */
 export function __clearRuntimeOptionsCache(): void {
   optionsCache.clear();
+  cliLoginSupport.clear();
 }
 
 /** A reconnect is a useful retry boundary, without throwing away valid catalogs. */
@@ -99,6 +101,79 @@ export function clearFailedRuntimeOptionsCache(): void {
   for (const [key, cached] of optionsCache) {
     if (cached.value === null) optionsCache.delete(key);
   }
+}
+
+/** Authentication changes this copy's session probe immediately. */
+export function clearRuntimeOptionsCache(adapterType: string, installation: string): void {
+  optionsCache.delete(`${adapterType}@${installation}`);
+}
+
+function loginState(home: string, login: ToolLoginSpec | null, options: RuntimeOptions | null): boolean | null {
+  const fileState = loggedIn(home, login);
+  if (fileState !== null) return fileState;
+  return options?.auth_methods?.length ? options.authenticated ?? null : null;
+}
+
+/** Built-ins with an explicit host login command keep that flow authoritative. */
+function reportedOptions(login: ToolLoginSpec | null, options: RuntimeOptions | null): RuntimeOptions | null {
+  if (!login || !options?.auth_methods?.length) return options;
+  return { ...options, auth_methods: [] };
+}
+
+const cliLoginSupport = new Map<string, Promise<boolean>>();
+
+function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): Promise<boolean> {
+  const key = `${manifest.command}\0${entryArgs.join("\0")}`;
+  const cached = cliLoginSupport.get(key);
+  if (cached) return cached;
+  const result = new Promise<boolean>((resolve) => {
+    let settled = false;
+    const env = { ...process.env, ...manifest.env, HOME: manifest.home } as Record<string, string | undefined>;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.OPENAI_API_KEY;
+    const child = spawn(manifest.command, [...entryArgs, "login", "--help"], {
+      cwd: manifest.home,
+      env,
+      stdio: "ignore",
+    });
+    const finish = (supported: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(supported);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      finish(false);
+    }, 4_000);
+    timer.unref?.();
+    child.on("error", () => finish(false));
+    child.on("close", (code) => finish(code === 0));
+  });
+  cliLoginSupport.set(key, result);
+  return result;
+}
+
+/**
+ * Compatibility for Agents that advertise ACP auth but require their own
+ * top-level `login` command first. This is a fixed managed command, not a
+ * remotely programmable shell. Old binary manifests safely imply no entry
+ * args; old Node package manifests must be reinstalled to learn that prefix.
+ */
+async function withManagedCliLogin(manifest: ToolManifest, options: RuntimeOptions | null): Promise<RuntimeOptions | null> {
+  if (manifest.login || !options || options.cli_login_available || !terminalAuthAvailable()) return options;
+  // This compatibility path is only useful for Agents that advertised ACP
+  // Agent Auth but cannot complete it until their own CLI has credentials.
+  if (!options.auth_methods?.some((method) => method.type === "agent")) return options;
+  const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
+  if (!entryArgs) return options;
+  if (!(await supportsManagedCliLogin(manifest, entryArgs))) return options;
+  return {
+    ...options,
+    // ACP remains authoritative. This is a Rainver-owned fallback and does
+    // not masquerade as an Agent-advertised authentication method.
+    cli_login_available: true,
+  };
 }
 
 async function runtimeOptions(
@@ -140,18 +215,19 @@ export async function detectCapabilities(
         found.push({
           id: OWN_INSTALLATION,
           version,
-          logged_in: loggedIn(homedir(), lookup.login),
-          options: asked,
+          logged_in: loginState(homedir(), lookup.login, asked),
+          options: reportedOptions(lookup.login, asked),
         });
       }
     }
     for (const manifest of managed.get(lookup.adapter_type) ?? []) {
       const id = managedInstallationId(manifest.version);
+      const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null;
       found.push({
         id,
         version: manifest.version,
-        logged_in: loggedIn(manifest.home, manifest.login),
-        options: askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null,
+        logged_in: loginState(manifest.home, manifest.login, asked),
+        options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
       });
     }
     if (found.length > 0) installations[lookup.adapter_type] = found;

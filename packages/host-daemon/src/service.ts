@@ -9,14 +9,18 @@ const runServiceCommand: ServiceCommandRunner = (command, args) => new Promise((
 /**
  * A source-checkout CLI has no install root and leaves process management to
  * its caller. The installed launcher exports the root, so registration can
- * finish the product flow by enabling and starting its systemd user service.
+ * finish the product flow by enabling and restarting its systemd user
+ * service. Restart is intentional: an already-running daemon keeps the
+ * server URL and bearer token it loaded at process start, so `enable --now`
+ * alone would leave it reconnecting with stale registration state.
  */
 export async function startInstalledService(
   env: NodeJS.ProcessEnv = process.env,
   run: ServiceCommandRunner = runServiceCommand,
 ): Promise<boolean> {
   if (process.platform !== "linux" || !env.RAINVER_HOST_INSTALL_ROOT) return false;
-  await run("systemctl", ["--user", "enable", "--now", "rainver-host.service"]);
+  await run("systemctl", ["--user", "enable", "rainver-host.service"]);
+  await run("systemctl", ["--user", "restart", "rainver-host.service"]);
   return true;
 }
 

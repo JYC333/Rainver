@@ -636,6 +636,9 @@ describe("hosts routes", () => {
       setTimeout(() => reject(new Error("timed out waiting for heartbeat_ack")), 5000);
     });
     expect(heartbeatAck).toMatchObject({ type: "heartbeat_ack" });
+    expect(heartbeatAck.runtime_probes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ adapter_type: "opencode" }),
+    ]));
 
     const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
     socket.close();

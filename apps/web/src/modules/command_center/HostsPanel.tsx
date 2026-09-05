@@ -11,7 +11,6 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
-import HostProviderBindings from './HostProviderBindings'
 import HostAgents from './HostAgents'
 import { useAuth } from '../../contexts/AuthContext'
 import HostProxyAddress from './HostProxyAddress'
@@ -48,8 +47,13 @@ export default function HostsPanel() {
     return [...groups.entries()]
   }, [hosts])
 
-  const loadAdapters = useCallback(() => {
-    hostsApi.listRuntimeAdapters().then(result => setRuntimeAdapters(result.items)).catch(error => toast.error(errMsg(error)))
+  const loadAdapters = useCallback(async () => {
+    try {
+      const result = await hostsApi.listRuntimeAdapters()
+      setRuntimeAdapters(result.items)
+    } catch (error) {
+      toast.error(errMsg(error))
+    }
   }, [])
   useEffect(() => {
     loadAdapters()
@@ -178,21 +182,6 @@ export default function HostsPanel() {
                     ? 'Built-in server execution host'
                     : `${host.platform ?? '—'} / ${host.arch ?? '—'} · daemon ${host.daemon_version ?? 'unknown'} · last seen ${fmt(host.last_heartbeat_at)}`}
                 </p>
-                {host.capabilities_json?.runtimes && host.capabilities_json.runtimes.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {host.capabilities_json.runtimes.map(runtime => {
-                      const adapter = runtimeAdapters.find(a => a.capability_probe === runtime)
-                      const version = host.capabilities_json?.versions?.[runtime]
-                      const label = version ? `${runtime} ${version}` : runtime
-                      if (!adapter) return <Badge key={runtime} variant="outline">{label}</Badge>
-                      return (
-                        <Badge key={runtime} variant={adapter.remote_eligible ? 'secondary' : 'muted'}>
-                          {label}{!adapter.remote_eligible && ' · next phase'}
-                        </Badge>
-                      )
-                    })}
-                  </div>
-                )}
               </div>
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <Button size="sm" variant="destructive" onClick={() => revoke(host.id)}>Revoke</Button>
@@ -203,7 +192,7 @@ export default function HostsPanel() {
                 // otherwise the card next to one that does have the control
                 // reads as the control being broken.
                 <p className="w-full border-t pt-2 text-xs text-muted-foreground">
-                  CLI runs here use the server machine's own logins. A model backend is chosen per paired remote host.
+                  CLI runs here use the server machine's own logins. Paired remote hosts manage login and model source per Agent.
                 </p>
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
@@ -224,15 +213,18 @@ export default function HostsPanel() {
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <>
-                  <HostProviderBindings
-                    host={host}
-                    runtimeAdapters={runtimeAdapters}
-                    providers={providers}
-                  />
                   <div className="w-full">
                     <HostProxyAddress host={host} onChanged={() => { void load() }} />
                   </div>
-                  <HostAgents host={host} adapters={eligibleAdapters} isInstanceAdmin={Boolean(currentUser?.is_instance_admin)} onChanged={() => { void load() }} />
+                  <HostAgents
+                    host={host}
+                    adapters={eligibleAdapters}
+                    providers={providers}
+                    isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
+                    onChanged={async () => {
+                      await Promise.all([load(), loadAdapters()])
+                    }}
+                  />
                 </>
               )}
                 </Card>

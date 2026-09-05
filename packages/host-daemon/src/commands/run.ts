@@ -29,7 +29,7 @@ import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } fro
 import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
 import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
-import { clearFailedRuntimeOptionsCache } from "../capabilities.js";
+import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -39,7 +39,7 @@ const UPDATE_RESTART_POLL_MS = 30_000;
 // The installed unit uses Restart=on-failure: update is an intentional
 // restart, while a revoked/unregistered daemon returns zero and stays down.
 const UPDATE_RESTART_EXIT_CODE = 75;
-/** What the last `hello_ack` said about runtimes; see `helloInfo`. */
+/** What the latest control-plane acknowledgement said about runtimes; see `helloInfo`. */
 let lastRuntimeProbes: RuntimeProbe[] | undefined;
 
 function wsUrl(serverUrl: string): string {
@@ -291,6 +291,16 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           return;
         }
         case "heartbeat_ack":
+          // ACP registry agents may be enabled while this connection stays
+          // open. Refresh the server-owned probe catalog and immediately
+          // report again when it changed, so a just-installed runtime appears
+          // without restarting the daemon or waiting another interval.
+          if (frame.runtime_probes && JSON.stringify(runtimeProbes) !== JSON.stringify(frame.runtime_probes)) {
+            runtimeProbes = frame.runtime_probes;
+            lastRuntimeProbes = runtimeProbes;
+            clearFailedRuntimeOptionsCache();
+            sendHeartbeat();
+          }
           return;
         case "error":
           log(`server error: ${frame.detail}`);
@@ -392,7 +402,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             openLoginSession(frame, (payload) => {
               sink.send(payload);
               // A finished login changes what this host reports.
-              if (payload.type === "login_exit") sendHeartbeat();
+              if (payload.type === "login_exit") {
+                clearRuntimeOptionsCache(frame.adapter_type, frame.installation);
+                sendHeartbeat();
+              }
             }, log);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

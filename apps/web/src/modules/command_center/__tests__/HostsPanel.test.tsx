@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import HostsPanel from '../HostsPanel'
-import { hostsApi, providersApi } from '../../../api/client'
+import { hostsApi, providersApi, type ModelProviderOut } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => ({ currentUser: null }) }))
@@ -32,6 +32,12 @@ const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
 const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, provider_api: 'openai_compatible' as const }
+const CLAUDE_PROVIDER = {
+  id: 'provider-1', space_id: 'space-1', name: 'Claude proxy', provider_type: 'anthropic', base_url: 'https://example.test',
+  network_profile_id: null, claude_compatible_base_url: 'https://example.test', openai_compatible_base_url: null,
+  default_model: 'claude-sonnet', available_models: ['claude-sonnet'], enabled: true, is_default: false,
+  has_api_key: true, has_subscription: false, grant_enabled: true, created_at: '', updated_at: '',
+} satisfies ModelProviderOut
 
 beforeEach(() => {
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [SERVER_HOST, REMOTE_HOST] })
@@ -41,27 +47,45 @@ beforeEach(() => {
 })
 
 describe('HostsPanel', () => {
-  it('lists hosts with their status and reported runtimes, and only offers Revoke for a remote host', async () => {
+  it('lists hosts without duplicating the Agent inventory above it, and only offers Revoke for a remote host', async () => {
     render(<HostsPanel />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
     expect(screen.getAllByText('server').length).toBeGreaterThan(0)
     expect(screen.getByText('Built-in server execution host')).toBeInTheDocument()
-    expect(screen.getByText('claude')).toBeInTheDocument()
+    expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Claude Code')
+    expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Model source')
+    expect(screen.getByLabelText('Model source for Claude Code on Laptop')).toBeInTheDocument()
+    expect(screen.queryByText('Model backend')).toBeNull()
+    expect(screen.queryByText('git')).toBeNull()
     expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1)
   })
 
-  it('shows a version next to a runtime badge and marks a detected-but-ineligible runtime as next phase', async () => {
+  it('shows versions on installed Agent rows and omits uninstalled runtime badges', async () => {
     // ACP runtime replatform P3: codex_cli is remote-eligible now (its own
     // adapter is codex-acp), so a still-genuinely-ineligible adapter
     // (gemini_cli, implementation_status "planned") exercises this case.
     const GEMINI_ADAPTER = { adapter_type: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false }
     vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
-      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' }, installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: null, options: null }] } } }],
+      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' }, installations: { claude_code: [{ id: 'own', version: '1.2.3 (Claude Code)', logged_in: null, options: null }] } } }],
     })
     render(<HostsPanel />)
-    expect(await screen.findByText('claude 1.2.3')).toBeInTheDocument()
-    expect(screen.getByText(/gemini.*next phase/)).toBeInTheDocument()
+    expect(await screen.findByTestId('host-agent-host-1-claude_code')).toHaveTextContent('own · 1.2.3')
+    expect(screen.getByTestId('host-agent-host-1-claude_code')).not.toHaveTextContent('(Claude Code)')
+    expect(screen.queryByText(/gemini.*next phase/i)).toBeNull()
+  })
+
+  it('changes a supported Agent model source from inside that Agent row', async () => {
+    vi.mocked(providersApi.list).mockResolvedValue([CLAUDE_PROVIDER])
+    vi.mocked(hostsApi.setProviderBinding).mockResolvedValue({
+      host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: CLAUDE_PROVIDER.id, model: null, updated_at: '',
+    })
+    render(<HostsPanel />)
+    const modelSource = await screen.findByLabelText('Model source for Claude Code on Laptop')
+    await userEvent.click(modelSource)
+    await userEvent.click(await screen.findByRole('option', { name: 'Claude proxy · claude-sonnet' }))
+    await waitFor(() => expect(hostsApi.setProviderBinding).toHaveBeenCalledWith('host-1', 'claude_code', 'provider-1'))
+    expect(modelSource).toHaveTextContent('Claude proxy · claude-sonnet')
   })
 
   it('issues a pairing code and shows it for copying', async () => {
@@ -107,23 +131,15 @@ describe('HostsPanel', () => {
     }
   })
 
-  it('says why a model backend cannot be chosen instead of hiding the control', async () => {
-    // A host with no reported runtime has nothing to bind, but someone looking
-    // for this control must be told that rather than shown a blank card.
+  it('uses the unified Agents empty state when no runtime has been reported', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: null }] })
     render(<HostsPanel />)
-    expect(await screen.findByText(/has not reported an installed runtime/)).toBeInTheDocument()
+    expect(await screen.findByText('No agent on this host yet.')).toBeInTheDocument()
+    expect(screen.queryByText('Model backend')).toBeNull()
   })
 
   it("explains that the server host uses the machine's own logins", async () => {
     render(<HostsPanel />)
-    expect(await screen.findByText(/A model backend is chosen per paired remote host/)).toBeInTheDocument()
-  })
-
-  it('names the runtimes a host has when none of them can be dispatched to', async () => {
-    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER] })
-    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['git'], versions: {}, installations: {} } }] })
-    render(<HostsPanel />)
-    expect(await screen.findByText(/runtimes \(git\) can be dispatched to remotely/)).toBeInTheDocument()
+    expect(await screen.findByText(/manage login and model source per Agent/)).toBeInTheDocument()
   })
 })

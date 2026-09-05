@@ -228,6 +228,15 @@ describe("ACP registry agents", () => {
     expect(installed.statusCode).toBe(200);
     expect(installed.json()).toMatchObject({ ok: true, installation: "managed:1.2.3", host_id: hostId, adapter_type: "acp_goose" });
     expect(await installFrame).toMatchObject({ adapter_type: "acp_goose", version: "1.2.3", distribution: GOOSE.distribution, login: null });
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
+      [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{
+        id: "managed:1.2.3", version: "1.2.3", logged_in: false,
+        options: { config_options: [], authenticated: false, auth_methods: [{
+          id: "device", name: "Device login", description: null, type: "terminal", args: ["login"], env: {},
+        }] },
+      }] } })],
+    );
 
     // Removing a managed copy is the same conversation the other way; `own`
     // is not something the daemon can remove.
@@ -242,12 +251,21 @@ describe("ACP registry agents", () => {
     // The login terminal: the daemon runs the copy's login on a PTY and the
     // stream relays it; typed input goes back over the same session.
     asUser(ADMIN);
+    const methodRequired = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream`,
+    });
+    expect(methodRequired.statusCode).toBe(422);
+    expect(methodRequired.json().detail).toMatch(/auth_method_id is required/);
     const seen: Record<string, unknown>[] = [];
     socket.addEventListener("message", (event) => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
       seen.push(frame);
       if (frame.type === "login_open") {
-        expect(frame).toMatchObject({ adapter_type: "acp_goose", installation: "managed:1.2.3", login: null });
+        expect(frame).toMatchObject({
+          adapter_type: "acp_goose", installation: "managed:1.2.3", login: null, argv: ["acp_goose"],
+          auth_method: { id: "device", type: "terminal", args: ["login"] },
+        });
         socket.send(JSON.stringify({ type: "login_output", session_id: frame.session_id, data: "code? " }));
       }
       if (frame.type === "login_input") {
@@ -255,7 +273,7 @@ describe("ACP registry agents", () => {
         socket.send(JSON.stringify({ type: "login_exit", session_id: frame.session_id, exit_code: 0, logged_in: true }));
       }
     });
-    const streamUrl = `${httpBaseUrl()}/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream`;
+    const streamUrl = `${httpBaseUrl()}/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?auth_method_id=device`;
     const response = await fetch(streamUrl, { headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
@@ -292,6 +310,20 @@ describe("ACP registry agents", () => {
       payload: JSON.stringify({ data: "x" }),
     });
     expect(late.statusCode).toBe(409);
+
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
+      [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{
+        id: "managed:1.2.3", version: "1.2.3", logged_in: null,
+        options: { config_options: [], authenticated: null, auth_methods: [] },
+      }] } })],
+    );
+    const unsupportedLogin = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream`,
+    });
+    expect(unsupportedLogin.statusCode).toBe(422);
+    expect(unsupportedLogin.json().detail).toMatch(/does not advertise a supported login method/);
 
     const binding = await app.inject({
       method: "PUT",

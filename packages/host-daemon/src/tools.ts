@@ -33,6 +33,8 @@ export interface ToolManifest {
   /** How to launch: the command, resolved to an absolute path where one exists. */
   command: string;
   args: string[];
+  /** Args required to enter the installed CLI, before protocol/login args. */
+  entry_args?: string[];
   env: Record<string, string>;
   /** This installation's own HOME — its login state lives here, apart from the machine's. */
   home: string;
@@ -170,6 +172,7 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
     const relocate = (value: string) => value.split(stagingDir).join(finalDir);
     manifest.command = relocate(manifest.command);
     manifest.args = manifest.args.map(relocate);
+    manifest.entry_args = manifest.entry_args?.map(relocate);
     manifest.env = Object.fromEntries(Object.entries(manifest.env).map(([key, value]) => [key, relocate(value)]));
     manifest.home = relocate(manifest.home);
     manifest.login_command = manifest.login_command?.map(relocate) ?? null;
@@ -185,7 +188,7 @@ async function materialize(
   distribution: ToolDistribution,
   dir: string,
   log: (line: string) => void,
-): Promise<Pick<ToolManifest, "command" | "args" | "env">> {
+): Promise<Pick<ToolManifest, "command" | "args" | "entry_args" | "env">> {
   if (distribution.kind === "npx") {
     // A pinned `npm install` into this directory, not `npx`: what runs is what
     // was installed, at the version the server named, and nothing is cached
@@ -194,7 +197,7 @@ async function materialize(
     const name = packageName(distribution.package);
     const packageRoot = join(dir, "node_modules", ...name.split("/"));
     const bin = await packageBin(packageRoot);
-    return { command: process.execPath, args: [bin, ...distribution.args], env: distribution.env };
+    return { command: process.execPath, args: [bin, ...distribution.args], entry_args: [bin], env: distribution.env };
   }
   if (distribution.kind === "uvx") {
     const toolBin = join(dir, "bin");
@@ -202,7 +205,7 @@ async function materialize(
     const entries = await readdir(toolBin);
     const command = entries.find((entry) => entry === packageName(distribution.package)) ?? entries[0];
     if (!command) throw new Error(`uv installed ${distribution.package} but exposed no executable`);
-    return { command: join(toolBin, command), args: distribution.args, env: distribution.env };
+    return { command: join(toolBin, command), args: distribution.args, entry_args: [], env: distribution.env };
   }
   if (distribution.kind !== "binary") throw new Error(`Unsupported distribution kind: ${String((distribution as { kind: unknown }).kind)}`);
   const key = platformKey();
@@ -215,7 +218,7 @@ async function materialize(
   const command = resolve(dir, target.cmd);
   if (!command.startsWith(`${dir}/`) && !command.startsWith(`${dir}\\`)) throw new Error(`Binary cmd escapes the tool directory: ${target.cmd}`);
   if (!existsSync(command)) throw new Error(`Archive did not contain ${target.cmd}`);
-  return { command, args: target.args, env: target.env };
+  return { command, args: target.args, entry_args: [], env: target.env };
 }
 
 /** `@scope/name@1.2.3` → `@scope/name`; `name@1.2.3` → `name`. */

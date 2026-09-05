@@ -8,11 +8,7 @@ original_args=("$@")
 download_file() {
   local url="$1"
   local output="$2"
-  if [[ -t 2 ]]; then
-    curl --fail --location --progress-bar "$url" --output "$output"
-  else
-    curl --fail --location --silent --show-error "$url" --output "$output"
-  fi
+  curl --fail --location --silent --show-error "$url" --output "$output"
 }
 
 while (($# > 0)); do

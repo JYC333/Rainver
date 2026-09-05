@@ -3,7 +3,7 @@ import { isRevocationClose, parseServerFrame } from "../src/commands/run.js";
 
 // `hello_ack.runtime_probes` is what decides which binary this daemon spawns
 // for an adapter; the shape is the shared contract's, not a local parser's.
-describe("runtime probes in hello_ack", () => {
+describe("runtime probes from the control plane", () => {
   const probe = {
     adapter_type: "opencode",
     runtime: "opencode",
@@ -17,6 +17,12 @@ describe("runtime probes in hello_ack", () => {
   it("carries a well-formed probe through whole", () => {
     const parsed = parseServerFrame({ type: "hello_ack", host_id: "host-1", runtime_probes: [probe] });
     expect(parsed.ok && parsed.frame.type === "hello_ack" ? parsed.frame.runtime_probes : null).toEqual([probe]);
+  });
+
+  it("refreshes probes on a heartbeat acknowledgement while accepting an older server without them", () => {
+    const refreshed = parseServerFrame({ type: "heartbeat_ack", runtime_probes: [probe] });
+    expect(refreshed.ok && refreshed.frame.type === "heartbeat_ack" ? refreshed.frame.runtime_probes : null).toEqual([probe]);
+    expect(parseServerFrame({ type: "heartbeat_ack" }).ok).toBe(true);
   });
 
   it("rejects a hello_ack whose probe could not name a command, rather than dropping the probe silently", () => {

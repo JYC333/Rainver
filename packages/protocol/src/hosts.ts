@@ -54,9 +54,31 @@ export const RuntimeSessionConfigSelectionSchema = z.object({
 }).strict();
 export type RuntimeSessionConfigSelection = z.infer<typeof RuntimeSessionConfigSelectionSchema>;
 
-/** What a copy of a runtime says its ACP session can be configured to. */
+/**
+ * One authentication flow advertised by an Agent during ACP initialize.
+ * Missing `type` on the wire is normalized to `agent`, as required by ACP.
+ * Terminal arguments and environment are Agent-provided data. Rainver's
+ * managed CLI fallback is deliberately represented separately on
+ * `RuntimeOptions`, because it is not an ACP authentication method.
+ */
+export const RuntimeAuthMethodSchema = z.object({
+  id: z.string().min(1).max(256),
+  name: z.string().min(1).max(256),
+  description: z.string().max(2000).nullable(),
+  type: z.enum(["agent", "terminal"]),
+  args: z.array(z.string().max(2000)),
+  env: z.record(z.string(), z.string()),
+});
+export type RuntimeAuthMethod = z.infer<typeof RuntimeAuthMethodSchema>;
+
+/** What a copy of a runtime says during ACP initialization/session setup. */
 export const RuntimeOptionsSchema = z.object({
   config_options: z.array(RuntimeSessionConfigOptionSchema),
+  auth_methods: z.array(RuntimeAuthMethodSchema).optional(),
+  /** Rainver verified that this managed copy supports its fixed top-level `login` command. */
+  cli_login_available: z.boolean().optional(),
+  /** Whether the post-initialize session probe succeeded; null when not tested. */
+  authenticated: z.boolean().nullable().optional(),
 });
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>;
 
@@ -67,7 +89,7 @@ export const RuntimeInstallationSchema = z.object({
   /** `own` or `managed:<version>`. */
   id: z.string(),
   version: z.string().nullable(),
-  /** Whether its login state exists; null when the runtime declares no login. */
+  /** Whether its login state exists; ACP session setup is the generic fallback signal. */
   logged_in: z.boolean().nullable(),
   /** Null when the copy could not be asked and has no configured model either. */
   options: RuntimeOptionsSchema.nullable(),
