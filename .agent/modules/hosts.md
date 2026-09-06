@@ -746,7 +746,9 @@ In the UI (command center → Hosts) this is host-major: each remote host card
 has an **Agents** section listing only the agents that host has a copy of,
 with source (`own`/`managed`), a cleaned version number that does not repeat
 the Agent name, log-in / remove, and an "Add agent…"
-picker for the enabled catalog. The card does not repeat the raw PATH runtime
+picker that is one list, the ACP registry — nothing is shown above it as a
+default: the builtin CLIs are ordinary registry entries there (mapped through
+the spec's `registry_id`) and offer **Install** like any enabled agent. The card does not repeat the raw PATH runtime
 inventory above this list (and does not surface the daemon's Git utility as an
 Agent). The host×adapter **Model source** is rendered inside that same Agent
 row rather than in a disconnected backend grid: adapters with a supported
@@ -759,16 +761,17 @@ own product settings support BYOK. Agent name, copies, login actions and Model
 source share one compact row; copy controls scroll horizontally if the viewport
 cannot hold them rather than turning every normal desktop row into two lines.
 Login remains per installation while Model source remains per host×adapter;
-the visual grouping does not collapse those two authority scopes. For
-an instance admin, the same picker lazily reads the whole ACP registry: search
-results remain visible while installing and after installation, with explicit
+the visual grouping does not collapse those two authority scopes. The
+picker lazily reads the registry for every host owner: search results remain
+visible while installing and after installation, with explicit
 **Installing…** and **Installed** states. A not-yet-enabled entry offers one
 **Enable & install** action: the server first snapshots and enables it
 instance-wide, then installs its managed copy on that host. An enabled entry
 that is absent from this host offers **Install**. A failed install leaves the
 successfully enabled catalog entry visible and reports the partial outcome;
 the picker never sends an arbitrary registry distribution directly to the
-daemon. Non-admin host owners see only the already-enabled catalog. No agent is labelled "built-in": the builtin
+daemon. A non-admin host owner sees only the entries that need no enabling —
+the builtin CLIs and already-enabled agents. No agent is labelled "built-in": the builtin
 CLIs and registry agents differ only in server-side capability (provider
 binding, subagent lockdown, usage), which is not a host concern.
 

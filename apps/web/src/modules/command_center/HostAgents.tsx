@@ -36,7 +36,15 @@ export default function HostAgents({
   isInstanceAdmin: boolean
   onChanged: () => Promise<void> | void
 }) {
-  const [busy, setBusy] = useState<string | null>(null)
+  // One key per in-flight action, not one slot: two installs started back to
+  // back must each keep their own spinner until their own request settles.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
+  const startBusy = (key: string) => setBusy(previous => new Set(previous).add(key))
+  const endBusy = (key: string) => setBusy(previous => {
+    const next = new Set(previous)
+    next.delete(key)
+    return next
+  })
   const [loginOpen, setLoginOpen] = useState<{
     adapterType: string
     installation: string
@@ -52,7 +60,6 @@ export default function HostAgents({
   const online = host.status === 'online'
 
   const present = useMemo(() => adapters.filter(adapter => installationsOn(host, adapter).length > 0), [adapters, host])
-  const absent = useMemo(() => adapters.filter(adapter => installationsOn(host, adapter).length === 0), [adapters, host])
   const providerBindingsEnabled = present.some(agentAcceptsProviderBinding)
   const providerBindings = useHostProviderBindings(host.id, providerBindingsEnabled)
   const builtinAdaptersByRegistryId = useMemo(
@@ -63,14 +70,19 @@ export default function HostAgents({
     () => new Map((enabledRegistryAgents ?? []).map(agent => [agent.id, agent] as const)),
     [enabledRegistryAgents],
   )
+  // One list for everything a host can gain: the registry, with the builtin
+  // CLIs and already-enabled agents offering Install and the rest offering
+  // Enable & install. A non-admin cannot enable, so they see only the
+  // installable ones — never a separate "default" list above the registry.
   const registryCandidates = useMemo(() => {
     const needle = registryQuery.trim().toLowerCase()
     return (registry ?? [])
+      .filter(entry => isInstanceAdmin || enabledRegistryById.has(entry.id) || builtinAdaptersByRegistryId.has(entry.id))
       .filter(entry => !needle || entry.name.toLowerCase().includes(needle) || entry.id.toLowerCase().includes(needle))
-  }, [registry, registryQuery])
+  }, [registry, registryQuery, isInstanceAdmin, enabledRegistryById, builtinAdaptersByRegistryId])
 
   async function loadRegistry() {
-    if (!isInstanceAdmin || registryLoading) return
+    if (registryLoading) return
     setRegistryLoading(true)
     setRegistryError(null)
     try {
@@ -90,18 +102,19 @@ export default function HostAgents({
   function toggleAdding() {
     const opening = !adding
     setAdding(opening)
-    if (opening && isInstanceAdmin && registry === null) void loadRegistry()
+    if (opening && registry === null) void loadRegistry()
   }
 
   async function withBusy(key: string, action: () => Promise<void>) {
-    setBusy(key)
+    if (busy.has(key)) return
+    startBusy(key)
     try {
       await action()
       await onChanged()
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
-      setBusy(null)
+      endBusy(key)
     }
   }
 
@@ -113,7 +126,8 @@ export default function HostAgents({
 
   async function installFromRegistry(entry: AcpRegistryEntry) {
     const key = `registry:${entry.id}`
-    setBusy(key)
+    if (busy.has(key)) return
+    startBusy(key)
     let enabledAgent = enabledRegistryById.get(entry.id) ?? null
     let enabledNow = false
     let changed = false
@@ -150,7 +164,7 @@ export default function HostAgents({
       try {
         if (changed || enabledAgent) await onChanged()
       } finally {
-        setBusy(null)
+        endBusy(key)
       }
     }
   }
@@ -193,34 +207,12 @@ export default function HostAgents({
 
       {adding && (
         <div className="space-y-2 rounded-md border border-border p-2" data-testid={`host-add-agent-${host.id}`}>
-          {absent.length > 0 && (
-            <ul className="space-y-1">
-              {absent.map(adapter => (
-                <li key={adapter.adapter_type} className="flex items-center justify-between gap-2 text-xs">
-                  <span>{adapter.display_name}</span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label={`Install ${adapter.display_name} on ${host.name}`}
-                    disabled={busy === adapter.adapter_type}
-                    onClick={() => void install(adapter)}
-                  >
-                    {busy === adapter.adapter_type ? <Loader2 className="size-3 animate-spin" /> : 'Install'}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {absent.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              Every enabled agent is already on this host.
-            </p>
-          )}
-          {isInstanceAdmin && (
-            <section className="space-y-1 border-t border-border pt-2">
+          <section className="space-y-1">
               <p className="text-xs font-medium">Install from ACP registry</p>
               <p className="text-xs text-muted-foreground">
-                This enables the agent for the instance, then installs a managed copy on {host.name}. Registry agents run at low trust using their own host login.
+                {isInstanceAdmin
+                  ? <>Installs a managed copy on {host.name}; an agent not yet enabled for the instance is enabled first. Registry agents run at low trust using their own host login.</>
+                  : <>Installs a managed copy on {host.name}. Only agents an instance admin has enabled are listed.</>}
               </p>
               {registryLoading ? (
                 <p className="text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3 animate-spin" />Loading registry…</p>
@@ -246,7 +238,7 @@ export default function HostAgents({
                       const installed = installedRegistryIds.has(entry.id)
                         || enabledAgent?.installed_on.some(item => item.host_id === host.id) === true
                         || (adapter ? installationsOn(host, adapter).length > 0 : false)
-                      const installing = busy === `registry:${entry.id}`
+                      const installing = busy.has(`registry:${entry.id}`)
                       const alreadyEnabled = Boolean(enabledAgent || builtinAdaptersByRegistryId.has(entry.id))
                       return (
                         <li key={entry.id} className="flex items-center justify-between gap-2 py-2 text-xs">
@@ -276,7 +268,6 @@ export default function HostAgents({
                 </>
               ) : null}
             </section>
-          )}
         </div>
       )}
 

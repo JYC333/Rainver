@@ -21,7 +21,7 @@ vi.mock('../../../api/client', async importOriginal => {
   return {
     ...original,
     acpAgentsApi: {
-      registry: vi.fn(async () => ({ items: [goose, { ...goose, id: 'kilo', name: 'Kilo' }, { ...goose, id: 'opencode', name: 'OpenCode' }] })),
+      registry: vi.fn(async () => ({ items: [goose, { ...goose, id: 'kilo', name: 'Kilo' }, { ...goose, id: 'opencode', name: 'OpenCode' }, { ...goose, id: 'claude-acp', name: 'Claude Code' }] })),
       list: vi.fn(async () => ({ items: [enabledGoose, { ...enabledGoose, id: 'crow', name: 'crow', adapter_type: 'acp_crow', installed_on: [] }] })),
       enable: enable.mockImplementation(async (id: string) => ({ ...enabledGoose, id, name: 'Kilo', adapter_type: `acp_${id}`, installed_on: [] })),
       disable: disable.mockResolvedValue(null),
@@ -89,10 +89,13 @@ describe('HostAgents', () => {
     expect(onChanged).toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Install Claude Code on Laptop' }))
+    // One list, the registry: the builtin CLI is installable from it like any
+    // enabled agent, and nothing is listed above it as a default.
+    await userEvent.click(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' }))
     await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'claude_code'))
-    // Not an admin: no registry search.
-    expect(screen.queryByLabelText('Search ACP registry')).toBeNull()
+    // Not an admin: entries that would first need enabling are not offered.
+    expect(screen.queryByText('Kilo')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Enable and install/ })).toBeNull()
   })
 
   it('logs a copy in through the terminal, stripping escape codes and relaying typed input', async () => {
@@ -129,6 +132,39 @@ describe('HostAgents', () => {
     ))
   })
 
+  it('keeps each install spinning until its own request settles when two start back to back', async () => {
+    const pending = new Map<string, (value: { host_id: string; adapter_type: string; ok: boolean; error: null; installation: string }) => void>()
+    installRuntime.mockImplementation((hostId: string, adapterType: string) => new Promise(resolve => {
+      pending.set(adapterType, resolve)
+    }))
+    const onChanged = vi.fn(async () => undefined)
+    const hostWithoutOpenCode = { ...HOST, capabilities_json: { runtimes: [], installations: { acp_goose: HOST.capabilities_json!.installations!.acp_goose } } } as unknown as Host
+    render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={onChanged} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
+    const claude = await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })
+    const opencode = screen.getByRole('button', { name: 'Install OpenCode on Laptop' })
+    await userEvent.click(claude)
+    await userEvent.click(opencode)
+    await waitFor(() => expect(pending.size).toBe(2))
+    // Both in flight: both disabled, both spinning, neither has stolen the other's slot.
+    expect(claude).toBeDisabled()
+    expect(opencode).toBeDisabled()
+    expect(claude.querySelector('.animate-spin')).not.toBeNull()
+    expect(opencode.querySelector('.animate-spin')).not.toBeNull()
+    pending.get('claude_code')!({ host_id: 'h1', adapter_type: 'claude_code', ok: true, error: null, installation: 'managed:1.2.3' })
+    // A finished entry turns into its Installed badge; the button is gone.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Install Claude Code on Laptop' })).toBeNull())
+    // goose was already on the host; Claude joins it.
+    expect(screen.getAllByText('Installed')).toHaveLength(2)
+    // The first finishing must not clear the second's spinner.
+    expect(opencode).toBeDisabled()
+    expect(opencode.querySelector('.animate-spin')).not.toBeNull()
+    pending.get('opencode')!({ host_id: 'h1', adapter_type: 'opencode', ok: true, error: null, installation: 'managed:1.2.3' })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Install OpenCode on Laptop' })).toBeNull())
+    expect(screen.getAllByText('Installed')).toHaveLength(3)
+    installRuntime.mockImplementation(async (hostId: string, adapterType: string) => ({ host_id: hostId, adapter_type: adapterType, ok: true, error: null, installation: 'managed:1.2.3' }))
+  })
+
   it('lets an instance admin enable and install an agent directly from the ACP registry', async () => {
     let finishInstall!: (value: { host_id: string; adapter_type: string; ok: boolean; error: null; installation: string }) => void
     installRuntime.mockImplementationOnce((hostId: string, adapterType: string) => new Promise(resolve => {
@@ -137,7 +173,7 @@ describe('HostAgents', () => {
     const onChanged = vi.fn(async () => undefined)
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
-    expect(screen.getByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
     const search = await screen.findByLabelText('Search ACP registry')
     await userEvent.type(search, 'goose')
     // One occurrence is the installed host row; the second proves the

@@ -54,7 +54,7 @@ export default function HostAgentRow({
   copies: RuntimeInstallation[]
   providers: ModelProviderOut[]
   binding: HostRuntimeProviderBinding | null
-  installBusy: string | null
+  installBusy: ReadonlySet<string>
   providerBusy: boolean
   onInstall: () => void
   onUninstall: (entry: RuntimeInstallation) => void
@@ -116,7 +116,7 @@ export default function HostAgentRow({
                   size="sm"
                   variant="ghost"
                   aria-label={`Remove ${entry.id} of ${adapter.display_name} from ${host.name}`}
-                  disabled={host.status !== 'online' || installBusy === `${adapter.adapter_type}:${entry.id}`}
+                  disabled={host.status !== 'online' || installBusy.has(`${adapter.adapter_type}:${entry.id}`)}
                   onClick={() => onUninstall(entry)}
                 >
                   Remove
@@ -129,10 +129,10 @@ export default function HostAgentRow({
             size="sm"
             variant="ghost"
             aria-label={`Add a managed copy of ${adapter.display_name} on ${host.name}`}
-            disabled={host.status !== 'online' || installBusy === adapter.adapter_type}
+            disabled={host.status !== 'online' || installBusy.has(adapter.adapter_type)}
             onClick={onInstall}
           >
-            {installBusy === adapter.adapter_type ? <Loader2 className="size-3 animate-spin" /> : '+ managed copy'}
+            {installBusy.has(adapter.adapter_type) ? <Loader2 className="size-3 animate-spin" /> : '+ managed copy'}
           </Button>
         )}
       </span>
