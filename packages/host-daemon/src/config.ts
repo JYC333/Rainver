@@ -18,6 +18,31 @@ export interface DaemonConfig {
 
 const CONFIG_DIR_ENV = "RAINVER_HOST_CONFIG_DIR";
 
+/**
+ * The control-plane base URL as every API and WebSocket path is appended to
+ * it: scheme, host, optional path prefix, no trailing slash, no query or
+ * fragment. `https://rainver.example/` typed at the prompt is the same server
+ * as `https://rainver.example`, and the daemon must not build
+ * `https://rainver.example//api/v1/...` out of it.
+ */
+export function normalizeServerUrl(raw: string): string {
+  const trimmed = raw.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error(`Invalid --server URL: ${JSON.stringify(raw)} (expected e.g. https://rainver.example)`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Invalid --server URL: ${JSON.stringify(raw)} (must start with http:// or https://)`);
+  }
+  if (url.username || url.password) {
+    throw new Error(`Invalid --server URL: ${JSON.stringify(raw)} (must not embed credentials)`);
+  }
+  const pathname = url.pathname.replace(/\/+$/, "");
+  return `${url.origin}${pathname}`;
+}
+
 export function configDir(): string {
   return process.env[CONFIG_DIR_ENV] ?? join(homedir(), ".rainver-host");
 }
@@ -33,7 +58,12 @@ export async function loadConfig(): Promise<DaemonConfig | null> {
     if (typeof parsed.server_url !== "string" || typeof parsed.host_id !== "string" || typeof parsed.token !== "string") {
       throw new Error(`Malformed daemon config at ${configPath()}`);
     }
-    return { server_url: parsed.server_url, host_id: parsed.host_id, token: parsed.token, workspaces: parsed.workspaces ?? {} };
+    return {
+      server_url: normalizeServerUrl(parsed.server_url),
+      host_id: parsed.host_id,
+      token: parsed.token,
+      workspaces: parsed.workspaces ?? {},
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;

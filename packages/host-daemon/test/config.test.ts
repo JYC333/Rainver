@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig, removeConfig, requireConfig, saveConfig } from "../src/config.js";
+import { configPath, loadConfig, normalizeServerUrl, removeConfig, requireConfig, saveConfig } from "../src/config.js";
 import { runService } from "../src/commands/run.js";
 
 let dir: string;
@@ -15,6 +15,30 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.RAINVER_HOST_CONFIG_DIR;
   await rm(dir, { recursive: true, force: true });
+});
+
+describe("normalizeServerUrl", () => {
+  it("drops trailing slashes so appended API paths do not double up", () => {
+    expect(normalizeServerUrl("https://rainver.example/")).toBe("https://rainver.example");
+    expect(normalizeServerUrl("https://rainver.example///")).toBe("https://rainver.example");
+    expect(normalizeServerUrl("  https://rainver.example \n")).toBe("https://rainver.example");
+  });
+
+  it("keeps a path prefix and a port, and discards query and fragment", () => {
+    expect(normalizeServerUrl("https://rainver.example/rainver/")).toBe("https://rainver.example/rainver");
+    expect(normalizeServerUrl("http://localhost:3000/?x=1#y")).toBe("http://localhost:3000");
+  });
+
+  it("rejects anything that is not a plain http(s) origin", () => {
+    expect(() => normalizeServerUrl("rainver.example")).toThrow(/Invalid --server URL/);
+    expect(() => normalizeServerUrl("ftp://rainver.example")).toThrow(/http:\/\/ or https:\/\//);
+    expect(() => normalizeServerUrl("https://user:pw@rainver.example")).toThrow(/credentials/);
+  });
+
+  it("normalizes a stored server_url on load", async () => {
+    await saveConfig({ server_url: "https://rainver.example/", host_id: "host-1", token: "t", workspaces: {} });
+    expect((await loadConfig())?.server_url).toBe("https://rainver.example");
+  });
 });
 
 describe("daemon config", () => {

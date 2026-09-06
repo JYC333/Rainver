@@ -882,6 +882,11 @@ closing its socket reports offline the next time anyone lists hosts.
 The dev Vite entrypoint proxies `/internal` with WebSocket upgrade forwarding
 to the server service, so a daemon registered against the browser's dev origin
 (`http://localhost:3000` in dev) can use the same origin for its outbound WS.
+The production nginx image (`apps/web/nginx.conf`) exposes exactly
+`/internal/hosts/ws` the same way and nothing else under `/internal/` — the
+other routes there are service-to-service and stay behind the internal token,
+unreachable from the public entrypoint. `server/test/frontendProxy.test.ts`
+pins both halves.
 The Command Center's `HostsPanel` refreshes only its own host list every three
 seconds while mounted; it does not reload the page or trigger unrelated module
 queries. This is a component-scoped read refresh, not the planned general
