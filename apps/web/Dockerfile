@@ -70,7 +70,7 @@ RUN pnpm run build
 # service worker + precached assets) served over a static web server.
 FROM nginx:1.27-alpine AS prod
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 
 EXPOSE 80

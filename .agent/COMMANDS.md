@@ -19,6 +19,12 @@ pnpm install --frozen-lockfile
 
 # Force rebuild images
 ./ops/scripts/start.sh --build
+
+# Start in the background (docker compose up -d). Every service carries
+# `restart: unless-stopped`, so a detached stack also comes back after a host
+# reboot once Docker is up. Update a running prod instance with:
+#   git pull && ./ops/scripts/start.sh --prod --build --detach
+./ops/scripts/start.sh --prod --detach
 ```
 
 ## Server

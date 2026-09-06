@@ -12,6 +12,7 @@
 #   ./ops/scripts/start.sh --test       — test (web 3100, API via /api/v1)
 #   ./ops/scripts/start.sh --prod       — prod (web 28400 → nginx 80 → internal server)
 #   ./ops/scripts/start.sh --build      — same as above with image rebuild
+#   ./ops/scripts/start.sh --detach     — start in the background (docker compose up -d)
 #
 # Data layout: $RAINVER_ROOT/<mode>/ (e.g. ~/.rainver-data/dev). Override the host-side
 # parent directory with RAINVER_ROOT when you need a non-default location.
@@ -28,6 +29,7 @@ SANDBOX_IMAGE="rainver-sandbox"
 
 MODE="${RAINVER_MODE:-dev}"
 build_flag=""
+detach_flag=""
 
 for arg in "$@"; do
   case $arg in
@@ -35,6 +37,7 @@ for arg in "$@"; do
     --test)   MODE="test" ;;
     --prod)   MODE="prod" ;;
     --build)  build_flag="--build" ;;
+    --detach|-d) detach_flag="--detach" ;;
     *) echo "Unknown argument: $arg" && exit 1 ;;
   esac
 done
@@ -140,4 +143,12 @@ up_args=(up)
 if [[ -n "$build_flag" ]]; then
   up_args+=("$build_flag")
 fi
+if [[ -n "$detach_flag" ]]; then
+  up_args+=("$detach_flag")
+fi
 "${COMPOSE[@]}" "${up_args[@]}"
+
+if [[ -n "$detach_flag" ]]; then
+  echo "Started in the background. Follow logs with:"
+  echo "  ${COMPOSE[*]} logs -f server"
+fi
