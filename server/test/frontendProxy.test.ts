@@ -29,6 +29,12 @@ describe("production nginx proxy", () => {
     expect(ws).toContain('proxy_set_header Connection "upgrade";');
   });
 
+  it("never lets the app shell or the service worker be cached", () => {
+    expect(locationBlock("= /index.html")).toContain('add_header Cache-Control "no-cache";');
+    expect(locationBlock("= /sw.js")).toContain("no-store");
+    expect(locationBlock("/assets/")).toContain("immutable");
+  });
+
   it("exposes nothing else under /internal", () => {
     const internalLocations = [...nginxConf.matchAll(/location\s+(=\s+)?(\S*\/internal\S*)\s*\{/g)].map((m) => `${m[1] ?? ""}${m[2]}`);
     expect(internalLocations).toEqual(["= /internal/hosts/ws"]);

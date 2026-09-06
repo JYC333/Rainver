@@ -53,17 +53,28 @@ export type { RuntimeProbe } from "@rainver/protocol";
  * Asks one copy of a runtime what it can be set to, over ACP, launched
  * exactly as a job for it would be.
  */
-function askRuntimeOptions(probes: RuntimeProbe[]): AskRuntimeOptions {
+/** Last failure reason logged per copy, so a probe that keeps failing the same way is logged once, not every minute. */
+const reportedProbeFailures = new Map<string, string>();
+
+function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void): AskRuntimeOptions {
   return async (lookup, installation) => {
     const probe = probes.find((candidate) => candidate.adapter_type === lookup.adapter_type);
     if (!probe) return null;
+    const key = `${lookup.adapter_type}@${installation}`;
+    const failed = (reason: string) => {
+      if (reportedProbeFailures.get(key) === reason) return;
+      reportedProbeFailures.set(key, reason);
+      log?.(`${key}: could not read its login methods and options — ${reason}`);
+    };
     const cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.adapter_type);
-      const options = await probeAcpOptions(launch.command, launch.args, launch.env, cwd);
+      const options = await probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed);
+      if (options !== null && reportedProbeFailures.delete(key)) log?.(`${key}: login methods and options read successfully`);
       return options;
-    } catch {
+    } catch (error) {
+      failed(`launch could not be resolved: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -80,9 +91,10 @@ async function helloInfo(
   workspaces: Record<string, string> = {},
   serverUrl?: string,
   probes?: RuntimeProbe[],
+  log?: (line: string) => void,
 ): Promise<HostHelloInfo> {
   const capabilities = await detectCapabilities(
-    probes ? askRuntimeOptions(probes) : undefined,
+    probes ? askRuntimeOptions(probes, log) : undefined,
     probes ?? [],
     async (lookup) => {
       const command = probes?.find(candidate => candidate.adapter_type === lookup.adapter_type)?.argv[0];

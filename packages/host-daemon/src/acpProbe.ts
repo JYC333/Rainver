@@ -105,7 +105,15 @@ export function parseAcpSessionProbeResult(
   error: unknown,
   authMethods: RuntimeAuthMethod[],
 ): RuntimeOptions | null {
-  if (error !== undefined && !isAcpAuthRequiredError(error)) return null;
+  if (error !== undefined && !isAcpAuthRequiredError(error)) {
+    // The session probe is inconclusive, but the auth methods came from a
+    // successful `initialize` and are the only login path a registry agent
+    // has. Not every agent reports a missing login as ACP's `auth_required`;
+    // dropping the methods here left such a copy with no Log in button and
+    // no way to ever become logged in. Keep them; the login state is unknown.
+    if (authMethods.length === 0) return null;
+    return { config_options: [], auth_methods: authMethods, authenticated: null };
+  }
   return {
     ...parseAcpSessionOptions(result),
     auth_methods: authMethods,
@@ -132,35 +140,53 @@ export function probeAcpOptions(
   /** Must not be a real workspace: some runtimes snapshot or index whatever they are opened in. */
   cwd: string,
   timeoutMs = 20_000,
+  /**
+   * Told why a probe yielded nothing. The null result is deliberate (a probe
+   * must never cost the heartbeat), but silent null left a copy with no login
+   * button and no explanation anywhere; the reason goes to the daemon log.
+   */
+  onFailure?: (reason: string) => void,
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
     let settled = false;
-    const finish = (value: RuntimeOptions | null) => {
+    let stderr = "";
+    const stderrTail = () => {
+      const text = stderr.trim();
+      return text ? `; stderr: ${text.slice(-600).replace(/\s+/g, " ")}` : "";
+    };
+    const finish = (value: RuntimeOptions | null, reason?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       try { child.kill(); } catch { /* already gone */ }
+      if (value === null && reason) onFailure?.(reason);
       resolve(value);
     };
-    const timer = setTimeout(() => finish(null), timeoutMs);
+    const timer = setTimeout(() => finish(null, `no answer within ${Math.round(timeoutMs / 1000)}s${stderrTail()}`), timeoutMs);
     timer.unref?.();
 
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
         cwd,
-        stdio: ["pipe", "pipe", "ignore"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, ...env },
       });
-    } catch {
+    } catch (error) {
       clearTimeout(timer);
+      onFailure?.(`cannot start ${command}: ${error instanceof Error ? error.message : String(error)}`);
       resolve(null);
       return;
     }
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-4000);
+    });
 
     const send = (frame: Record<string, unknown>) => {
-      try { child.stdin?.write(`${JSON.stringify(frame)}\n`); } catch { finish(null); }
+      try { child.stdin?.write(`${JSON.stringify(frame)}\n`); } catch (error) {
+        finish(null, `stdin closed: ${error instanceof Error ? error.message : String(error)}${stderrTail()}`);
+      }
     };
 
     let buffer = "";
@@ -176,7 +202,7 @@ export function probeAcpOptions(
         try { message = JSON.parse(line); } catch { continue; }
         if (message.id === 1) {
           if (message.error) {
-            finish(null);
+            finish(null, `initialize failed: ${JSON.stringify(message.error)}`);
             continue;
           }
           authMethods = parseAcpAuthMethods(record(message.result).authMethods)
@@ -185,12 +211,18 @@ export function probeAcpOptions(
           continue;
         }
         if (message.id === 2) {
-          finish(parseAcpSessionProbeResult(message.result, message.error, authMethods));
+          const parsed = parseAcpSessionProbeResult(message.result, message.error, authMethods);
+          finish(
+            parsed,
+            parsed === null
+              ? `session/new failed with a reason other than auth_required and initialize advertised no auth method: ${JSON.stringify(message.error)}`
+              : undefined,
+          );
         }
       }
     });
-    child.on("error", () => finish(null));
-    child.on("close", () => finish(null));
+    child.on("error", (error) => finish(null, `cannot start ${command}: ${error.message}`));
+    child.on("close", (code, signal) => finish(null, `exited (${signal ?? `code ${code}`}) before answering${stderrTail()}`));
 
     send({
       jsonrpc: "2.0",

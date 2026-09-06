@@ -214,7 +214,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
     const sendHeartbeat = () => {
       void currentWorkspaces()
-        .then((ws) => helloInfo(ws, serverUrl, runtimeProbes))
+        .then((ws) => helloInfo(ws, serverUrl, runtimeProbes, log))
         .then((info) => sendOnThisConnection({ type: "heartbeat", ...info }));
       // Fire-and-forget, and deliberately after the heartbeat is already on
       // its way: counting starts an agent process per runtime, so it must
@@ -226,7 +226,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     };
 
     socket.addEventListener("open", () => {
-      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes)).then((info) => {
+      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes, log)).then((info) => {
         // Reclaims the directories of runs this daemon is no longer executing
         // — their outputs, their work surface, and the per-run profile an
         // older layout put there. A run still launching, running, or uploading

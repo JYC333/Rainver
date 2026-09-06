@@ -19,12 +19,16 @@ describe('ACP authentication method parsing', () => {
     expect(isAcpAuthRequiredError(null)).toBe(false)
   })
 
-  it('reports unauthenticated only for auth_required and treats other session failures as an inconclusive probe', () => {
+  it('reports unauthenticated only for auth_required; another session failure keeps the advertised methods with the login state unknown', () => {
     const methods = parseAcpAuthMethods([{ id: 'browser', name: 'Browser' }])
     expect(parseAcpSessionProbeResult(undefined, { code: -32000, data: { reason: 'auth_required' } }, methods))
       .toMatchObject({ authenticated: false, auth_methods: [expect.objectContaining({ id: 'browser' })] })
+    // The methods are the only login path a registry agent has, and not
+    // every agent says auth_required when it is not logged in.
     expect(parseAcpSessionProbeResult(undefined, { code: -32000, message: 'workspace failed' }, methods))
-      .toBeNull()
+      .toEqual({ config_options: [], auth_methods: methods, authenticated: null })
+    // With nothing advertised there is nothing to keep: inconclusive.
+    expect(parseAcpSessionProbeResult(undefined, { code: -32000, message: 'workspace failed' }, [])).toBeNull()
   })
 })
 
@@ -54,5 +58,47 @@ describe('ACP session config option parsing', () => {
   it('does not project legacy modes into modern config options', () => {
     expect(parseAcpSessionOptions({ modes: { currentModeId: 'ask', availableModes: [] } }))
       .toEqual({ config_options: [] })
+  })
+})
+
+describe('probeAcpOptions failure reporting', () => {
+  it('names a copy that exits before answering, with its stderr', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const reasons: string[] = []
+    // Pipe writes are asynchronous on macOS and Windows: exit from the write
+    // callback, or the message is lost before the parent can read it.
+    const result = await probeAcpOptions(process.execPath, ['-e', 'process.stderr.write("boom: not logged in", () => process.exit(3))'], {}, process.cwd(), 5_000, r => reasons.push(r))
+    expect(result).toBeNull()
+    expect(reasons).toHaveLength(1)
+    expect(reasons[0]).toMatch(/exited \(code 3\) before answering; stderr: boom: not logged in/)
+  })
+
+  it('names a copy whose command cannot be started', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const reasons: string[] = []
+    const result = await probeAcpOptions('/nonexistent/rainver-probe-binary', [], {}, process.cwd(), 5_000, r => reasons.push(r))
+    expect(result).toBeNull()
+    expect(reasons.join('\n')).toMatch(/cannot start \/nonexistent\/rainver-probe-binary/)
+  })
+
+  it('names a session that fails for a reason other than auth_required when no auth method was advertised', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const reasons: string[] = []
+    // A fake agent that answers over stdio and then stays alive until the
+    // probe kills it, so its asynchronous pipe writes (macOS, Windows) are
+    // flushed rather than lost to an early exit.
+    const script = `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      setInterval(() => {}, 1000);
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        if (msg.id === 1) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [] } }) + "\\n");
+        if (msg.id === 2) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 2, error: { code: -32000, message: "workspace failed" } }) + "\\n");
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 5_000, r => reasons.push(r))
+    expect(result).toBeNull()
+    expect(reasons[0]).toMatch(/session\/new failed with a reason other than auth_required and initialize advertised no auth method: .*workspace failed/)
   })
 })

@@ -651,7 +651,9 @@ everything about a copy lives on the copy. The capability report is
 `{ runtimes, versions, installations }`: `installations[adapter_type]` holds
 one `{ id, version, logged_in, options }` per copy (`logged_in` comes from
 the configured credential file for built-ins, otherwise from whether ACP
-session setup succeeds when the Agent advertises authentication;
+session setup succeeds when the Agent advertises authentication — a session
+failure that is not ACP's `auth_required` leaves it unknown but keeps the
+advertised methods, since they are a registry agent's only login path;
 `options.config_options` and `options.auth_methods` are the generic ACP
 capabilities that copy advertised; `options.cli_login_available` is a separate
 Rainver compatibility capability and is never represented as an ACP method).
