@@ -131,7 +131,6 @@ run_drizzle_schema_check_docker() {
   echo "[migrate] checking Drizzle schema artifacts before database bootstrap..."
   "${COMPOSE[@]}" run --rm -T --no-deps \
     -v "$REPO_ROOT/server/src:/app/server/src:ro" \
-    -v "$REPO_ROOT/server/drizzle:/app/server/drizzle:ro" \
     -v "$REPO_ROOT/server/migrations:/app/server/migrations:ro" \
     -v "$REPO_ROOT/server/drizzle.config.ts:/app/server/drizzle.config.ts:ro" \
     -v "$REPO_ROOT/server/scripts:/app/server/scripts:ro" \

@@ -27,11 +27,10 @@ describe("dbMigrationOps", () => {
 
       expect(reset).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
 
-      expect(start).toContain("generate_schema_migrations()");
-      expect(start).toContain("pnpm run schema:generate");
-      expect(start.lastIndexOf("generate_schema_migrations")).toBeLessThan(
-        start.lastIndexOf("ensure_server_image_for_migrations"),
-      );
+      // Migrations are an append-only committed chain: start never generates
+      // one as a side effect, and the host needs no pnpm to run the stack.
+      expect(start).not.toContain("schema:generate");
+      expect(start).not.toContain("pnpm");
       expect(start).toContain("run_database_migrations()");
       expect(start).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
       expect(start).toContain("ensure_server_image_for_migrations");
@@ -49,10 +48,8 @@ describe("dbMigrationOps", () => {
       expect(reset).toContain('[[ "$MODE" == "dev"');
       // Migration runs first, always, so the reset database is on the current
       // schema; the dev setup archive is imported data-only on top of it
-      // afterward. Restoring the archive's own (possibly older) schema before
-      // migrating — the previous order — breaks under this repo's
-      // single-baseline-squash model as soon as the baseline SQL changes after
-      // the archive was saved.
+      // afterward. The archive is a private convenience snapshot, never
+      // restored with its own schema.
       expect(reset.indexOf('"$REPO_ROOT/ops/scripts/db/migrate.sh"')).toBeLessThan(
         reset.indexOf("pg_restore -U"),
       );

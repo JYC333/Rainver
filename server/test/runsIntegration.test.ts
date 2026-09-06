@@ -14,7 +14,7 @@ import {
 // suites use a FakeDb that does not execute SQL, so they cannot catch parameter
 // type inference, CHECK/UNIQUE constraints, varchar length, or CTE column
 // ambiguity. These run the actual SQL against the repository's shared
-// PostgreSQL Testcontainers template loaded from migrations/0001_baseline.sql.
+// PostgreSQL Testcontainers template migrated from server/migrations/.
 //
 // The whole suite skips gracefully when Docker is unavailable so `pnpm test`
 // still runs everywhere; where Docker is present (dev, CI) it always runs.

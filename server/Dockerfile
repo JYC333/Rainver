@@ -52,7 +52,6 @@ RUN pnpm --filter @rainver/folder-read build
 FROM deps AS build
 COPY server/tsconfig.json ./server/
 COPY server/drizzle.config.ts ./server/
-COPY server/drizzle ./server/drizzle
 COPY server/src ./server/src
 COPY server/migrations ./server/migrations
 COPY server/scripts ./server/scripts
@@ -67,7 +66,6 @@ ENV NODE_ENV=development
 COPY catalog /app/catalog
 COPY server/tsconfig.json ./server/
 COPY server/drizzle.config.ts ./server/
-COPY server/drizzle ./server/drizzle
 COPY server/scripts ./server/scripts
 COPY server/src ./server/src
 COPY server/migrations ./server/migrations

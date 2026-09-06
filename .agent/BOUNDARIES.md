@@ -573,12 +573,15 @@ concept is renamed or replaced, the old name is removed in the same change. Two
 names for one thing, or two documents claiming the same authority, is the defect
 this rule exists to prevent — not a migration convenience.
 
-**B59** — While the product has no production data to preserve, schema changes
-are edited to their final shape in `server/src/db/schema/` and folded into the
-canonical `server/migrations/0001_baseline.sql` by `pnpm run schema:generate`.
-Do not add incremental migration files or compatibility shims for superseded
-shapes. This boundary expires the moment a deployment holds data someone would
-miss; from then on, superseded shapes need real migrations.
+**B59** — `server/migrations/` is an append-only chain. `0000_baseline.sql`
+is frozen (a deployment has carried data since 2026-09-06), and every schema
+change after it is a new numbered file appended by
+`pnpm run schema:generate -- --name <name>` from the Drizzle schema, with data
+backfills written into that same file. A migration that any database has
+applied is never edited, renamed, or removed — the runner records checksums
+and refuses a changed one, and `baselineSchema.test.ts` pins the baseline's
+hash. Do not fold a change into an earlier file, and do not add compatibility
+shims in application code for a shape a migration has already replaced.
 
 **B60** — Internal UUIDs remain valid storage and transport identifiers. Users
 never type them in normal product flows, but that is a UI requirement, not a

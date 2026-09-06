@@ -59,10 +59,11 @@ Server database access is centralized under `server/src/db/`:
 The migration runner is the generated-SQL applier and remains an explicit ops
 command, not a startup hook.
 
-`server/migrations/0001_baseline.sql` is the current consolidated generated
-schema baseline for this pre-history phase. Ordinary schema changes start in
-`server/src/db/schema/`, run through `pnpm run schema:generate`, and are then
-applied by the server migration runner.
+`server/migrations/` is the append-only migration chain: the frozen
+`0000_baseline.sql` plus one numbered file per schema change. Ordinary schema
+changes start in `server/src/db/schema/`, run through
+`pnpm run schema:generate -- --name <name>`, and are then applied by the
+server migration runner.
 
 ## Configuration
 

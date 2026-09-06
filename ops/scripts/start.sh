@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Start rainver via Docker Compose (frontend + server + deployer).
 #
+# Schema migrations are applied by ops/scripts/db/migrate.sh before the app
+# services start; the migration chain under server/migrations is committed and
+# never generated here (appending one is a deliberate developer step, see
+# server/migrations/README.md). Nothing on the host needs the Node toolchain.
+#
 # Usage:
 #   ./ops/scripts/start.sh              — dev (default)
 #   ./ops/scripts/start.sh --dev        — dev (web 3000, API via /api/v1)
@@ -74,24 +79,6 @@ ensure_env() {
   fi
 }
 
-generate_schema_migrations() {
-  echo "Generating Drizzle migration artifacts from TypeScript schema..."
-  if ! command -v pnpm >/dev/null 2>&1; then
-    echo "pnpm is required to run server schema generation before start" >&2
-    exit 1
-  fi
-  if [[ ! -x "$REPO_ROOT/server/node_modules/.bin/drizzle-kit" ]]; then
-    echo "Server dependencies are required to generate Drizzle migrations before start." >&2
-    echo "Run: corepack enable && pnpm install --frozen-lockfile" >&2
-    exit 1
-  fi
-
-  (
-    cd "$REPO_ROOT/server"
-    pnpm run schema:generate
-  )
-}
-
 validate_prod_env() {
   [[ "$MODE" == "prod" ]] || return 0
 
@@ -132,7 +119,6 @@ ensure_env
 validate_prod_env
 local_compose_ensure_server_database_env
 local_compose_generate_server_env
-generate_schema_migrations
 
 export DOCKER_GID
 DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 989)

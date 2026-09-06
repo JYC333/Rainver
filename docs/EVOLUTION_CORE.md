@@ -25,7 +25,7 @@ write active memory, mutate agent versions, or bind runtime skills directly.
 ## Strategy Assets
 
 Strategy assets live in `evolution_strategy_assets`. Built-in system strategies
-are seeded in `0001_baseline.sql`; space-specific strategies use the same table
+are seeded in `0000_baseline.sql`; space-specific strategies use the same table
 with `space_id` set. System and space keys are separately unique.
 
 Built-ins:

@@ -3,7 +3,7 @@
 Date: 2026-07-24
 
 This matrix records the current canonical write/read authority after the
-dual-track cleanup. Code and `server/migrations/0001_baseline.sql` remain the
+dual-track cleanup. Code and the `server/migrations/` chain remain the
 source of truth when this document and implementation disagree.
 
 | Domain | Canonical Authority | Derived / Audit Only | Retired / Non-Authority |

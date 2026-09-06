@@ -10,7 +10,7 @@
 |---|---|
 | `server/` | TypeScript API backend. The gateway module is permanent; unknown API paths return the local 404 catch-all. |
 | `server/src/db/schema/` | Drizzle schema authoring source for database table/constraint/index shape. |
-| `server/migrations/` | The runtime schema applied by the server migration runner — a single `0001_baseline.sql`, regenerated from `src/db/schema/` rather than extended by numbered upgrades. See `server/migrations/README.md`. |
+| `server/migrations/` | The append-only migration chain applied by the server migration runner — the frozen `0000_baseline.sql` plus one numbered file per schema change, generated from `src/db/schema/`. See `server/migrations/README.md`. |
 | `apps/web/` | Web client. It consumes APIs and shared protocol types; it is not a business-rule authority. |
 | `catalog/` | Built-in definitions, including agent templates and capabilities. |
 | `packages/protocol/` | Shared TypeScript protocol package only. No handlers, persistence, routing, or authority. |

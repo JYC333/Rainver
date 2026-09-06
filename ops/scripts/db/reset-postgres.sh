@@ -118,13 +118,12 @@ echo "Dropping database '$PGDB'..."
   psql -U "$PGUSER" -d postgres -c "DROP DATABASE IF EXISTS \"$PGDB\";"
 
 echo "Running server migrations (Docker-native, inside a one-shot server container)..."
-# Rebuild the schema fresh from the current migration baseline first, always —
-# restoring the dev setup archive's OWN (possibly older) schema and then
-# migrating on top of it, as this used to do, fails under this repo's
-# single-baseline-squash model as soon as the baseline SQL changes after the
-# archive was saved (the archive's tracking row still records the OLD
-# checksum for what is now an immutable but different applied migration).
-# Migrating first means the reset database is always on the current schema.
+# Rebuild the schema fresh from the current migration chain first, always,
+# then import the dev setup archive data-only on top of it. The archive is a
+# private convenience snapshot, not a versioned backup, so it is never
+# restored with its own schema: migrating first means the reset database is
+# always on the current schema, and a column the archive no longer matches is
+# reported and skipped rather than aborting the reset.
 if ! "$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"; then
   echo "ERROR: database was dropped but server migration FAILED." >&2
   echo "       The database may now be missing or EMPTY and unmigrated. Re-run:" >&2

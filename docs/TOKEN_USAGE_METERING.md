@@ -99,9 +99,8 @@ Current user-facing routes include summary, timeseries, event, dimension,
 subject, session, budget-preview, and managed CLI history import endpoints.
 Instance operations have only the de-identified totals route.
 
-## Database Baseline
+## Database Schema
 
-Schema authoring lives in `server/src/db/schema/usage.ts`. Regenerate the single
-Drizzle baseline and `server/migrations/0001_baseline.sql` with
-`pnpm run schema:generate` from `server/`; do not edit generated SQL or add a
-second migration.
+Schema authoring lives in `server/src/db/schema/usage.ts`. A change is appended
+to `server/migrations/` with `pnpm run schema:generate -- --name <name>` from
+`server/`; the usage tables were created by the frozen `0000_baseline.sql`.

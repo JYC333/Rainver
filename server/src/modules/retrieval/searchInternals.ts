@@ -32,7 +32,7 @@ export function armFetchLimit(maxResults: number): number {
 // The vector arm emits a constant-dimension halfvec cosine query for these so the
 // planner can use the partial index; other dimensions fall back to the exact
 // `vector` scan. MUST stay in sync with the ix_retrieval_chunks_embedding_hnsw_*
-// partial indexes in migrations/0001_baseline.sql.
+// partial indexes in migrations/0000_baseline.sql.
 export const ANN_HALFVEC_DIMENSIONS: ReadonlySet<number> = new Set([2560]);
 
 // Multi-hop graph recall bounds. Seeds are capped so a broad query cannot turn

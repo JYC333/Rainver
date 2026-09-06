@@ -9,8 +9,8 @@ corepack enable
 pnpm install --frozen-lockfile
 
 # Start everything (Docker Compose). First run creates ~/.rainver-data/dev/.env from template.
-# The start script runs `pnpm run schema:generate` from server/ before image build
-# and migration, so TypeScript schema edits are converted to generated artifacts.
+# The start script applies the committed migration chain before the app services
+# start; it never generates a migration (that is a developer step, below).
 ./ops/scripts/start.sh
 
 # Other profiles
@@ -50,19 +50,18 @@ TESTCONTAINERS_REUSE_ENABLE=false pnpm test
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate:status
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 
-# Schema changes: edit server/src/db/schema/, then generate SQL artifacts.
-# schema:generate refreshes the empty-database baseline under
-# server/drizzle/0000_baseline.sql, with rollback protection.
-# The runtime schema is ONE file, server/migrations/0001_baseline.sql: no
-# deployment carries data predating it, so a change is folded in rather than
-# appended as a numbered upgrade. After schema:generate, copy the Drizzle
-# baseline over it (see server/migrations/README.md). schema:check is no-write
-# and validates that the schema, the Drizzle baseline and the runtime baseline
-# all agree, plus the single-file rule; start.sh runs it before applying
-# migrations. No database is needed for either command.
-# Rewriting the baseline means recreating the database: the runner refuses a
-# changed already-applied file, so run ops/scripts/db/reset-postgres.sh first.
-pnpm run schema:generate
+# Schema changes: edit server/src/db/schema/, then append the migration
+# drizzle-kit derives from the diff. server/migrations/ is an append-only
+# chain — 0000_baseline.sql is frozen, and a file any database has applied is
+# never edited (the runner records checksums and refuses a changed one).
+# Review the generated SQL and add data backfills to it before it is applied
+# anywhere; use --custom for an empty file when drizzle-kit cannot derive the
+# change (extension, backfill). schema:check is no-write: chain shape,
+# declared extensions, and schema drift (prints the SQL a missing migration
+# would contain); migrate.sh and the prod image build run it. No database is
+# needed for either command. See server/migrations/README.md.
+pnpm run schema:generate -- --name add_widget_color
+pnpm run schema:generate -- --custom --name enable_pg_trgm
 pnpm run schema:check
 ```
 
@@ -82,17 +81,16 @@ JS only.
 ## Database scripts (run from repo root)
 
 ```bash
-# Run generated migrations (Docker-native by default: the server migration runner
+# Run committed migrations (Docker-native by default: the server migration runner
 # runs inside a one-shot server container, using the in-network postgres service).
-# The normal start script first runs schema:generate, then invokes this helper
-# before app services start. The helper runs a no-write Drizzle schema check,
-# then Docker-native mode creates POSTGRES_DB when it is missing, then applies
-# the committed migration SQL. Production image builds also run the same schema
-# check.
+# The normal start script invokes this helper before app services start. The
+# helper runs the no-write schema check, then Docker-native mode creates
+# POSTGRES_DB when it is missing, then applies every pending migration in order.
+# Production image builds also run the same schema check.
 ./ops/scripts/db/migrate.sh [--mode dev|test|prod]
 
 # Host mode: only when DATABASE_URL points to a reachable external Postgres
-# (runs the server migration runner from server/).
+# (runs the server migration runner from server/; needs the Node toolchain).
 DATABASE_URL=postgresql://... ./ops/scripts/db/migrate.sh --host [--mode dev|test|prod]
 
 # Pre-migration backup: --mode prod ALWAYS takes a pg_dump custom-format dump to

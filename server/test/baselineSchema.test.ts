@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // Every test here drops and reapplies the whole baseline, so each one costs
@@ -11,7 +12,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadMigrations, migrate } from "../src/db/migrator.js";
 
-// Empty-DB migration test. Applies the single runtime baseline to a fresh
+// Empty-DB migration test. Applies the whole migration chain to a fresh
 // Postgres via the server migration runner and asserts the resulting schema
 // applies cleanly and idempotently.
 //
@@ -94,7 +95,7 @@ function normalizeBaselineSql(sql: string): string {
 }
 
 function baselineSql(): string {
-  return normalizeBaselineSql(readFileSync(join(MIGRATIONS_DIR, "0001_baseline.sql"), "utf8"));
+  return normalizeBaselineSql(readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"), "utf8"));
 }
 
 function tableDefinition(sql: string, table: string): string {
@@ -102,16 +103,40 @@ function tableDefinition(sql: string, table: string): string {
   return match?.[1] ?? "";
 }
 
-describe("server runner applies the baseline schema", () => {
-  // Asserted literally so that adding a migration is a deliberate edit here,
-  // not a silent side effect of a schema change elsewhere. There is one file:
-  // no deployment carries data that predates it, so upgrades are folded into
-  // the baseline rather than chained behind it.
-  it("keeps the schema in a single baseline file", () => {
+// sha256 of 0000_baseline.sql as frozen on 2026-09-06, when the first
+// deployment started carrying data. The runner refuses a changed applied file
+// at runtime; this pins the same fact at test time, before any database is
+// involved, so a stray `schema:generate` under the old fold-into-the-baseline
+// habit fails here rather than at the next start of a real instance.
+const FROZEN_BASELINE_SHA256 = "a9bd58568be126d1c76f07896103916012326be09c488dd5d9fc953f2f307c41";
+
+describe("server runner applies the migration chain", () => {
+  // The chain is append-only: a frozen baseline followed by one numbered file
+  // per schema change, contiguous, with the Drizzle journal naming exactly the
+  // files on disk. `schema:check` enforces the same shape; asserted here too so
+  // the test suite fails on a half-committed migration without drizzle-kit.
+  it("keeps an append-only chain that starts at the frozen baseline", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
-    expect(migrationFiles).toEqual(["0001_baseline.sql"]);
+    expect(migrationFiles[0]).toBe("0000_baseline.sql");
+    migrationFiles.forEach((file, index) => {
+      expect(file.startsWith(`${String(index).padStart(4, "0")}_`), `gap or duplicate before ${file}`).toBe(true);
+    });
+    const journal = JSON.parse(readFileSync(join(MIGRATIONS_DIR, "meta", "_journal.json"), "utf8")) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+    expect(journal.entries.map((entry) => entry.tag)).toEqual(
+      migrationFiles.map((file) => file.replace(/\.sql$/, "")),
+    );
+    for (const entry of journal.entries) {
+      expect(existsSync(join(MIGRATIONS_DIR, "meta", `${String(entry.idx).padStart(4, "0")}_snapshot.json`))).toBe(true);
+    }
+  });
+
+  it("never rewrites the frozen baseline", () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"));
+    expect(createHash("sha256").update(sql).digest("hex")).toBe(FROZEN_BASELINE_SHA256);
   });
 
   it("carries the execution topology the Folder/Location split needs", () => {
@@ -332,10 +357,11 @@ describe("server runner applies the baseline schema", () => {
     const expectedVersions = loadMigrations(MIGRATIONS_DIR).map((f) => f.version);
     const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
-    expect(result.applied).toContain("0001");
+    expect(result.applied).toEqual(expectedVersions);
+    expect(expectedVersions[0]).toBe("0000");
 
     const recorded = await db.pool.query(
-      `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0001'`,
+      `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0000'`,
     );
     expect(recorded.rowCount).toBe(1);
 
@@ -374,7 +400,7 @@ describe("server runner applies the baseline schema", () => {
     const applied = await db.pool.query<{ version: string }>(
       `SELECT version FROM public.${RUNNER_TABLE} ORDER BY version`,
     );
-    expect(applied.rows.map((row) => row.version)).toEqual(["0001"]);
+    expect(applied.rows.map((row) => row.version)).toEqual(loadMigrations(MIGRATIONS_DIR).map((f) => f.version));
   }, 120_000);
 
   it("rejects unknown user states, and constrains object_type by format only", async () => {
@@ -527,7 +553,7 @@ describe("server runner applies the baseline schema", () => {
     if (!db.available) return;
     await resetSchema(db.pool);
     const first = await migrate(db.pool, MIGRATIONS_DIR);
-    expect(first.applied).toContain("0001");
+    expect(first.applied).toContain("0000");
 
     const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.applied).toEqual([]);

@@ -10,6 +10,7 @@
 **/dist
 **/src-tauri/target
 **/.venv
+**/.tmp
 .git
 .agent
 .claude

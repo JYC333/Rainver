@@ -170,7 +170,7 @@ it does not mutate project source bindings or source subscriptions.
 - `server/src/modules/reader/`
 - `server/src/modules/informationDigest/`
 - `server/src/modules/sources/postProcessing/`
-- `server/migrations/0001_baseline.sql`
+- `server/migrations/0000_baseline.sql`
 
 ## Related Docs
 

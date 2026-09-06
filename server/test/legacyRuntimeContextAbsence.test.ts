@@ -7,7 +7,6 @@ const roots = [
   "server/src",
   "server/test",
   "server/migrations",
-  "server/drizzle",
   "packages/protocol/src",
   "packages/protocol/test",
   "apps/web/src",

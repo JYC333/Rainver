@@ -1,44 +1,59 @@
 # Server Migrations
 
-Schema authoring starts in `server/src/db/schema/`. Run `pnpm run
-schema:generate` from `server/` to regenerate the Drizzle authoring baseline
-under `server/drizzle/0000_baseline.sql`. Run `pnpm run schema:check` to verify
-the committed Drizzle snapshot matches the TypeScript schema.
+Schema authoring starts in `server/src/db/schema/`. This directory is the
+append-only chain the server migration runner applies, and at the same time
+the drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus
+`meta/` with the Drizzle journal and the snapshot each file was diffed from.
 
-**The runtime schema is a single file, `0001_baseline.sql`.** A schema change is
-folded into it rather than appended as a numbered upgrade: no deployment
-carries data that predates the baseline, so a chain of upgrades would be
-history nobody replays and a second place for the schema to disagree with
-`src/db/schema/`. Regenerate it from the Drizzle baseline when the schema
-changes:
+**`0000_baseline.sql` is frozen** (since 2026-09-06, when the first deployment
+started carrying data). Every schema change after it is a new numbered file.
+A file that any database has applied is never edited: the runner records each
+file's checksum in `public.server_schema_migrations` and refuses to start
+against a changed one. `server/test/baselineSchema.test.ts` pins the
+baseline's hash and the chain shape so this fails in CI, not on an instance.
 
-```bash
-pnpm run schema:generate
-cp drizzle/0000_baseline.sql migrations/0001_baseline.sql
-```
-
-The migration runner applies the file and records its checksum in
-`public.server_schema_migrations`. The startup/migration scripts run the
-no-write schema check first. `server/test/baselineSchema.test.ts` asserts the
-single-file rule, so adding a numbered migration is a deliberate edit there
-rather than a silent side effect.
-
-**Rewriting the baseline means recreating the database.** The migration runner
-records each file's checksum and refuses to reapply a changed one — it cannot
-reconcile a rewritten baseline against a database that already has the old one.
-So after regenerating, drop and recreate:
+## Changing the schema
 
 ```bash
-./ops/scripts/db/reset-postgres.sh   # then start.sh / migrate.sh as usual
+cd server
+# 1. edit server/src/db/schema/
+# 2. append the migration drizzle-kit derives from the diff
+pnpm run schema:generate -- --name add_widget_color
+# 3. read the generated SQL; add data backfills or ordering fixes to that
+#    same file if the plain DDL is not enough. It is editable until it has
+#    been applied somewhere — after that, write another migration.
+# 4. verify (no database needed)
+pnpm run schema:check
 ```
 
-That is the trade the single-file rule accepts, and it is only acceptable while
-no deployment carries data worth keeping. If this instance ever does, that is
-the moment to reintroduce append-only numbered migrations — and the baseline
-stops being rewritable at the same time.
+`schema:check` fails when the chain is malformed (gap, duplicate, journal and
+files disagreeing, missing snapshot), when an extension declared in
+`src/db/schema/database-features.json` is created by no migration, or when
+`src/db/schema/` has changes no migration captures — it runs drizzle-kit
+against a scratch copy of the chain and prints the SQL that would be
+generated. Both `ops/scripts/db/migrate.sh` (dev/test) and the production
+server image build run it.
 
-The same applies to **backups**: an archive taken before a baseline rewrite
-restores a database whose recorded checksum no longer matches, and the runner
-then refuses to start against it. `ops/scripts/system/restore.sh` compares the
-two during preflight and refuses before touching anything, so the mismatch
-surfaces while you can still pick a different archive.
+Some changes drizzle-kit cannot derive — a new extension, a data backfill, a
+constraint that depends on existing rows. Start from an empty file:
+
+```bash
+pnpm run schema:generate -- --custom --name enable_pg_trgm
+```
+
+drizzle-kit only ever sees `--out` relative to `server/`; the script handles
+that, and treats any error text in drizzle-kit's output as a failure because
+drizzle-kit exits 0 on a failed snapshot read.
+
+## Applying
+
+Migrations are explicit ops commands, never a server-startup side effect.
+`ops/scripts/start.sh` runs `ops/scripts/db/migrate.sh` before the app
+services come up; `--mode prod` always takes a `pg_dump` first. See
+`.agent/COMMANDS.md`. An instance on an older migration is brought forward by
+the normal migrate step, so a backup taken on an older build restores into a
+newer one; `ops/scripts/system/restore.sh` checks during preflight that this
+build carries the backup's last migration with the same checksum.
+
+Plugin-owned tables keep their own chains under
+`plugins/official/<id>/migrations/`, run by the plugin installer.

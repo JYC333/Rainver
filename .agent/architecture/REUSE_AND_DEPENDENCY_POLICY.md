@@ -192,7 +192,7 @@ what is installed.
 | Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**; the dependency-free `sandbox/runner.mjs` is the one hand-written mapping and is pinned by `server/test/sandboxRunnerClient.test.ts` | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
-| Migration artifacts | `drizzle-kit` generate into the committed baseline | `server/migrations/0001_baseline.sql`, `pnpm run schema:generate` |
+| Migration artifacts | `drizzle-kit` generate appended to the committed chain | `server/migrations/`, `pnpm run schema:generate -- --name <name>` |
 | Transactions | `withTransaction`, `withQueryableTransaction` | `server/src/db/tx.ts`, `server/src/modules/routeUtils/common.ts` |
 | Visibility predicates, role helpers, content-access SQL | `access` support package | `server/src/modules/access/` |
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |

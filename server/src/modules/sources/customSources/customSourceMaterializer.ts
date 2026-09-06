@@ -578,7 +578,7 @@ function safeExtension(value: string): string {
   return value && /^[.][a-zA-Z0-9_-]{1,16}$/.test(value) ? value : "";
 }
 
-// source_items.retention_policy CHECK constraint values (server/migrations/0001_baseline.sql).
+// source_items.retention_policy CHECK constraint values (server/migrations/0000_baseline.sql).
 const ALLOWED_RETENTION_POLICIES = new Set([
   "metadata_only",
   "summary_only",

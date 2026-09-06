@@ -125,7 +125,7 @@ Response for unknown plugin:
 ## 4. Data Lifecycle
 
 ### Migrations
-Core plugin control-plane schema (`official_plugin_enablements`, `official_plugin_events`, `plugin_installs`, and `plugin_migrations`) uses the standard `server/migrations/` numbered SQL files.
+Core plugin control-plane schema (`official_plugin_enablements`, `official_plugin_events`, `plugin_installs`, and `plugin_migrations`) uses the standard `server/migrations/` append-only chain.
 
 Plugin-owned domain tables do not live in the core baseline. The `diary` plugin owns `diary_entries` and `diary_reflections` through SQL files under `plugins/official/diary/migrations/`. The `finance_ledger` plugin owns its finance book, account, directive, posting, price, import/export, and metadata tables through SQL files under `plugins/official/finance_ledger/migrations/`. Plugin migrations are copied into `server/dist/official-plugins/<plugin_id>/migrations/` during build. The installer executes those migrations only when the plugin is installed and records their checksums in `plugin_migrations`.
 
@@ -222,7 +222,7 @@ as Level 2 or further out.
 | `plugins/official/finance_ledger/` | Bundled finance ledger plugin package source, manifest, server runtime, web page, and migrations |
 | `server/dist/official-plugins/diary/` | diary build output loaded by the server at startup |
 | `server/dist/official-plugins/finance_ledger/` | finance_ledger build output loaded by the server at startup |
-| `server/migrations/0001_baseline.sql` (appended) | DB migration — plugin control-plane and install tracking only |
+| `server/migrations/0000_baseline.sql` | DB migration — plugin control-plane and install tracking only |
 | `apps/web/src/api/client.ts` | Frontend API client |
 | `apps/web/src/plugins/diary/DiaryPageAdapter.tsx` | App-owned adapter that injects web host APIs into the diary plugin page |
 | `apps/web/src/plugins/finance_ledger/FinancePageAdapter.tsx` | App-owned adapter that injects web host APIs into the finance ledger plugin page |

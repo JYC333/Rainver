@@ -45,8 +45,8 @@ Support packages are documented in `MODULES.md`.
 5. Add request/response schemas in the module or `packages/protocol/src/` when
    the contract is shared with clients.
 6. Add Drizzle schema under `server/src/db/schema/` when the module owns new
-   tables, then run `pnpm run schema:generate` from `server/` to merge generated
-   SQL into `server/migrations/0001_baseline.sql`. Use UUID/string primary keys
+   tables, then run `pnpm run schema:generate -- --name <name>` from `server/`
+   to append the migration to `server/migrations/`. Use UUID/string primary keys
    and include `space_id` for space-scoped data.
 7. Register the module in `server/src/gateway/routeRegistry.ts`.
 8. Add focused tests under `server/test/`.

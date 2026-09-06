@@ -17,11 +17,12 @@
 #
 # Backup-compatibility preflight fails closed, before any destructive operation:
 # a missing/unexpected backup_format, a PostgreSQL major-version mismatch, or a
-# schema checksum that differs from this build's migrations/0001_baseline.sql.
-# The last one means the archive predates a schema change: restoring it would
-# leave a database the migration runner refuses to start against, so prefer a
-# build whose baseline matches. --force-incompatible-backup overrides any of
-# the three for controlled recovery.
+# schema checksum that differs from this build's copy of that migration.
+# The last one means an applied migration was edited, or the archive came from
+# a newer build than this one: restoring it would leave a database the
+# migration runner refuses to start against. An archive from an OLDER build is
+# fine — the normal migrate step brings it forward. --force-incompatible-backup
+# overrides any of the three for controlled recovery.
 # --force (file overwrite) and --force-running (active services) do NOT imply it.
 #
 # Usage:
@@ -167,7 +168,7 @@ fi
 # ── Manifest version metadata (read + validate; fail closed on mismatch) ───────
 # Manifest fields are never silently ignored: each is reported, and an incompatible
 # backup_format, a PostgreSQL major-version mismatch, or a schema checksum that
-# differs from this build's baseline aborts before any destructive operation.
+# differs from this build's migration file aborts before any destructive operation.
 # --force-incompatible-backup overrides the check for controlled recovery.
 # PostgreSQL is the server database.
 read_manifest_field() {
@@ -221,17 +222,28 @@ if [[ -n "$BK_PG_MAJOR" && -n "$LIVE_PG_MAJOR" && "$BK_PG_MAJOR" != "$LIVE_PG_MA
   incompatible_backup "backup PostgreSQL major ($BK_PG_MAJOR) != live server major ($LIVE_PG_MAJOR); restoring a custom-format dump across major versions can fail or misbehave."
 fi
 
-# The runtime schema is a single regenerated baseline (server/migrations/README.md),
-# so its checksum changes whenever the schema does. A backup taken before that
-# rewrite restores a database whose recorded checksum no longer matches the
-# file on disk, and the migration runner refuses to reapply it — leaving a
-# restored-but-unstartable stack. Say so here, where the operator can still
-# choose a different archive, rather than at the next `start.sh`.
-BASELINE_FILE="$SCRIPT_DIR/../../../server/migrations/0001_baseline.sql"
-if [[ -n "$BK_SCHEMA_MIGRATION_CHECKSUM" && -f "$BASELINE_FILE" ]]; then
-  LIVE_SCHEMA_CHECKSUM="$(sha256sum "$BASELINE_FILE" | cut -d' ' -f1)"
-  if [[ "$BK_SCHEMA_MIGRATION_CHECKSUM" != "$LIVE_SCHEMA_CHECKSUM" ]]; then
-    incompatible_backup "backup schema checksum (${BK_SCHEMA_MIGRATION_CHECKSUM:0:12}...) != this build's baseline (${LIVE_SCHEMA_CHECKSUM:0:12}...); the migration runner will refuse to start against the restored database. Restore into a build whose baseline matches, or accept that this data cannot be carried across the schema change."
+# Migrations are append-only (server/migrations/README.md): the manifest records
+# the latest migration the backup's database had applied and that file's
+# checksum. This build must carry the same file with the same content — then a
+# restore followed by the normal migrate step brings the data forward through
+# any later migrations. A version this build does not know means the archive
+# came from a newer build; a different checksum means an applied migration was
+# edited, which the runner refuses at the next start. Say so here, where the
+# operator can still choose a different archive.
+MIGRATIONS_DIR="$SCRIPT_DIR/../../../server/migrations"
+if [[ -n "$BK_SCHEMA_MIGRATION_VERSION" && -n "$BK_SCHEMA_MIGRATION_CHECKSUM" && -d "$MIGRATIONS_DIR" ]]; then
+  BK_MIGRATION_FILE="$(find "$MIGRATIONS_DIR" -maxdepth 1 -name "${BK_SCHEMA_MIGRATION_VERSION}_*.sql" | head -n 1)"
+  if [[ -z "$BK_MIGRATION_FILE" ]]; then
+    incompatible_backup "backup schema version ${BK_SCHEMA_MIGRATION_VERSION} is not in this build's migration chain; the archive was taken on a newer build. Restore into a build that carries that migration."
+  else
+    LIVE_SCHEMA_CHECKSUM="$(sha256sum "$BK_MIGRATION_FILE" | cut -d' ' -f1)"
+    if [[ "$BK_SCHEMA_MIGRATION_CHECKSUM" != "$LIVE_SCHEMA_CHECKSUM" ]]; then
+      incompatible_backup "backup checksum for migration ${BK_SCHEMA_MIGRATION_VERSION} (${BK_SCHEMA_MIGRATION_CHECKSUM:0:12}...) != this build's $(basename "$BK_MIGRATION_FILE") (${LIVE_SCHEMA_CHECKSUM:0:12}...); the migration runner will refuse to start against the restored database."
+    fi
+    LATEST_MIGRATION_FILE="$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '[0-9]*_*.sql' | sort | tail -n 1)"
+    if [[ "$(basename "$LATEST_MIGRATION_FILE")" != "$(basename "$BK_MIGRATION_FILE")" ]]; then
+      echo "[restore] backup is at migration ${BK_SCHEMA_MIGRATION_VERSION}; this build continues to $(basename "$LATEST_MIGRATION_FILE"). start.sh will apply the remaining migrations."
+    fi
   fi
 fi
 

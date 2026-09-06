@@ -293,50 +293,46 @@ successful commit and never participate in the critical write outcome.
 - Local PostgreSQL containers have stable mode-specific names:
   `rainver-dev-postgres`, `rainver-test-postgres`, and `rainver-prod-postgres`.
 - Schema authoring is owned by Drizzle definitions under `server/src/db/schema/`.
-  `server/drizzle/` stores the empty-database generated snapshot, and
-  `server/migrations/` stores the runtime schema applied by the server
-  migration runner — **a single `0001_baseline.sql`**, regenerated from the
-  Drizzle schema rather than extended by numbered upgrades. No deployment here
-  carries data predating it, so a change is folded in: edit the Drizzle schema,
-  `pnpm run schema:generate`, copy `drizzle/0000_baseline.sql` over
-  `migrations/0001_baseline.sql`, and recreate the database
-  (`ops/scripts/db/reset-postgres.sh`) — the runner refuses to reapply a file
-  whose checksum changed. `schema:check` enforces that the schema, the
-  generated baseline and the runtime baseline all agree. See
-  `server/migrations/README.md`, including when this rule should be retired in
-  favour of append-only migrations again.
-  `ops/scripts/start.sh` also runs `pnpm run schema:generate` from `server/`
-  before building the server image or applying migrations, so startup keeps the
-  generated artifacts in sync with TypeScript schema files.
+  `server/migrations/` is both the drizzle-kit output directory (`meta/`
+  journal and snapshots) and the **append-only chain** the server migration
+  runner applies: the frozen `0000_baseline.sql` followed by one numbered file
+  per schema change. Edit the Drizzle schema, then
+  `pnpm run schema:generate -- --name <name>` appends the diff (`--custom`
+  for an empty file when drizzle-kit cannot derive the change); review the SQL
+  and add data backfills before it is applied anywhere. A file any database has
+  applied is never edited — the runner records checksums and refuses a changed
+  one. `schema:check` (no-write) validates chain shape, declared extensions,
+  and schema drift. See `server/migrations/README.md` and B59.
+  `ops/scripts/start.sh` never generates a migration; it applies the committed
+  chain, so a host running the stack needs Docker but no Node toolchain.
 - In bundled compose modes, server uses the Postgres owner/app role from
   `POSTGRES_USER`/`POSTGRES_PASSWORD`; ops scripts generate
   `SERVER_DATABASE_URL` from those values and do not maintain a separate
   per-table app role.
 - Boolean defaults are PostgreSQL-native (`true`/`false`).
 - **Migration command path** (`ops/scripts/db/migrate.sh`): defaults to Docker-native. The normal
-  `ops/scripts/start.sh` path first runs `pnpm run schema:generate` from `server/`, then this helper
-  runs a no-write Drizzle schema check, verifying the committed Drizzle snapshot matches
-  `server/src/db/schema/` before any database bootstrap. Docker-native mode then creates
+  `ops/scripts/start.sh` path invokes this helper, which runs the no-write schema check
+  (`pnpm run schema:check` inside a one-shot server container), verifying the committed chain
+  matches `server/src/db/schema/` before any database bootstrap. Docker-native mode then creates
   `POSTGRES_DB` if the target database is missing, and finally runs `node dist/db/migrateCli.js up`
   inside a one-shot server container using the in-network `postgres` host (Postgres is not
-  published to the host). Production server image builds also run `pnpm run schema:check` so prod
-  artifacts are validated before release. Deleting the database and then running migrate is a
-  valid empty-instance initialization path. `--host` runs the same schema check and migration
-  runner from `server/` only against an explicitly configured, reachable external Postgres; run
-  `pnpm run schema:generate` yourself before host-mode migrate when schema files changed.
+  published to the host), applying every pending migration in order. Production server image
+  builds also run `pnpm run schema:check` so prod artifacts are validated before release.
+  Deleting the database and then running migrate is a valid empty-instance initialization path;
+  an instance on an older migration is brought forward by the same command. `--host` runs the
+  same schema check and migration runner from `server/` only against an explicitly configured,
+  reachable external Postgres.
   `ops/scripts/db/reset-postgres.sh` reuses this path after dropping the target DB and always runs
   it before touching any saved dev setup archive, so the reset database is always on the current
   schema (an empty DB is never left unmigrated). When a private dev setup archive exists (dev mode,
   `$MODE_ROOT/setup/database.dump`, written by `ops/scripts/db/save-dev-setup.sh`), reset then
   imports its data (`pg_restore --data-only`) into that freshly migrated schema — not the archive's
-  own schema. Restoring the archive's own (possibly older) schema and migrating on top of it, as
-  this used to do, fails once the baseline SQL has changed since the archive was saved: the
-  archive's tracking row still records the OLD checksum for what is now an immutable but different
-  applied migration. Data-only import is best-effort — `pg_restore` reports and continues past a
-  table/column that no longer matches rather than aborting the reset; refresh the archive with
+  own schema. The archive is a private convenience snapshot, not a versioned backup. Data-only
+  import is best-effort — `pg_restore` reports and continues past a table/column that no longer
+  matches rather than aborting the reset; refresh the archive with
   `ops/scripts/db/save-dev-setup.sh` once the database looks right.
-  `ops/scripts/start.sh` invokes schema generation and then this migration helper before starting
-  app services; the server service process itself still does not run migrations on startup.
+  `ops/scripts/start.sh` invokes this migration helper before starting app services; the server
+  service process itself still does not run migrations on startup.
   Dev/test compose bind-mounts `server/migrations/` so generated local migration artifacts are
   visible to the one-shot migration container. Prod uses migrations bundled into the server
   image; build the image for a new release before starting prod.
@@ -527,50 +523,49 @@ changes.
 **Generator vs. applier — a strict split:**
 - `server/src/db/schema/` is the schema authoring source for tables,
   constraints, indexes, and foreign keys that Drizzle can represent.
-- `server/migrations/` remains the canonical generated/applied schema history.
+- `server/migrations/` is the canonical append-only schema history (B59).
 - `server/src/db/migrator.ts` is the only schema applier for real databases.
   It reads ordered `NNNN_*.sql` files, rejects duplicate version prefixes,
   records checksums, and holds the migration advisory lock.
 - `drizzle-kit` (config: `server/drizzle.config.ts`) only generates plain
-  `.sql` files by diffing `src/db/schema/**` against
-  `server/drizzle/meta/*.json` snapshots. It is not used to apply anything
+  `.sql` files by diffing `src/db/schema/**` against the
+  `server/migrations/meta/*.json` snapshots. It is not used to apply anything
   to a live database (no `drizzle-kit migrate` / `push` in this project).
-- `server/drizzle/` (generator output + `meta/` snapshots) is **committed to
+- `server/migrations/` is the drizzle-kit output directory *and* the chain
+  the runner applies; its `meta/` journal and snapshots are **committed to
   git**: the snapshots are the state `generate` diffs against on every
   machine/CI run, not disposable build output.
-- `server/scripts/db/schema-baseline.mjs` keeps the committed empty-database
-  Drizzle snapshot/SQL in sync with `server/src/db/schema/`, and also checks
-  that `migrations/0001_baseline.sql` matches it — the copy is manual, so
-  nothing else would catch the two drifting.
+- `server/scripts/db/schema-migrations.mjs` wraps drizzle-kit: `generate`
+  appends the next numbered file, `check` validates the chain and detects
+  schema drift without writing. It passes `--out` relative to `server/` and
+  treats error text in drizzle-kit's output as failure, because drizzle-kit
+  exits 0 after a failed snapshot read.
 
 **Changing a table:**
 1. Edit the relevant file under `src/db/schema/`.
-2. `pnpm run schema:generate` (from `server/`) — runs `drizzle-kit generate`
-   for the empty-database baseline in `server/drizzle/`. Copy it over
-   `migrations/0001_baseline.sql`; the runtime schema is that one file, and
-   applying a changed one to an existing database means recreating it.
-   `ops/scripts/start.sh` runs this automatically before image build and
-   migration; run it manually when you want to review generated files before
-   starting the stack.
-3. Review the generated SQL now consolidated into `0001_baseline.sql`. Do not
-   hand-edit it for ordinary schema changes; fix the Drizzle schema and
-   regenerate.
-4. `pnpm run schema:check` (CI-safe, no database needed) fails if schema TS
-   was edited without regenerating, or if a drizzle-generated migration
-   wasn't merged into `server/migrations/0001_baseline.sql`. It also fails on
-   duplicate migration version prefixes.
+2. `pnpm run schema:generate -- --name <name>` (from `server/`) — runs
+   `drizzle-kit generate` and appends `NNNN_<name>.sql` plus its snapshot to
+   `server/migrations/`. `--custom` appends an empty file for SQL drizzle-kit
+   cannot derive.
+3. Review the generated SQL. Add data backfills or ordering fixes to that
+   file if the plain DDL is not enough; it is editable until it has been
+   applied somewhere, and never afterwards — the runner refuses a changed
+   applied file, and `baselineSchema.test.ts` pins the frozen baseline's hash.
+4. `pnpm run schema:check` (CI-safe, no database needed) fails if the chain
+   is malformed, if a declared extension has no migration, or if schema TS was
+   edited without generating a migration — it prints the SQL that is missing.
 
 **Narrow custom-SQL boundary:**
 Some PostgreSQL primitives are not expressible in the Drizzle DSL here:
 data backfills, changes to the `retrieval_object_type` DOMAIN's `CHECK`
-values, and Postgres extensions (`CREATE EXTENSION`). Those must be isolated
-custom SQL migrations/fragments and must not be ad hoc edits to generated
-table-structure SQL. They must not change table structure that
-`src/db/schema/` describes unless the schema files are updated in the same
-change. `schema:check` is file-based: it compares `src/db/schema/**` against
-committed `server/drizzle/meta/` snapshots and checks generated migrations
-were merged into `server/migrations/0001_baseline.sql`. It does not inspect a
-live database or re-read custom SQL migrations for structural drift.
+values, and Postgres extensions (`CREATE EXTENSION`). Those go into a
+`--custom` migration, or into the generated file of the change they belong
+to, and must not change table structure that `src/db/schema/` describes
+unless the schema files are updated in the same change. `schema:check` is
+file-based: it compares `src/db/schema/**` against the committed
+`server/migrations/meta/` snapshots and checks every declared extension is
+created by some migration. It does not inspect a live database or re-read
+custom SQL for structural drift.
 
 **Schema representation notes:**
 - Content column defaults are storage backstops, not creation policy. Seven
@@ -599,5 +594,5 @@ live database or re-read custom SQL migrations for structural drift.
 
 **Normal workflow does not use `drizzle-kit pull`.** The day-to-day tools
 (`schema:generate`, `schema:check`) diff only against committed
-`server/drizzle/meta/*.json` snapshots. `pull` is not a schema parity check
+`server/migrations/meta/*.json` snapshots. `pull` is not a schema parity check
 for this repository.

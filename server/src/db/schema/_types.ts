@@ -23,7 +23,7 @@ export const tsVector = customType<{ data: string }>({
 
 // retrieval_chunks.embedding is a deliberately unconstrained pgvector
 // column (no fixed dimension — see the ck_retrieval_chunks_embedding_dimensions
-// CHECK in 0001_baseline.sql, which ties embedding_dimensions to
+// CHECK in migrations/0000_baseline.sql, which ties embedding_dimensions to
 // vector_dims(embedding) per row). drizzle-orm's built-in vector() helper
 // always emits a fixed `vector(N)`, so it can't represent this column
 // without producing a spurious ALTER COLUMN TYPE diff.

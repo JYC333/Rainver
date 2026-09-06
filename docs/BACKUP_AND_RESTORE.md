@@ -262,11 +262,13 @@ During preflight, `restore.sh` reads the manifest **version metadata** (`backup_
 `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, `pg_dump_version`),
 prints the recorded values, and **fails closed before any destructive operation** on a missing
 or unexpected `backup_format`, a PostgreSQL **major-version** mismatch between the backup
-source and the live restore target, or a `schema_migration_checksum` that differs from this
-build's `server/migrations/0001_baseline.sql`. The last one means the archive predates a schema
-change: the runtime schema is a single regenerated baseline, so restoring it would produce a
-database the migration runner refuses to start against — prefer a build whose baseline matches
-the archive. For controlled recovery you can override this check with
+source and the live restore target, a `schema_migration_version` that this build's
+`server/migrations/` chain does not contain, or a `schema_migration_checksum` that differs from
+this build's copy of that migration file. The last two mean the archive came from a newer build,
+or an applied migration was edited: restoring it would produce a database the migration runner
+refuses to start against. An archive from an **older** build is fine — migrations are
+append-only, and the next `start.sh` applies the ones the archive predates. For controlled
+recovery you can override this check with
 `--force-incompatible-backup`; `--force` (file overwrite) and `--force-running` (active
 services) do **not** imply it. The metadata is never silently ignored.
 

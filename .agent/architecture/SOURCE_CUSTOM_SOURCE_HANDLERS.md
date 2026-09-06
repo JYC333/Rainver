@@ -368,7 +368,7 @@ return the same `CustomSourceRunnerResult` shape, so the Phase 3 contract
 validator and materializer are unchanged and shared by both models.
 
 Schema: `source_handler_versions.language`'s `CHECK` constraint in
-`server/migrations/0001_baseline.sql` allows both `typescript_node` and
+`server/migrations/0000_baseline.sql` allows both `typescript_node` and
 `declarative_pipeline_v1`. Instance Settings' `allowed_languages`
 (`SERVER_CUSTOM_SOURCE_ALLOWED_LANGUAGES`) defaults to both values.
 
@@ -526,9 +526,9 @@ selecting a Custom Source credential (API/service layer only).
 ## Phase 1 Schema Design (implemented in Phase 2)
 
 This section records the schema shape consolidated into
-`server/migrations/0001_baseline.sql` for the pre-history baseline. There is no
-historical data or deployed system for these Sources Source changes, so the
-declarative pipeline and Source Recipe schema are folded into `0001` rather
+`server/migrations/0000_baseline.sql`. There was no historical data or
+deployed system when these Sources changes landed, so the declarative pipeline
+and Source Recipe schema are part of the frozen baseline rather
 than kept as separate incremental migration files. Once a real deployment has
 applied `0001`, later schema changes must be added as ordered incremental
 migrations.

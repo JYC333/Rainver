@@ -2,23 +2,24 @@ import { defineConfig } from "drizzle-kit";
 
 // Generator-only config: Drizzle schema is the authoring source, but
 // drizzle-kit is never used to apply migrations against a live database
-// (no `drizzle-kit migrate` / `push`). `schema:generate` always generates the
-// complete schema from an empty temporary snapshot and replaces `drizzle/`
-// with one deterministic empty-database baseline. Runtime upgrade migrations
-// under `server/migrations/` are maintained separately and remain immutable.
+// (no `drizzle-kit migrate` / `push`). `server/migrations/` is both the
+// drizzle-kit output directory (numbered SQL plus `meta/` journal and
+// snapshots) and the directory the server migration runner applies, so
+// `pnpm run schema:generate -- --name <name>` appends the next migration to
+// the same chain the runner will replay. Applied files are immutable.
 //
 // `generate`/`check` (the day-to-day and CI commands) are purely file-based
 // and never touch a database, so SERVER_DATABASE_URL is not required for them.
-// `schema:check` writes Drizzle output into a temporary directory and compares
-// it to the committed snapshot so startup/build checks do not mutate the repo.
-// Only the one-time bootstrap `pull` (and `push`, which this project doesn't
-// use) need real credentials; they'll fail with an ordinary connection error
-// if SERVER_DATABASE_URL is unset.
+// `schema:check` runs drizzle-kit against a temporary copy of the chain and
+// fails if a migration would be produced, so build checks do not mutate the
+// repo. Only the one-time bootstrap `pull` (and `push`, which this project
+// doesn't use) need real credentials; they'll fail with an ordinary connection
+// error if SERVER_DATABASE_URL is unset.
 
 export default defineConfig({
   dialect: "postgresql",
   schema: "./src/db/schema/index.ts",
-  out: "./drizzle",
+  out: "./migrations",
   dbCredentials: {
     url: process.env.SERVER_DATABASE_URL ?? "postgresql://unset/unset",
   },

@@ -70,13 +70,17 @@ describe("project work event vocabulary", () => {
   });
 
   it("keeps the loop-stage CHECK agreeing with the protocol constant", () => {
-    const baseline = readFileSync(
-      join(import.meta.dirname, "..", "migrations", "0001_baseline.sql"),
-      "utf8",
-    );
-    const match = /CONSTRAINT "ck_task_loop_states_stage" CHECK \(current_stage_key IN \(([^)]*)\)\)/
-      .exec(baseline);
-    expect(match, "stage CHECK not found in the runtime baseline").not.toBeNull();
+    // The last migration that (re)defines the constraint wins, so read the
+    // whole chain in order rather than the frozen baseline alone.
+    const migrationsDir = join(import.meta.dirname, "..", "migrations");
+    const chain = readdirSync(migrationsDir)
+      .filter((name) => /^\d+_.+\.sql$/.test(name))
+      .sort()
+      .map((name) => readFileSync(join(migrationsDir, name), "utf8"))
+      .join("\n");
+    const matches = [...chain.matchAll(/CONSTRAINT "ck_task_loop_states_stage" CHECK \(current_stage_key IN \(([^)]*)\)\)/g)];
+    const match = matches.at(-1);
+    expect(match, "stage CHECK not found in the migration chain").not.toBeNull();
     const inCheck = [...(match?.[1] ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(inCheck).toEqual([...WORK_LOOP_STAGE_KEYS]);
   });

@@ -13,6 +13,9 @@
 # Environment files
 .env
 
+# Scratch output of server scripts (schema drift check, SQL capture)
+**/.tmp/
+
 # PostgreSQL runtime data and dumps — never committed
 # (actual data lives under RAINVER_HOME/db/postgres, not in the repo)
 **/db/postgres/
