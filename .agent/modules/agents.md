@@ -220,6 +220,13 @@ server runtime-tool installation: the paired host owns the CLI login and
 runtime process. Room and direct chat dispatch apply the profile's owner-only
 trigger and record the real Agent id on the remote Run.
 
+A profile is the runtime an Agent runs on, not the Agent. What the CLI
+remembers on that machine belongs to the Agent and the container it ran in —
+one runtime profile directory per Agent × Conversation, or Agent × owner for
+direct chat ([`hosts.md`](hosts.md)) — so changing the profile does not carry
+one Room's CLI memory into another, and two Agents on one machine share none
+of it.
+
 Rules:
 
 - Creating an Agent also creates one default runtime profile from the initial
@@ -241,6 +248,57 @@ Rules:
   per-run `adapter_type` / `model_provider_id` / `model` fields are kept only
   as compatibility inputs for older callers and should not be the primary
   frontend model.
+
+## Identity and memory
+
+An Agent is the memory boundary; a Conversation is the context boundary; host ×
+CLI is only the substrate
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4–§6). Three things are
+kept apart deliberately, and they have three different authors:
+
+| | Author | Where it lives | Reach |
+|---|---|---|---|
+| **Role** (`agents.role_instruction`) | the owner, as a setting | `agents` | wherever the Agent runs |
+| **Persona** (`memory_type = 'persona'`) | the Agent, about itself | `memory_entries`, `scope_type = 'agent'` | every Room and direct chat; one active entry per Agent |
+| **Note** (`note` / `decision` / `lesson`) | the Agent, about a Room | the same scope, carrying `origin_room_id` | only where that Room's audience already reached |
+
+The prompt renders role first and persona second. This is delivered on the
+**host-bound** path — `agentGroups/agentIdentityPrompt.ts`, on a Room turn, a
+Room delegation and a direct chat. A managed (server-side) Agent does not
+receive the block yet: it would acquire the same entries through the Runtime
+Context Memory candidate authority, which is a different change, deferred in
+[plans/backlog.md](../plans/backlog.md) §10. Neither role nor persona is written
+to a vendor context file, and the CLI's own auto-memory is scratch Rainver never
+reads, imports or promotes.
+
+**Who may change a persona is decided by who set the Run going**, read from
+the **root** Run's `trigger_origin` (`systemActions/effectiveTriggerOrigin.ts`,
+so a delegated child is judged by what started the chain) together with
+`runs.instructed_by_user_id`, and never from the prompt. The owner's own turn produces a proposal decided in that turn; any
+other member's turn produces a proposal only the owner can accept
+(`required_owner_user_id`, by identity and not by role). Owner-only proposal
+text is never stored in the shared Room message; the Room reader projects it
+from the proposal authority only for that owner, so the member who asked gets
+nothing. An unattended Run applies it directly and records it where the write happened.
+A **revision** is `agent.persona_revised`, carrying what it replaced as well as
+what it now says, with a one-step `restore_memory` that retires the new version
+and brings the previous one back. A **first** persona replaced nothing, so it
+is an ordinary `memory.remembered` whose reversal is an archive. At most one
+persona write per Run. An Agent with no owner — the
+`space_shared` Space and Project Assistants — has no memory of its own at all.
+
+A revision is a new version on the chain, so the Memory page's version chain
+and restore are how a person reads and reverses what an Agent became. Widening
+a note means promoting it to Project Memory as a proposal; the entry itself
+never widens.
+
+Outside a Project, an autonomous persona change creates a private, content-free
+Activity Inbox pointer for the owner. It opens the Memory page, whose named
+Agent filter identifies the relevant memory and where the same one-step
+reversal is `POST /memory/:id/revert`; a Project-bound change appears in the
+Project's updates. Both reversals are one action for the same reason: an Agent must
+always have some persona, so archiving the head alone would leave it with
+none.
 
 ## Does Not Own
 

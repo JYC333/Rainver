@@ -253,16 +253,81 @@ preceded by the conversation title. Later turns in the same conversation send
 only messages since that Agent's previous turn. Reset context clears the
 vendor session and marks the thread `session_reset`; the directory stays.
 
+A host-bound turn's `host_prompt_context` opens with the Agent's own identity
+block (`agentGroups/agentIdentityPrompt.ts`): the owner's `role_instruction`
+first, then the Agent's persona, then the notes it learned where this Room's
+audience already reached. The notes come from the Memory module's own delivery
+query — **not** through the retrieval adapter, because agent-scope entries are
+excluded from the person-facing retrieval index outright (memory search runs as
+the instructing person, so an indexed note from a limited Room would come back
+in any Room that asked). Both memory sections are bounded: the persona is
+clamped, and notes are taken newest-first, whole notes only, skipping one too
+large for what is left rather than stopping at it.
+
+It is sent on **every** turn, not only a fresh one: a vendor session outlives
+many turns, and an Agent whose persona was revised, or whose Room roster
+changed what it may be told, would otherwise go on acting as whoever it was
+when the session started. The cost is that a resumed session accumulates one
+copy of the block per turn; sending only on change would need a digest on the
+thread, and a digest that said "sent" for a turn that never reached the runtime
+would silently withhold the Agent's identity — which is the worse failure. It
+is in the backlog rather than the code.
+
+What re-sending cannot do is **retract**: a note delivered on turn 1 is in the
+vendor session, and adding a member to the Room afterwards stops it being sent
+again but does not take it out of what the Agent is already reasoning from.
+Only an explicit context reset does that. ADR 0003 §4 is precise about this —
+the audience filter guards the moment of dispatch — and this is the same
+accepted residual, not a solved problem.
+
+A specialist reached by `agent.delegate` gets the same block: it runs in the
+same vendor session as one that was @-mentioned — `host_threads` is unique per
+Conversation × Agent — so without it the same Agent would run with its role and
+persona on one turn and without them on the next, depending only on how it was
+reached.
+
+A sibling Agent waiting on another's Run is shown that Run's **task**, never
+its prompt (`runs/runAssignedTask.ts`): the prompt carries the other Agent's
+persona and notes, and the Agent is the memory boundary.
+
+Direct chat sends the same block, with the person in that chat as the audience:
+they receive the persona and the notes learned in Rooms whose roster still
+contains them, plus notes taken in that chat when they are the Agent's owner.
+
+Like the conversation history beside it, the block is prompt content and not
+server-brokered Runtime Context: it enters no Delivery, no snapshot and no
+checkpoint of its own, and it is regenerated every turn rather than replayed.
+A run dispatched to the **server** host is still brokered through the Runtime
+Context Gateway for everything else it is given — only a remote host skips that
+— so "not Runtime Context" describes this block, not the whole turn.
+
+The Agent's CLI state on that machine is scoped the same way. Its runtime
+profile — login, vendor sessions, and whatever the CLI remembers on its own —
+is keyed by **Agent × container**: this Conversation for a Room turn, the owner
+for a direct chat ([`hosts.md`](hosts.md), "The runtime profile"). Two
+specialists in one Room, and one specialist in two Rooms, therefore share
+nothing the CLI remembers, which is the substrate half of
+[ADR 0003](../decisions/0003-memory-proposal-flow.md) §6 — Rainver owns the
+Agent's identity and its distilled Memory, and the CLI's own auto-memory stays
+delegated scratch it never reads or imports.
+
 The same owner-only gate permits a direct chat with a host-bound Agent. Direct
 chat has one `host_threads` container per Agent × owner, renders recent messages
 from that session (not a Room summary), and exposes
 `POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the direct session
-closes and archives a managed workspace; the first later message may opt into
-restoring the newest archive, but never restores the vendor session. Removing a
-Room specialist follows the same archive-not-delete rule, with offline archives
-replayed on the daemon's next heartbeat.
+closes and archives both the Agent's runtime profile and, when Rainver managed
+it, the workspace; the first later message may opt into restoring the newest
+archive, but never restores the vendor session. Removing a Room specialist
+follows the same archive-not-delete rule, with offline archives replayed on the
+daemon's next heartbeat — with one distinction the shared Conversation cwd
+forces: the departing Agent's **profile** is always archived, while the
+**workspace** follows only when the last Agent leaves the Conversation.
 
-Room and direct prompt context is prompt content, not server-brokered Runtime
+`POST /api/v1/agents/:agentId/host-state/reset` clears an Agent's CLI memory on
+one Host outright: every profile archived, no workspace touched, and that
+Agent's vendor sessions on the Host retired.
+
+What a remote Host receives is prompt content, not server-brokered Runtime
 Context; credentials, memory reads, and provider state do not cross to the
 Host. Managed directories remain per container, so a direct chat cannot see a
 Room's files and one Room cannot see another's files without an explicit pull.
@@ -461,7 +526,22 @@ conclusion, a promotion) are decided where they were made. The Run snapshots
 them onto its message as `action_previews`; the shared `ConversationSurface`
 component — so both the full Room page and the Project chat panel — renders
 each as a card with Accept / Reject, and a decision continues the
-conversation in place (`continueAfterProposal`). They also
+conversation in place (`continueAfterProposal`). One kind of card is rendered
+for one person only: a proposal that names its decider by identity rather than
+by role — an Agent's persona, which is its owner's alone
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §5) — carries
+`decidable_by_user_id`, and the surfaces drop it for everyone else. It stays in
+the shared snapshot rather than being filtered server-side, because that
+snapshot *is* the card: dropping it there would take it from the owner too. So
+a member who asked the Agent to change what it has become sees the reply and no
+card, which is the intended answer — they cannot accept it, and buttons that
+refuse are worse than nothing.
+
+What that does **not** do is keep the proposal's own title off the wire: it
+stays in the message's `metadata_json`, which every member of the Room reads.
+That is consistent with ADR 0018 — the request was made in this Room, so its
+text is this Room's content — and the hiding is about who is asked to decide,
+not about who may read what was said. They also
 reach the Project's attention list (`proposals/projectIntegration.ts`), each
 row linking back to that conversation, so Pulse and the shell say a decision
 is waiting without anyone opening the Space-level Review page.

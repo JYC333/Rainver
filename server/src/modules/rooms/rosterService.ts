@@ -159,6 +159,7 @@ export class RoomRosterService {
         agent_id: restoreTarget.agentId,
         container_kind: "conversation",
         container_id: restoreTarget.conversationId,
+        include_workspace: restoreTarget.includeWorkspace,
       },
     );
     return { ...result, managed_workspace_restore: restored };
@@ -303,9 +304,18 @@ export class RoomRosterService {
       if (member.role === "manager") throw managedRoomAgentImmutable();
       const threadRepository = new PgHostThreadRepository(client);
       const closedThreads = await threadRepository.closeConversationAgentForRoom(identity.spaceId, room.id, agentId);
+      // Every closed thread with a host, not only the managed-workspace ones:
+      // the Agent's runtime profile is on that machine either way, and leaving
+      // it behind is what would carry this Room's CLI memory into the next.
       const archiveTargets = closedThreads
-        .filter((thread) => thread.pending_archive_at && thread.workspace_mode === "managed" && thread.execution_host_id && thread.session_id)
-        .map((thread) => ({ threadId: thread.id, hostId: thread.execution_host_id!, agentId, conversationId: thread.session_id! }));
+        .filter((thread) => thread.pending_archive_at && thread.execution_host_id && thread.session_id)
+        .map((thread) => ({
+          threadId: thread.id,
+          hostId: thread.execution_host_id!,
+          agentId,
+          conversationId: thread.session_id!,
+          includeWorkspace: thread.include_workspace,
+        }));
       if (member.status === "active") {
         await client.query(
           `UPDATE room_agent_members
@@ -340,6 +350,7 @@ export class RoomRosterService {
           agent_id: archiveTarget.agentId,
           container_kind: "conversation",
           container_id: archiveTarget.conversationId,
+          include_workspace: archiveTarget.includeWorkspace,
         },
       );
       archived.push(response);
@@ -1017,9 +1028,29 @@ interface ManagedConversationRestoreTarget {
   hostId: string;
   agentId: string;
   conversationId: string;
+  /**
+   * Whether the shared Conversation cwd comes back with the Agent's profile.
+   *
+   * Two things were archived when the Agent left, and only one of them is
+   * always there to restore. The Agent's runtime profile is archived whenever
+   * it leaves; the cwd only when it was the last one out, and a Conversation
+   * pinned to a registered Location never had a Rainver-managed cwd at all.
+   * The heartbeat reports workspaces and not profiles, so this is what it can
+   * answer — the daemon restores whichever archives exist and says what moved.
+   */
+  includeWorkspace: boolean;
 }
 
-async function findManagedWorkspaceRestoreTarget(
+/**
+ * The closed thread a re-added Agent would pick its host state back up from.
+ *
+ * Deliberately **not** gated on an archived workspace being available. That
+ * gate was right when the workspace was the only thing archived; now the
+ * common case — one Agent leaves a Conversation while others stay — archives
+ * only the Agent's profile, and requiring a workspace archive would make every
+ * one of those permanently unrestorable and swept after 30 days.
+ */
+export async function findManagedWorkspaceRestoreTarget(
   client: PoolClient,
   spaceId: string,
   agentId: string,
@@ -1027,30 +1058,35 @@ async function findManagedWorkspaceRestoreTarget(
   userId: string,
 ): Promise<ManagedConversationRestoreTarget | null> {
   const profile = await client.query<ManagedConversationRestoreTarget>(
-    `SELECT thread.execution_host_id AS "hostId", thread.agent_id AS "agentId", thread.session_id AS "conversationId"
+    `SELECT thread.execution_host_id AS "hostId", thread.agent_id AS "agentId",
+            thread.session_id AS "conversationId",
+            (thread.workspace_mode = 'managed' AND EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) workspace
+               WHERE workspace->>'container_kind' = 'conversation'
+                 AND workspace->>'container_id' = thread.session_id
+                 AND workspace->>'archived_available' = 'true'
+            )) AS "includeWorkspace"
        FROM host_threads thread
        JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
        JOIN hosts host ON host.id = thread.execution_host_id
       WHERE thread.space_id = $1 AND thread.agent_id = $2
         AND conversation.room_id = $3
         AND thread.container_kind = 'conversation'
-        AND thread.workspace_mode = 'managed'
         AND thread.status = 'closed'
         AND host.owner_user_id = $4 AND host.status <> 'revoked'
-        AND EXISTS (
-          SELECT 1
-            FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) workspace
-           WHERE workspace->>'container_kind' = 'conversation'
-             AND workspace->>'container_id' = thread.session_id
-             AND workspace->>'archived_available' = 'true'
-        )
       ORDER BY conversation.updated_at DESC, conversation.created_at DESC, conversation.id DESC
       LIMIT 1`,
     [spaceId, agentId, roomId, userId],
   );
   const selected = profile.rows[0];
   return selected
-    ? { hostId: selected.hostId, agentId: selected.agentId, conversationId: selected.conversationId }
+    ? {
+      hostId: selected.hostId,
+      agentId: selected.agentId,
+      conversationId: selected.conversationId,
+      includeWorkspace: selected.includeWorkspace,
+    }
     : null;
 }
 

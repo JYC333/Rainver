@@ -65,6 +65,35 @@ describe("roles", () => {
   });
 });
 
+describe("unattended persona write exception", () => {
+  const base = {
+    action: "memory.write",
+    space_id: "s1",
+    trigger_origin: "automation",
+    memory_persona_write: true,
+  };
+
+  it("allows only a concrete persona remember/revise action", () => {
+    for (const memoryAction of ["memory.remember", "memory.revise"]) {
+      expect(engineCheck(registry, req("memory.write", {
+        ...base,
+        memory_action_id: memoryAction,
+      })).reason_code, memoryAction).not.toBe("unattended_project_write");
+    }
+  });
+
+  it("does not let a copied persona flag exempt another memory writer", () => {
+    const decision = engineCheck(registry, req("memory.write", {
+      ...base,
+      memory_action_id: "memory.archive",
+    }));
+    expect(decision).toMatchObject({
+      decision: "require_approval",
+      reason_code: "unattended_project_write",
+    });
+  });
+});
+
 describe("information digest automation policy", () => {
   it("allows a member to fire their own personal digest schedule", () => {
     const decision = engineCheck(registry, req("automation.fire", {

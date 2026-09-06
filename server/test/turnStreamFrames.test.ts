@@ -24,7 +24,7 @@ const tool = (index: number, name: string, status: "running" | "succeeded" = "ru
 const preview = (index: number): TurnPart => ({
   type: "action_preview", index, action_id: "a1", tool_call_id: null, status: "proposed",
   proposal_id: "p1", proposal_type: "memory_create", title: "Remember it",
-  summary: null, risk_level: "low", scope: null,
+  summary: null, risk_level: "low", scope: null, decidable_by_user_id: null,
 });
 
 describe("turn stream frames", () => {

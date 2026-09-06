@@ -65,7 +65,8 @@ the physical topology:
   container identity.
 - `hosts.managed_workspaces_json` is the daemon's bounded heartbeat inventory
   of managed Agent × container directories and archive availability. It never
-  contains a filesystem path.
+  contains a filesystem path, and it lists workspaces only — runtime profiles
+  are not reported, so nothing outside the daemon enumerates them.
 
 Managed workspaces are daemon-owned directories, not Workspace Locations. A
 launch names an Agent and either a Conversation id or the direct owner's user
@@ -309,41 +310,247 @@ absolute profile path; Codex's config has to name its own catalog absolutely
 and only the executing machine knows where that is. Paths that escape the
 profile are refused — the daemon runs unsandboxed on a machine the user owns.
 
-`profile_key` is `<adapter_type>/<provider_id>`, and the profile lives at
-`profiles/<adapter_type>/<provider_id>` under the daemon's config directory —
-shared by every run with that adapter and provider on that machine, never
-per-run. A CLI keeps its conversation state inside the profile (Claude Code's
-session transcripts live under `CLAUDE_CONFIG_DIR`), so a profile deleted when
-its run exits takes with it the session the next turn is about to resume: every
-turn after the first then fails with the runtime reporting no such
-conversation, and the thread is reset. Sharing per adapter and provider keeps a
-conversation resumable for as long as its backend does not change, and makes
-changing the backend start a fresh session rather than resume one whose context
-another vendor's model produced. The daemon validates the key before building a
-path from it — it runs unsandboxed on a machine the user owns.
+### The runtime profile: one per Agent × container
+
+`profile_key` is
+`agents/<agent_id>/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`,
+and the profile lives at
+`agents/<agent_id>/profiles/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`
+under the daemon's config directory — beside the Agent's managed workspaces,
+not inside them. The container is the **Conversation** for a Room turn, the
+**owner** for a direct chat, and the **WorkspaceLocation** for everything else
+(a Task thread, an Automation, a Plan or Workflow node, an evolution run whose
+Folder prefers a remote Location — none of which has a conversation to be the
+boundary of). A Location thread's vendor session therefore lives in the
+profile of the Agent whose Run last used it, while the thread itself carries
+no Agent (`ck_host_threads_owner`). Task admission reads the latest Run's
+Agent beside its status: when the Agent dispatched now is a different one, the
+session is retired at admission (`retireLocationSessionForAgentChange`,
+recorded in `retired_vendor_session_ids`) and the Run starts a fresh session
+in its own profile, rather than resuming into another Agent's profile and
+resetting mid-turn with "no such conversation". Switching a Task's Agent is
+thus a fresh session, by design.
+`resolveRuntimeProfileScope` reads the container from `host_threads`, not from
+the launch workspace: a Conversation pinned to a registered Location has
+`workspace.kind = "location"` while still being a Conversation, and keying off
+the workspace would put two Rooms back into one directory.
+
+**Every host-bound Agent run carries a profile**, including a run with no
+ModelProvider binding — the frame then has empty `files`, empty `env`, and only
+`profile_env` plus `login_link`, and the provider segment is the literal
+`ambient`. This is what changed in the Agent identity work
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §6): the key used to be
+`<adapter_type>/<provider_id>`, shared by every run with that adapter and
+provider on the machine, and an unbound run had no profile at all and simply
+read the machine's own `~/.claude` or `~/.codex`. Both were the leak — two
+Agents on one machine, and one Agent in two Rooms, shared one login, one
+session store, and one pile of vendor auto-memory. The CLI's own working memory
+is still delegated scratch that Rainver never reads, syncs or promotes; what
+keeps it from crossing a boundary is this key.
+
+Never per-run, in either shape. A CLI keeps its conversation state inside the
+profile, so a profile deleted when its run exits takes with it the session the
+next turn is about to resume: every turn after the first then fails with the
+runtime reporting no such conversation, and the thread is reset. Keeping one
+per Agent × container × adapter × backend keeps a conversation resumable for as
+long as its backend does not change, and makes changing the backend start a
+fresh session rather than resume one whose context another vendor's model
+produced. The daemon validates every segment before building a path from it —
+it runs unsandboxed on a machine the user owns.
 
 Two consequences of a profile that outlives its run: a written config keeps
 that run's lease token after the lease is revoked (a dead credential in a 0700
-directory; the provider's real key is never there), and two concurrent runs
-sharing an adapter and provider share the directory, so one can end up using a
-sibling run's lease — same upstream, but usage attributes to the sibling.
+directory; the provider's real key is never there), and two concurrent runs of
+the same Agent in the same container on the same backend share the directory,
+so one can end up using a sibling run's lease — same upstream, but usage
+attributes to the sibling.
 
 **All three runtimes need a profile**, and all three keep conversation state
 inside one: Claude Code under `CLAUDE_CONFIG_DIR`, Codex under
 `CODEX_HOME/sessions/YYYY/MM/DD`, OpenCode under `HOME/.local/share/opencode`
-(reached through HOME, since `XDG_DATA_HOME` is not on the ambient allowlist).
-On the server host their isolation comes from the credential broker, which does
-not exist on a trusted host, so environment injection alone would leave the
-machine's own `~/.claude` or `~/.codex` in play.
+— for a **bound** run reached through `HOME`, since `XDG_DATA_HOME` is not on
+B67's allowlist and there would be nothing to point; an unbound run points the
+XDG roots instead and keeps the machine's `HOME` (below).
+Each profile's state-root variables are set so that every `home_subdir` a
+login spec names resolves inside it. On the server host their isolation comes
+from the credential broker, which does not exist on a trusted host, so
+environment injection alone would leave the machine's own `~/.claude` or
+`~/.codex` in play.
+
+The frame's `credential_source` tells the daemon which of two environment
+rules applies, and they are deliberately different:
+
+- `provider_lease` — B67 in full. The machine contributes nothing to which
+  backend, credential or upstream the runtime reaches, so the ambient
+  environment is rebuilt from `filterAmbientEnv`'s allowlist. Unchanged from
+  before this phase, including its stated cost: a bound run cannot see
+  `~/.gitconfig` or `~/.ssh`.
+- `host_login` — B67's closing rule stands: a run with no binding is not
+  affected. It keeps `HOME` and therefore `~/.gitconfig` and `~/.ssh/config`,
+  the proxy variables, and the language toolchains a paired machine needs.
+  `clearStateRootEnv` drops two closed sets and nothing else: the four XDG
+  **roots** by exact name, and the vendor prefixes **the launched runtime**
+  reads as a credential or a state root — `ANTHROPIC_*`/`CLAUDE_*` for Claude
+  Code, `OPENAI_*`/`CODEX_*` for Codex, `GEMINI_*`/`GOOGLE_*` for Gemini CLI
+  (the `GOOGLE_` family is how it chooses between API-key and Vertex billing),
+  every vendor prefix for OpenCode (it routes to whichever provider it finds a
+  key for) and for a runtime the daemon does not know. Per runtime, not one
+  list for all: `GOOGLE_APPLICATION_CREDENTIALS` and `GOOGLE_CLOUD_PROJECT` are
+  how gcloud and a GCS toolchain authenticate in a Task run, and Claude Code
+  reads neither. The XDG set is named rather than prefixed on purpose:
+  `XDG_RUNTIME_DIR` is how a git credential helper reaches the keyring and how
+  rootless podman finds its socket, so dropping it would break a Task run that
+  pushes or builds — the same class of regression as moving `HOME`. The
+  credential set matters as much as the state roots: this run exists to spend
+  the owner's *subscription*, linked into its profile, and a runtime that
+  prefers an ambient `ANTHROPIC_API_KEY` bills an API account instead — B67's
+  own second named failure.
+
+The state root is therefore **not** `HOME` for an unbound run. Each runtime
+names its own, and each is the variable that runtime's binding already uses:
+`CLAUDE_CONFIG_DIR` for Claude Code (its transcripts and its
+`.credentials.json` both live there), `CODEX_HOME` for Codex, and the XDG
+roots for OpenCode, whose data directory is `$XDG_DATA_HOME/opencode` before
+it falls back to `HOME/.local/share/opencode`. A **bound** run still gets
+`HOME: "."`, because B67 wants the machine contributing nothing at all, and
+pays for it by losing `~/.gitconfig` and `~/.ssh` — a cost recorded in the
+deferred register and unchanged by this phase.
+
+Redirecting `HOME` for unbound runs too was considered and rejected: it would
+have broken `git commit` (no author identity) and `git push` (no ssh config)
+for every Task run on a paired machine, which is a price the memory boundary
+does not need to pay. OpenCode's XDG redirect is the one state root **not
+verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
+machine-global, which is no worse than before this phase but is not the
+isolation claimed here. See the deferred register.
 
 This granularity is the minimal extension of what ADR 0016 already decided for
 remote runs: session continuity is the vendor CLI's own state on that machine,
-addressed by the thread's opaque `vendor_session_id`, and machine-global when
-the run is unbound. A binding subdivides that state by provider and changes
-nothing else. The server-host conversation-home machinery
-(`prepareConversationHome(state_key)`) is deliberately *not* what this reuses —
-ADR 0016 records that server-brokered Runtime Context continuity has no meaning
-for a remote host.
+addressed by the thread's opaque `vendor_session_id`. The server-host
+conversation-home machinery (`prepareConversationHome(state_key)`) is
+deliberately *not* what this reuses — ADR 0016 records that server-brokered
+Runtime Context continuity has no meaning for a remote host.
+
+### Login state: one per host × installation, shared by link
+
+An Agent-managed login (a subscription, no ModelProvider binding) is the main
+path for CLI conversations — the driving need is that subscription quota is
+usable for them — and a login per Agent × container profile would multiply
+logins by Agents × Rooms. So the login stays where it was:
+
+- each host × installation has exactly one **login home** — the machine's own
+  `~/.claude` / `~/.codex` / OpenCode data directory for `own`, the copy's
+  `home/` for `managed:<version>` — and login happens there, once, through the
+  existing login stream;
+- when the daemon materializes a profile for an **unbound** run, it links
+  **only** the runtime's credential file (the `credential_file` under
+  `home_subdir` the login spec already names) from that login home into the
+  profile. Everything else in the profile — sessions, auto-memory, settings —
+  is the profile's own;
+- a runtime that declares **no** login/state-root spec is not host-executable.
+  A dynamic ACP registry agent is the current case: moving it into an empty
+  profile would break authentication, while leaving it in the managed copy's
+  shared home would mix sessions and auto-memory across Agents. Dispatch fails
+  closed with `runtime_profile_isolation_unsupported` until its registry entry
+  can name the credential file and state-root variable; the host adapter
+  catalog therefore exposes such a copy for installation/management but marks
+  it `remote_eligible: false`, and the default-adapter endpoint refuses it;
+- a link, never a copy and never a token in the environment. Passing the
+  credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
+  Rainver read a credential and injected it into a subprocess, the shape
+  [ADR 0008](../decisions/0008-credential-channel-isolation.md) forbids. A
+  symlink is tried first and a hard link is the fallback, because Windows
+  refuses `symlink` without Developer Mode;
+- missing login file → the profile is created without the link, and the first
+  dispatch surfaces the runtime's own login prompt. That is the intended
+  behavior. A symlink already at the target is removed then, because it points
+  into a login home that has no credential any more (a managed copy that was
+  uninstalled) and the runtime's own login would otherwise write through it
+  into a removed directory; a regular file there is a credential this profile
+  holds itself and is left alone;
+- a symlink at the target is followed and checked: while it still resolves to
+  *this* login home there is nothing to do, since a symlink tracks a re-login
+  by path on its own. When it does not — the profile key carries no
+  installation, so the same directory is reached again after an Agent moves
+  between `own` and `managed:<version>`, or after a managed copy is replaced
+  and its tree removed — it is dangling or authenticating as the wrong
+  installation, and it is relinked. A regular file is the Windows hard-link
+  fallback or a
+  credential the runtime refreshed into the profile itself, and once a
+  temp-file rename has dropped the shared inode's link count the two look
+  identical on disk. **Recency decides**: a login home newer than the target is
+  followed (relinked), a profile that refreshed itself later is left alone —
+  and logged, once per launch, as no longer sharing that login, because that
+  divergence is the one state nothing else on the machine would ever surface
+  (a hard link to the same inode, the Windows fallback, is not divergence).
+  Without that, a hard link would pin a profile to an orphaned inode silently
+  and forever. A link that *fails* throws rather than leaving the run to
+  discover it has no credential — a headless dispatch cannot answer a login
+  prompt. **Not yet verified on a paired host**: whether each runtime refreshes
+  in place or by temp-file rename, and whether a rotating refresh token would
+  invalidate the siblings. See the deferred register;
+- provider-bound runs are unchanged: the profile carries the lease
+  configuration and no login link, because linking the machine's subscription
+  credential into a profile that is not using it puts a credential where it
+  does not belong.
+
+### Archiving what an Agent leaves behind
+
+Profiles join the archive-not-delete rule the managed workspaces already
+follow, on the same 30-day sweep. Two things move, with different owners:
+
+- the Agent's **runtime profile** is the Agent's alone, so it is archived
+  whenever that Agent leaves — removed from a Room, or its direct session
+  deleted — which is what keeps what it learned there out of the next Room;
+- the **workspace** is shared by every Agent in a Conversation, so it follows
+  only when the last one leaves. `include_workspace` on the
+  `managed_workspace_archive` / `_restore` frames says which of the two the
+  daemon should move, computed by `listPendingManagedWorkspaceArchives` and
+  `closeConversationAgentForRoom` rather than guessed on the host.
+
+The re-add offer and the restore itself now ask the same question — "is there
+a closed thread for this Agent in this Room on this host" — rather than two
+different ones. The candidate flag is `host_state_archive_available`; it used
+to require a managed workspace *and* a heartbeat entry reporting one archived,
+which was false for every Room specialist because a conversation heartbeat
+entry carries no `agent_id` by contract, so the offer never appeared at all.
+
+Restoring rides the existing "restore workspace" request, and its target query
+is deliberately **not** gated on an archived workspace being available: that
+gate was right when the workspace was the only thing archived, and now the
+common case — one Agent leaves while others stay — archives only the profile,
+so requiring a workspace archive would have made every one of those
+permanently unrestorable and swept after 30 days. The workspace half is a flag
+on the same request. The daemon restores whichever archives exist and reports
+what moved; the workspace goes first, because a live shared cwd is a real
+conflict and a live profile only means this Agent has dispatched here since.
+
+The old `<configDir>/profiles/<adapter>/<provider>` tree — the shared logins,
+session stores and dead lease tokens the new key exists to end — is archived by
+the daemon on connect (`archiveLegacyProfileTree`, to `profiles.removed-<ts>`
+at the config root) and swept with every other archive after the retention
+window. Nothing reads it; it is moved aside rather than deleted, like every
+other retired directory here.
+
+`POST /api/v1/agents/:agentId/host-state/reset` is the **"clear this Agent's
+CLI memory on this host"** action: owner-only twice over (the caller must own
+the Host, and be the Agent's owner when it has one), it archives every profile
+the Agent has on that machine, touches no workspace, and refuses while a
+dispatch holds a lock **or a Run is still in flight** on one of the Agent's
+threads — a Task or Automation thread never claims the lock and serialises on
+its latest Run's status instead, so the guard asks both, else the Run's outcome
+would re-arm a retired thread with a session whose store is gone. Which threads
+are the Agent's: those carrying its `agent_id`, and the Location threads whose
+**latest** Run was its (that is where the session currently lives; an earlier
+Run of the same Agent does not make a session now in another Agent's profile
+this reset's to retire). Inside one transaction it retires that Agent's vendor
+sessions through the existing `session_reset` path **first**, then asks the
+host, and rolls the retirement back if the host refuses. The two orderings fail
+differently and only one is recoverable: a thread still claiming a
+`vendor_session_id` whose store has been archived resumes into nothing, while a
+thread reset without the archive happening starts a fresh session in a profile
+that still holds the old one — wasteful, visible in the error the caller gets,
+and fixed by running it again. There is no web surface for it yet.
 
 A remote run is given up on for two distinct reasons, and the failure says
 which: `runtime_timeout` when the whole run budget elapsed, and
@@ -520,7 +727,10 @@ closed; the login endpoint never falls back to a host shell.
 One session per host × adapter × copy; a new stream supersedes the old, and a
 closed stream sends `login_close`. The server-host login engine
 (`providers/cli/loginEngine.ts`) is unchanged and still owns the server host's
-own profiles; the daemon terminal never copies credentials anywhere.
+own profiles; the daemon terminal never reads or copies credential contents.
+It may **link** one owner's login file into that owner's Agent profiles on the
+same machine (above) — the CLI opens its own file and the daemon never holds
+the bytes.
 
 Enabling a registry agent (`modules/acpAgents`, instance admin) publishes a
 dynamic adapter `acp_<id>` (`runtimeAdapters/dynamicSpecs.ts`) whose command
@@ -600,8 +810,9 @@ rebuilds the environment from an **allowlist** rather than filtering a denylist
 prefixes lets `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` (OpenCode's credential
 store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
 The allowlist is the same shape the server host uses in `cliSubprocessEnv.ts`.
-A run with **no** binding keeps the machine's environment untouched, exactly as
-before.
+A run on the machine's own login is governed by the other rule instead: it
+keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
+carries a runtime profile of its own — see "The runtime profile" above.
 
 - `GET /api/v1/hosts/runtime-adapters` (P3, C6) — catalog of remote-eligible
   adapters (`implemented` + ACP protocol): the builtin specs plus dynamic

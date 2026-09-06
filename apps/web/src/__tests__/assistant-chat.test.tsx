@@ -593,6 +593,53 @@ describe('AssistantChatPage conversation backends', () => {
     expect(messagesMock).toHaveBeenCalledWith('s1')
   })
 
+  it('does not show a direct-chat card that names somebody else as its decider', async () => {
+    // An Agent's persona is its owner's alone (ADR 0003 §5), and direct chat
+    // is the other surface that renders these cards. A card whose Accept can
+    // only refuse is worse than no card.
+    messagesMock.mockResolvedValue([
+      {
+        id: 'm1',
+        session_id: 's1',
+        space_id: 'personal-1',
+        user_id: null,
+        role: 'assistant',
+        content: 'I would change how I answer.',
+        metadata_json: {
+          action_previews: [
+            {
+              action_id: 'memory.remember',
+              status: 'proposed',
+              proposal_id: 'proposal-persona',
+              proposal_type: 'memory_create',
+              title: 'Change what I have become',
+              summary: null,
+              risk_level: 'low',
+              decidable_by_user_id: 'someone-else',
+            },
+            {
+              action_id: 'inquiry.create_thread',
+              status: 'proposed',
+              proposal_id: 'proposal-open',
+              proposal_type: 'inquiry_thread_create',
+              title: 'Open a question about caching',
+              summary: null,
+              risk_level: 'low',
+            },
+          ],
+        },
+        created_at: '',
+      },
+    ])
+
+    renderPage('/agents/a1/chat?session=s1')
+
+    expect(await screen.findByText('I would change how I answer.')).toBeInTheDocument()
+    // The one anybody may decide is still there.
+    expect(screen.getByText('Open a question about caching')).toBeInTheDocument()
+    expect(screen.queryByText('Change what I have become')).not.toBeInTheDocument()
+  })
+
   it('shows managed workspace state and sends an explicit restore choice', async () => {
     backendsMock.mockResolvedValue({ options: [{
       runtime_profile_id: 'runtime-host',

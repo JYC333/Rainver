@@ -320,15 +320,23 @@ export function errorCodeValue(error: unknown): string | null {
   return null;
 }
 
+/**
+ * Statuses after which a thread's vendor session is free: nothing will write
+ * to it again. Exported for SQL that asks "is a Run still in flight on this
+ * thread" — one list, so the reset guard and the admission check cannot
+ * disagree about `waiting_for_review`.
+ */
+export const TERMINAL_RUN_STATUSES = [
+  "succeeded",
+  "failed",
+  "degraded",
+  "cancelled",
+  "orphaned",
+  "waiting_for_review",
+] as const;
+
 export function isTerminalRunStatus(status: string): status is RunTerminalStatus | "waiting_for_review" {
-  return [
-    "succeeded",
-    "failed",
-    "degraded",
-    "cancelled",
-    "orphaned",
-    "waiting_for_review",
-  ].includes(status);
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
 /** Statuses a Run can never leave. Deliberately excludes `waiting_for_review`

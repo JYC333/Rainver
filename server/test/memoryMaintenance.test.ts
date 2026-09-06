@@ -85,6 +85,8 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     root_memory_id: null,
     supersedes_memory_id: null,
     project_id: null,
+    agent_id: null,
+    origin_room_id: null,
     ...overrides,
   };
 }
@@ -155,6 +157,8 @@ describe("Memory maintenance scan", () => {
     const db = fakeDb([
       row({ id: "visible", title: "Same" }),
       row({ id: "restricted", title: "Same", sensitivity_level: "highly_restricted" }),
+      // The Agent's own memory of itself and of a Room, which is not the
+      // person's Memory to consolidate (ADR 0003 §4).
       row({ id: "agent-scope", title: "Same", scope_type: "agent" }),
       row({ id: "folder-scope", title: "Same", scope_type: "project_folder" }),
       row({

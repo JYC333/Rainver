@@ -1,5 +1,5 @@
 {
-  "id": "413ff39b-3fb9-4bcc-8510-6b4aacc5c67b",
+  "id": "51d6401b-2a56-441e-b2e6-c72b58c22c90",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -33089,6 +33089,12 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": false
+        },
+        "origin_room_id": {
+          "name": "origin_room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -33316,6 +33322,37 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_memory_entries_origin_room_id": {
+          "name": "ix_memory_entries_origin_room_id",
+          "columns": [
+            {
+              "expression": "origin_room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_memory_entries_active_persona": {
+          "name": "uq_memory_entries_active_persona",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "scope_type = 'agent' AND memory_type = 'persona' AND status = 'active' AND deleted_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -33378,10 +33415,12 @@
           "tableFrom": "memory_entries",
           "tableTo": "agents",
           "columnsFrom": [
-            "agent_id"
+            "agent_id",
+            "space_id"
           ],
           "columnsTo": [
-            "id"
+            "id",
+            "space_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -33437,6 +33476,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "memory_entries_origin_room_id_fkey": {
+          "name": "memory_entries_origin_room_id_fkey",
+          "tableFrom": "memory_entries",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "origin_room_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -33449,11 +33503,27 @@
         },
         "ck_memory_entries_scope_type": {
           "name": "ck_memory_entries_scope_type",
-          "value": "scope_type IN ('user', 'project')"
+          "value": "scope_type IN ('user', 'project', 'agent')"
         },
         "ck_memory_entries_scope_placement": {
           "name": "ck_memory_entries_scope_placement",
-          "value": "(scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL)"
+          "value": "(scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL) OR (scope_type = 'agent' AND project_id IS NULL AND agent_id IS NOT NULL AND owner_user_id IS NOT NULL)"
+        },
+        "ck_memory_entries_agent_shape": {
+          "name": "ck_memory_entries_agent_shape",
+          "value": "scope_type <> 'agent' OR (memory_type IN ('note', 'decision', 'lesson', 'persona') AND subject_user_id IS NULL)"
+        },
+        "ck_memory_entries_origin_room": {
+          "name": "ck_memory_entries_origin_room",
+          "value": "origin_room_id IS NULL OR (scope_type = 'agent' AND memory_type <> 'persona')"
+        },
+        "ck_memory_entries_agent_private": {
+          "name": "ck_memory_entries_agent_private",
+          "value": "scope_type <> 'agent' OR visibility = 'private'"
+        },
+        "ck_memory_entries_persona_scope": {
+          "name": "ck_memory_entries_persona_scope",
+          "value": "memory_type <> 'persona' OR scope_type = 'agent'"
         },
         "ck_memory_entries_sensitivity_level": {
           "name": "ck_memory_entries_sensitivity_level",

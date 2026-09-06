@@ -603,7 +603,10 @@ export interface SpaceInvitationOut {
   expires_at: string
 }
 
+// The last four are the Agent's own (ADR 0003 §4): three note kinds and the
+// one persona, told apart from a memory about a person by the type alone.
 export type MemoryType       = 'preference' | 'semantic' | 'episodic' | 'procedural' | 'project'
+  | 'note' | 'decision' | 'lesson' | 'persona'
 export type MemoryStatus     = 'active' | 'archived' | 'proposed' | 'rejected' | 'superseded'
 export type ContentVisibility = 'private' | 'space_shared' | 'selected_users'
 export type ContentAccessLevel = 'full' | 'summary'
@@ -1755,6 +1758,8 @@ export interface Memory {
   root_memory_id?: string | null
   supersedes_memory_id?: string | null
   project_id?: string | null
+  /** `agent` scope only: the Room this note was learned in, null for a persona. */
+  origin_room_id?: string | null
 }
 
 export interface KnowledgeItemSummary {
@@ -2211,6 +2216,13 @@ export interface ChatActionPreview {
   summary?: string | null
   risk_level?: string | null
   scope?: Record<string, unknown> | null
+  /**
+   * Set when one named person decides this and nobody else may — an Agent's
+   * persona, which is its owner's alone (ADR 0003 §5). Rendered for that
+   * person only: a member who asked cannot accept it, and buttons that refuse
+   * are worse than no card.
+   */
+  decidable_by_user_id?: string | null
 }
 
 /** Product task board item (`TaskOut`). */

@@ -80,6 +80,7 @@ describe("terminal Chat Run reconciliation", () => {
         },
       },
       {
+        loadActionPreviews: async () => [],
         resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: {
           async finalizeChatTurn() {
@@ -169,6 +170,7 @@ describe("terminal Chat Run reconciliation", () => {
         },
       },
       {
+        loadActionPreviews: async () => [],
         resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: {
           async finalizeChatTurn() {

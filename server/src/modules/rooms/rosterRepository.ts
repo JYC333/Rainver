@@ -13,7 +13,7 @@ export interface RoomRosterAgentCandidate {
   private: boolean;
   shared_with_user_ids: string[];
   workspace_mode: "location" | "managed" | null;
-  workspace_archive_available: boolean;
+  host_state_archive_available: boolean;
 }
 
 export interface RoomInvitationRecord {
@@ -104,28 +104,43 @@ export class PgRoomRosterRepository {
                    AND grant_row.revoked_at IS NULL
               ), '[]'::jsonb) AS shared_with_user_ids
               ,binding.workspace_mode,
+              -- Whether re-adding this Agent has any host state to bring back:
+              -- its runtime profile always, and the shared Conversation cwd
+              -- when it was the last one out. Deliberately the same condition
+              -- findManagedWorkspaceRestoreTarget matches on, and no more.
+              --
+              -- It used to require a managed workspace_mode and a heartbeat
+              -- entry reporting an archived workspace, which was wrong twice.
+              -- The common case archives only the profile — one Agent leaves
+              -- while others stay — and the heartbeat reports no profiles at
+              -- all. Worse, a conversation heartbeat entry carries no agent_id
+              -- by contract, so matching one against a.id was never true and
+              -- this flag was always false: the offer never appeared for any
+              -- Room specialist.
+              --
+              -- Every clause below is findManagedWorkspaceRestoreTarget's,
+              -- including the host's owner and revoked checks: offering a
+              -- restore the target query will not match sends the request into
+              -- a null target and the person is told nothing. And it is
+              -- deliberately not restricted to the Agent's currently selected
+              -- runtime profile's host — that profile can be disabled or
+              -- repointed after the thread closed, and the archive on the old
+              -- machine is still what a re-add would bring back.
               COALESCE(EXISTS (
                 SELECT 1
                   FROM host_threads archived_thread
                   JOIN sessions archived_conversation
                     ON archived_conversation.id = archived_thread.session_id
                    AND archived_conversation.space_id = archived_thread.space_id
+                  JOIN hosts archived_host ON archived_host.id = archived_thread.execution_host_id
                  WHERE archived_thread.space_id = a.space_id
                    AND archived_thread.agent_id = a.id
-                   AND archived_thread.execution_host_id = binding.execution_host_id
                    AND archived_thread.container_kind = 'conversation'
-                   AND archived_thread.workspace_mode = 'managed'
                    AND archived_thread.status = 'closed'
                    AND archived_conversation.room_id = $3
-                   AND EXISTS (
-                     SELECT 1
-                       FROM jsonb_array_elements(COALESCE(host.managed_workspaces_json, '[]'::jsonb)) report
-                      WHERE report->>'agent_id' = a.id::text
-                        AND report->>'container_kind' = 'conversation'
-                        AND report->>'container_id' = archived_thread.session_id
-                        AND report->>'archived_available' = 'true'
-                   )
-              ), false) AS workspace_archive_available
+                   AND archived_host.owner_user_id = $2
+                   AND archived_host.status <> 'revoked'
+              ), false) AS host_state_archive_available
          FROM agents a
          JOIN rooms room ON room.space_id = a.space_id AND room.id = $3
         LEFT JOIN room_agent_members member
@@ -141,7 +156,6 @@ export class PgRoomRosterRepository {
            ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC
            LIMIT 1
         ) binding ON true
-        LEFT JOIN hosts host ON host.id = binding.execution_host_id
         WHERE ${where}
         ORDER BY member.status = 'active' DESC, a.created_at ASC, a.id ASC
         LIMIT $4 OFFSET $5`,

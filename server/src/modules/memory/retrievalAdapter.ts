@@ -44,9 +44,22 @@ type MemoryProjectableFields = Pick<
   "scope_type" | "visibility" | "access_level" | "owner_user_id" | "sensitivity_level"
 >;
 
-// Scope validity is enforced by the canonical table CHECK; projection only
-// needs the visibility/access vocabulary checks below.
-const MEMORY_RETRIEVAL_PROJECTABLE_SQL = "TRUE";
+/**
+ * Scope validity is enforced by the canonical table CHECK; what this excludes
+ * is the `agent` scope.
+ *
+ * Those entries are private and owned by the Agent's owner, so the canonical
+ * read gate would happily return them to that person — and memory retrieval is
+ * run *as* the instructing person from inside a turn. A note learned in a
+ * limited Room would come back in a search made from any other Room and be
+ * spoken there, walking straight past the audience filter the whole scope
+ * exists for. The Agent's own memory reaches the Agent through one door only,
+ * `memory/agentMemoryDelivery.ts`, which applies that filter in its own
+ * candidate query ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
+ */
+const memoryRetrievalProjectableSql = (alias?: string) =>
+  `${alias ? `${alias}.` : ""}scope_type <> 'agent'`;
+const MEMORY_RETRIEVAL_PROJECTABLE_SQL = memoryRetrievalProjectableSql();
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 
@@ -140,6 +153,7 @@ async function revalidateMemoryMany(
         AND me.id = ANY($2::varchar[])
         AND me.status = 'active'
         AND me.deleted_at IS NULL
+        AND ${memoryRetrievalProjectableSql("me")}
         AND ${contentReadSql("memory", "me", "$3")}
         AND ${memorySensitivityReadSql("me", "$3")}`,
     [spaceId, ids, viewerUserId],
@@ -177,7 +191,9 @@ function memoryIsoOrNull(value: Date | string | null | undefined): string | null
 }
 
 export function isMemoryRetrievalProjectable(row: MemoryProjectableFields): boolean {
-  return isContentVisibility(row.visibility) && isContentAccessLevel(row.access_level);
+  return row.scope_type !== "agent"
+    && isContentVisibility(row.visibility)
+    && isContentAccessLevel(row.access_level);
 }
 
 function uniqueIds(ids: readonly string[]): string[] {

@@ -42,6 +42,8 @@ export interface AgentProposalOrigin {
   agentId: string;
   runId: string;
   rationale: string;
+  /** Who asked, when that differs from who decides — see `requested_by_user_id`. */
+  instructedByUserId?: string | null;
 }
 
 /**
@@ -101,11 +103,13 @@ interface TargetMemoryRow extends MemoryAuthFields {
   title: string | null;
   content: string | null;
   project_id: string | null;
+  agent_id: string | null;
+  origin_room_id: string | null;
 }
 
 const TARGET_MEMORY_COLUMNS = `id, space_id, owner_user_id,
   scope_type, namespace, memory_type, title, content, visibility,
-  access_level, sensitivity_level, deleted_at, project_id`;
+  access_level, sensitivity_level, deleted_at, project_id, agent_id, origin_room_id`;
 
 const SENSITIVITY_LEVELS = new Set([
   "normal",
@@ -161,8 +165,26 @@ export class PgMemoryProposalRepository {
     const sensitivity = normalizeSensitivity(command.sensitivity_level ?? "normal");
     validateCreateCommand(command, visibility, sensitivity);
 
+    // An agent-scope entry is about the Agent, not about a person, so it has
+    // no subject — and its owner is the Agent's owner, which the caller
+    // supplies because only it knows whose Agent this is.
     const subjectUserId = command.subject_user_id ?? (scope === "user" ? userId : null);
     const ownerUserId = command.owner_user_id ?? null;
+    if (scope === "agent" && command.type === "persona" && command.agent_id) {
+      const active = await this.db.query<{ present: boolean }>(
+        `SELECT true AS present
+           FROM memory_entries
+          WHERE space_id = $1 AND agent_id = $2 AND scope_type = 'agent'
+            AND memory_type = 'persona' AND status = 'active' AND deleted_at IS NULL
+          LIMIT 1`,
+        [effectiveSpaceId, command.agent_id],
+      );
+      if (active.rows[0]) {
+        throw new MemoryProposalValidationError(
+          "This Agent already has an active persona; revise that persona instead of creating another one",
+        );
+      }
+    }
     const payload: Record<string, unknown> = {
       operation: "create",
       proposed_content: command.content,
@@ -185,6 +207,30 @@ export class PgMemoryProposalRepository {
     }
     if (command.project_id !== null && command.project_id !== undefined) {
       payload.project_id = command.project_id;
+    }
+    // Recorded for any scope, applied to the column only in the Agent's own
+    // (the placement CHECK forbids it elsewhere): when an Agent promotes one
+    // of its notes to Project Memory, where it learned it is what the person
+    // deciding needs to see, and dropping it would leave the proposal saying
+    // less than the Agent knew.
+    if (command.origin_room_id) payload.origin_room_id = command.origin_room_id;
+    if (scope === "agent") {
+      if (!command.agent_id) {
+        throw new MemoryProposalValidationError("agent memory requires the owning agent_id");
+      }
+      payload.agent_id = command.agent_id;
+      // The proposal is attributed to the Agent's owner, because they are who
+      // decides it — so who *asked* has to be recorded separately, or the
+      // owner's review surface shows a request they appear to have made
+      // themselves. Who asked is exactly the fact §5 wants them to weigh.
+      if (agentOrigin?.instructedByUserId) {
+        payload.requested_by_user_id = agentOrigin.instructedByUserId;
+      }
+      // Only this Agent's owner may accept it. Role is what proposal apply
+      // normally arbitrates on, and a Space owner or admin satisfies any role
+      // a persona proposal could require — which is exactly the person ADR
+      // 0003 §5 says must not be able to accept someone else's Agent's.
+      payload.required_owner_user_id = ownerUserId;
     }
 
     await this.enforceProposalCreate({
@@ -275,13 +321,57 @@ export class PgMemoryProposalRepository {
       payload.subject_user_id = changeData.subject_user_id;
     }
     if (changeData.scope !== undefined) {
+      // Never across the `agent` boundary. Moving a user-scope entry into the
+      // Agent's scope would let a person mint a persona for an Agent they do
+      // not own — the row already carries that Agent's id as provenance — and
+      // moving one out would take the Agent's own memory into a person's.
+      // Which scope an entry is in is settled when it is written.
+      if (changeData.scope === "agent" || target.scope_type === "agent") {
+        throw new MemoryProposalValidationError(
+          "an Agent's own memory cannot be moved into or out of the Agent scope",
+        );
+      }
       payload.target_scope = changeData.scope;
     }
     if (changeData.namespace !== undefined) {
       payload.target_namespace = changeData.namespace;
     }
     if (changeData.type !== undefined) {
+      // `persona` is reserved to the Agent scope by a database CHECK, and an
+      // agent-scope entry's type is what decides whether it is delivered
+      // everywhere. Neither is a person's to retype.
+      if (changeData.type === "persona" || target.scope_type === "agent") {
+        throw new MemoryProposalValidationError(
+          "an Agent's own memory keeps the kind it was written as",
+        );
+      }
       payload.memory_type = changeData.type;
+    }
+    if (target.scope_type === "agent") {
+      // An Agent proposes changes to its own memory only. The applier already
+      // refuses the direct write; without this, its fallback proposal would
+      // carry one Agent's revision of another's persona to the owner they
+      // share, and an accept would hand the entry's authorship across.
+      if (agentOrigin && agentOrigin.agentId !== target.agent_id) {
+        throw new MemoryProposalValidationError(
+          "an Agent may propose changes only to its own memory, not another Agent's",
+        );
+      }
+      payload.agent_id = target.agent_id;
+      payload.origin_room_id = target.origin_room_id;
+      // Who asked, when that differs from who decides. A persona that already
+      // exists is revised rather than created, so this is the common path, not
+      // the rare one — and without it the owner's review surface shows a
+      // proposal they appear to have made themselves.
+      if (agentOrigin?.instructedByUserId) {
+        payload.requested_by_user_id = agentOrigin.instructedByUserId;
+      }
+      // The same rule a create carries, and for the same reason: decided by
+      // the Agent's owner alone, by identity and not by role. Setting it only
+      // on creates left every persona *revision* decidable by any Space
+      // owner or admin — including the member who asked for it, which is the
+      // one person ADR 0003 §5 names.
+      payload.required_owner_user_id = target.owner_user_id;
     }
     validateUpdatePayload(payload);
 
@@ -544,10 +634,10 @@ function validateCreateCommand(
   }
 }
 
-function normalizeMemoryScope(value: string): "user" | "project" {
+function normalizeMemoryScope(value: string): "user" | "project" | "agent" {
   const scope = value.toLowerCase();
-  if (scope !== "user" && scope !== "project") {
-    throw new MemoryProposalValidationError("memory scope must be user or project");
+  if (scope !== "user" && scope !== "project" && scope !== "agent") {
+    throw new MemoryProposalValidationError("memory scope must be user, project or agent");
   }
   return scope;
 }

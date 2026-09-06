@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Activity, ChevronRight, FileText, FolderKanban, Loader2, PackageCheck, Search, Wrench, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { knowledgeApi, memoryApi, spacesApi } from '../../api/client'
+import { agentsApi, knowledgeApi, memoryApi, spacesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { useAuth } from '../../contexts/AuthContext'
 import { errMsg } from '../../lib/utils'
@@ -15,6 +15,7 @@ import type {
   ClaimCandidatePacketCreateResponse,
   RetrievalSearchResult,
   SpaceRetrievalSettings,
+  AgentOut,
 } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -52,6 +53,11 @@ export default function MemoriesPage() {
   // A conversation outside a Room has no session; its paused turn links by Run.
   const runFilter = searchParams.get('run') ?? ''
   const writtenByFilter = (searchParams.get('created_by') ?? 'all') as 'all' | 'agent' | 'user'
+  // Whose memory, as opposed to who wrote it. `agent` is what the Agents know
+  // about themselves and about a Room (ADR 0003 §4) — the owner's to read,
+  // archive and restore, and kept apart from what is remembered about a person.
+  const scopeFilter = searchParams.get('scope') ?? ''
+  const agentFilter = searchParams.get('agent_id') ?? ''
   // "Since I last looked" (ADR 0003 §3). A stamped instant rather than a
   // rolling window, so the list does not shift under the person while they
   // are reading it.
@@ -59,6 +65,7 @@ export default function MemoriesPage() {
   const statusFilter = searchParams.get('status') ?? 'active'
 
   const [memories, setMemories] = useState<Memory[]>([])
+  const [agents, setAgents] = useState<AgentOut[]>([])
   const [form, setForm]         = useState<MemoryForm>(EMPTY_FORM)
   const [query, setQuery]       = useState('')
   const [searchResults, setSearchResults] = useState<RetrievalSearchResult[] | null>(null)
@@ -88,7 +95,9 @@ export default function MemoriesPage() {
     try {
       setMemories((await memoryApi.list({
         status: statusFilter,
+        scope: scopeFilter || undefined,
         project_id: projectFilter || undefined,
+        agent_id: agentFilter || undefined,
         created_by: writtenByFilter === 'all' ? undefined : writtenByFilter,
         since: sinceFilter || undefined,
         session: sessionFilter || undefined,
@@ -96,9 +105,16 @@ export default function MemoriesPage() {
       })).items)
     }
     catch (e) { toast.error(errMsg(e)) }
-  }, [projectFilter, activeSpaceId, statusFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter])
+  }, [projectFilter, agentFilter, activeSpaceId, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (!activeSpaceId) { setAgents([]); return }
+    void agentsApi.list({ limit: '200', status: 'active,disabled,inactive' })
+      .then(setAgents)
+      .catch(() => setAgents([]))
+  }, [activeSpaceId])
 
   useEffect(() => {
     if (!activeSpaceId) {
@@ -211,6 +227,14 @@ export default function MemoriesPage() {
     try {
       const result = await memoryApi.delete(id)
       toast(isMemory(result) ? 'Archived' : 'Archive proposal submitted')
+      await load()
+    } catch (e) { toast.error(errMsg(e)) }
+  }
+
+  async function revertMemory(id: string) {
+    try {
+      await memoryApi.revert(id)
+      toast('Put the previous version back')
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -532,6 +556,41 @@ export default function MemoriesPage() {
                 ))}
                 <Button
                   size="sm"
+                  variant={scopeFilter === 'agent' ? 'secondary' : 'ghost'}
+                  onClick={() => setSearchParams(previous => {
+                    if (scopeFilter === 'agent') {
+                      previous.delete('scope')
+                      previous.delete('agent_id')
+                    } else {
+                      previous.set('scope', 'agent')
+                    }
+                    return previous
+                  })}
+                  title="What your Agents have learned about themselves and about a Room"
+                >
+                  Agent memory
+                </Button>
+                <div className="min-w-[180px]">
+                  <Select
+                    value={agentFilter}
+                    options={[
+                      { value: '', label: 'All Agents' },
+                      ...agents.map(agent => ({ value: agent.id, label: agent.name })),
+                    ]}
+                    onChange={value => setSearchParams(previous => {
+                      if (value) {
+                        previous.set('agent_id', value)
+                        previous.set('scope', 'agent')
+                      } else {
+                        previous.delete('agent_id')
+                      }
+                      return previous
+                    })}
+                    ariaLabel="Filter memory by Agent"
+                  />
+                </div>
+                <Button
+                  size="sm"
                   variant={sinceFilter ? 'secondary' : 'ghost'}
                   onClick={() => setFilter(
                     'since',
@@ -647,12 +706,29 @@ export default function MemoriesPage() {
                         {m.title || 'Untitled memory'}
                       </Link>
                       {m.created_by?.startsWith('agent:') && (
-                        <Badge variant="outline" className="ml-2">Agent</Badge>
+                        <Badge variant="outline" className="ml-2">
+                          {agents.find(agent => agent.id === m.agent_id)?.name ?? 'Agent'}
+                        </Badge>
                       )}
                       {m.content && <p className="text-xs text-muted-foreground truncate mt-0.5">{m.content}</p>}
                     </TableCell>
                     <TableCell><Badge variant="secondary">{m.type}</Badge></TableCell>
-                    <TableCell className="text-muted-foreground">{m.scope}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {m.scope}
+                      {m.scope === 'agent' && (
+                        // Where it may go back to. A persona has no origin
+                        // Room and reaches every conversation this Agent is
+                        // in; a note reaches only an audience its Room already
+                        // contained (ADR 0003 §4).
+                        <span className="block text-xs">
+                          {m.type === 'persona'
+                            ? 'everywhere'
+                            : m.origin_room_id
+                              ? 'one Room'
+                              : 'direct chat only'}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell><ScopeBadge visibility={m.visibility} /></TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{m.namespace ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground">{m.importance.toFixed(1)}</TableCell>
@@ -665,7 +741,12 @@ export default function MemoriesPage() {
                         ? (m.owner_user_id === currentUser?.id
                           ? <Button variant="outline" size="sm" onClick={() => restoreMemory(m.id)}>Restore</Button>
                           : null)
-                        : <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)}>×</Button>}
+                        : m.type === 'persona' && m.supersedes_memory_id && m.owner_user_id === currentUser?.id
+                          // An Agent must have some persona, so the reversal
+                          // is one action: retire this version, bring back the
+                          // one it replaced.
+                          ? <Button variant="outline" size="sm" onClick={() => revertMemory(m.id)}>Undo change</Button>
+                          : <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)}>×</Button>}
                     </TableCell>
                   </TableRow>
                 ))}

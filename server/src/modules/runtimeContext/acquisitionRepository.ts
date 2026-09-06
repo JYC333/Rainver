@@ -203,6 +203,11 @@ export class PgRuntimeContextAcquisitionRepository {
       "sensitivity_level=ANY($3)",
       "status='active'",
       "deleted_at IS NULL",
+      // The grant is over the person's own Memory. An Agent's memory of itself
+      // and of a Room happens to be owned by that person too
+      // (ADR 0003 §4), but it is not theirs to disclose across a Space, and
+      // even the counts and types here would say something about it.
+      "scope_type <> 'agent'",
     ];
     addArrayFilter(where, params, "memory_layer", filter.memory_layers);
     addArrayFilter(where, params, "memory_type", filter.memory_types);

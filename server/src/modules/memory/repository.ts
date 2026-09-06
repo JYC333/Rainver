@@ -14,7 +14,7 @@ import { accessibleProjectIds, canAccessProject } from "./projectAccess.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
-import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
+import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
 
 export interface QueryResult<Row> {
@@ -35,6 +35,8 @@ export interface MemoryListFilters {
   memoryType?: string | null;
   status?: string | null;
   projectId?: string | null;
+  /** One Agent's own scope; the normal read gate still proves ownership. */
+  agentId?: string | null;
   /**
    * Who wrote it. Reading what the Agents have been remembering is the
    * after-the-fact review ADR 0003 §2 put in place of approving each write,
@@ -69,7 +71,7 @@ export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id,
   sensitivity_level, last_confirmed_at, confidence, importance,
   source_id, created_by, created_at, updated_at, deleted_at, version, tags,
   memory_layer, source_trust, created_from_proposal_id,
-  root_memory_id, supersedes_memory_id, project_id`;
+  root_memory_id, supersedes_memory_id, project_id, agent_id, origin_room_id`;
 
 export interface MemoryRow extends MemoryAuthFields {
   id: string;
@@ -94,6 +96,8 @@ export interface MemoryRow extends MemoryAuthFields {
   root_memory_id: string | null;
   supersedes_memory_id: string | null;
   project_id: string | null;
+  agent_id: string | null;
+  origin_room_id: string | null;
 }
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
@@ -151,6 +155,11 @@ export class PgMemoryReadRepository {
       params.push(filters.projectId);
       where.push(`project_id = $${params.length}`);
     }
+    if (filters.agentId) {
+      params.push(filters.agentId);
+      where.push(`agent_id = $${params.length}`);
+      where.push(`scope_type = 'agent'`);
+    }
     if (filters.writtenBy === "agent") {
       where.push(`created_by LIKE 'agent:%'`);
     } else if (filters.writtenBy === "user") {
@@ -180,6 +189,7 @@ export class PgMemoryReadRepository {
     const userExpr = `$${params.length}`;
     where.push(contentReadSql("memory", "me", userExpr));
     where.push(memorySensitivityReadSql("me", userExpr));
+    where.push(memoryAgentScopeReadSql("me", userExpr));
     const result = await this.db.query<MemoryRow>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level
@@ -222,7 +232,8 @@ export class PgMemoryReadRepository {
          FROM memory_entries me
         WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL
           AND ${contentReadSql("memory", "me", "$3")}
-          AND ${memorySensitivityReadSql("me", "$3")}`,
+          AND ${memorySensitivityReadSql("me", "$3")}
+          AND ${memoryAgentScopeReadSql("me", "$3")}`,
       [memoryId, spaceId, userId],
     );
     const row = result.rows[0];
@@ -271,6 +282,7 @@ export class PgMemoryReadRepository {
     const userExpr = `$${params.length}`;
     where.push(contentReadSql("memory", "me", userExpr));
     where.push(memorySensitivityReadSql("me", userExpr));
+    where.push(memoryAgentScopeReadSql("me", userExpr));
     const result = await this.db.query<MemoryRow>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level
@@ -455,8 +467,8 @@ export class PgMemoryReadRepository {
  * redaction (shared by the read model and the apply accept-result builder). */
 export function serializeMemoryRow(row: MemoryRow, viewerUserId: string): MemoryOut {
   const redact = shouldRedactMemoryContent(row, viewerUserId);
-  if (row.scope_type !== "user" && row.scope_type !== "project") {
-    throw new MemoryReadValidationError("memory scope must be user or project");
+  if (row.scope_type !== "user" && row.scope_type !== "project" && row.scope_type !== "agent") {
+    throw new MemoryReadValidationError("memory scope must be user, project or agent");
   }
   return {
     id: row.id,
@@ -486,6 +498,11 @@ export function serializeMemoryRow(row: MemoryRow, viewerUserId: string): Memory
       created_from_proposal_id: row.created_from_proposal_id,
       root_memory_id: row.root_memory_id,
       supersedes_memory_id: row.supersedes_memory_id,
+      // The Agent an `agent`-scope entry belongs to, and the Room a note was
+      // learned in. The Memory page needs both to say whose memory this is and
+      // where it came from; elsewhere they are provenance and null.
+      agent_id: row.agent_id ?? null,
+      origin_room_id: row.origin_room_id ?? null,
       project_id: row.project_id,
     };
 }

@@ -147,6 +147,19 @@ export class ContentAccessService {
       if (update.visibility !== "space_shared" && !resource.owner_user_id) {
         throw new HttpError(422, "owner_user_id is required for private or selected-user content");
       }
+      // An Agent's own memory is private by construction and by database CHECK
+      // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md)
+      // §4): what it learned about itself and about a Room reaches a wider
+      // audience only by being promoted to Project Memory, which is a
+      // proposal. Refused here with a reason rather than letting the CHECK
+      // surface as an unmapped constraint error.
+      if (resourceType === "memory" && update.visibility !== "private"
+        && await this.isAgentScopeMemory(client, identity.spaceId, resourceId)) {
+        throw new HttpError(
+          422,
+          "An Agent's own memory stays private. Promote it to Project Memory instead of widening it.",
+        );
+      }
       if (update.project_id !== null && update.project_id !== resource.project_id) {
         throw new HttpError(422, "Moving content into another Project requires an explicit filing action");
       }
@@ -331,6 +344,15 @@ export class ContentAccessService {
       [spaceId, resourceId],
     );
     return result.rows[0] ?? null;
+  }
+
+  /** Whether this memory row is the Agent's own rather than a person's. */
+  private async isAgentScopeMemory(db: Queryable, spaceId: string, resourceId: string): Promise<boolean> {
+    const row = await db.query<{ scope_type: string }>(
+      `SELECT scope_type FROM memory_entries WHERE space_id = $1 AND id = $2 LIMIT 1`,
+      [spaceId, resourceId],
+    );
+    return row.rows[0]?.scope_type === "agent";
   }
 
   private async canManage(

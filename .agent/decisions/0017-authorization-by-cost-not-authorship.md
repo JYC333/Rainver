@@ -1,6 +1,6 @@
 # ADR 0017: Authorization Follows Cost, Reversibility, Exposure and Origin — Not Authorship
 
-Date: 2026-08-28
+Date: 2026-08-28 · revised 2026-09-06
 
 ## Status
 
@@ -37,6 +37,26 @@ An action that registers as a proposal must name, at its registration, which
 row of this table it falls under. An action that names none is not a proposal
 action.
 
+**One named exception, and only one: an Agent's persona entry.** A persona is
+rendered into that Agent's own prompt, so on its face it reads as
+self-modification — but it is a `memory_entries` row with Memory's versioning,
+provenance, archive and restore, so it belongs to the *second* row of this
+table — long-term belief, governed by
+[ADR 0003](0003-memory-proposal-flow.md) — and not to the first. That row
+defers to ADR 0003 for when the gate applies, and ADR 0003 §5 is where the
+answer is: a persona write is gated per instance in a `manual`-origin Run and
+is not gated in an unattended one. It is the only entry in this table for
+which the "and only when" above is read through the governing rule rather than
+applied to every write of that kind.
+
+The self-modification row keeps its meaning: capabilities, policies, and
+authored prompt artifacts, through the B20 / ADR 0009 capability lifecycle. A
+persona entry is none of those — it has no manifest, no code, no tests, and
+nothing about it enters that lifecycle. What makes the difference defensible is
+that ADR 0003 §5 gates it *harder* than authorship would in the case that
+matters here: a person in a turn cannot rewrite it directly, not even the
+owner.
+
 Explicit checkpoints placed by a plan or workflow author also remain binding:
 `plan_checkpoint` and `workflow_execution_checkpoint` are requested stops, not
 author-based default gates. `plan_review` is a direction gate and
@@ -54,6 +74,27 @@ proposal. Two mechanisms replace it:
   (scheduled, delegated from an unattended root, automated) is
   `require_approval`. `ruleUnattendedProjectWrite` enforces the origin boundary for writes in this
   class.
+
+  **The persona exception, and its reasoning.** An Agent's persona entry
+  ([ADR 0003](0003-memory-proposal-flow.md) §5) is the one write whose origin
+  test runs the other way round: a `manual` turn proposes it, an unattended
+  origin applies it. The rule above assumes a person in a conversation is the
+  authorization — which holds for a Project-internal write, whose reach is the
+  Project the person is already in. A persona is delivered in every Room and
+  every conversation this Agent has, so "a person asked in a turn" is exactly
+  the input that must not carry that reach: any member of any Room the Agent
+  sits in could otherwise rewrite what every other member's turns will see.
+  The unattended case is not a person's request at all — it is the Agent
+  concluding something about itself — and it is bounded by everything
+  ADR 0003 §4 and §5 require: one revision per Run, one active persona per
+  Agent, a record for the Agent's owner carrying what it replaced as well as
+  what it now says, and a one-step reversal that puts the previous version
+  back.
+
+  So the exemption is narrow by construction: it applies to `memory_type =
+  'persona'` on an `agent`-scope entry and to nothing else, and the policy
+  layer must scope it that narrowly rather than exempting `memory.write` as a
+  whole.
 - **Bounds.** Every fan-out and every spend has a limit set before the work
   runs, the overflow is queued or offered rather than refused, and the limit
   is visible in the message that announces the work. A decomposition creates
@@ -120,12 +161,18 @@ their class.
   match ADR 0003; ADR 0011 §6 defers to §4 above for what "needs a person"
   means; `architecture/SYSTEM_ACTIONS.md` restates its durable-writes section
   as the general rule.
+- `memory.write` stays in `ORIGIN_GATED_PROJECT_WRITES`. The persona exception
+  is expressed as a narrower condition inside that rule — a persona write on an
+  `agent`-scope entry — never by removing the action from the gated set, which
+  would relax the origin boundary for every other memory write with it.
 
 ## Non-goals
 
 - No change to ADR 0008, 0013, 0016, B19, B20, B43.
-- No automatic write from an unattended origin; origin gating is not
-  relaxed.
+- No automatic write from an unattended origin, with the single named
+  exception of an Agent's persona entry (§1, §2). Origin gating is not
+  otherwise relaxed, and the exception is not a precedent for a second one:
+  another write that wants it has to earn its own row here.
 - No inline editing of proposals in the Room (unchanged from the
   conversational-advancement decisions).
 
@@ -133,3 +180,13 @@ their class.
 
 A default may switch to direct application only after its review-after,
 undo, bounds, and origin checks exist. This condition applies to each write path.
+
+## Revision history
+
+- **2026-08-28** — original: the exhaustive hard-gate list, origin-and-bounds
+  governance for everything else, bounded spend, review-after with undo, and
+  `gatedProposalAction`.
+- **2026-09-06** — named the one exception to §1's self-modification row and
+  §2's origin gate: an Agent's persona entry, governed by ADR 0003 §5, with
+  the reasoning for the inversion and the requirement that the policy layer
+  scope the exemption to persona rather than to `memory.write`.

@@ -13,6 +13,10 @@ import {
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { ROOT_BRANCH_PATH, visibleMessagePathSql } from "./messagePath.js";
+import {
+  actionPreviewsForViewer,
+  loadChatActionPreviewsByRunIds,
+} from "../agents/projectChatActionPreviews.js";
 
 export interface CreateSessionInput {
   projectFolderId?: string | null;
@@ -260,6 +264,29 @@ export class PgSessionRepository {
     return result.rows.map(messageToOut);
   }
 
+  private async projectRoomActionPreviews(
+    spaceId: string,
+    userId: string,
+    messages: readonly MessageOut[],
+  ): Promise<MessageOut[]> {
+    const runIds = messages.flatMap((message) =>
+      message.role === "assistant" && message.run_id ? [message.run_id] : []);
+    const previewsByRun = await loadChatActionPreviewsByRunIds(this.db, spaceId, runIds);
+    return messages.map((message) => {
+      if (message.role !== "assistant" || !message.run_id) return message;
+      const visible = actionPreviewsForViewer(
+        previewsByRun.get(message.run_id) ?? [],
+        userId,
+      );
+      const metadata = { ...(message.metadata_json ?? {}) } as MessageMetadata;
+      // Replace, do not merge. This also removes owner-only previews persisted
+      // by older builds before the shared-message boundary was fixed.
+      if (visible.length > 0) metadata.action_previews = visible;
+      else delete metadata.action_previews;
+      return { ...message, metadata_json: metadata };
+    });
+  }
+
   async listRoomMessages(
     spaceId: string,
     userId: string,
@@ -275,7 +302,8 @@ export class PgSessionRepository {
       roomId,
     );
     if (!session) return null;
-    return this.loadMessagePage(spaceId, sessionId, limit, offset, true);
+    const messages = await this.loadMessagePage(spaceId, sessionId, limit, offset, true);
+    return this.projectRoomActionPreviews(spaceId, userId, messages);
   }
 
   /**
@@ -295,7 +323,7 @@ export class PgSessionRepository {
     const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
     if (!session) return null;
     const page = await this.loadMessagePage(spaceId, sessionId, 1, 0, true, messageId);
-    return page[0] ?? null;
+    return (await this.projectRoomActionPreviews(spaceId, userId, page))[0] ?? null;
   }
 
   /**

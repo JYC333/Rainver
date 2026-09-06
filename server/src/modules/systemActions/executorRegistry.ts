@@ -40,6 +40,14 @@ export function registerModuleSystemActionExecutors(
     registerProjectWorkSystemActionExecutors(executors, config, run);
     registerPolicySystemActionExecutors(executors, config, run);
     registerProposalDecisionExecutor(executors, config, run);
+  }
+  // Memory alone does not require an instructing person. An Agent's persona
+  // write is the one memory write an unattended Run may make
+  // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §5),
+  // and a family that is not registered at all cannot make it. Everything else
+  // the family can do still needs one, refused inside the executors with a
+  // reason rather than by being invisible.
+  if (granted.generic && config.databaseUrl) {
     registerMemoryDirectWriteExecutors(executors, config, run);
   }
   if (granted.researchAcquisition && config.databaseUrl && run.instructed_by_user_id) {

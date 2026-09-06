@@ -8,7 +8,7 @@ import { contentResourceDefinition } from "../src/modules/access/contentAccessRe
 import { contentAccessLevelSql, contentReadSql } from "../src/modules/access/contentAccessSql.js";
 import type { ContentAccessGrant, OversightMode } from "../src/modules/access/contentAccessTypes.js";
 import { memoryAccessDecision } from "../src/modules/memory/memoryReadAuth.js";
-import { memorySensitivityReadSql } from "../src/modules/memory/memorySensitivitySql.js";
+import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "../src/modules/memory/memorySensitivitySql.js";
 
 // The read predicate exists twice: once as SQL (contentAccessSql, used to filter
 // rows in-database) and once as a pure function (decideContentAccess, used where
@@ -138,6 +138,26 @@ async function seedHighlyRestrictedMemory(): Promise<string> {
   return id;
 }
 
+async function seedAgentScopeMemory(): Promise<string> {
+  const id = randomUUID();
+  const agentId = randomUUID();
+  await db.pool.query(
+    `INSERT INTO agents (id, space_id, owner_user_id, name, status, created_at, updated_at, visibility)
+     VALUES ($1, $2, $3, 'Specialist', 'active', now(), now(), 'private')`,
+    [agentId, SPACE, OWNER],
+  );
+  await db.pool.query(
+    `INSERT INTO memory_entries
+       (id, space_id, scope_type, memory_type, content, status, owner_user_id, agent_id,
+        sensitivity_level, visibility, access_level, namespace, title, confidence, importance,
+        version, access_count, created_at, updated_at)
+     VALUES ($1, $2, 'agent', 'note', 'learned in the limited Room', 'active', $3, $4,
+             'normal', 'private', 'full', 'agent.default', 'note', 1, 0.5, 1, 0, now(), now())`,
+    [id, SPACE, OWNER, agentId],
+  );
+  return id;
+}
+
 async function memoryDecisionFromDb(userId: string, memoryId: string): Promise<"deny" | "summary" | "full"> {
   const definition = contentResourceDefinition("memory")!;
   const result = await db.pool.query<{ effective_access_level: string }>(
@@ -146,7 +166,8 @@ async function memoryDecisionFromDb(userId: string, memoryId: string): Promise<"
       WHERE me.space_id = $1
         AND me.id = $2
         AND ${contentReadSql("memory", "me", "$3")}
-        AND ${memorySensitivityReadSql("me", "$3")}`,
+        AND ${memorySensitivityReadSql("me", "$3")}
+        AND ${memoryAgentScopeReadSql("me", "$3")}`,
     [SPACE, memoryId, userId],
   );
   const level = result.rows[0]?.effective_access_level;
@@ -230,6 +251,40 @@ describe("content access SQL/in-memory equivalence", () => {
     expect(memoryDecision).toBe("full");
     expect(sqlDecision).toBe(memoryDecision);
   });
+
+  it.each(OVERSIGHT_MODES)(
+    "keeps an Agent's own memory owner-only under oversight_mode=%s",
+    async (oversightMode) => {
+      if (!db.available) return;
+      // The one place the SQL and the in-process gate depart from the general
+      // access model: an agent-scope note carries the Room it was learned in
+      // and reaches only that Room's audience, and oversight is not it
+      // (ADR 0003 §4, ADR 0018).
+      await seedSpace(oversightMode);
+      const id = await seedAgentScopeMemory();
+      const adminDecision = memoryAccessDecision(
+        {
+          id,
+          space_id: SPACE,
+          deleted_at: null,
+          sensitivity_level: "normal",
+          visibility: "private",
+          access_level: "full",
+          owner_user_id: OWNER,
+          scope_type: "agent",
+        },
+        {
+          spaceId: SPACE,
+          userId: ADMIN,
+          oversightLevel: expectedOversightLevel(oversightMode, ADMIN),
+        },
+      );
+      expect(adminDecision).toBe("deny");
+      expect(await memoryDecisionFromDb(ADMIN, id)).toBe(adminDecision);
+      expect(await memoryDecisionFromDb(OWNER, id)).toBe("full");
+    },
+    ACCESS_MATRIX_TIMEOUT_MS,
+  );
 
   it.each(OVERSIGHT_MODES)(
     "keeps highly_restricted memory owner-only unless oversight_mode=%s",

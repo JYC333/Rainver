@@ -6,6 +6,7 @@ import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSee
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { loadConfig } from "../src/config.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
+import { resolveRuntimeProfileScope, runtimeProfileKey } from "../src/modules/runs/remoteProviderBinding.js";
 import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
@@ -173,6 +174,260 @@ describe("host_threads owner constraints", () => {
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({ id: first.id, status: "closed" });
     expect(closed[0]?.pending_archive_at).toEqual(expect.any(String));
+  });
+
+  it("gives every Agent × container its own runtime profile, and the machine's own to none of them", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // The leak this closes: `profiles/<adapter>/<provider>` was shared by every
+    // run with that adapter and provider on a machine, and an unbound run had
+    // no profile at all, so it read the machine's own `~/.claude`. Two Agents
+    // in one Room and one Agent in two Rooms are the two ways that mixed what
+    // a vendor CLI remembers.
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const otherVersion = "99999999-9999-4999-8999-999999999999";
+    const otherConversation = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    await seedAgentWithVersion(db.pool, {
+      agent: otherAgent, version: otherVersion, space: SPACE, owner: OWNER, name: "Second Agent",
+    });
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, project_id, room_id, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', now(), now())`,
+      [otherConversation, SPACE, PROJECT, roomId],
+    );
+    const repository = new PgHostThreadRepository(db.pool);
+    const threads = [] as Array<{ id: string; agentId: string }>;
+    for (const [agentId, sessionId] of [
+      [AGENT, CONVERSATION], [otherAgent, CONVERSATION],
+      [AGENT, otherConversation], [otherAgent, otherConversation],
+    ] as const) {
+      const thread = await repository.getOrCreateForConversationAgent({
+        executionHostId: HOST,
+        workspaceMode: "managed",
+        spaceId: SPACE,
+        sessionId,
+        agentId,
+        adapterType: "claude_code",
+        runtimeInstallation: "own",
+        createdByUserId: OWNER,
+      });
+      threads.push({ id: thread.id, agentId });
+    }
+    const keys = new Set<string>();
+    for (const thread of threads) {
+      const scope = await resolveRuntimeProfileScope(
+        db.pool,
+        { agent_id: thread.agentId, host_task_thread_id: thread.id },
+        LOCATION,
+      );
+      expect(scope.container_kind).toBe("conversation");
+      keys.add(runtimeProfileKey(scope, "claude_code", null));
+    }
+    // Two Agents × two Conversations: four directories, no overlap.
+    expect(keys.size).toBe(4);
+    for (const key of keys) expect(key).toMatch(/^agents\/[^/]+\/conversation\/[^/]+\/claude_code\/ambient$/);
+
+    // Direct chat is keyed by the owner; a run with no thread falls back to the
+    // Location, which is what its vendor session already belongs to.
+    const direct = await repository.getOrCreateForDirect({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      agentId: AGENT,
+      userId: OWNER,
+      adapterType: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: direct.id }, LOCATION))
+      .resolves.toEqual({ agent_id: AGENT, container_kind: "direct", container_id: OWNER });
+    await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: null }, LOCATION))
+      .resolves.toEqual({ agent_id: AGENT, container_kind: "location", container_id: LOCATION });
+    // No container at all is a caller that skipped resolution. Proceeding would
+    // hand the run the machine's own state root by another name.
+    await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: null }, null))
+      .rejects.toThrow(/runtime profile has no container/);
+
+    // A Run whose Agent is not the thread's would write into another Agent's
+    // profile and archive the wrong one. The two are the same on every path
+    // that creates a thread, so this fails loudly rather than failing open —
+    // the boundary is the whole point.
+    await expect(resolveRuntimeProfileScope(db.pool, { agent_id: otherAgent, host_task_thread_id: direct.id }, LOCATION))
+      .rejects.toThrow(/belongs to Agent/);
+  });
+
+  it("archives a departing Agent's profile while the Conversation cwd another Agent uses stays", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const otherVersion = "99999999-9999-4999-8999-999999999999";
+    await seedAgentWithVersion(db.pool, {
+      agent: otherAgent, version: otherVersion, space: SPACE, owner: OWNER, name: "Second Agent",
+    });
+    const repository = new PgHostThreadRepository(db.pool);
+    for (const agentId of [AGENT, otherAgent]) {
+      await repository.getOrCreateForConversationAgent({
+        executionHostId: HOST,
+        workspaceMode: "managed",
+        spaceId: SPACE,
+        sessionId: CONVERSATION,
+        agentId,
+        adapterType: "claude_code",
+        runtimeInstallation: "own",
+        createdByUserId: OWNER,
+      });
+    }
+
+    // One Agent leaves while the other stays: its own CLI state has to go —
+    // otherwise it walks into the next Room — but the shared cwd belongs to
+    // the Agent still in the Room.
+    const first = await repository.closeConversationAgentForRoom(SPACE, roomId, AGENT);
+    expect(first).toHaveLength(1);
+    expect(first[0]?.pending_archive_at).toEqual(expect.any(String));
+    expect(first[0]?.include_workspace).toBe(false);
+    await expect(repository.listPendingManagedWorkspaceArchives(HOST))
+      .resolves.toEqual([expect.objectContaining({ agent_id: AGENT, include_workspace: false })]);
+
+    // The last one out takes the workspace with it.
+    const second = await repository.closeConversationAgentForRoom(SPACE, roomId, otherAgent);
+    expect(second[0]?.include_workspace).toBe(true);
+
+    const pending = await repository.listPendingManagedWorkspaceArchives(HOST);
+    expect(pending).toHaveLength(2);
+    for (const item of pending) await repository.acknowledgeManagedWorkspaceArchive(item.id);
+    await expect(repository.listPendingManagedWorkspaceArchives(HOST)).resolves.toEqual([]);
+  });
+
+  it("retires every vendor session an Agent has on one host when its profiles are cleared", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // The other half of `host-state/reset`: the profiles that held those
+    // sessions are gone from the machine, so a thread still believing it can
+    // resume one would fail on its next turn.
+    const repository = new PgHostThreadRepository(db.pool);
+    const conversation = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      adapterType: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    await db.pool.query(
+      `UPDATE host_threads SET vendor_session_id = 'vendor-1' WHERE id = $1`,
+      [conversation.id],
+    );
+
+    expect(await repository.retireAgentSessionsOnHost(AGENT, HOST)).toBe(1);
+
+    const after = await db.pool.query<{ status: string; vendor_session_id: string | null; retired: string[] }>(
+      `SELECT status, vendor_session_id, retired_vendor_session_ids AS retired FROM host_threads WHERE id = $1`,
+      [conversation.id],
+    );
+    expect(after.rows[0]).toMatchObject({ status: "session_reset", vendor_session_id: null });
+    // Kept, so ambient import can still tell the Agent's old sessions from the
+    // owner's own history on the same machine.
+    expect(after.rows[0]?.retired).toEqual(["vendor-1"]);
+  });
+
+  it("retires a Task thread's session too, though the thread carries no Agent", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // `ck_host_threads_owner` forces a Location-bound thread's `agent_id`
+    // null, but the profile its session lived in is keyed by the Agent that
+    // ran there and `host-state/reset` archives it. Matching only on the
+    // column would leave that thread resuming into nothing.
+    const repository = new PgHostThreadRepository(db.pool);
+    const taskThread = await repository.create({
+      workspaceLocationId: LOCATION,
+      taskId: TASK,
+      adapterType: "claude_code",
+      createdByUserId: OWNER,
+    });
+    await db.pool.query(
+      `UPDATE host_threads SET execution_host_id = $2, vendor_session_id = 'vendor-task' WHERE id = $1`,
+      [taskThread.id, HOST],
+    );
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                         owner_user_id, visibility, host_task_thread_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', $6, now(), now())`,
+      [randomUUID(), SPACE, AGENT, VERSION, OWNER, taskThread.id],
+    );
+
+    expect(await repository.retireAgentSessionsOnHost(AGENT, HOST)).toBe(1);
+
+    await expect(db.pool.query<{ status: string; vendor_session_id: string | null }>(
+      `SELECT status, vendor_session_id FROM host_threads WHERE id = $1`, [taskThread.id],
+    )).resolves.toMatchObject({ rows: [{ status: "session_reset", vendor_session_id: null }] });
+
+    // Another Agent's Task thread on the same machine is not this Agent's to
+    // reset.
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const otherVersion = "99999999-9999-4999-8999-999999999999";
+    await seedAgentWithVersion(db.pool, {
+      agent: otherAgent, version: otherVersion, space: SPACE, owner: OWNER, name: "Second Agent",
+    });
+    expect(await repository.retireAgentSessionsOnHost(otherAgent, HOST)).toBe(0);
+  });
+
+  it("retires a Task thread's session for the Agent that ran there last, not any Agent that ever did", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // The session lives in the profile of the Agent whose Run last used the
+    // thread (`resolveRuntimeProfileScope` keys a `location` container by the
+    // Run's Agent). Resetting an earlier Agent must not retire a session that
+    // now lives in another Agent's untouched profile.
+    const repository = new PgHostThreadRepository(db.pool);
+    const taskThread = await repository.create({
+      workspaceLocationId: LOCATION, taskId: TASK, adapterType: "claude_code", createdByUserId: OWNER,
+    });
+    await db.pool.query(
+      `UPDATE host_threads SET execution_host_id = $2, vendor_session_id = 'vendor-task' WHERE id = $1`,
+      [taskThread.id, HOST],
+    );
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const otherVersion = "99999999-9999-4999-8999-999999999999";
+    await seedAgentWithVersion(db.pool, {
+      agent: otherAgent, version: otherVersion, space: SPACE, owner: OWNER, name: "Second Agent",
+    });
+    for (const [agent, version, when] of [[AGENT, VERSION, "now() - interval '1 hour'"], [otherAgent, otherVersion, "now()"]] as const) {
+      await db.pool.query(
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                           owner_user_id, visibility, host_task_thread_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', $6, ${when}, ${when})`,
+        [randomUUID(), SPACE, agent, version, OWNER, taskThread.id],
+      );
+    }
+
+    expect(await repository.retireAgentSessionsOnHost(AGENT, HOST)).toBe(0);
+    await expect(db.pool.query<{ vendor_session_id: string | null }>(
+      `SELECT vendor_session_id FROM host_threads WHERE id = $1`, [taskThread.id],
+    )).resolves.toMatchObject({ rows: [{ vendor_session_id: "vendor-task" }] });
+    expect(await repository.retireAgentSessionsOnHost(otherAgent, HOST)).toBe(1);
+  });
+
+  it("retires a Location thread's session when the next Run is another Agent's, and nothing else's", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // Task admission calls this when the dispatching Agent differs from the
+    // one whose Run last used the thread: the session is in that Agent's
+    // profile and cannot be resumed from the new one, so it is retired as a
+    // recorded decision rather than failing on the next turn.
+    const repository = new PgHostThreadRepository(db.pool);
+    const taskThread = await repository.create({
+      workspaceLocationId: LOCATION, taskId: TASK, adapterType: "claude_code", createdByUserId: OWNER,
+    });
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-task' WHERE id = $1`, [taskThread.id]);
+
+    expect(await repository.retireLocationSessionForAgentChange(taskThread.id)).toBe(true);
+    await expect(db.pool.query<{ status: string; vendor_session_id: string | null; retired_vendor_session_ids: string[] }>(
+      `SELECT status, vendor_session_id, retired_vendor_session_ids FROM host_threads WHERE id = $1`, [taskThread.id],
+    )).resolves.toMatchObject({
+      rows: [{ status: "session_reset", vendor_session_id: null, retired_vendor_session_ids: ["vendor-task"] }],
+    });
+
+    // A Conversation thread is an Agent's own and never changes Agent.
+    const conversation = await repository.createForConversationAgent({
+      spaceId: SPACE, sessionId: CONVERSATION, agentId: AGENT, executionHostId: HOST, workspaceMode: "location",
+      workspaceLocationId: LOCATION, adapterType: "claude_code", createdByUserId: OWNER,
+    });
+    expect(await repository.retireLocationSessionForAgentChange(conversation.id)).toBe(false);
   });
 
   it("persists the owner-only member policy and permits a host-bound profile without a provider", async (ctx) => {

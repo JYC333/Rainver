@@ -338,6 +338,10 @@ async function loadMemoryEntryKindUsageObjects(db: Queryable, spaceId: string, u
         AND me.status = 'active'
         AND me.deleted_at IS NULL
         AND me.sensitivity_level <> 'highly_restricted'
+        -- What an Agent knows about itself and about a Room is not the object
+        -- vocabulary of any person, and its memory_type values (persona, note,
+        -- lesson) would suggest profiles nobody authored (ADR 0003 section 4).
+        AND me.scope_type <> 'agent'
         AND ${contentReadSql("memory", "me", "$2")}
       ORDER BY me.id ASC`,
     [spaceId, userId],

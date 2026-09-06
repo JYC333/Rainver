@@ -10,6 +10,8 @@ import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
 import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
 import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
 import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProviderBindingRepository.js";
+import type { HostLaunchProviderBinding } from "@rainver/protocol";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
 import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
 
@@ -19,36 +21,217 @@ import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
  * environment. Every Codex-TOML or OpenCode-JSON decision stays here, next to
  * the server-host path that already makes it — one implementation, not two
  * that drift.
+ *
+ * The wire contract owns the shape; this alias is what the rest of the remote
+ * path calls it. Every host-bound Agent run carries one, bound or not.
  */
-export interface RemoteProviderBindingFrame {
-  /**
-   * Which profile directory on the executing machine this run's runtime uses,
-   * as `<adapter_type>/<provider_id>`.
-   *
-   * The scope is deliberately *not* the run. A CLI's conversation state lives
-   * inside the profile — Claude Code keeps its session transcripts under
-   * `CLAUDE_CONFIG_DIR` — so a per-run profile is deleted along with the
-   * session the next turn is about to resume, and every turn after the first
-   * fails with the runtime reporting no such conversation. Keying by adapter
-   * and provider keeps a conversation resumable for as long as its backend
-   * does not change, and makes changing the backend start a fresh session
-   * rather than resume one whose context another vendor's model produced.
-   */
-  profile_key: string;
-  env: Record<string, string>;
-  profile_env: Record<string, string>;
-  /**
-   * `contents` may contain `PROFILE_ROOT_PLACEHOLDER`, which the daemon
-   * replaces with the absolute profile directory — Codex's `config.toml` needs
-   * an absolute path to its own model catalog, and only the executing machine
-   * knows where that is. `escape` says how to encode the substituted path for
-   * the file's own syntax: a Windows root inside a TOML basic string would
-   * otherwise produce invalid escapes.
-   */
-  files: Array<{ relative_path: string; contents: string; escape?: "toml_basic_string" }>;
+export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
+
+/**
+ * Which Agent, in which container, this run's CLI profile belongs to.
+ *
+ * The scope is deliberately *not* the run. A CLI's conversation state lives
+ * inside the profile — Claude Code keeps its session transcripts under
+ * `CLAUDE_CONFIG_DIR` — so a per-run profile is deleted along with the
+ * session the next turn is about to resume, and every turn after the first
+ * fails with the runtime reporting no such conversation.
+ *
+ * It is not machine-global either, which is what it used to be: keyed by
+ * adapter and provider alone, every Agent on a machine shared one login,
+ * one session store, and one pile of vendor auto-memory, and an unbound run
+ * simply used the machine's own `~/.claude`. Keying by Agent × container is
+ * what makes "the Agent is the memory boundary, the Conversation is the
+ * context boundary" true of the substrate as well as of Rainver's own
+ * Memory ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
+ *
+ * The container is the Conversation for a Room turn, the owner for a direct
+ * chat, and the WorkspaceLocation for everything else — a Task thread, an
+ * Automation, a Plan or Workflow node, an evolution run whose Folder prefers
+ * a remote Location. Those last have no conversation to be the boundary of,
+ * and the Location is the thing their vendor session already belongs to.
+ */
+export interface RuntimeProfileScope {
+  agent_id: string;
+  container_kind: "conversation" | "direct" | "location";
+  container_id: string;
 }
 
 export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
+
+/**
+ * Which Agent × container this run's profile belongs to.
+ *
+ * Read from `host_threads` when the Run has one, because that table is where
+ * the container identity actually lives: a Conversation thread is keyed
+ * `(session_id, agent_id)` and a direct-chat thread `(agent_id,
+ * container_user_id)`. The launch workspace is deliberately *not* the source —
+ * a Conversation pinned to a registered WorkspaceLocation has
+ * `workspace.kind = "location"` while still being a Conversation, and keying
+ * the profile off the workspace would put two Rooms on one machine back into
+ * one directory.
+ *
+ * Without a thread there is no conversation to be the boundary of, so the
+ * Location is: an Automation, a Room root run, a Plan or Workflow node, and an
+ * evolution run whose Folder prefers a remote Location all reach the host this
+ * way, and their vendor session already belongs to that Location.
+ */
+export async function resolveRuntimeProfileScope(
+  db: Queryable,
+  run: { agent_id: string; host_task_thread_id?: string | null },
+  workspaceLocationId: string | null,
+): Promise<RuntimeProfileScope> {
+  if (run.host_task_thread_id) {
+    const thread = await db.query<{
+      agent_id: string | null;
+      container_kind: string | null;
+      container_id: string | null;
+    }>(
+      `SELECT agent_id, container_kind,
+              CASE WHEN container_kind = 'direct' THEN container_user_id
+                   WHEN container_kind = 'conversation' THEN session_id
+                   ELSE workspace_location_id END AS container_id
+         FROM host_threads WHERE id = $1 LIMIT 1`,
+      [run.host_task_thread_id],
+    );
+    const row = thread.rows[0];
+    if (row?.container_id && (row.container_kind === "direct" || row.container_kind === "conversation")) {
+      // The thread's Agent and the Run's are the same on every path that
+      // creates one, and the archive keys off the thread's column — so a
+      // divergence would write this run into another Agent's profile and
+      // archive the wrong one. Enforced rather than assumed: failing open here
+      // crosses the boundary this whole phase exists to draw.
+      if (row.agent_id && row.agent_id !== run.agent_id) {
+        throw new RemoteProviderBindingError(
+          "runtime_profile_agent_mismatch",
+          `Host thread ${run.host_task_thread_id} belongs to Agent ${row.agent_id}, but this run is Agent ${run.agent_id}.`,
+        );
+      }
+      return {
+        agent_id: row.agent_id ?? run.agent_id,
+        container_kind: row.container_kind,
+        container_id: row.container_id,
+      };
+    }
+    if (row?.container_id) {
+      return { agent_id: run.agent_id, container_kind: "location", container_id: row.container_id };
+    }
+  }
+  if (!workspaceLocationId) {
+    // Every remote dispatch is workspace-bound (hosts.md, phase 2 C9), so this
+    // is a caller that skipped resolution rather than a legitimate shape.
+    // Failing here is the point: proceeding would silently hand the run the
+    // machine's own `~/.claude`, which is what this key exists to prevent.
+    throw new RemoteProviderBindingError(
+      "runtime_profile_scope_unresolved",
+      "This run has neither a host thread nor a WorkspaceLocation, so its runtime profile has no container.",
+    );
+  }
+  return { agent_id: run.agent_id, container_kind: "location", container_id: workspaceLocationId };
+}
+
+/**
+ * The profile directory this run's runtime uses, as a `/`-separated key the
+ * daemon validates segment by segment before building a path from it.
+ *
+ * `ambient` rather than an empty segment for a run with no ModelProvider: the
+ * machine's own login is a real backend choice, and it gets its own directory
+ * beside the bound ones so that switching a Conversation between a
+ * subscription login and a ModelProvider starts a fresh vendor session rather
+ * than resuming one whose context another backend produced.
+ */
+export function runtimeProfileKey(
+  scope: RuntimeProfileScope,
+  adapterType: string,
+  providerId: string | null,
+): string {
+  return [
+    "agents",
+    scope.agent_id,
+    scope.container_kind,
+    scope.container_id,
+    adapterType,
+    providerId ?? "ambient",
+  ].join("/");
+}
+
+/**
+ * The profile frame for a run with no ModelProvider binding.
+ *
+ * There used to be none: an unbound run was launched with the machine's own
+ * environment, so its CLI read `~/.claude` — one login, one session store and
+ * one pile of vendor auto-memory shared by every Agent on the machine. This
+ * gives it the same profile a bound run gets, minus the lease: no `files`, no
+ * `env`, only the state-root variables and a link to the one credential file
+ * this installation was logged in with.
+ *
+ * The link, rather than a token in the environment: passing the credential
+ * through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean Rainver read
+ * a credential and injected it into a subprocess, which is the shape
+ * [ADR 0008](../../../../.agent/decisions/0008-credential-channel-isolation.md)
+ * forbids. With a link the CLI opens its own file and neither the server nor
+ * the daemon ever holds the bytes.
+ */
+export function buildUnboundRuntimeProfile(
+  adapterType: string,
+  scope: RuntimeProfileScope,
+): RemoteProviderBindingFrame {
+  const login = getRuntimeAdapterSpec(adapterType)?.credentials?.login ?? null;
+  // A runtime profile can replace the machine's state root only when its login
+  // can travel with it. Running without that contract would put every Agent on
+  // the managed installation's one session/auto-memory tree, contradicting
+  // B68. Fail closed until the registry entry declares the login boundary.
+  if (!login) {
+    throw new RemoteProviderBindingError(
+      "runtime_profile_isolation_unsupported",
+      `Runtime adapter '${adapterType}' does not declare a login/state-root boundary, so Rainver cannot isolate its CLI state by Agent.`,
+    );
+  }
+  return {
+    profile_key: runtimeProfileKey(scope, adapterType, null),
+    env: {},
+    profile_env: profileStateEnv(adapterType),
+    files: [],
+    credential_source: "host_login",
+    login_link: { home_subdir: login.home_subdir, credential_file: login.credential_file },
+  };
+}
+
+/**
+ * Where a runtime on **this machine's own login** keeps its state, as
+ * profile-relative paths the daemon resolves.
+ *
+ * Deliberately **not** `HOME`. A bound run gets `HOME: "."` because B67 wants
+ * the machine contributing nothing at all, and pays for it by losing
+ * `~/.gitconfig` and `~/.ssh` — a cost that phase accepted for bound runs and
+ * recorded. An unbound run must not pay it: a Task run on a paired machine
+ * commits and pushes inside a registered Location, and moving its `HOME` would
+ * break `git commit` on the author identity and `git push` on the user's ssh
+ * config, for runs that worked the day before.
+ *
+ * Each runtime names its own state root instead, and each of these is the
+ * variable that runtime's own binding already uses:
+ *
+ * - Claude Code — `CLAUDE_CONFIG_DIR`, which holds both its session
+ *   transcripts and the `.credentials.json` the login link lands on.
+ * - Codex — `CODEX_HOME`, likewise for `sessions/` and `auth.json`.
+ * - OpenCode — the XDG roots. Its data directory is `$XDG_DATA_HOME/opencode`,
+ *   falling back to `HOME/.local/share/opencode`, which is why the bound path
+ *   redirects `HOME`: `XDG_DATA_HOME` is not on B67's allowlist so there is
+ *   nothing to point. Here there is. **This is the one state root not verified
+ *   on a real host** — if OpenCode ignores `XDG_DATA_HOME`, its state stays
+ *   machine-global, which is no worse than before this phase but is not the
+ *   isolation this claims. Recorded in the deferred register.
+ */
+function profileStateEnv(adapterType: string): Record<string, string> {
+  if (adapterType === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };
+  if (adapterType === "codex_cli") return { CODEX_HOME: ".codex" };
+  return {
+    XDG_DATA_HOME: ".local/share",
+    XDG_CONFIG_HOME: ".config",
+    XDG_STATE_HOME: ".local/state",
+    XDG_CACHE_HOME: ".cache",
+  };
+}
 
 /**
  * `model_override_json.source` written when the remote path actually bound a
@@ -216,6 +399,7 @@ export async function buildRemoteProviderBinding(input: {
   hostId: string;
   adapterType: string;
   binding: ResolvedRemoteBinding;
+  scope: RuntimeProfileScope;
   ttlSeconds: number;
   leaseRegistry?: ProviderProxyLeaseRegistry;
   db: Queryable;
@@ -313,6 +497,7 @@ export async function buildRemoteProviderBinding(input: {
       frame: bindingFrame({
         adapterType: input.adapterType,
         providerId: input.binding.provider_id,
+        scope: input.scope,
         leaseUrl,
         leaseToken: lease.token,
         model,
@@ -369,16 +554,23 @@ export function boundAcpModelId(
 function bindingFrame(input: {
   adapterType: string;
   providerId: string;
+  scope: RuntimeProfileScope;
   leaseUrl: string;
   leaseToken: string;
   model: string | null;
   providerName: string;
   availableModels: string[];
 }): RemoteProviderBindingFrame {
-  // Both halves are already constrained — the adapter type comes from the
-  // runtime-adapter catalog and the provider id is a generated identifier —
-  // and the daemon validates the shape again before it builds a path from it.
-  const profile_key = `${input.adapterType}/${input.providerId}`;
+  // Every segment is already constrained — the adapter type comes from the
+  // runtime-adapter catalog, the ids are generated identifiers — and the
+  // daemon validates the shape again before it builds a path from it.
+  const profile_key = runtimeProfileKey(input.scope, input.adapterType, input.providerId);
+  // A bound run reaches its backend through the lease this frame carries, so
+  // it needs no login and gets no link: linking one in would put the machine's
+  // subscription credential inside a profile that is not using it. B67 applies
+  // in full, which is what `credential_source` tells the daemon.
+  const login_link = null;
+  const credential_source = "provider_lease" as const;
   if (input.adapterType === "claude_code") {
     // Claude has no binding-supplied config file; what it needs is an empty
     // profile so this machine's own login is not visible, plus the endpoint.
@@ -392,7 +584,7 @@ function bindingFrame(input: {
       env.ANTHROPIC_DEFAULT_OPUS_MODEL = input.model;
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = input.model;
     }
-    return { profile_key, env, profile_env: { HOME: ".", CLAUDE_CONFIG_DIR: ".claude" }, files: [] };
+    return { profile_key, env, profile_env: { HOME: ".", CLAUDE_CONFIG_DIR: ".claude" }, files: [], credential_source, login_link };
   }
 
   const model = input.model!;
@@ -402,6 +594,8 @@ function bindingFrame(input: {
       profile_key,
       env: {},
       profile_env: { HOME: ".", CODEX_HOME: ".codex" },
+      credential_source,
+      login_link,
       files: [
         {
           relative_path: catalogRelative,
@@ -440,6 +634,8 @@ function bindingFrame(input: {
     profile_key,
     env: {},
     profile_env: { HOME: ".", OPENCODE_CONFIG: "opencode.json" },
+    credential_source,
+    login_link,
     files: [{ relative_path: "opencode.json", contents: JSON.stringify(document, null, 2) }],
   };
 }

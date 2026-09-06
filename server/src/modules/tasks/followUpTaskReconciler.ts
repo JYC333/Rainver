@@ -2,7 +2,7 @@ import type { ServerConfig } from "../../config.js";
 import { ATTENDED_TRIGGER_ORIGINS } from "../policy/decisionCore.js";
 import { PgProposalApplyService } from "../proposals/applyService.js";
 import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry.js";
-import { effectiveTriggerOrigin } from "../systemActions/systemActionDispatcher.js";
+import { effectiveTriggerOrigin } from "../systemActions/effectiveTriggerOrigin.js";
 import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
 
 /**
@@ -49,7 +49,7 @@ export async function applyAttendedFollowUpTasks(
   run: RunRecord,
 ): Promise<void> {
   if (!config.databaseUrl || !run.instructed_by_user_id || run.mode === "dry_run") return;
-  const origin = await effectiveTriggerOrigin({ databaseUrl: config.databaseUrl }, run);
+  const origin = await effectiveTriggerOrigin(db, run);
   if (!ATTENDED_TRIGGER_ORIGINS.has(origin)) return;
 
   // Only into the Run's own Project. An output may name any Project in the

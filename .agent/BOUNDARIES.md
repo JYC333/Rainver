@@ -48,7 +48,7 @@ and remain subject to the Project ACL on every read.
 
 **B9** — Memory is scoped long-term context, not raw business data. Raw input must enter `activity_records` first.
 
-**B10** — The proposal applier is the only writer of active memory. An Agent's memory write applies directly only when it is a new version, carries full provenance, comes from a `manual`-origin session, and changes no reach — no wider visibility, no higher sensitivity, not about another person, not replacing human-authored content. Any write that changes reach, and any write from an unattended origin, is a proposal a person approves. There is no cap on how much may be remembered — the volume mechanism is a circuit breaker that pauses one person's writing in a session and raises it as a fault, never a queue of writes to approve. Memory is never a black box: every entry shows its provenance and version chain, and a person archives or restores their own directly, without a proposal.
+**B10** — The proposal applier is the only writer of active memory. An Agent's memory write applies directly only when it is a new version, carries full provenance, comes from a `manual`-origin session, and changes no reach — no wider visibility, no higher sensitivity, not about another person, not replacing human-authored content. Any write that changes reach, and any write from an unattended origin, is a proposal a person approves, **with one named exception: an Agent's persona entry**, below. Agent Memory (`scope_type = 'agent'`) is the Agent's own: `agent_id` owns it, a note carries the Room it was learned in — null only when the Run speaks in no Room and the person who set it going is the Agent's owner, which is the direct-chat case — and is delivered only to an audience that Room's active human members already contained, and widening a note means promotion to Project Memory as a proposal. A persona entry has no origin Room and is delivered everywhere by design, so it inverts the origin test for the reason ADR 0003 §5 and ADR 0017 §1–§2 give — a `manual` turn proposes it and only the Agent's owner may accept, an unattended origin applies it, recorded for the owner with what it replaced and reversed in one step — and it is the only place that inversion holds; ADR 0003 §4 records the residual Room crossing that follows as accepted and bounds it there. There is no cap on how much may be remembered — the volume mechanism is a circuit breaker that pauses one person's writing in a session and raises it as a fault, never a queue of writes to approve. Memory is never a black box: every entry shows its provenance and version chain, and a person archives or restores their own directly, without a proposal.
 
 **B11** — Successful reads of registered content are written to
 `content_access_logs` only when the viewer differs from the resource owner.
@@ -303,7 +303,9 @@ See [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-pla
 Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder. The
 server host keeps the existing strict isolation model (bubblewrap, PathPolicy,
 mount containment) unchanged; a remote (personal) host runs in trusted-host
-mode — native process spawn, no sandbox, the machine's own login state unless
+mode — native process spawn, no sandbox, the machine's own login state (from
+B68, reached through the Agent's own runtime profile rather than the machine's
+`HOME`) unless
 the Run carries an explicit ModelProvider binding (ADR 0016's 2026-08-24
 amendment; see B67) — and
 is not held to the server host's isolation invariants. Host liveness and
@@ -370,8 +372,19 @@ how a CLI runtime picks a backend:
 Two failures this prevents, both silent: a selected provider shadowed by
 machine state, so the Run's recorded `model_provider_id` is a lie; and a
 subscription login converted into API billing by a leftover key. A Run with
-**no** binding is not affected — it keeps using the machine's own login state,
-which on a remote host is the default.
+**no** binding is not affected by *this* rule — it keeps using the machine's
+own login state and the machine's own environment, including `HOME`, so its
+`~/.gitconfig`, `~/.ssh` and proxy variables stay reachable. What it does get
+is a **state root** of its own: every host-bound Agent run, bound or not, runs
+in a runtime profile keyed by Agent × container, reached through that
+runtime's own state-root variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, the XDG
+roots) rather than by moving `HOME`, with the machine's login linked into it.
+That is a memory boundary, not a backend one — see B68. What such a run does
+drop is the vendor credential variables **the launched runtime reads** that a
+machine may have lying around, for this rule's own second reason: a leftover
+key would bill an API account instead of the subscription the profile was just
+given. Per runtime, not one list for all, so a Task run on Claude Code keeps
+the `GOOGLE_*` variables its gcloud toolchain needs.
 
 Enforcement: on the server host the env allowlist
 (`server/src/modules/runs/cliSubprocessEnv.ts`) already implements the
@@ -380,13 +393,45 @@ passed either, whether or not a CLI login profile supplied a run-private one.
 On a remote host the daemon's spawn env and
 profile-directory selection are the enforcement point, and they implement this:
 for a bound run the daemon rebuilds the environment from an allowlist and
-points the runtime at a control-plane-provided profile it materializes and then
-removes. A run with no binding still inherits the machine's environment, which
-is the pre-existing behavior and the default. Neither path may be loosened into a wholesale
-ambient inherit for a bound Run. See
+points the runtime at a control-plane-provided profile. A run with no binding
+still inherits the machine's environment — minus only the vendor prefixes that
+would move a runtime's state root back out of its profile or hand it a
+credential the control plane did not choose (B68) — which is the pre-existing
+behavior and the default. Neither path may be loosened into
+a wholesale ambient inherit for a bound Run. See
 [ADR 0008](decisions/0008-credential-channel-isolation.md) for the channel
 isolation this protects and ADR 0016's 2026-08-24 amendment for the binding
 that makes it reachable remotely.
+
+**B68** — On an execution host, a vendor CLI's own state — its login, its
+session store, and whatever it remembers on its own — belongs to **one Agent in
+one container**, never to the machine. Every host-bound Agent run, bound to a
+ModelProvider or not, runs in a runtime profile keyed
+`agents/<agent_id>/<container_kind>/<container_id>/<adapter>/<provider|ambient>`,
+where the container is the Conversation for a Room turn, the owner for a direct
+chat, and the WorkspaceLocation otherwise. Two Agents on one machine, and one
+Agent in two Rooms, share none of it. The machine's login still serves them
+all: it stays in one login home per host × installation and is **linked** into
+each profile, and the profile is reached through that runtime's own state-root
+variable rather than by moving `HOME`, so an unbound run keeps the machine's
+git and ssh configuration — never copied, never passed through a subprocess
+environment
+([ADR 0008](decisions/0008-credential-channel-isolation.md)), and never read by
+the daemon. A host-bound runtime whose registry entry declares no login/state-
+root boundary is refused: running it in the managed installation's shared home
+would violate this boundary, while moving it into an empty profile would break
+authentication. Profiles are archived, not deleted, when an Agent
+leaves a container, and cleared on demand by
+`POST /api/v1/agents/:agentId/host-state/reset`.
+
+This is a *memory* boundary and it is the substrate half of
+[ADR 0003](decisions/0003-memory-proposal-flow.md) §6: Rainver owns an Agent's
+identity and its distilled Memory, and the CLI's own auto-memory stays
+delegated scratch that is never read, synchronized, reviewed, or promoted into
+`memory_entries`. Do not confuse it with B67, which is about which *backend* a
+run reaches: an unbound run keeps the machine's environment and B67's closing
+rule stands, minus the vendor credential variables that would spend an API
+account instead of the subscription this profile was given.
 
 ## Mobile Boundaries
 
@@ -548,6 +593,6 @@ code.
 
 ## Open-Source Boundary
 
-**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`) and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
+**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into `core/`; see B1/B2.

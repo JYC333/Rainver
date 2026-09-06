@@ -52,13 +52,23 @@ function loginSessionKey(hostId: string, adapterType: string, installation: stri
   return `${hostId}/${adapterType}/${installation}`;
 }
 
-function remoteEligibleAdapterTypes(): string[] {
+function remoteInstallableAdapterTypes(): string[] {
   return listRuntimeAdapterSpecs()
     .filter((spec) =>
       spec.runtime_kind === "local_cli"
       && spec.implementation_status === "implemented"
       && spec.invocation?.protocol === "acp")
     .map((spec) => spec.adapter_type);
+}
+
+function isRemoteDispatchEligible(adapterType: string): boolean {
+  const spec = getRuntimeAdapterSpec(adapterType);
+  return spec?.runtime_kind === "local_cli"
+    && spec.implementation_status === "implemented"
+    && spec.invocation?.protocol === "acp"
+    // An unbound host run needs this contract to give each Agent a separate
+    // state root without losing the managed installation's login.
+    && spec.credentials?.login !== undefined;
 }
 
 /**
@@ -161,6 +171,7 @@ async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: stri
         agent_id: item.agent_id,
         container_kind: item.container_kind,
         container_id: item.container_id,
+        include_workspace: item.include_workspace,
       },
     );
     if (result.ok) await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
@@ -262,7 +273,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  // Static catalog of remote-dispatch-eligible runtime adapters (P3, C6):
+  // Static catalog of remote runtime adapters and their dispatch eligibility
+  // (P3, C6):
   // the single source of truth the frontend reads instead of hardcoding the
   // same ACP-only eligibility rule the dispatch endpoint above already
   // enforces. No per-user or per-space data — session-authenticated only for
@@ -286,8 +298,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // reports for this adapter, when it differs from `command` (an ACP
         // adapter's own bundled executable vs. the vendor CLI it drives).
         capability_probe: spec.invocation?.remote_capability_probe ?? spec.executable!.command!,
-        remote_eligible: spec.implementation_status === "implemented"
-          && spec.invocation?.protocol === "acp",
+        remote_eligible: isRemoteDispatchEligible(spec.adapter_type),
         // A builtin adapter's managed copy comes from this ACP registry entry;
         // the registry picker hides it so the same agent is not offered twice.
         registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
@@ -315,6 +326,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       ? payload.adapter_type.trim()
       : null;
     if (adapterType) {
+      if (!isRemoteDispatchEligible(adapterType)) {
+        return reply.code(422).send({
+          detail: `Runtime adapter '${adapterType}' cannot isolate its login and state by Agent`,
+          code: "runtime_profile_isolation_unsupported",
+        });
+      }
       const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
       if (hostInstallationIds(host.rows[0]?.capabilities_json, adapterType).length === 0) {
         return reply.code(422).send({ detail: `This host reports no installation of '${adapterType}'` });
@@ -372,7 +389,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
     const adapterType = params(request).adapterType ?? "";
-    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
       return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
     }
     const probe = acpRuntimeProbe(adapterType);
@@ -411,7 +428,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!resolved) return reply;
     const { adapterType, installation } = params(request);
     if (!adapterType || !installation) return reply.code(400).send({ detail: "adapterType and installation are required" });
-    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
       return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
     }
     const probe = acpRuntimeProbe(adapterType);
@@ -520,7 +537,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!providerId) return reply.code(422).send({ detail: "model_provider_id is required" });
     const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : null;
 
-    if (!remoteEligibleAdapterTypes().includes(adapterType)) {
+    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
       return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
     }
     // An ACP-registry agent runs on the machine's own login only: nothing

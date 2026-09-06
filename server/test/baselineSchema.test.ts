@@ -203,7 +203,7 @@ describe("server runner applies the baseline schema", () => {
     expect(memoryEntries).toContain("created_from_proposal_id character varying(36)");
     expect(baseline).toContain("ck_memory_entries_memory_layer");
     expect(baseline).toContain("ck_memory_entries_scope_type");
-    expect(baseline).toContain("scope_type IN ('user', 'project')");
+    expect(baseline).toContain("scope_type IN ('user', 'project', 'agent')");
     expect(baseline).toContain("ix_memory_entries_memory_type");
     expect(baseline).toContain("memory_entries_created_from_proposal_id_fkey");
   });

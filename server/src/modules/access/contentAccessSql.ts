@@ -320,6 +320,44 @@ export function projectReadAccessSql(
 }
 
 /**
+ * Who may read what happens in a Room — the predicate behind ADR 0018's
+ * "the roster answers who may see these conversations", asked rather than
+ * described (`modules/rooms.md`, Thread References).
+ *
+ * For the **mainline** it is every Project reader: `getProjectMainline` enrols
+ * people on first open rather than syncing membership, so its
+ * `room_user_members` rows are only the subset who have opened the Project,
+ * and reading the roster would understate the audience — a missed disclosure
+ * to whoever opens it next. For a limited Room it is the roster **intersected
+ * with** Project readability: leaving a Project deletes the `project_members`
+ * row and leaves every `room_user_members` row active, so the roster alone
+ * counts people who can no longer read anything here.
+ */
+export function roomConversationReadAccessSql(
+  spaceExpr: string,
+  roomExpr: string,
+  userExpr: string,
+): string {
+  return `EXISTS (
+    SELECT 1
+      FROM rooms audience_room
+     WHERE audience_room.id = ${roomExpr}
+       AND audience_room.space_id = ${spaceExpr}
+       AND (
+         audience_room.is_mainline
+         OR EXISTS (
+           SELECT 1 FROM room_user_members audience_member
+            WHERE audience_member.space_id = audience_room.space_id
+              AND audience_member.room_id = audience_room.id
+              AND audience_member.user_id = ${userExpr}
+              AND audience_member.status = 'active'
+         )
+       )
+       AND ${projectReadAccessSql("audience_room.space_id", "audience_room.project_id", userExpr)}
+  )`;
+}
+
+/**
  * Room-backed Run outputs remain readable only while the viewer is an active
  * member of that Run's Room. Generic content grants are intentionally not
  * sufficient: a selected-user grant on an artifact or Proposal must not keep

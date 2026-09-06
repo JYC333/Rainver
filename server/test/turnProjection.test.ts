@@ -167,7 +167,7 @@ describe("turn projection", () => {
       [{
         action_id: "a1", tool_call_id: "c1", status: "proposed", proposal_id: "p1",
         proposal_type: "memory_create", title: "Remember it", summary: null,
-        risk_level: "low", scope: null,
+        risk_level: "low", scope: null, decidable_by_user_id: null,
       }],
     );
     expect(projected.parts.map((part) => part.type)).toEqual(["text", "action_preview"]);

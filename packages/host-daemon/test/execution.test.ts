@@ -61,6 +61,9 @@ function collectSend() {
   return { frames, send, complete };
 }
 
+const AGENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const CONV = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
 describe("handleLaunch", () => {
   it("streams stdout as output frames and reports a clean exit", async () => {
     const { frames, send, complete } = collectSend();
@@ -365,10 +368,12 @@ describe("handleLaunch with a provider binding", () => {
           launch_id: "launch-21",workspace_location_id: "folder-1",
           argv: ["sh", "-c", "printf '%s|%s|%s|%s\n' \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_AUTH_TOKEN\" \"${ANTHROPIC_API_KEY:-none}\" \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; cat \"$CODEX_HOME/config.toml\""],
           provider_binding: {
-            profile_key: "codex_cli/provider-1",
+            profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/location/cccccccc-cccc-4ccc-8ccc-cccccccccccc/codex_cli/provider-1",
             env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1", ANTHROPIC_AUTH_TOKEN: "lease-token" },
             profile_env: { HOME: ".", CODEX_HOME: ".codex" },
             files: [{ relative_path: ".codex/config.toml", contents: "catalog = \"{{RAINVER_RUN_PROFILE}}/x.json\"" }],
+            credential_source: "provider_lease",
+            login_link: null,
           },
         },
         send,
@@ -378,38 +383,128 @@ describe("handleLaunch with a provider binding", () => {
       const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
       expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none");
       // The placeholder is resolved against the real profile directory, which
-      // is keyed by adapter and provider rather than by this run.
-      expect(output).toMatch(/catalog = ".*\/profiles\/codex_cli\/provider-1\/x\.json"/);
+      // is keyed by Agent × container × adapter × backend rather than by this
+      // run — and never by adapter and provider alone, which is what two
+      // Agents on one machine used to share.
+      expect(output).toMatch(
+        new RegExp(`catalog = ".*/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/profiles/location/cccccccc-cccc-4ccc-8ccc-cccccccccccc/codex_cli/provider-1/x\\.json"`),
+      );
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     }
   });
 
-  it("leaves the machine's own environment alone for an unbound run", async () => {
+  it("moves an own-login run's state root into its profile without taking the machine away from it", async () => {
+    // Two rules meet here. The leak this profile key closes: a run on the
+    // machine's own login used to inherit the machine's `HOME`, so its CLI
+    // read `~/.claude` — one login, one session store and one pile of vendor
+    // auto-memory shared by every Agent on the machine. And B67's closing
+    // rule, which this must not break: such a run is "not affected", so the
+    // machine's own environment — proxies, toolchains, the `~/.gitconfig` a
+    // Task run commits with — is still there. Only the state root moves.
     const { frames, send, complete } = collectSend();
+    const machineHome = process.env.HOME;
+    process.env.RAINVER_TEST_TOOLCHAIN = "/opt/toolchain";
+    process.env.XDG_DATA_HOME = "/home/someone/.local/share";
     process.env.ANTHROPIC_API_KEY = "sk-this-machine";
     try {
       await handleLaunch(
         {
           run_id: "run-unbound",
           launch_id: "launch-22",workspace_location_id: "folder-1",
-          argv: ["sh", "-c", "printf '%s\n' \"${ANTHROPIC_API_KEY:-none}\""],
+          argv: ["sh", "-c", "printf '%s|%s|%s|%s|%s\n' \"$CLAUDE_CONFIG_DIR\" \"$HOME\" \"${RAINVER_TEST_TOOLCHAIN:-none}\" \"${XDG_DATA_HOME:-none}\" \"${ANTHROPIC_API_KEY:-none}\""],
+          provider_binding: {
+            profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/ambient",
+            env: {},
+            // The shape the server actually sends for this case: a state
+            // root, and deliberately no `HOME`.
+            profile_env: { CLAUDE_CONFIG_DIR: ".claude" },
+            files: [],
+            credential_source: "host_login",
+            login_link: null,
+          },
         },
         send,
         () => {},
       );
       await complete();
       const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
-      expect(output).toContain("sk-this-machine");
+      // The state root is the Agent's profile; `HOME` is still the machine's,
+      // so `~/.gitconfig` and `~/.ssh/config` reach a Task run that commits;
+      // the machine's toolchain survives; and the two that must not — a
+      // variable that would move the state root back out, and a credential
+      // that would bill an API account instead of the owner's subscription —
+      // are gone.
+      expect(output).toMatch(
+        new RegExp(`/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/profiles/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/ambient/\\.claude\\|${machineHome}\\|/opt/toolchain\\|none\\|none`),
+      );
     } finally {
+      delete process.env.RAINVER_TEST_TOOLCHAIN;
+      delete process.env.XDG_DATA_HOME;
       delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("drops the machine's vendor keys for a runtime that keeps its own state root, and writes no profile", async () => {
+    // A registry agent is logged in inside its managed tree and declares no
+    // login spec, so its frame moves nothing and links nothing. What it still
+    // must not inherit is a credential lying around on the machine — an agent
+    // that read one would bill an API account instead of that login. Its
+    // `HOME` and XDG roots are untouched, because that is where its login is.
+    const { frames, send, complete } = collectSend();
+    const machineHome = process.env.HOME;
+    process.env.XDG_DATA_HOME = "/home/someone/.local/share";
+    process.env.GEMINI_API_KEY = "gm-this-machine";
+    const profileKey = "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/acp_registry_agent/ambient";
+    try {
+      await handleLaunch(
+        {
+          run_id: "run-registry",
+          launch_id: "launch-23",
+          workspace_location_id: "folder-1",
+          adapter_type: "acp_registry_agent",
+          argv: ["sh", "-c", "printf '%s|%s|%s\n' \"$HOME\" \"${XDG_DATA_HOME:-none}\" \"${GEMINI_API_KEY:-none}\""],
+          provider_binding: {
+            profile_key: profileKey,
+            env: {},
+            profile_env: {},
+            files: [],
+            credential_source: "host_login",
+            login_link: null,
+          },
+        },
+        send,
+        () => {},
+      );
+      await complete();
+      const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+      expect(output).toBe(`${machineHome}|/home/someone/.local/share|none\n`);
+      expect(existsSync(join(configDir, "agents", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "profiles"))).toBe(false);
+    } finally {
+      delete process.env.XDG_DATA_HOME;
+      delete process.env.GEMINI_API_KEY;
     }
   });
 
   it("fails the run rather than building a path out of a traversing profile key", async () => {
     // The key becomes a directory on a machine the daemon runs unsandboxed on.
-    for (const profile_key of ["../../etc", "claude_code/../../etc", "one-segment", ".hidden/x", "a/b/c"]) {
+    for (const profile_key of [
+      "../../etc",
+      "claude_code/../../etc",
+      "one-segment",
+      `agents/${AGENT}/conversation/${CONV}/claude_code/../../../../../etc`,
+      `agents/${AGENT}/conversation/${CONV}/claude_code/.hidden`,
+      `agents/${AGENT}/elsewhere/${CONV}/claude_code/ambient`,
+      `notagents/${AGENT}/conversation/${CONV}/claude_code/ambient`,
+      // The Agent and container segments become directory names on an
+      // unsandboxed machine, so they must be identifiers the control plane
+      // generated, not merely path-safe text.
+      `agents/not-a-uuid/conversation/${CONV}/claude_code/ambient`,
+      `agents/${AGENT}/conversation/not-a-uuid/claude_code/ambient`,
+      "claude_code/provider-1",
+      "a/b/c",
+    ]) {
       const { frames, send, complete } = collectSend();
       await handleLaunch(
         {
@@ -417,7 +512,7 @@ describe("handleLaunch with a provider binding", () => {
           launch_id: "launch-profile",
           workspace_location_id: "folder-1",
           argv: ["sh", "-c", "echo should-not-run"],
-          provider_binding: { profile_key, env: {}, profile_env: { HOME: "." }, files: [] },
+          provider_binding: { profile_key, env: {}, profile_env: { HOME: "." }, files: [], credential_source: "provider_lease", login_link: null },
         },
         send,
         () => {},
@@ -425,7 +520,7 @@ describe("handleLaunch with a provider binding", () => {
       await complete();
       const completion = frames.find((f) => f.type === "complete");
       expect(completion?.exit_code, profile_key).toBe(1);
-      expect(String(completion?.error), profile_key).toContain("profile key");
+      expect(String(completion?.error), profile_key).toMatch(/runtime profile key|UUID-like/);
       expect(frames.some((f) => f.type === "output"), profile_key).toBe(false);
     }
   });

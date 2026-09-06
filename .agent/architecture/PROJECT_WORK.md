@@ -89,7 +89,8 @@ insert next to it.
 task.responsibility_changed · task.run_settled · task.reported ·
 project.reported · thread.created · thread.archived · thread.reopened ·
 thread.concluded · thread.next_step_adopted · memory.remembered ·
-memory.revised · memory.archived`
+memory.revised · memory.archived · agent.persona_revised ·
+agent.persona_restored`
 
 The `thread.*` kinds are Inquiry advancement, subject `inquiry_thread`,
 declared by the `inquiry` module in the same registry. They exist because
@@ -301,8 +302,12 @@ nothing is decided by it.
 `GET /projects/:projectId/updates` (`updatesReadModel.ts`) is the third read
 model: the same stream filtered to `task.reported`, `project.reported`,
 `task.accepted` (a Task closing is an update; nothing writes a report for it,
-so the acceptance is rendered as itself), the five `thread.*` kinds and the
-three `memory.*` kinds, newest first. Task lifecycle kinds stay out — Board state is not a readable
+so the acceptance is rendered as itself), the five `thread.*` kinds, the three
+`memory.*` kinds and the two `agent.persona_*` kinds, newest first. A persona
+revision is the one row that carries `previous_summary` — what it replaced,
+because deciding whether to put that back needs both sides in front of the
+person, not one side and a link — and the one whose undo is `restore_memory`
+rather than an archive. Task lifecycle kinds stay out — Board state is not a readable
 account and has its own surface.
 
 Each row names its `subject` (`task`, `inquiry_thread` or `memory_entry` —
@@ -310,7 +315,7 @@ Each row names its `subject` (`task`, `inquiry_thread` or `memory_entry` —
 carries none, since no read model joins `projects` and an unreachable third
 member would be speculative) and, where the
 advancement can be put back, an `undo` (`archive_thread`, `reopen_thread`,
-`revert_iteration`, `archive_memory`) that `POST /projects/:projectId/updates/:eventId/undo`
+`revert_iteration`, `archive_memory`, `restore_memory`) that `POST /projects/:projectId/updates/:eventId/undo`
 dispatches to the owning domain command. Undo is an ordinary `manual`-origin
 write: it goes through `transitionLifecycle`/`recordIteration` under their own
 authority checks and locks, records its own event naming the one it reversed

@@ -33,6 +33,10 @@ const UPDATE_KINDS = [
   "memory.remembered",
   "memory.revised",
   "memory.archived",
+  // What an Agent concluded about itself with nobody in the turn. It applies
+  // unasked, so this is the surface that makes it conditional (ADR 0003 §3).
+  "agent.persona_revised",
+  "agent.persona_restored",
 ];
 
 /**
@@ -49,6 +53,9 @@ const UNDO_ACTIONS: Record<string, ProjectWorkUpdateUndo["action"]> = {
   // reversal.
   "memory.remembered": "archive_memory",
   "memory.revised": "archive_memory",
+  // Not `archive_memory`: an Agent must have some persona, so retiring the new
+  // version has to bring the previous one back in the same action.
+  "agent.persona_revised": "restore_memory",
 };
 
 export function updateUndoAction(eventKind: string): ProjectWorkUpdateUndo["action"] | null {
@@ -186,6 +193,10 @@ function toUpdate(row: UpdateRow): Omit<ProjectWorkUpdate, "members"> {
       && (row.thread_id === null || threadUndoStillApplies(undoAction, row.thread_lifecycle))
       ? { action: undoAction, target_id: row.subject_id }
       : null,
+    // What it replaced, when the writer recorded one. Only an Agent's persona
+    // does today: deciding whether to put the previous version back needs both
+    // sides in front of the person, not one side and a link.
+    previous_summary: str(row.data_json?.previous_summary),
     undone_by_event_id: row.undone_by_event_id,
   };
 }

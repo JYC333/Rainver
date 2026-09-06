@@ -17,6 +17,7 @@ import {
   type SessionConfigSelection,
 } from '../conversation/ConversationSessionConfig'
 import { readBackTurnState, settledTurn } from '../conversation/settledTurn'
+import { decidableByViewer } from '../conversation/ConversationSurface'
 import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
@@ -459,7 +460,12 @@ export default function ChatPanel({
           error: m.error,
           extra: (
             <>
-              {m.actionPreviews?.length ? <div className="mt-2 space-y-2">{m.actionPreviews.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null}
+              {(() => {
+                // Filtered here as in the Room: a card that names one decider
+                // is rendered for that person only (ADR 0003 §5).
+                const cards = decidableByViewer(m.actionPreviews ?? [], userId)
+                return cards.length ? <div className="mt-2 space-y-2">{cards.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null
+              })()}
               {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                 {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
               </div> : null}

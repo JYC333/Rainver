@@ -93,7 +93,7 @@ export const RoomAgentCandidateSchema = z.object({
   private: z.boolean(),
   shared_with_user_ids: z.array(IdSchema).default([]),
   workspace_mode: z.enum(["location", "managed"]).nullish().optional(),
-  workspace_archive_available: z.boolean().optional(),
+  host_state_archive_available: z.boolean().optional(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomAgentCandidate = z.infer<typeof RoomAgentCandidateSchema>;

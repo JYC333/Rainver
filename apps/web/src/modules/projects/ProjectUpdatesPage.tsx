@@ -151,6 +151,15 @@ export default function ProjectUpdatesPage() {
                   ) : (
                     <p className="text-sm">{update.summary}</p>
                   )}
+                  {update.previous_summary && (
+                    // Both sides of the change, because deciding whether to
+                    // put the previous one back needs both — and sending the
+                    // person to the version chain for the other half is what
+                    // the one-step undo exists to avoid.
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      was: {update.previous_summary}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {update.outcome && update.outcome !== 'progress' && (
@@ -249,10 +258,12 @@ function UndoControl({
   onUndo: (eventId: string) => void | Promise<void>
 }) {
   if (!update.undo) return null
-  // Same rule as the composer above, with one exception: archiving a memory
-  // is the owner's own decision, not a Project write, and the read model
-  // already shows a viewer only their own memory rows.
-  if (!canWrite && update.undo.action !== 'archive_memory') return null
+  // Same rule as the composer above, with two exceptions: archiving a memory
+  // and putting an Agent's previous persona back are the owner's own
+  // decisions, not Project writes, and the read model already shows a viewer
+  // only their own memory rows.
+  const ownerAction = update.undo.action === 'archive_memory' || update.undo.action === 'restore_memory'
+  if (!canWrite && !ownerAction) return null
   return (
     <Button
       size="sm"

@@ -826,6 +826,7 @@ export const memoryApi = {
     type?: string
     status?: string
     project_id?: string
+    agent_id?: string
     /** `agent` = what the Agents have written on their own (ADR 0003 §2). */
     created_by?: 'agent' | 'user'
     since?: string
@@ -840,6 +841,7 @@ export const memoryApi = {
     if (params.type !== undefined) q.type = params.type
     if (params.status !== undefined) q.status = params.status
     if (params.project_id !== undefined) q.project_id = params.project_id
+    if (params.agent_id !== undefined) q.agent_id = params.agent_id
     if (params.created_by !== undefined) q.created_by = params.created_by
     if (params.since !== undefined) q.since = params.since
     if (params.session !== undefined) q.session = params.session
@@ -859,6 +861,11 @@ export const memoryApi = {
     del<Memory | Proposal>(`/memory/${id}`),
   restore: (id: string) =>
     post<Memory>(`/memory/${id}/restore`, {}),
+  // Undo one revision in a single action — archive what is there, bring back
+  // what it replaced. An Agent's persona has to be reversed this way: it must
+  // always have one, so archiving the head alone would leave it with none.
+  revert: (id: string) =>
+    post<Memory>(`/memory/${id}/revert`, {}),
   versions: (id: string) =>
     get<{ items: MemoryVersion[] }>(`/memory/${id}/versions`),
   search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>

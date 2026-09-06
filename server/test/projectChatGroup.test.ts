@@ -8,7 +8,7 @@ describe("projectChatActionPreviews", () => {
   describe("loadProjectChatActionPreviews", () => {
     it("deduplicates proposal events and projects failed action events", async () => {
       const query = vi.fn(async (sql: string, params?: unknown[]) => {
-        expect(params).toEqual(["space-1", "run-1"]);
+        expect(params).toEqual(["space-1", ["run-1"]]);
         if (sql.includes("FROM proposals")) {
           return { rows: [{
             id: "proposal-1",
@@ -18,13 +18,14 @@ describe("projectChatActionPreviews", () => {
             risk_level: "high",
             payload_json: { action_id: "source.backfill.propose_start", project_id: "project-1" },
             action_idempotency_key: "call-1",
+            created_by_run_id: "run-1",
           }] };
         }
         return { rows: [
-          { status: "succeeded", metadata_json: { action_id: "source.backfill.propose_start", tool_call_id: "call-1", ok: true } },
-          { status: "failed", metadata_json: { action_id: "project.source.propose_bind", tool_call_id: "call-2", ok: false, error_code: "system_action_policy_denied" } },
-          { status: "failed", metadata_json: { action_id: "research.start_acquisition", tool_call_id: "call-3", ok: false, error_code: "system_action_failed", error_message: "No active Question Thread has id 'memory-classification'. Use one of these ids exactly: t-1 — Why?" } },
-          { status: "failed", metadata_json: null },
+          { run_id: "run-1", status: "succeeded", metadata_json: { action_id: "source.backfill.propose_start", tool_call_id: "call-1", ok: true } },
+          { run_id: "run-1", status: "failed", metadata_json: { action_id: "project.source.propose_bind", tool_call_id: "call-2", ok: false, error_code: "system_action_policy_denied" } },
+          { run_id: "run-1", status: "failed", metadata_json: { action_id: "research.start_acquisition", tool_call_id: "call-3", ok: false, error_code: "system_action_failed", error_message: "No active Question Thread has id 'memory-classification'. Use one of these ids exactly: t-1 — Why?" } },
+          { run_id: "run-1", status: "failed", metadata_json: null },
         ] };
       });
 
@@ -48,6 +49,7 @@ describe("projectChatActionPreviews", () => {
             risk_level: "medium",
             payload_json: { action_id: "inquiry.promote_knowledge" },
             action_idempotency_key: "call-3",
+            created_by_run_id: "run-2",
           }] };
         }
         return { rows: [] };

@@ -469,6 +469,27 @@ export class HostConnectionRegistry {
     });
   }
 
+  /**
+   * "Clear this Agent's CLI memory on this host": archives every runtime
+   * profile the Agent has on the machine and touches no workspace. Shares the
+   * managed-workspace request/reply channel because it is the same kind of
+   * answer — moved or nothing to move.
+   */
+  resetAgentHostProfiles(hostId: string, agentId: string): Promise<ManagedWorkspaceResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, changed: false, error: "host_offline" });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingManagedWorkspaces.delete(requestId);
+        resolve({ ok: false, changed: false, error: "host_timeout" });
+      }, MANAGED_WORKSPACE_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
+      connection.sink!.send({ type: "agent_profiles_reset", request_id: requestId, agent_id: agentId });
+    });
+  }
+
   /** One level of an owned host's directory tree, answered by its daemon. */
   async listHostDirectories(hostId: string, path: string | null): Promise<HostDirectoryListing> {
     return this.requestHostAction(hostId, "list_dirs", { path });

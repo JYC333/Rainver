@@ -307,11 +307,21 @@ const proposalInputs:Record<string,z.ZodType>={
   // — the write becomes a proposal for the person. What is deliberately
   // absent is a subject: an Agent cannot write into someone else's memory
   // here at all, by any route.
+  //
+  // `memory_type` also decides *whose* memory this is (ADR 0003 §4), rather
+  // than a second field the model would have to keep consistent with it: the
+  // first three are about the person in the turn, the last four are the
+  // Agent's own.
   "memory.remember": z.object({
     content: z.string().trim().min(1).max(4000),
     rationale: z.string().trim().min(1).max(1000)
       .describe("Why this is worth keeping across sessions. Recorded with the entry; a write without one is refused."),
-    memory_type: z.enum(["semantic", "episodic", "procedural"]).optional(),
+    memory_type: z.enum(["semantic", "episodic", "procedural", "note", "decision", "lesson", "persona"]).optional()
+      .describe(
+        "What kind of memory this is, and whose. `semantic` (the default), `episodic` and `procedural` are about the person you are talking to. "
+        + "`note`, `decision` and `lesson` are your own, kept for this Room and delivered back to you only where everyone present could already have seen the conversation it came from. "
+        + "`persona` is what you have learned about yourself: one per Agent, delivered everywhere, so keep it free of anything specific to a Project or a Room — and if a person in this turn asked for it, it goes to your owner to decide rather than being stored.",
+      ),
     title: z.string().trim().min(1).max(200).optional(),
     visibility: z.enum(["private", "space_shared", "selected_users"]).optional()
       .describe("Defaults to private, which writes immediately. Anything wider is a change in reach: it becomes a proposal for the person to decide, and no entry exists until they accept."),

@@ -111,6 +111,8 @@ export const ActionPreviewTurnPartSchema = z.object({
   summary: z.string().nullable(),
   risk_level: z.string().nullable(),
   scope: JsonObjectSchema.nullable(),
+  /** Set when one named person decides this and nobody else may (ADR 0003 §5). */
+  decidable_by_user_id: IdSchema.nullable(),
 }).strict();
 
 export const TurnPartSchema = z.discriminatedUnion("type", [

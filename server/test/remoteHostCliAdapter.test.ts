@@ -10,6 +10,9 @@ import {
   setProviderProxyBaseUrlForProcess,
 } from "../src/modules/providers/proxy/lease.js";
 import { NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
+import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
+import { buildUnboundRuntimeProfile } from "../src/modules/runs/remoteProviderBinding.js";
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
 import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
 import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization.js";
@@ -532,6 +535,33 @@ describe("executeRemoteHostCliAdapter", () => {
   });
 });
 
+describe("which runs get a runtime profile at all", () => {
+  it("fails closed when a runtime cannot isolate its login and state", () => {
+    setDynamicRuntimeAdapterSpecs([{
+      ...getRuntimeAdapterSpec("claude_code")!,
+      adapter_type: "acp_registry_agent",
+      credentials: { credential_mode: "cli_profile", credential_runtime_name: "acp_registry_agent", supports_oauth_login_state: false },
+    }]);
+    try {
+      const scope = { agent_id: "agent-1", container_kind: "conversation" as const, container_id: "conv-1" };
+      expect(() => buildUnboundRuntimeProfile("acp_registry_agent", scope)).toThrowError(
+        expect.objectContaining({ code: "runtime_profile_isolation_unsupported" }),
+      );
+      // The three the plan names all declare one and all get a profile.
+      for (const adapter of ["claude_code", "codex_cli", "opencode"]) {
+        const frame = buildUnboundRuntimeProfile(adapter, scope);
+        expect(frame?.credential_source, adapter).toBe("host_login");
+        expect(frame?.login_link, adapter).not.toBeNull();
+        // Never `HOME`: an unbound run keeps the machine's, so a Task run that
+        // commits still has `~/.gitconfig` and `~/.ssh/config`.
+        expect(frame?.profile_env, adapter).not.toHaveProperty("HOME");
+      }
+    } finally {
+      setDynamicRuntimeAdapterSpecs([]);
+    }
+  });
+});
+
 describe("executeRemoteHostCliAdapter with a bound run", () => {
   // The other end of the path that shipped inert: what the server actually
   // puts on the wire, and whether the lease it issued stops working when the
@@ -567,12 +597,19 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-gone", model: null, origin: "host_default" as const }),
             record: async (_runId, used) => { recorded.push(used); },
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
       const launch = sink.sent.find((f) => f.type === "launch") as Record<string, unknown>;
-      expect(launch.provider_binding).toBeUndefined();
+      // Unbound, but not profile-less: the run still gets its own state root,
+      // pointed at the `ambient` profile rather than at this machine's own
+      // `~/.claude`. What is absent is the lease.
+      const fallback = launch.provider_binding as { profile_key: string; env: Record<string, string>; files: unknown[] };
+      expect(fallback.profile_key).toMatch(/\/claude_code\/ambient$/);
+      expect(fallback.env).toEqual({});
+      expect(fallback.files).toEqual([]);
       // Recorded as unbound, and said out loud rather than silently.
       expect(recorded).toEqual([null]);
       expect(warnings).toContainEqual(expect.objectContaining({
@@ -597,6 +634,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-gone", model: null, origin: "dispatch" as const }),
             record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
         },
       );
@@ -638,6 +676,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "M2", origin: "dispatch" as const }),
             record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: leases,
         },
@@ -691,6 +730,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
         },
@@ -754,6 +794,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
         },
@@ -817,6 +858,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
         },

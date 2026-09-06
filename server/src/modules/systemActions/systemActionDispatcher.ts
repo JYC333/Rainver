@@ -36,6 +36,8 @@ import { enforce } from "../policy/service.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
+import { memoryPolicyContext } from "../memory/memoryPolicyContext.js";
+import { effectiveTriggerOrigin } from "./effectiveTriggerOrigin.js";
 
 export interface SystemActionDispatcherDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
@@ -371,26 +373,12 @@ async function enforcePolicyForAction(
 }
 
 /**
- * The origin that actually decides whether a person asked for this.
- *
- * A delegated child carries `delegation` whoever started the chain, so reading
- * its own origin would let an autonomous root launder a gated write through a
- * specialist. The root's origin is the one that answers "did a person ask".
+ * The `declared_resource` adapter: the action names the resource it writes,
+ * and the policy layer decides against that resource rather than against the
+ * action alone. The Run's context is flattened into the rule context here, and
+ * the origin it carries is the **effective** one — a delegated child is judged
+ * by what started the chain (`effectiveTriggerOrigin`).
  */
-export async function effectiveTriggerOrigin(
-  config: { databaseUrl: string },
-  run: RunRecord,
-): Promise<string> {
-  if (run.trigger_origin !== "delegation" || !run.root_run_id || run.root_run_id === run.id) {
-    return run.trigger_origin;
-  }
-  const root = await getDbPool(config.databaseUrl).query<{ trigger_origin: string }>(
-    `SELECT trigger_origin FROM runs WHERE space_id = $1 AND id = $2`,
-    [run.space_id, run.root_run_id],
-  );
-  return root.rows[0]?.trigger_origin ?? run.trigger_origin;
-}
-
 export async function enforceDeclaredResourcePolicy(
   databaseUrl: string,
   definition: SystemActionDefinition,
@@ -434,7 +422,12 @@ export async function enforceDeclaredResourcePolicy(
       // person asked for in a conversation from the same call made by an
       // unattended wake-up, and without this key it read every dispatch as
       // `manual` and never fired.
-      trigger_origin: await effectiveTriggerOrigin({ databaseUrl }, run),
+      trigger_origin: await effectiveTriggerOrigin(getDbPool(databaseUrl), run),
+      // What a memory write is, resolved by the module that owns the answer
+      // rather than taken from the call: `ruleUnattendedProjectWrite`'s one
+      // exception is a persona write, and for a revision that fact lives on
+      // the target row, not in the arguments.
+      ...(await memoryPolicyContext(getDbPool(databaseUrl), definition.id, run.space_id, run.agent_id, input)),
       surface: "managed_run_system_action_gateway",
       ...(hasActionGrant !== undefined ? { has_action_approval_grant: hasActionGrant } : {}),
     },

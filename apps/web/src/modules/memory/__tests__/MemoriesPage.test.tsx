@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import MemoriesPage from '../MemoriesPage'
 import type { Memory } from '../../../types/api'
-import { knowledgeApi, memoryApi, spacesApi } from '../../../api/client'
+import { agentsApi, knowledgeApi, memoryApi, spacesApi } from '../../../api/client'
 
 const toastCalls: string[] = []
 vi.mock('sonner', () => {
@@ -24,17 +24,32 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     toastCalls.length = 0
     vi.mocked(memoryApi.list).mockResolvedValue({ items: [memoryRow()], limit: 50, offset: 0, total: 1 })
     vi.mocked(spacesApi.getRetrievalSettings).mockResolvedValue(baseSettings)
+    vi.mocked(agentsApi.list).mockResolvedValue([{ id: 'agent-1', name: 'Research Agent' }] as never)
   })
 
   it('asks for what the Agents wrote, and marks those rows', async () => {
     renderPage()
 
     expect(await screen.findByText('Meeting times')).toBeInTheDocument()
-    expect(screen.getByText('Agent')).toBeInTheDocument()
+    expect(await screen.findByText('Research Agent')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Written by an Agent' }))
     await waitFor(() => {
       expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ created_by: 'agent' }))
+    })
+  })
+
+  it('filters Agent memory by the selected Agent', async () => {
+    renderPage('/memory?scope=agent')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Filter memory by Agent' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Research Agent' }))
+
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({
+        scope: 'agent',
+        agent_id: 'agent-1',
+      }))
     })
   })
 
@@ -117,6 +132,9 @@ vi.mock('../../../api/client', () => ({
   knowledgeApi: {
     claimCandidatePacket: vi.fn(),
   },
+  agentsApi: {
+    list: vi.fn(),
+  },
 }))
 
 const disabledRankingMechanic = {
@@ -188,6 +206,7 @@ function memoryRow(over: Record<string, unknown> = {}) {
     confidence: 1,
     importance: 0.5,
     created_by: 'agent:agent-1',
+    agent_id: 'agent-1',
     version: 1,
     tags: null,
     created_at: '2026-08-26T00:00:00.000Z',
@@ -221,6 +240,7 @@ describe('MemoriesPage maintenance UI', () => {
       generated_child_proposal_count: 0,
     })
     vi.mocked(spacesApi.getRetrievalSettings).mockResolvedValue(baseSettings)
+    vi.mocked(agentsApi.list).mockResolvedValue([])
   })
 
   it('keeps space_ops unavailable when shared review is private_only', async () => {

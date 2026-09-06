@@ -56,6 +56,15 @@ const ActionPreviewSchema = z.object({
   summary: z.string().nullish(),
   risk_level: z.string().nullish(),
   scope: JsonObjectSchema.nullish(),
+  /**
+   * Set when exactly one person may decide this, by identity rather than by
+   * role — an Agent's persona, which only its owner decides
+   * ([ADR 0003](../../../.agent/decisions/0003-memory-proposal-flow.md) §5).
+   * The card is rendered for that person and for nobody else: a member who
+   * asked for the change cannot accept it, and buttons that refuse are worse
+   * than no card.
+   */
+  decidable_by_user_id: IdSchema.nullish(),
 }).strict();
 export type MessageActionPreview = z.infer<typeof ActionPreviewSchema>;
 
@@ -297,21 +306,12 @@ export const ChatTurnCompletionSchema = z
     error: z.string().nullish(),
     error_code: z.string().nullish(),
     assistant_message: AssistantMessageSchema.nullish(),
-    action_previews: z
-      .array(
-        z.object({
-          action_id: z.string(),
-          tool_call_id: z.string().nullish(),
-          status: z.enum(["proposed", "auto_applied", "completed", "failed", "rejected"]),
-          proposal_id: IdSchema.nullish(),
-          proposal_type: z.string().nullish(),
-          title: z.string().nullish(),
-          summary: z.string().nullish(),
-          risk_level: z.string().nullish(),
-          scope: JsonObjectSchema.nullish(),
-        }),
-      )
-      .optional(),
+    // The named schema, not a second copy of it. The copy that used to stand
+    // here was byte-identical until one of them gained a field, at which point
+    // the declared wire contract for this frame said a field the sender emits
+    // does not exist — and a `.parse()` would have stripped it, handing an
+    // owner-only card to every viewer.
+    action_previews: z.array(ActionPreviewSchema).optional(),
     ...SecretResponseGuards,
   })
   .strict();
@@ -333,7 +333,13 @@ export const ChatTurnPrepareRunResultSchema = z
   })
   .passthrough();
 
-export const MemoryScopeSchema = z.enum(["user", "project"]);
+/**
+ * Where a Memory entry lives. `agent` is the Agent's own
+ * ([ADR 0003](../../../.agent/decisions/0003-memory-proposal-flow.md) §4):
+ * what it has learned about itself and about a Room, owned by `agent_id` with
+ * `owner_user_id` naming the person who archives, restores and reviews it.
+ */
+export const MemoryScopeSchema = z.enum(["user", "project", "agent"]);
 export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
 
 export const MemoryOutSchema = z
@@ -366,6 +372,10 @@ export const MemoryOutSchema = z
     root_memory_id: IdSchema.nullish(),
     supersedes_memory_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
+    /** The Agent an `agent`-scope entry belongs to; producing provenance elsewhere. */
+    agent_id: IdSchema.nullish(),
+    /** The Room an `agent`-scope note was learned in; null for a persona and outside the scope. */
+    origin_room_id: IdSchema.nullish(),
     ...SecretResponseGuards,
   })
   .passthrough();
@@ -396,6 +406,9 @@ const MemoryCreateFieldsSchema = z.object({
   last_confirmed_at: ISODateTimeSchema.nullish(),
   project_id: IdSchema.nullish(),
   memory_layer: z.string().nullish(),
+  /** `agent` scope only: the owning Agent, and the Room a note was learned in. */
+  agent_id: IdSchema.nullish(),
+  origin_room_id: IdSchema.nullish(),
 });
 
 const MemoryUpdateFieldsSchema = z.object({

@@ -86,7 +86,7 @@ accepted into Memory or Knowledge.
 |---|---|
 | `source_trust` | Dominant trust level from accepted provenance_entries. |
 | `created_from_proposal_id` | Links MemoryEntry back to accepted Proposal. |
-| `agent_id` | Producing Agent provenance. Never used to select or authorize Memory. |
+| `agent_id` | Producing Agent provenance in user/project scope; the ownership and explicit filter key in Agent scope. |
 | `last_verified_at` | Last time this memory claim was explicitly verified. |
 
 Activity, Artifact, Run, and evidence provenance for accepted Memory is stored
@@ -118,6 +118,13 @@ Sources briefings set `activity_records.aggregate_key` to
 preview plus ids/counts in `payload_json`. The full content remains in the
 Library/Sources read model. Activity consolidation paths must exclude rows where
 `aggregate_key IS NOT NULL`.
+
+A Project-free autonomous persona write similarly creates one owner-private,
+content-free pointer keyed as `agent_persona:<memory_id>`. Its payload contains
+only `pointer_type=agent_persona_revision`, the Memory/Agent ids, and whether it
+is a revision; the Inbox sends the owner to `/memory/<memory_id>` for review or
+revert. Persona content remains in the Memory authority and never enters the
+Activity row.
 
 Sources/Evidence provenance trust is a separate, smaller vocabulary:
 `trusted`, `normal`, and `untrusted`. Source connection trust maps explicitly to

@@ -1,7 +1,7 @@
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { InquiryIterationService } from "../inquiry/iterationService.js";
-import { PgMemoryApplyRepository } from "../memory/memoryApplyRepository.js";
+import { MemoryApplyError, PgMemoryApplyRepository } from "../memory/memoryApplyRepository.js";
 import { recordDomainWorkEvent } from "./domainWorkEvents.js";
 import { updateUndoAction } from "./updatesReadModel.js";
 
@@ -85,6 +85,48 @@ async function undoLocked(
       occurredAt: new Date().toISOString(),
       idempotencySuffix: `undo:${eventId}`,
       data: { summary: "Archived what the Agent remembered" },
+      provenance: { undoOfEventId: eventId },
+    });
+    return { undone_event_id: eventId, action };
+  }
+
+  if (action === "restore_memory") {
+    // A persona is the one memory a person cannot simply archive: the Agent
+    // has to have some persona, and archiving the head would leave it with
+    // none. So the reversal is two canonical writes in one action — retire the
+    // version the Agent wrote, bring back the one it replaced — which is what
+    // "one-step restore" means for ADR 0003 §5's third row.
+    const previousId = typeof event.data_json?.restores_memory_id === "string"
+      ? event.data_json.restores_memory_id
+      : null;
+    if (!previousId) throw new HttpError(409, "This change had no previous version to put back");
+    const memory = new PgMemoryApplyRepository(db);
+    // A stale page can still offer this after an unattended Run superseded the
+    // persona again, or after the previous version was restored by hand. Both
+    // are refusals the person can act on, not server faults, so the applier's
+    // status errors are answered as 409 rather than escaping as a 500.
+    const step = async (memoryId: string, status: "archived" | "active") => {
+      try {
+        return await memory.setOwnStatus(identity.spaceId, identity.userId, memoryId, status);
+      } catch (error) {
+        if (error instanceof MemoryApplyError) throw new HttpError(409, error.message);
+        throw error;
+      }
+    };
+    const archived = await step(event.subject_id, "archived");
+    if (!archived) throw new HttpError(409, "That memory is no longer the caller's to change");
+    const restored = await step(previousId, "active");
+    if (!restored) throw new HttpError(409, "The previous version is no longer there to put back");
+    await recordDomainWorkEvent(db, {
+      spaceId: identity.spaceId,
+      projectId,
+      subjectType: "memory_entry",
+      subjectId: previousId,
+      userId: identity.userId,
+      eventKind: "agent.persona_restored",
+      occurredAt: new Date().toISOString(),
+      idempotencySuffix: `undo:${eventId}`,
+      data: { summary: "Put back what the Agent had been before" },
       provenance: { undoOfEventId: eventId },
     });
     return { undone_event_id: eventId, action };

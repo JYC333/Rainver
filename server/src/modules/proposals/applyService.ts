@@ -686,6 +686,7 @@ export class PgProposalApplyService {
     proposal: ApplyProposalRow,
     userId: string,
   ): Promise<void> {
+    assertRequiredOwnerMayDecide(proposal, userId);
     const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
     // `required_approver_role: "owner"` on a Project-scoped proposal means the
     // Project's owner, which is what the applier's own authority check
@@ -931,16 +932,49 @@ function recordValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * A proposal that names one person, by identity rather than by role.
+ *
+ * Role is what everything else here arbitrates on, and for the Agent's own
+ * memory that is the wrong question: a Space owner or admin satisfies any role
+ * a persona proposal could require, and they are exactly the person
+ * [ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §5 says
+ * must not be able to change what someone else's Agent has become. So the
+ * proposal carries `required_owner_user_id` and only that person decides it —
+ * no role elevation substitutes, and the Project-owner promotion below does
+ * not apply either.
+ */
+export function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
+  const value = (proposal.payload_json ?? {}).required_owner_user_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function assertRequiredOwnerMayDecide(
+  proposal: { payload_json: Record<string, unknown> | null },
+  userId: string,
+): void {
+  const required = requiredOwnerUserId(proposal);
+  if (required && required !== userId) {
+    throw new HttpError(403, "Only this Agent's owner can decide what it has become");
+  }
+}
+
 export function canRejectProposalWithRole(
   proposal: {
     created_by_user_id: string | null;
     owner_user_id: string | null;
     created_by_agent_id: string | null;
     required_approver_role: string | null;
+    payload_json?: Record<string, unknown> | null;
   },
   userId: string,
   role: string | null,
 ): boolean {
+  // A proposal that names one person by identity is that person's alone, to
+  // decline as much as to accept: leaving reject on role would let a Space
+  // admin throw away a persona change the Agent's owner has not seen.
+  const requiredOwner = requiredOwnerUserId({ payload_json: proposal.payload_json ?? null });
+  if (requiredOwner) return requiredOwner === userId;
   if (proposal.created_by_user_id === userId) return true;
   // Agent-authored proposals retain Agent attribution, while owner_user_id is
   // the trusted server-populated identity of the instructing human. Give that
@@ -1010,6 +1044,16 @@ function normalizeApplyError(error: unknown): unknown {
     });
   }
   if (error instanceof ProposalApplyHttpError) return error;
+  if (
+    error && typeof error === "object"
+    && (error as { code?: unknown }).code === "23505"
+    && (error as { constraint?: unknown }).constraint === "uq_memory_entries_active_persona"
+  ) {
+    return new ProposalApplyHttpError(409, {
+      code: "active_persona_already_exists",
+      message: "This Agent already has an active persona. Refresh and revise the active version instead.",
+    });
+  }
   return error;
 }
 

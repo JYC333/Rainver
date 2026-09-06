@@ -5,7 +5,11 @@ import type {
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { resolveAgentActorId } from "../../db/actorResolver.js";
-import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
+import {
+  actionPreviewsForViewer,
+  loadProjectChatActionPreviews,
+  sharedActionPreviews,
+} from "../agents/projectChatActionPreviews.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import {
   ManagedSemanticCheckpointProvider,
@@ -98,13 +102,20 @@ export async function finalizeChatTurn(
   if (existingCompletion.items.length > 0) return null;
 
   const outcome = chatOutcome(run);
-  const actionPreviews = metadata.project_id
-    ? await (deps.loadActionPreviews ?? loadProjectChatActionPreviews)(
-        getDbPool(config.databaseUrl!),
-        run.space_id,
-        run.id,
-      )
-    : [];
+  // Proposals belong to Runs, not Projects. Direct chat deliberately has no
+  // Project and still needs the same decision card as a Room turn.
+  const allActionPreviews = await (deps.loadActionPreviews ?? loadProjectChatActionPreviews)(
+    getDbPool(config.databaseUrl!),
+    run.space_id,
+    run.id,
+  );
+  const actionPreviews = actionPreviewsForViewer(allActionPreviews, metadata.user_id);
+  // A Room message is one shared row. Owner-only proposal text is projected
+  // from the proposal table when that owner reads the Room; it must never be
+  // snapshotted here for other Room readers to receive over the API.
+  const persistedActionPreviews = isRoomConversationRun(run)
+    ? sharedActionPreviews(allActionPreviews)
+    : actionPreviews;
   let assistantMessage: AssistantMessage | null = null;
   let terminalMessageId: string | null = null;
   let terminalMessageCreatedAt: string | null = null;
@@ -123,7 +134,7 @@ export async function finalizeChatTurn(
             ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}),
             status: run.status,
             ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
-            ...(actionPreviews.length > 0 ? { action_previews: actionPreviews } : {}),
+            ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
           },
         })
       : await sessions.addAssistantMessageForRun(
@@ -135,7 +146,7 @@ export async function finalizeChatTurn(
             content: outcome.reply,
             metadata: {
               ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
-              ...(actionPreviews.length > 0 ? { action_previews: actionPreviews } : {}),
+              ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
             },
           },
         );

@@ -136,12 +136,15 @@ export function RoomRosterPanel({
   }
 
   async function addExisting(candidate: RoomAgentCandidate) {
-    const restoreAvailable = candidate.workspace_mode === 'managed' && candidate.workspace_archive_available === true
+    // Not gated on a managed workspace: what is archived when a specialist
+    // leaves is always its runtime profile — its login, sessions and CLI
+    // memory — and only sometimes the shared cwd.
+    const restoreAvailable = candidate.host_state_archive_available === true
     if ((candidate.private || restoreAvailable) && !await ask({
       title: candidate.private ? `Share ${candidate.name} with this Room?` : `Re-add ${candidate.name} to this Room?`,
       description: candidate.private
         ? 'The Agent is private. Current Room members, and only they, get access to it here.'
-        : 'The Agent is being re-added. You can optionally restore its archived managed workspace.',
+        : 'The Agent is being re-added. You can optionally restore the host state it left behind here.',
       confirmLabel: candidate.private ? 'Share and add' : 'Add to Room',
       variant: 'default',
       restoreAvailable,

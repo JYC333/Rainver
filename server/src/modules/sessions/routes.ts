@@ -228,14 +228,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
         const threadRepository = new PgHostThreadRepository(client);
         for (const thread of directThreads.rows) {
-          await threadRepository.closeDirectAgent(thread.agent_id, identity.userId, thread.workspace_mode === "managed");
+          // Always pending: even a thread with no Rainver-managed cwd has this
+          // Agent's runtime profile on the host to archive.
+          await threadRepository.closeDirectAgent(thread.agent_id, identity.userId, true);
         }
         return directThreads.rows
-          .filter((thread) => thread.workspace_mode === "managed" && thread.execution_host_id)
+          .filter((thread) => thread.execution_host_id)
           .map((thread) => ({
             threadId: thread.id,
             hostId: thread.execution_host_id!,
             agentId: thread.agent_id,
+            includeWorkspace: thread.workspace_mode === "managed",
           }));
       });
       if (!deleted) return reply.code(404).send({ detail: "Session not found" });
@@ -245,7 +248,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
           target.hostId,
           "managed_workspace_archive",
-          { agent_id: target.agentId, container_kind: "direct", container_id: identity.userId },
+          {
+            agent_id: target.agentId,
+            container_kind: "direct",
+            container_id: identity.userId,
+            include_workspace: target.includeWorkspace,
+          },
         );
         archived.push({ agent_id: target.agentId, ...result });
         if (result.ok) {

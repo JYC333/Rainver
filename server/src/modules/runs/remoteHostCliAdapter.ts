@@ -24,12 +24,15 @@ import type { Queryable } from "../routeUtils/common.js";
 import {
   boundAcpModelId,
   buildRemoteProviderBinding,
+  buildUnboundRuntimeProfile,
   recordRemoteRunBackend,
   resolveRemoteRunBinding,
+  resolveRuntimeProfileScope,
   RemoteProviderBindingError,
   type RemoteProviderBinding,
   type RemoteProviderBindingFrame,
   type ResolvedRemoteBinding,
+  type RuntimeProfileScope,
 } from "./remoteProviderBinding.js";
 
 /**
@@ -136,12 +139,35 @@ export interface RemoteHostCliAdapterDeps {
 export interface RemoteBindingPort {
   resolve(run: RunRecord, hostId: string, adapterType: string): Promise<ResolvedRemoteBinding | null>;
   record(runId: string, used: { provider_id: string; model: string | null } | null, spaceId: string): Promise<void>;
+  /** Which Agent × container this run's CLI profile belongs to; never null — every host-bound run has one. */
+  profileScope(run: RunRecord, workspaceLocationId: string | null): Promise<RuntimeProfileScope>;
 }
 
-/** For a caller with no bindings at all: every run is unbound, nothing recorded. */
+/**
+ * For a caller with no bindings at all: every run is unbound, nothing
+ * recorded. Its profile scope is derived from the Run alone, without the
+ * `host_threads` lookup a real one does, so a protocol-plumbing test still
+ * exercises a run that carries a profile rather than a special case that does
+ * not.
+ *
+ * It refuses a run with no Location for the same reason the real resolver
+ * does, rather than falling back to the run id: a per-run profile is deleted
+ * along with the session the next turn is about to resume, and a stub that
+ * quietly minted one would let a test pass on a shape production must never
+ * produce.
+ */
 export const NO_PROVIDER_BINDINGS: RemoteBindingPort = {
   async resolve() { return null; },
   async record() {},
+  async profileScope(run, workspaceLocationId) {
+    if (!workspaceLocationId) {
+      throw new RemoteProviderBindingError(
+        "runtime_profile_scope_unresolved",
+        "This run has no WorkspaceLocation, so its runtime profile has no container.",
+      );
+    }
+    return { agent_id: run.agent_id, container_kind: "location", container_id: workspaceLocationId };
+  },
 };
 
 function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
@@ -150,6 +176,7 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
   return {
     resolve: (run, hostId, adapterType) => resolveRemoteRunBinding(db, run, hostId, adapterType),
     record: (runId, used, spaceId) => recordRemoteRunBackend(db, runId, used, spaceId),
+    profileScope: (run, workspaceLocationId) => resolveRuntimeProfileScope(db, run, workspaceLocationId),
   };
 }
 
@@ -288,6 +315,11 @@ async function runRemoteHostCliAdapter(
   // Read from the thread message rather than `runs.model_provider_id` — see
   // `remoteProviderBinding.ts` for why that column is not evidence.
   let providerBinding: RemoteProviderBinding | null = null;
+  // The frame that gives this run's CLI its own state root. A bound run's is
+  // the binding above; an unbound one gets the same profile minus the lease,
+  // so it reads its own login and its own vendor auto-memory rather than the
+  // machine's `~/.claude`.
+  let profileFrame: RemoteProviderBindingFrame | null = null;
   let unusableHostDefault: string | null = null;
   const config = deps.config;
   const bindings = deps.bindings ?? (config ? databaseBindingPort(config) : null);
@@ -300,6 +332,7 @@ async function runRemoteHostCliAdapter(
         );
       }
       const bound = await bindings.resolve(input.run, hostId, spec.adapter_type);
+      const scope = await bindings.profileScope(input.run, workspaceLocationId);
       if (bound) {
         if (!config) {
           throw new RemoteProviderBindingError(
@@ -314,6 +347,7 @@ async function runRemoteHostCliAdapter(
             hostId,
             adapterType: spec.adapter_type,
             binding: bound,
+            scope,
             // Outlive the run itself, the way the server-host path does, so a
             // request in flight at the timeout boundary is not cut off.
             ttlSeconds: timeoutSeconds + 300,
@@ -337,9 +371,16 @@ async function runRemoteHostCliAdapter(
           providerBinding = null;
         }
       }
+      // Not an else: a Host default that turned out to be unusable falls back
+      // to the machine's own login, and that fallback needs a profile for the
+      // same reason an intentionally unbound run does. A runtime without a
+      // login/state-root contract fails closed here instead of sharing its
+      // managed installation's session and auto-memory across Agents.
+      profileFrame = providerBinding?.frame
+        ?? buildUnboundRuntimeProfile(spec.adapter_type, scope);
       if (unusableHostDefault) {
         const text = "This host's default model backend is not usable for this run, "
-          + `so it ran on the machine's own login state instead: ${unusableHostDefault}`;
+          + `so it ran on this machine's own login instead: ${unusableHostDefault}`;
         // Through `runtime_event_sink`, not the thread sink: the degradation
         // only happens to a run with **no** thread — a thread always has a
         // dispatched message, and a dispatched message always carries a
@@ -429,7 +470,7 @@ async function runRemoteHostCliAdapter(
     hostId,
     workspaceLocationId,
     registry,
-    providerBinding?.frame ?? null,
+    profileFrame,
     runOverrideField(input.run.model_override_json, "installation") ?? "own",
     spec.adapter_type,
     workSurface?.frame ?? null,

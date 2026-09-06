@@ -129,8 +129,24 @@ export const HostHelloInfoSchema = z.object({
 });
 export type HostHelloInfo = z.infer<typeof HostHelloInfoSchema>;
 
+/**
+ * The runtime profile this run's CLI lives in, and the model backend binding
+ * when there is one.
+ *
+ * Every host-bound Agent run carries this frame, including a run with no
+ * ModelProvider: the CLI's own state root — its login, its sessions, its
+ * auto-memory — is the profile rather than the machine's `~/.claude` or
+ * `~/.codex`, which is what keeps two Agents on one machine, and one Agent in
+ * two Rooms, from sharing what the runtime remembers. An unbound run's frame
+ * carries no `files` and no `env`, only `profile_env` and `login_link`.
+ */
 export const HostLaunchProviderBindingSchema = z.object({
-  /** `<adapter_type>/<provider_id>`: which profile directory on the host the runtime uses. */
+  /**
+   * `agents/<agent_id>/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`:
+   * which profile directory on the host the runtime uses. The container is the
+   * Conversation for a Room turn, the owner for a direct chat, and the
+   * WorkspaceLocation for everything else.
+   */
   profile_key: z.string().min(1),
   /** Literal environment; never a provider API key (ADR 0008 channel isolation). */
   env: z.record(z.string()),
@@ -141,6 +157,33 @@ export const HostLaunchProviderBindingSchema = z.object({
     contents: z.string(),
     escape: z.literal("toml_basic_string").optional(),
   })),
+  /**
+   * Where this run's credential comes from, and therefore how much of the
+   * machine the daemon may leave in place.
+   *
+   * `provider_lease` — the control plane chose the backend, so B67 applies in
+   * full: the executing machine contributes nothing to which backend,
+   * credential or upstream the runtime reaches, and its environment is
+   * filtered to an allowlist.
+   *
+   * `host_login` — the run uses the machine's own login, reached through the
+   * link below. B67's closing rule stands: a run with no binding keeps the
+   * machine's environment, so `~/.gitconfig`, `~/.ssh/config` and the proxy
+   * variables a paired machine needs are still there. What the profile
+   * replaces is only the runtime's *state root*.
+   */
+  credential_source: z.enum(["provider_lease", "host_login"]),
+  /**
+   * For a `host_login` run: which file to link out of this installation's
+   * login home into the profile, so one login per host × installation serves
+   * every Agent profile on it. The daemon links it and never reads its
+   * contents (ADR 0008). Null for a provider-bound run, which carries its
+   * lease configuration in `files` and needs no login.
+   */
+  login_link: z.object({
+    home_subdir: z.string().min(1),
+    credential_file: z.string().min(1),
+  }).nullable(),
 });
 export type HostLaunchProviderBinding = z.infer<typeof HostLaunchProviderBindingSchema>;
 
@@ -271,6 +314,16 @@ const managedWorkspaceActionFields = {
   agent_id: IdSchema,
   container_kind: ManagedWorkspaceContainerKindSchema,
   container_id: IdSchema,
+  /**
+   * Whether the shared container directory goes with the Agent's own profile.
+   *
+   * A Conversation's managed workspace is shared by every Agent in it, so one
+   * Agent leaving a Room archives only that Agent's profile; the workspace
+   * follows when the last one leaves. A direct chat has one Agent, so both
+   * always move together — and a Conversation running on a registered
+   * WorkspaceLocation has no managed workspace to archive at all.
+   */
+  include_workspace: z.boolean(),
 };
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
@@ -289,6 +342,14 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("workspace_forget"), request_id: IdSchema, workspace_id: z.string() }),
   z.object({ type: z.literal("managed_workspace_archive"), ...managedWorkspaceActionFields }),
   z.object({ type: z.literal("managed_workspace_restore"), ...managedWorkspaceActionFields }),
+  /**
+   * "Clear this Agent's CLI memory on this host": archive every runtime
+   * profile the Agent has on the machine — its logins, sessions and vendor
+   * auto-memory — and touch no workspace. Owner-only, and paired with
+   * retiring the Agent's vendor sessions through `session_reset` so the next
+   * turn starts fresh rather than resuming into a profile that is gone.
+   */
+  z.object({ type: z.literal("agent_profiles_reset"), request_id: IdSchema, agent_id: IdSchema }),
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
   HostLoginOpenFrameSchema,
@@ -377,7 +438,7 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("managed_workspace_result"),
     request_id: IdSchema,
-    action: z.enum(["archive", "restore"]),
+    action: z.enum(["archive", "restore", "reset"]),
     ok: z.boolean(),
     changed: z.boolean(),
     error: z.string().nullable(),

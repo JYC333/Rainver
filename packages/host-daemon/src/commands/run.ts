@@ -28,7 +28,7 @@ import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
 import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
-import { archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
+import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
 
@@ -235,6 +235,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         void sweepStaleRunProfiles().then((removed) => {
           if (removed > 0) log(`removed ${removed} finished run director${removed === 1 ? "y" : "ies"}`);
         }).catch(() => {});
+        void archiveLegacyProfileTree().then((moved) => {
+          if (moved) log("archived the pre-Agent-keyed profiles/ tree; it is swept after the retention window");
+        }).catch((error) => log(`legacy profile tree archive failed: ${error instanceof Error ? error.message : String(error)}`));
         void sweepManagedWorkspaceArchives().catch((error) => log(`managed workspace sweep failed: ${error instanceof Error ? error.message : String(error)}`));
         sendOnThisConnection({ type: "hello", token, ...info });
       });
@@ -361,12 +364,24 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             try {
               const container: ManagedWorkspaceContainer = { kind: frame.container_kind, id: frame.container_id };
               const changed = action === "archive"
-                ? await archiveManagedWorkspace(frame.agent_id, container)
-                : await restoreManagedWorkspace(frame.agent_id, container);
+                ? await archiveManagedWorkspace(frame.agent_id, container, frame.include_workspace)
+                : await restoreManagedWorkspace(frame.agent_id, container, frame.include_workspace);
               sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: true, changed, error: null });
               sendHeartbeat();
             } catch (error) {
               sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
+            }
+          })();
+          return;
+        }
+        case "agent_profiles_reset": {
+          void (async () => {
+            try {
+              const changed = await archiveAgentProfiles(frame.agent_id);
+              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "reset", ok: true, changed, error: null });
+              sendHeartbeat();
+            } catch (error) {
+              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "reset", ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
             }
           })();
           return;

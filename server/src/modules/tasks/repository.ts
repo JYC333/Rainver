@@ -935,8 +935,8 @@ export class PgTaskRepository {
     // `isTerminalRunStatus` rather than a hand-rolled list, and only the
     // latest Run: a hand-rolled copy here once missed `waiting_for_review`
     // and deadlocked the thread after any Run that landed in review.
-    const latestRun = await client.query<{ status: string }>(
-      `SELECT status FROM runs WHERE host_task_thread_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    const latestRun = await client.query<{ status: string; agent_id: string | null }>(
+      `SELECT status, agent_id FROM runs WHERE host_task_thread_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [thread.id],
     );
     const latestStatus = latestRun.rows[0]?.status;
@@ -951,6 +951,19 @@ export class PgTaskRepository {
     const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
     if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
     await assertRunnableAgent(client, identity.spaceId, agentId);
+
+    // The thread is the Location's, but the vendor session lives in the
+    // profile of the Agent that last ran here (`resolveRuntimeProfileScope`).
+    // A different Agent cannot resume it — the runtime would report no such
+    // conversation and the thread would reset mid-turn — so the switch is
+    // made at admission, where it is a recorded retirement rather than a
+    // failure the next turn discovers.
+    let resumeVendorSessionId = thread.vendor_session_id ?? null;
+    const previousAgentId = latestRun.rows[0]?.agent_id ?? null;
+    if (resumeVendorSessionId && previousAgentId && previousAgentId !== agentId) {
+      await threads.retireLocationSessionForAgentChange(thread.id);
+      resumeVendorSessionId = null;
+    }
 
     // A dispatch to someone's own machine runs under that machine's trust,
     // not in a sandbox the control plane owns — and the read model reads this
@@ -1010,7 +1023,7 @@ export class PgTaskRepository {
         host_thread: {
           schema_version: "host_thread.v1",
           thread_id: thread.id,
-          runtime_session_id: thread.vendor_session_id ?? null,
+          runtime_session_id: resumeVendorSessionId,
         },
       },
       // The same snapshot the server branch writes. The two dispatch paths

@@ -6,18 +6,26 @@ A **Space** is a collaboration boundary, not a shared mind. Members of a househo
 
 ## Attribution layers
 
-Long-lived learned content has exactly three carriers. An Agent is never a
-Memory read scope.
+Long-lived learned content has exactly four carriers. An Agent is a Memory
+read scope in exactly one of them, and in no other.
 
 | Layer | Meaning | Carrier | Read attribution |
 |---|---|---|---|
 | Personal | about a person | `memory_entries`, `scope_type=user` | `owner_user_id`, `private` |
 | Project | how a project is done | `memory_entries`, `scope_type=project` | `project_id` and Project membership |
 | Capability | how an Agent works | `evolvable_assets` | Agent/capability evolution policy |
+| Agent | what an Agent knows about itself and about a Room | `memory_entries`, `scope_type=agent` | `agent_id` owns it; `owner_user_id` is the Agent's owner |
 
-`memory_entries.agent_id` records which Agent produced a Memory version. It is
-provenance only: list, get, search, retrieval, maintenance, context assembly,
-and digests must never select or authorize Memory by that column.
+`memory_entries.agent_id` records which Agent produced a Memory version. In the
+`user` and `project` scopes it is provenance only: list, get, search,
+retrieval, maintenance, context assembly, and digests must never select or
+authorize Memory by that column there. In `scope_type = 'agent'` it is the
+ownership key — the one scope where what an Agent knows is the Agent's — and
+`owner_user_id` names the person who archives, restores and reviews it
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4). The two never mix:
+an `agent`-scope row is private, Project-free, has no subject, and is
+delivered back to its Agent under the audience rule below rather than read by
+anyone as a person's Memory.
 
 Within the two Memory layers:
 
@@ -35,9 +43,9 @@ Within the two Memory layers:
 |-------|------|
 | `owner_user_id` | Human who controls personal Memory and receives owner ACL. |
 | `subject_user_id` | Who or what the memory is about. Never inferred from `owner_user_id`. |
-| `scope_type` | Memory placement: exactly `user` or `project`. Enforced by a database CHECK. |
+| `scope_type` | Memory placement: exactly `user`, `project`, or `agent`. Database CHECKs require an `agent`-scope row to be private, Project-free, subject-free, owned by an Agent and human, and limited to `note`, `decision`, `lesson`, or `persona`. |
 | `project_id` | Required for `scope_type=project`; null for `scope_type=user`. |
-| `agent_id` | Producing Agent provenance only; never a read-attribution or authorization axis. |
+| `agent_id` | Producing Agent provenance in the `user` and `project` scopes, never a read-attribution or authorization axis there; the ownership key in `scope_type=agent`. |
 | `memory_type` | Public memory category used by APIs, digests, and UI grouping. |
 | `memory_layer` | Layer in the memory hierarchy (`semantic` or `episodic` in the current baseline). |
 | `visibility` | Who may read (`private`, `space_shared`, `selected_users`). |
@@ -108,7 +116,11 @@ and session, and archives or restores the owner's own entry in one request
 (`DELETE /memory/:id` returns 200 with the entry, or 202 with a proposal for
 someone else's). In a Project run the write also appears in the Project's
 updates as `memory.remembered` / `memory.revised` with a one-step
-`archive_memory` undo.
+`archive_memory` undo — except a persona **revision**, which is
+`agent.persona_revised`, carries what it replaced, and undoes as
+`restore_memory`: an Agent must always have some persona, so archiving the head
+alone would leave it with none. Outside a Project the same reversal is
+`POST /memory/:id/revert`.
 
 Everything else — post-session reflection, activity-to-memory pipelines,
 consolidation, maintenance packets and every import — continues through
@@ -123,13 +135,28 @@ input is forced to the instructing user's personal layer even when the Run has a
 Project or shared Agent context. Capability learning belongs in
 `evolvable_assets`, not `memory_entries`.
 
+What an Agent learns about **itself** is placed by `memory_type` rather than by
+creation context: `note`, `decision` and `lesson` are the Agent's own notes and
+carry `origin_room_id`, `persona` is the one entry per Agent that is delivered
+everywhere. Composite foreign keys require both the owning Agent and an origin
+Room, when present, to belong to the Memory row's Space. An `agent`-scope note is returned to its Agent only where the
+current Room's active human members are a subset of the origin Room's, computed
+at dispatch by `memory/agentMemoryDelivery.ts` — which is the only path that
+returns them at all, since the scope is excluded from the person-facing
+retrieval index. Widening one is promotion to Project Memory through the
+proposal path; the entry itself never widens. What renders the result into a
+prompt is the dispatch path: `agentGroups/agentIdentityPrompt.ts`. The scope is
+also outside Space oversight — a note's audience is the origin Room's roster,
+and oversight is not it.
+
 ## Implementation map
 
 - Central rule: `server/src/modules/access/contentAccess*.ts`; Memory sensitivity
   and redaction are additional gates in Memory repositories.
 - Serialization / redaction: `server/src/modules/memory/repository.ts` — memory row to API output helpers; `versions()` returns the chain with each version's provenance.
 - Direct Agent writes: `server/src/modules/memory/memoryApplyRepository.ts` (`applyDirect`, `setOwnStatus`, `MemoryReachError`) and `server/src/modules/memory/memoryDirectWriteExecutors.ts`.
-- Paused-session attention: `server/src/modules/memory/projectIntegration.ts`.
+- Paused-session attention: `server/src/modules/memory/projectIntegration.ts`;
+  Project-free persona-change pointer: `server/src/modules/activity/notificationPointers.ts`.
 - Persistence of cross-person reads: `server/src/modules/contentAccess/audit.ts`;
   table `content_access_logs`. Only the resource owner may query a resource's
   audit log by default. `GET /memory/:id` logs; the list and

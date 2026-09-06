@@ -8,6 +8,7 @@ import { RoomService } from "../rooms/service.js";
 import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
 import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository.js";
 import { ROOM_DELEGATION_COMPLETION_RETRY_JOB } from "./delegationCompletionRetryJob.js";
+import { runAssignedTask } from "../runs/runAssignedTask.js";
 
 type DelegationTerminalStatus = "succeeded" | "failed" | "cancelled";
 
@@ -166,7 +167,7 @@ export class AgentGroupRunLifecycleProjector {
           kind: "agent_delegation_result",
           key: input.delegation.id,
           payload: {
-            instruction: input.run.instruction ?? input.run.prompt ?? "",
+            instruction: input.run.instruction ?? runAssignedTask(input.run) ?? "",
             result_summary: input.resultSummary,
             status: input.terminalStatus,
           },
@@ -547,18 +548,20 @@ function waitingContinuationPrompt(
 ): string {
   const results = dependencyRuns.map((run, index) => {
     const agentName = stringValue(run.agent_name) ?? `Agent ${index + 1}`;
+    const task = runAssignedTask(run);
     return [
       `${index + 1}. ${agentName}`,
       `   status: ${run.status}`,
-      run.prompt ? `   task: ${run.prompt}` : null,
+      task ? `   task: ${task}` : null,
       `   result: ${terminalRunResultSummary(run)}`,
     ].filter((part): part is string => typeof part === "string").join("\n");
   }).join("\n");
+  const waitingTask = runAssignedTask(waitingRun);
   return [
     "Continue the paused room agent run using the completed agent results below.",
     "Use these results as available room context. Do not say the results are unavailable.",
     "Do not call additional agents unless the completed results clearly require a follow-up.",
-    waitingRun.prompt ? `Original instruction:\n${waitingRun.prompt}` : null,
+    waitingTask ? `Original instruction:\n${waitingTask}` : null,
     waiting.reason ? `Wait reason:\n${waiting.reason}` : null,
     waiting.resume_instruction ? `Resume instruction:\n${waiting.resume_instruction}` : null,
     waiting.scope ? `Wait scope: ${waiting.scope}` : null,

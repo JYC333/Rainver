@@ -160,10 +160,11 @@ describe("ACP registry agents", () => {
     });
     expect(listRuntimeAdapterSpecs().map((candidate) => candidate.adapter_type)).toContain("acp_goose");
 
-    // ...and the hosts module offers it for remote dispatch, with the daemon
-    // told how to probe it.
+    // The hosts module exposes it for installation, but does not offer it for
+    // dispatch until the registry can describe an Agent-isolated login/state
+    // root contract.
     const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-adapters", headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
-    expect(adapters.json().items).toContainEqual(expect.objectContaining({ adapter_type: "acp_goose", capability_probe: "acp_goose", remote_eligible: true }));
+    expect(adapters.json().items).toContainEqual(expect.objectContaining({ adapter_type: "acp_goose", capability_probe: "acp_goose", remote_eligible: false }));
 
     const listed = await app.inject({ method: "GET", url: "/api/v1/acp-agents" });
     expect(listed.json().items).toEqual([expect.objectContaining({ id: "goose", installed_on: [] })]);
@@ -176,6 +177,13 @@ describe("ACP registry agents", () => {
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [deskId, JSON.stringify({ installations: { acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", logged_in: false }] } })],
     );
+    const defaultRefused = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/${deskId}/default-adapter`,
+      payload: { adapter_type: "acp_goose" },
+    });
+    expect(defaultRefused.statusCode).toBe(422);
+    expect(defaultRefused.json()).toMatchObject({ code: "runtime_profile_isolation_unsupported" });
     const refused = await app.inject({ method: "DELETE", url: "/api/v1/acp-agents/goose" });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().detail).toMatch(/Desk/);

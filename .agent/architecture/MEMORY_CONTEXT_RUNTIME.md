@@ -26,7 +26,12 @@ Every Memory read revalidates:
 
 - active Space membership and exact `space_id`;
 - `deleted_at IS NULL` and `status = active`;
-- user or Project scope, ownership, visibility, grants, and Project membership;
+- user, Project or Agent scope, ownership, visibility, grants, and Project
+  membership. An `agent`-scope entry is the Agent's own
+  ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4): it is private to
+  the Agent's owner as a *read*, and it reaches the Agent itself only through
+  `memory/agentMemoryDelivery.ts`, whose audience filter is a separate gate
+  from this one and belongs to the dispatch path, not to Runtime Context;
 - summary-only Personal Memory grants before content leaves the domain.
 
 Memory search and retrieval remain read-only candidate authorities. Their

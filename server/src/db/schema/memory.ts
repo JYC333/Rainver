@@ -1,4 +1,4 @@
-import { pgTable, index, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents.js";
 import { users } from "./auth.js";
@@ -6,6 +6,7 @@ import { spaces } from "./spaces.js";
 import { artifacts } from "./artifacts.js";
 import { proposals } from "./proposals.js";
 import { projects } from "./projects.js";
+import { rooms } from "./rooms.js";
 
 export const memoryEntries = pgTable("memory_entries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -22,8 +23,12 @@ export const memoryEntries = pgTable("memory_entries", {
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	sensitivityLevel: varchar("sensitivity_level", { length: 32 }).default('normal').notNull(),
 	lastConfirmedAt: timestamp("last_confirmed_at", { withTimezone: true, mode: 'string' }),
-	// Producing-Agent provenance only. Memory authorization and retrieval must
-	// never use this column as an attribution scope.
+	// Producing-Agent provenance in the `user` and `project` scopes: Memory
+	// authorization and retrieval must never use this column as an attribution
+	// scope there. In `scope_type = 'agent'` it is the ownership key — the one
+	// scope where what an Agent knows is the Agent's, with `owner_user_id`
+	// naming the person who archives, restores and reviews it
+	// ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
 	agentId: varchar("agent_id", { length: 36 }),
 	namespace: varchar({ length: 255 }),
 	title: varchar({ length: 512 }),
@@ -48,6 +53,13 @@ export const memoryEntries = pgTable("memory_entries", {
 	sourceTrust: varchar("source_trust", { length: 32 }),
 	createdFromProposalId: varchar("created_from_proposal_id", { length: 36 }),
 	projectId: varchar("project_id", { length: 36 }),
+	// The Room an agent-scope note was learned in. A note is delivered only
+	// where the current Room's active human members are a subset of this Room's
+	// — an audience that could not have seen the conversation the note came
+	// from never receives the note. Null for a note taken in direct chat with
+	// the owner, and always null for a persona, which has no origin Room and is
+	// delivered everywhere.
+	originRoomId: varchar("origin_room_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_memory_entries_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_memory_entries_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
@@ -85,8 +97,8 @@ export const memoryEntries = pgTable("memory_entries", {
 			name: "fk_memory_entries_supersedes_memory_id_memory_entries"
 		}).onDelete("set null"),
 	foreignKey({
-			columns: [table.agentId],
-			foreignColumns: [agents.id],
+			columns: [table.agentId, table.spaceId],
+			foreignColumns: [agents.id, agents.spaceId],
 			name: "memory_entries_agent_id_fkey"
 		}),
 	foreignKey({
@@ -110,8 +122,38 @@ export const memoryEntries = pgTable("memory_entries", {
 			name: "memory_entries_subject_user_id_fkey"
 		}),
 	check("ck_memory_entries_memory_layer", sql`(memory_layer IS NULL) OR ((memory_layer)::text = ANY (ARRAY[('episodic'::character varying)::text, ('semantic'::character varying)::text]))`),
-	check("ck_memory_entries_scope_type", sql`scope_type IN ('user', 'project')`),
-	check("ck_memory_entries_scope_placement", sql`(scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL)`),
+	index("ix_memory_entries_origin_room_id").using("btree", table.originRoomId.asc().nullsLast()),
+	// One active persona per Agent. A second would make "what this Agent has
+	// become" ambiguous at the moment it is rendered into a prompt, and the
+	// version chain is how a revision is recorded instead.
+	uniqueIndex("uq_memory_entries_active_persona")
+		.on(table.agentId)
+		.where(sql`scope_type = 'agent' AND memory_type = 'persona' AND status = 'active' AND deleted_at IS NULL`),
+	// Cascade, not `set null`: a null `origin_room_id` means "learned in direct
+	// chat with the owner", so nulling a deleted Room's notes would reclassify
+	// them into the owner's direct chat — including notes from a Room the owner
+	// was never in. A Room that is really gone has no audience left for its
+	// notes to be delivered to.
+	foreignKey({
+			columns: [table.originRoomId, table.spaceId],
+			foreignColumns: [rooms.id, rooms.spaceId],
+			name: "memory_entries_origin_room_id_fkey"
+		}).onDelete("cascade"),
+	check("ck_memory_entries_scope_type", sql`scope_type IN ('user', 'project', 'agent')`),
+	check("ck_memory_entries_scope_placement", sql`(scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL) OR (scope_type = 'agent' AND project_id IS NULL AND agent_id IS NOT NULL AND owner_user_id IS NOT NULL)`),
+	check("ck_memory_entries_agent_shape", sql`scope_type <> 'agent' OR (memory_type IN ('note', 'decision', 'lesson', 'persona') AND subject_user_id IS NULL)`),
+	// An origin Room belongs to an agent-scope note and to nothing else: a
+	// persona is delivered everywhere and has none, and the other two scopes
+	// have their own reach rules.
+	check("ck_memory_entries_origin_room", sql`origin_room_id IS NULL OR (scope_type = 'agent' AND memory_type <> 'persona')`),
+	// Private, and enforced here rather than only in the read gate: the
+	// content-access API updates `visibility` with a raw UPDATE, and a
+	// space-shared agent-scope row would be returned to every Space member by
+	// every pure-SQL read while the TypeScript gate hid it on the Memory page.
+	check("ck_memory_entries_agent_private", sql`scope_type <> 'agent' OR visibility = 'private'`),
+	// A persona is what the Agent has learned about itself, so it is the
+	// Agent's scope or nothing.
+	check("ck_memory_entries_persona_scope", sql`memory_type <> 'persona' OR scope_type = 'agent'`),
 	check("ck_memory_entries_sensitivity_level", sql`(sensitivity_level)::text = ANY (ARRAY[('normal'::character varying)::text, ('sensitive'::character varying)::text, ('restricted'::character varying)::text, ('highly_restricted'::character varying)::text])`),
 	check("ck_memory_entries_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
 	check("ck_memory_entries_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),

@@ -130,8 +130,15 @@ export const PROJECT_WORK_EVENT_KINDS = [
   // one action.
   "memory.remembered",
   "memory.revised",
+  // What an Agent concluded about itself with nobody in the turn
+  // ([ADR 0003](../../../.agent/decisions/0003-memory-proposal-flow.md) §5's
+  // third row). It applies directly, so this is the notification that makes
+  // that conditional: the owner reads what changed and puts the previous
+  // version back in one action.
+  "agent.persona_revised",
   // The reversal, which is itself a row rather than a deletion.
   "memory.archived",
+  "agent.persona_restored",
 ] as const;
 export const ProjectWorkEventKindSchema = z.enum(PROJECT_WORK_EVENT_KINDS);
 export type ProjectWorkEventKind = z.infer<typeof ProjectWorkEventKindSchema>;
@@ -397,7 +404,17 @@ export type ProjectUpdateRequest = z.infer<typeof ProjectUpdateRequestSchema>;
  */
 export const ProjectWorkUpdateUndoSchema = z
   .object({
-    action: z.enum(["archive_thread", "reopen_thread", "revert_iteration", "archive_memory"]),
+    action: z.enum([
+      "archive_thread",
+      "reopen_thread",
+      "revert_iteration",
+      "archive_memory",
+      // A persona has no "archive and be done": the Agent has to have *some*
+      // persona, and archiving the head alone would leave it with none. The
+      // reversal is one action that retires the new version and brings the
+      // previous one back.
+      "restore_memory",
+    ]),
     target_id: IdSchema,
   })
   .strict();
@@ -428,6 +445,14 @@ const ProjectWorkUpdateBaseSchema = z.object({
     .strict()
     .nullable(),
   undo: ProjectWorkUpdateUndoSchema.nullable(),
+  /**
+   * What this update replaced, when it replaced something a person would want
+   * to weigh it against — today, an Agent's previous persona. Reversing is one
+   * action, but deciding whether to reverse needs both sides, and sending the
+   * person to the version chain for the other half is the thing ADR 0017 §4's
+   * "records every write with what changed" exists to avoid.
+   */
+  previous_summary: z.string().nullable(),
   /** Set once a later update reversed this one. */
   undone_by_event_id: IdSchema.nullable(),
 });

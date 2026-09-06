@@ -46,7 +46,24 @@ export function memoryAccessDecision(
     || !isContentVisibility(memory.visibility)
     || !isContentAccessLevel(memory.access_level)
   ) return "deny";
-  if (memory.scope_type !== "user" && memory.scope_type !== "project") return "deny";
+  // `agent` scope reads as the Agent's owner's own private content: the row is
+  // private with `owner_user_id` naming that person, so the canonical decision
+  // below already answers it. Listing the scope here is what admits it at all
+  // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
+  if (memory.scope_type !== "user" && memory.scope_type !== "project" && memory.scope_type !== "agent") {
+    return "deny";
+  }
+  // An agent-scope row is private by CHECK; a wider one could only be a row
+  // written around the applier, and granting on it would hand the Agent's own
+  // memory to the Space.
+  if (memory.scope_type === "agent" && memory.visibility !== "private") return "deny";
+  // And it is the Agent's owner's alone, oversight included. A note carries
+  // the Room it was learned in and is delivered only where that Room's
+  // audience already reached (ADR 0003 §4, ADR 0018); a Space owner reading it
+  // on the Memory page would cross the Room the delivery path refuses to
+  // cross. Oversight keeps `user` and `project` scope, where the
+  // accountability it exists for lives.
+  if (memory.scope_type === "agent" && memory.owner_user_id !== context.userId) return "deny";
   const resource = {
     id: memory.id ?? "memory",
     space_id: memory.space_id,

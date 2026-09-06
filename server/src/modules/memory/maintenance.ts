@@ -112,6 +112,10 @@ export class MemoryMaintenanceService {
         WHERE space_id = $1
           AND deleted_at IS NULL
           AND status = ANY($2::varchar[])
+          -- Agent Memory is not the person's Memory to consolidate (see
+          -- isExcludedMaintenanceRow). Excluded in the query rather than after
+          -- it, so it does not consume the scan window either.
+          AND scope_type <> 'agent'
           AND ($4::varchar IS NULL OR project_id = $4)
           AND (
             $5::timestamptz IS NULL
@@ -442,6 +446,13 @@ function memoryObject(row: MemoryRow): { object_type: "memory_entry"; object_id:
 
 function isExcludedMaintenanceRow(row: MemoryRow): boolean {
   if ((row.sensitivity_level ?? "normal").toLowerCase() === "highly_restricted") return true;
+  // Agent Memory is not the person's Memory to consolidate. Its duplicates and
+  // thin entries are the Agent's own record of itself and of a Room
+  // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4),
+  // its persona is one entry by construction, and a maintenance packet that
+  // proposed rewriting either would put an Agent's identity into a bulk review
+  // nobody reads it as.
+  if ((row.scope_type ?? "").toLowerCase() === "agent") return true;
   return false;
 }
 

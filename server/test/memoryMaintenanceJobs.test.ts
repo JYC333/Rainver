@@ -200,6 +200,8 @@ function memoryRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     root_memory_id: null,
     supersedes_memory_id: null,
     project_id: null,
+    agent_id: null,
+    origin_room_id: null,
     ...overrides,
   };
 }

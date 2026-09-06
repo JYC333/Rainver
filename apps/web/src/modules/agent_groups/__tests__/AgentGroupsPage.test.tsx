@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentGroupsPage from '../AgentGroupsPage'
@@ -1371,6 +1371,52 @@ describe('Rooms page', () => {
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
     expect(await screen.findByText('已提升为空间级知识。助手正在下方继续。')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
+  })
+
+  it('shows a card that names one decider only to that person', async () => {
+    // An Agent's persona is its owner's alone, by identity and not by role
+    // (ADR 0003 §5). The member who asked for the change cannot accept it, so
+    // they get no card — buttons that refuse are worse than nothing. The card
+    // stays in the shared snapshot because that snapshot *is* the card; the
+    // surface is what filters it.
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-persona',
+        session_id: 'session-1',
+        space_id: 'space-1',
+        user_id: null,
+        sender_agent_id: 'agent-1',
+        role: 'assistant',
+        content: 'I would change how I answer.',
+        metadata_json: {
+          action_previews: [{
+            action_id: 'memory.remember',
+            status: 'proposed',
+            proposal_id: 'proposal-persona',
+            proposal_type: 'memory_create',
+            title: 'Change what I have become',
+            summary: null,
+            risk_level: 'low',
+            decidable_by_user_id: 'user-2',
+          }],
+        },
+        created_at: '2026-09-06T00:00:03.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    } as never)
+    vi.mocked(proposalsApi.get).mockResolvedValue({ status: 'pending' } as Awaited<ReturnType<typeof proposalsApi.get>>)
+
+    // `user-1` asked; `user-2` owns the Agent.
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByText('I would change how I answer.')).toBeInTheDocument()
+    expect(screen.queryByText('Change what I have become')).not.toBeInTheDocument()
+
+    cleanup()
+    mockedSpaceContext.userId = 'user-2'
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByText('Change what I have become')).toBeInTheDocument()
   })
 
   it('refreshes a stale action-preview snapshot against the live Proposal on mount (already decided elsewhere)', async () => {

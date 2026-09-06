@@ -78,7 +78,15 @@ function registerCoreWorkEventKinds(): void {
   }
   // Memory's direct writes, declared here for the same reason as the Inquiry
   // kinds: the vocabulary must be complete when the registry is imported.
-  for (const kind of ["memory.remembered", "memory.revised", "memory.archived"] as const) {
+  for (const kind of [
+    "memory.remembered",
+    "memory.revised",
+    "memory.archived",
+    // What an Agent concluded about itself with nobody in the turn, and the
+    // reversal that puts the previous version back (ADR 0003 §5, §3).
+    "agent.persona_revised",
+    "agent.persona_restored",
+  ] as const) {
     registerWorkEventKind({ kind, subjects: ["memory_entry"], owner: "memory" });
   }
 }

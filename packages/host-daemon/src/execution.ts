@@ -1,5 +1,6 @@
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostLaunchFrame, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
+import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
@@ -7,9 +8,9 @@ import { configDir, requireConfig } from "./config.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
-import { filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
+import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
-import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
+import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 
 export interface LaunchWorkspace {
@@ -305,16 +306,58 @@ function rainverCliPath(): string {
 }
 
 /**
- * Where a bound run's runtime keeps its profile, including the conversation
- * state it will resume next turn. Shared by every run with the same adapter
- * and provider on this machine, which is why it is not under `runs/`.
+ * Where a run's runtime keeps its profile: its login, the conversation state
+ * it will resume next turn, and whatever the vendor CLI remembers on its own.
+ *
+ * The key is
+ * `agents/<agent_id>/<container_kind>/<container_id>/<adapter>/<provider|ambient>`,
+ * and the directory follows it with a `profiles/` level inserted so it sits
+ * beside — not inside — the Agent's managed workspaces. It is not under
+ * `runs/`: a profile deleted when its run exits takes with it the session the
+ * next turn is about to resume.
+ *
+ * Every segment is validated before a path is built from it. The daemon runs
+ * unsandboxed on a machine the user owns, so the control plane is not trusted
+ * to have sent a key that stays inside the config directory.
  */
-function providerProfileDir(profileKey: string): string {
+export function providerProfileDir(profileKey: string): string {
   const segments = profileKey.split("/");
-  if (segments.length !== 2 || segments.some((segment) => !/^[A-Za-z0-9._-]+$/.test(segment) || segment.startsWith("."))) {
-    throw new Error(`provider binding carried an unusable profile key: ${profileKey}`);
+  const [agents, agentId, containerKind, containerId, adapterType, providerId] = segments;
+  if (segments.length !== 6 || agents !== "agents") {
+    throw new Error(`runtime profile key has an unusable shape: ${profileKey}`);
   }
-  return join(configDir(), "profiles", ...segments);
+  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location") {
+    throw new Error(`runtime profile key has an unusable container kind: ${profileKey}`);
+  }
+  for (const segment of [agentId, containerId, adapterType, providerId]) {
+    if (!segment || !/^[A-Za-z0-9._-]+$/.test(segment) || segment.startsWith(".")) {
+      throw new Error(`runtime profile key has an unusable segment: ${profileKey}`);
+    }
+  }
+  // Derived from the container path rather than rebuilt: archive, restore and
+  // reset all move the container level, and a second construction of the same
+  // five segments that drifted would leave launches working while every
+  // archive silently moved nothing.
+  return join(
+    runtimeProfileContainerPath(agentId!, containerKind, containerId!),
+    adapterType!,
+    providerId!,
+  );
+}
+
+/**
+ * The HOME whose login state this installation uses.
+ *
+ * One login per host × installation, which is the whole point of linking the
+ * credential rather than logging in per profile: an Agent × container profile
+ * per Room would otherwise multiply logins by Agents × Rooms. `own` is the
+ * machine's own home directory — the CLI the user already logged into — and a
+ * managed copy has its own `home/` so its login never mixes with the
+ * machine's.
+ */
+function loginHomeFor(adapterType: string, installation: string): string | null {
+  if (installation === OWN_INSTALLATION) return homedir();
+  return readToolManifestSync(adapterType, installation)?.home ?? null;
 }
 
 /**
@@ -426,16 +469,25 @@ async function launchRun(
     });
     return;
   }
-  const { command, args: spawnArgs, env: acpAdapterEnv } = launch;
+  const { command, args: spawnArgs } = launch;
+  const acpAdapterEnv = { ...launch.env };
 
   const outputsDir = runOutputsDir(frame.run_id);
   await mkdir(outputsDir, { recursive: true });
 
-  // B67: for a bound run the executing machine contributes nothing to which
-  // backend, credential, or upstream the runtime reaches — so the ambient
-  // environment is filtered rather than merged over, and the runtime is
-  // pointed at a control-plane-provided profile instead of this machine's.
-  // A run with no binding keeps the machine's own environment untouched.
+  // Two different rules, told apart by `credential_source`.
+  //
+  // B67, for a run bound to a ModelProvider: the executing machine contributes
+  // nothing to which backend, credential or upstream the runtime reaches, so
+  // the ambient environment is filtered to an allowlist rather than merged
+  // over, and the runtime is pointed at a control-plane-provided profile.
+  //
+  // For a run on this machine's own login, B67's closing rule stands — it is
+  // "not affected" — so the machine's environment is kept and only the
+  // runtime's *state root* moves into the Agent's profile. Filtering here
+  // instead would take `~/.gitconfig`, `~/.ssh/config` and the proxy variables
+  // away from every Task run on a paired machine, which no part of this was
+  // meant to do.
   let baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};
@@ -459,11 +511,37 @@ async function launchRun(
   }
   if (frame.provider_binding) {
     try {
-      bindingEnv = await materializeProviderBinding(
-        frame.provider_binding,
-        providerProfileDir(frame.provider_binding.profile_key),
-      );
-      baseEnv = filterAmbientEnv(process.env);
+      const adapterType = frame.adapter_type ?? rawCommand;
+      const binding = frame.provider_binding;
+      // A frame that writes nothing, points at nothing and links nothing is
+      // the credential half alone — a runtime whose state root cannot move
+      // (a registry agent, logged in inside its managed tree). It gets no
+      // profile directory and keeps its `HOME`; only the ambient vendor keys
+      // go.
+      const relocatesState = Object.keys(binding.profile_env).length > 0
+        || binding.files.length > 0 || binding.login_link !== null;
+      bindingEnv = relocatesState
+        ? await materializeProviderBinding(
+          binding,
+          providerProfileDir(binding.profile_key),
+          loginHomeFor(adapterType, frame.installation ?? OWN_INSTALLATION),
+          log,
+        )
+        : {};
+      if (binding.credential_source === "provider_lease") {
+        baseEnv = filterAmbientEnv(process.env);
+      } else if (relocatesState) {
+        baseEnv = clearStateRootEnv(process.env, adapterType);
+        // A managed copy is launched with `HOME` pointing inside its own tree
+        // so its login never mixes with the machine's. That reason is gone
+        // once the credential is linked into the profile and the state root is
+        // the profile's own variable — and leaving it would take
+        // `~/.gitconfig` and `~/.ssh/config` away from exactly the runs this
+        // branch exists to keep them for.
+        delete acpAdapterEnv.HOME;
+      } else {
+        baseEnv = clearVendorCredentialEnv(process.env, adapterType);
+      }
     } catch (error) {
       send({
         type: "complete",

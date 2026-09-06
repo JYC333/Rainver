@@ -137,7 +137,7 @@ export function ConfirmDialog({
         {restoreAvailable && (
           <label className="mb-4 flex items-start gap-2 text-sm">
             <input type="checkbox" checked={restoreChecked} onChange={event => onRestoreChange?.(event.target.checked)} />
-            <span><span className="font-medium">Restore previous workspace</span><span className="block text-xs text-muted-foreground">Reuse the archived managed workspace when the host is online.</span></span>
+            <span><span className="font-medium">Restore previous host state</span><span className="block text-xs text-muted-foreground">Bring back what this Agent left on the host — its CLI login and sessions, and its workspace when it had one — if the archive is still there and the host is online.</span></span>
           </label>
         )}
         <div className="flex justify-end gap-2">

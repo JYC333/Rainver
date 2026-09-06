@@ -25,10 +25,12 @@ describe("the launch frame across the wire", () => {
     installation: "managed:1.2.3",
     adapter_type: "claude_code",
     provider_binding: {
-      profile_key: "claude_code/provider-1",
+      profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/provider-1",
       env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1" },
       profile_env: { CLAUDE_CONFIG_DIR: "." },
       files: [{ relative_path: ".codex/config.toml", contents: "m", escape: "toml_basic_string" }],
+      credential_source: "provider_lease",
+      login_link: null,
     },
     work_surface: {
       env: { RAINVER_API_URL: "http://control-plane:8021", RAINVER_RUN_ID: "run-1", RAINVER_TOOL_TOKEN: "t" },

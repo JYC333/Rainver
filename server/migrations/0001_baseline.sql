@@ -2874,9 +2874,14 @@ CREATE TABLE "memory_entries" (
 	"source_trust" varchar(32),
 	"created_from_proposal_id" varchar(36),
 	"project_id" varchar(36),
+	"origin_room_id" varchar(36),
 	CONSTRAINT "ck_memory_entries_memory_layer" CHECK ((memory_layer IS NULL) OR ((memory_layer)::text = ANY (ARRAY[('episodic'::character varying)::text, ('semantic'::character varying)::text]))),
-	CONSTRAINT "ck_memory_entries_scope_type" CHECK (scope_type IN ('user', 'project')),
-	CONSTRAINT "ck_memory_entries_scope_placement" CHECK ((scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL)),
+	CONSTRAINT "ck_memory_entries_scope_type" CHECK (scope_type IN ('user', 'project', 'agent')),
+	CONSTRAINT "ck_memory_entries_scope_placement" CHECK ((scope_type = 'user' AND project_id IS NULL) OR (scope_type = 'project' AND project_id IS NOT NULL) OR (scope_type = 'agent' AND project_id IS NULL AND agent_id IS NOT NULL AND owner_user_id IS NOT NULL)),
+	CONSTRAINT "ck_memory_entries_agent_shape" CHECK (scope_type <> 'agent' OR (memory_type IN ('note', 'decision', 'lesson', 'persona') AND subject_user_id IS NULL)),
+	CONSTRAINT "ck_memory_entries_origin_room" CHECK (origin_room_id IS NULL OR (scope_type = 'agent' AND memory_type <> 'persona')),
+	CONSTRAINT "ck_memory_entries_agent_private" CHECK (scope_type <> 'agent' OR visibility = 'private'),
+	CONSTRAINT "ck_memory_entries_persona_scope" CHECK (memory_type <> 'persona' OR scope_type = 'agent'),
 	CONSTRAINT "ck_memory_entries_sensitivity_level" CHECK ((sensitivity_level)::text = ANY (ARRAY[('normal'::character varying)::text, ('sensitive'::character varying)::text, ('restricted'::character varying)::text, ('highly_restricted'::character varying)::text])),
 	CONSTRAINT "ck_memory_entries_source_trust" CHECK ((source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))),
 	CONSTRAINT "ck_memory_entries_visibility" CHECK (visibility IN ('private', 'space_shared', 'selected_users')),
@@ -6603,11 +6608,12 @@ ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_project_id_delete_fk
 ALTER TABLE "memory_entries" ADD CONSTRAINT "fk_memory_entries_project_id_projects" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "fk_memory_entries_root_memory_id_memory_entries" FOREIGN KEY ("root_memory_id") REFERENCES "public"."memory_entries"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "fk_memory_entries_supersedes_memory_id_memory_entries" FOREIGN KEY ("supersedes_memory_id") REFERENCES "public"."memory_entries"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_agent_id_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_created_from_proposal_id_fkey" FOREIGN KEY ("created_from_proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_subject_user_id_fkey" FOREIGN KEY ("subject_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "memory_entries" ADD CONSTRAINT "memory_entries_origin_room_id_fkey" FOREIGN KEY ("origin_room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_last_packet_proposal_id_fkey" FOREIGN KEY ("last_packet_proposal_id") REFERENCES "public"."proposals"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_last_report_artifact_id_fkey" FOREIGN KEY ("last_report_artifact_id") REFERENCES "public"."artifacts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_maintenance_jobs" ADD CONSTRAINT "memory_maintenance_jobs_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7669,6 +7675,8 @@ CREATE INDEX "ix_memory_entries_status" ON "memory_entries" USING btree ("status
 CREATE INDEX "ix_memory_entries_subject_user_id" ON "memory_entries" USING btree ("subject_user_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_entries_supersedes_memory_id" ON "memory_entries" USING btree ("supersedes_memory_id");--> statement-breakpoint
 CREATE INDEX "ix_memory_entries_visibility" ON "memory_entries" USING btree ("visibility");--> statement-breakpoint
+CREATE INDEX "ix_memory_entries_origin_room_id" ON "memory_entries" USING btree ("origin_room_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_memory_entries_active_persona" ON "memory_entries" USING btree ("agent_id") WHERE scope_type = 'agent' AND memory_type = 'persona' AND status = 'active' AND deleted_at IS NULL;--> statement-breakpoint
 CREATE INDEX "ix_memory_maintenance_jobs_due" ON "memory_maintenance_jobs" USING btree ("status","run_after","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_memory_maintenance_jobs_owner" ON "memory_maintenance_jobs" USING btree ("space_id","owner_user_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_memory_relations_created_from_proposal_id" ON "memory_relations" USING btree ("created_from_proposal_id");--> statement-breakpoint

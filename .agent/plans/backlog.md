@@ -266,8 +266,9 @@ agent re-authorization SQL (`runtimeContext/gateway.ts`, twice) and
 ## 7. Harness And Scope Convergence
 
 Two remaining specifications cover capability shrink and the two-Scope user
-model. Each is a separate convergence with its own prerequisites; pointers only
-here, detail there. Runtime-boundary and registry-lifecycle work completed on
+model, and one audit (H2) covers the two paths a prompt is assembled by. Each
+is a separate convergence with its own prerequisites; pointers only here,
+detail there. Runtime-boundary and registry-lifecycle work completed on
 2026-08-14, and the routing specification was retired on 2026-08-15 — its
 shipped behaviour is in
 [../architecture/ROUTING.md](../architecture/ROUTING.md) and its untriggered
@@ -319,6 +320,52 @@ part of what the delivery renders, not a mutation applied after it.
   documents and the workflow template layer landed on 2026-08-14. The remaining
   items collapse the implementation to
   `SkillPackage + SkillBinding + SkillPolicy`.
+
+### H2 — Two prompt-assembly paths
+
+From the agent-identity-and-memory-boundary plan's decision 8, recorded in its
+P5 (2026-09-06); that plan is retired and the surviving statement of the split
+is [modules/rooms.md](../modules/rooms.md)'s host-bound section.
+
+A Run's prompt is assembled twice over, by two mechanisms that answer the same
+question. One is brokered: `runs/runtimeContextAttempts.ts` opens an invocation
+authority through `RuntimeContextInvocationGateway`, which resolves a Delivery,
+seals a snapshot, and writes Semantic and Micro Checkpoints. The other is
+direct: a Room turn and a direct chat assemble the conversation increment, the
+Project state and the Agent's identity block themselves and send that text as
+prompt content. The identity work had to say which one applied before it could
+add anything to either.
+
+Where the line actually runs is the audit's first question, because it is not
+where the prose in either document suggests. The gateway is skipped on exactly
+one condition — `execution_port.hostKind === "remote"`
+(`runs/orchestrationService.ts`) — so a Room turn or direct chat dispatched to
+the **server** host is assembled directly *and* brokered, and the module's own
+boundary inventory records both conversation entrypoints as
+`targetBoundary: "runtime_context_gateway"`
+(`runtimeContext/invocationInventory.ts`, asserted by
+`test/runtimeContextEntrypoints.test.ts`). Nor is the module reachable only
+from the brokered path: `modules/runtimeContext/` is about 8k lines, and
+outside `runtimeContextAttempts.ts` nine files import it. Seven are the ones
+you would expect: `gateway/routeRegistry.ts` mounting the module's own HTTP
+routes, `jobs/workerRuntime.ts` registering the checkpoint job handler,
+`importedSessions/extraction.ts` taking one prompt constant,
+`managedApiAdapter.ts` and `vendorCliAdapter.ts`, `runs/routes.ts`, and
+`orchestrationService.ts`. The other two are the ones that matter here: `chatTurnFinalizer.ts`, which calls `finalizeChatTurn` on
+**every** chat turn, host-bound included (it swallows
+`InvocationAuthorityNotFoundError` when there is no authority), and
+`agentGroups/service.ts`, which deliberately shares
+`runtimeContext/conversationContinuity.ts` so the two replays cannot drift into
+two fixed-size history implementations.
+
+- [ ] Establish which turns are brokered in practice, then which parts the
+  brokered path actually needs — sealed replay, CLI cursor continuity, and the
+  two checkpoint kinds — and which are carried only because the gateway exists.
+  Decide what to shrink from that evidence, not from the line count.
+
+The order matters: delivering the identity block to managed Agents
+([section 10](#10-agent-identity)) lands on whichever path this audit leaves
+standing, so doing it first would build against a surface that may not survive.
 
 ## 8. Execution Runtime
 
@@ -491,6 +538,31 @@ shipped in `293023c3` / `d162aabf` and neither item blocks it.
   client's `get<T>` is an assertion, so a future server change would not be
   caught by typecheck. The declaration that had already drifted is gone; the
   mechanism that let it drift is not.
+
+## 10. Agent Identity
+
+From the agent-identity-and-memory-boundary plan's P4 review (2026-09-06);
+that plan is retired, and the current state is
+[ADR 0003](../decisions/0003-memory-proposal-flow.md) §4 with
+[modules/rooms.md](../modules/rooms.md) and
+[modules/agents.md](../modules/agents.md). The phase shipped and neither item
+blocks it.
+
+- [ ] Send the host-bound identity block **on change** rather than on every
+  turn. A resumed vendor session accumulates one copy of it per turn (role,
+  persona, and up to 3000 characters of notes), which is the dominant repeated
+  payload on a conversation that otherwise sends only the increment since the
+  Agent's last turn. Doing it needs a digest of the rendered block on
+  `host_threads`, and the reason it was not built with P4 is the failure mode:
+  a digest that records "sent" for a turn that never reached the runtime would
+  silently leave the Agent without its identity, which is worse than the cost.
+  Whatever closes this has to make the record conditional on the dispatch
+  actually landing.
+- [ ] Deliver the same block to **managed** (server-side) Agents. P4 scoped
+  itself to the host-bound path on purpose: the managed path would acquire
+  these entries through its Runtime Context Memory candidate authority, which
+  is a different and smaller change, and the plan deferred it behind the
+  two-prompt-assembly-paths audit in section 7 (H2).
 
 ## Completion and retirement
 

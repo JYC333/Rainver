@@ -854,7 +854,7 @@ function RoomMessageView({
     : mine
     ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? 'You' : 'Person'))
     : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? 'Agent'
-  const previews = metadataActionPreviews(message.metadata_json)
+  const previews = decidableByViewer(metadataActionPreviews(message.metadata_json), viewerUserId)
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
     // text, so the two sides differ in alignment, fill and edge at once.
@@ -1027,6 +1027,24 @@ export function messageRunIds(message: {
 export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews
   return Array.isArray(value) ? value as ChatActionPreview[] : []
+}
+
+/**
+ * Drops the cards this person cannot decide.
+ *
+ * One kind names a single person by identity rather than by role — an Agent's
+ * persona, which only its owner decides (ADR 0003 §5). A member who asked for
+ * the change gets no card: they cannot accept it, and buttons that refuse are
+ * worse than nothing. Filtered here rather than server-side because this list
+ * is the shared snapshot on the message and is the only thing any surface
+ * renders — dropping it there would take the card from the owner too.
+ */
+export function decidableByViewer(
+  previews: readonly ChatActionPreview[],
+  viewerUserId: string | null | undefined,
+): ChatActionPreview[] {
+  return previews.filter(preview =>
+    !preview.decidable_by_user_id || preview.decidable_by_user_id === viewerUserId)
 }
 
 export function uniqueIds(values: string[]): string[] {

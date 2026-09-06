@@ -14,6 +14,7 @@ import {
 } from "../agentGroups/service.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
 import { PgRunRepository, type RunRecord } from "./repository.js";
+import { runAssignedTask } from "./runAssignedTask.js";
 
 const AGENT_DELEGATE_TOOL = "agent.delegate";
 const AGENT_WAIT_FOR_RESULTS_TOOL = "agent.wait_for_results";
@@ -526,7 +527,10 @@ function waitResultForRun(run: RunRecord): Record<string, unknown> {
     agent_id: run.agent_id,
     agent_name: stringValue(run.agent_name),
     status: run.status,
-    prompt: run.prompt,
+    // The task, not the prompt: a Room turn's prompt carries that Agent's own
+    // persona and the notes it learned there, which the Agent reading this
+    // result is not the audience for (ADR 0003 §4).
+    prompt: runAssignedTask(run),
     result: terminalRunResultSummary(run),
   };
 }

@@ -21,6 +21,7 @@ import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import { isStale } from "../hosts/repository.js";
 import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
+import { renderAgentIdentityPrompt } from "./agentIdentityPrompt.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import {
   loadRoomConversationReplayThroughMessage,
@@ -1038,6 +1039,7 @@ export class AgentGroupRunService {
       : [];
     let delegatedBackend: ResolvedConversationBackend | null = null;
     let delegatedHostDispatch: PreparedRoomHostDispatch | null = null;
+    let delegatedIdentityBlock: string | null = null;
     let delegatedWorkspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [];
     if (group.room_id) {
       if (!parentRun.session_id) {
@@ -1103,6 +1105,18 @@ export class AgentGroupRunService {
           agentId: input.target_agent_id,
           userId: identity.userId,
         });
+        // A delegated specialist runs in the same vendor session as one that
+        // was addressed directly — `host_threads` is unique per Conversation ×
+        // Agent — so without this the same Agent would run with its role and
+        // persona on one turn and without them on the next, depending only on
+        // how it was reached.
+        delegatedIdentityBlock = group.room_id
+          ? await renderAgentIdentityPrompt(repos.db, {
+            spaceId: input.space_id,
+            agentId: input.target_agent_id,
+            roomId: group.room_id,
+          })
+          : null;
       }
     }
     const childRun = await repos.runs.createDelegatedChildRun({
@@ -1124,10 +1138,12 @@ export class AgentGroupRunService {
       host_task_thread_id: delegatedHostDispatch?.host_thread.id ?? null,
       session_id: parentRun.session_id,
       project_id: parentRun.project_id,
-      prompt: group.room_id ? input.instruction : null,
+      prompt: group.room_id
+        ? [delegatedIdentityBlock, input.instruction].filter(Boolean).join("\n\n")
+        : null,
       instruction: input.instruction,
       model_override_json: group.room_id
-        ? delegatedRoomModelOverride(parentRun, input.target_agent_id, delegatedBackend, delegatedHostDispatch, delegatedWorkspaceAccess)
+        ? delegatedRoomModelOverride(parentRun, input.target_agent_id, input.instruction, delegatedBackend, delegatedHostDispatch, delegatedWorkspaceAccess)
         : null,
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
@@ -1703,7 +1719,20 @@ async function prepareRoomConversationBackends(input: {
       const conversationPrefix = hostPromptFresh
         ? `You are now in ${JSON.stringify(replayContext.conversation_title)}.`
         : null;
+      // Who this Agent is, before what it is being asked. Every turn, not only
+      // a fresh one: a vendor session outlives many turns, and an Agent whose
+      // persona was revised — or whose Room roster changed what it may be told
+      // — would otherwise go on acting as whoever it was when the session
+      // started. Re-sending cannot *retract* what an earlier turn already put
+      // into that session; only a context reset does, which is ADR 0003 §4's
+      // own position on the audience filter guarding the moment of dispatch.
+      const identityBlock = await renderAgentIdentityPrompt(input.db, {
+        spaceId: input.identity.spaceId,
+        agentId,
+        roomId: input.roomId,
+      });
       hostPromptContext = [
+        identityBlock,
         conversationPrefix,
         renderRoomPromptMessages(hostMessages, hostPromptFresh ? replayContext.summary_text : null),
       ].filter(Boolean).join("\n\n") || null;
@@ -1796,6 +1825,11 @@ function roomRunModelOverride(
     },
     chat_turn: {
       schema_version: "chat_turn.v1",
+      // What this turn was asked to do, kept apart from the assembled prompt.
+      // A sibling Agent waiting on this Run is shown the task; the prompt also
+      // carries this Agent's own persona and notes, which are not the
+      // sibling's to read (ADR 0003 §4).
+      assigned_task: assignedTask,
       session_id: backend.session_id,
       room_id: backend.room_id,
       user_id: backend.user_id,
@@ -1863,6 +1897,7 @@ function validateRoomSessionConfig(
 function delegatedRoomModelOverride(
   parentRun: Pick<RunRecord, "model_override_json">,
   targetAgentId: string,
+  instruction: string,
   backend?: ResolvedConversationBackend | null,
   hostDispatch?: PreparedRoomHostDispatch | null,
   workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
@@ -1883,14 +1918,18 @@ function delegatedRoomModelOverride(
           },
         }
       : {}),
-    ...(parentTurn.schema_version === "chat_turn.v1"
-      ? {
-          chat_turn: {
-            ...parentTurn,
-            agent_id: targetAgentId,
-          },
-        }
-      : {}),
+    // Always, not only when the parent had one. The parent's task is not this
+    // child's — inheriting it made a sibling waiting on this Run see the
+    // Manager's request where its own delegation instruction belongs — and
+    // leaving the key out is worse still: the child's prompt opens with its
+    // own identity block, so a Run with no task falls back to handing that
+    // block to whichever Agent waits on it. A sibling is shown the task, never
+    // the prompt.
+    chat_turn: {
+      ...(parentTurn.schema_version === "chat_turn.v1" ? parentTurn : { schema_version: "chat_turn.v1" }),
+      agent_id: targetAgentId,
+      assigned_task: instruction,
+    },
     ...(backend && hostDispatch
       ? {
           workspace: hostDispatch.workspace,

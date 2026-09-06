@@ -129,6 +129,33 @@ describe('ActivityInboxPage', () => {
     expect(screen.getByRole('link', { name: 'Generate proposals' }))
       .toHaveAttribute('href', '/activity/activity-1')
   })
+
+  it('routes a Project-free Agent persona pointer to the Memory review surface', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([
+      activityRecord({
+        id: 'persona-pointer-1',
+        source_type: 'system_event',
+        title: 'Agent persona revised',
+        content: 'Review the Agent persona change in Memory. You can revert it there.',
+        visibility: 'private',
+        agent_id: 'agent-1',
+        source_run_id: 'run-1',
+        metadata_json: {
+          pointer_type: 'agent_persona_revision',
+          memory_id: 'memory-1',
+          agent_id: 'agent-1',
+          revision: true,
+        },
+      }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'Review Persona' }))
+      .toHaveAttribute('href', '/memory/memory-1')
+    expect(screen.getByText('Agent persona')).toBeInTheDocument()
+    expect(screen.getByText('revised')).toBeInTheDocument()
+  })
 })
 
 /**

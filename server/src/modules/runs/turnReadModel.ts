@@ -112,6 +112,7 @@ export async function loadRunTurn(
     summary: preview.summary ?? null,
     risk_level: preview.risk_level ?? null,
     scope: preview.scope ?? null,
+    decidable_by_user_id: preview.decidable_by_user_id ?? null,
   })));
 
   return {

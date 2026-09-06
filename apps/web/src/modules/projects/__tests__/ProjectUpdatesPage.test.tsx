@@ -184,6 +184,32 @@ describe('Project updates', () => {
     expect(screen.getByText('Remembered something')).toBeInTheDocument()
   })
 
+  it('shows what a persona replaced, and lets a reader put it back', async () => {
+    // An Agent must always have some persona, so the reversal is one action
+    // that retires the new version and restores the previous one — and
+    // deciding whether to take it needs both sides in front of the person.
+    vi.mocked(projectsApi.updates).mockResolvedValue(page({
+      viewer_can_write: false,
+      items: [
+        {
+          id: 'event-persona', event_kind: 'agent.persona_revised', occurred_at: '2026-09-06T09:00:00.000Z',
+          actor: { kind: 'agent', id: 'agent-1', display_name: 'Research specialist' },
+          summary: 'I answer at length and explore tangents', outcome: null,
+          previous_summary: 'I answer briefly and ask before expanding scope',
+          subject: { type: 'memory_entry', id: 'memory-1', title: 'Persona' },
+          undo: { action: 'restore_memory', target_id: 'memory-1' },
+          undone_by_event_id: null, members: null,
+        },
+      ],
+    }) as never)
+    renderUpdates()
+
+    expect(await screen.findByText('I answer at length and explore tangents')).toBeInTheDocument()
+    expect(screen.getByText(/was: I answer briefly and ask before expanding scope/)).toBeInTheDocument()
+    // Offered to a reader: this is the owner's own memory, not a Project write.
+    expect(screen.getAllByRole('button', { name: 'Undo' })).toHaveLength(1)
+  })
+
   it('says it could not load rather than that nothing was reported', async () => {
     vi.mocked(projectsApi.updates).mockRejectedValue(new Error('boom'))
     renderUpdates()

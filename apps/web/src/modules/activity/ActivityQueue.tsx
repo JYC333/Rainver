@@ -48,6 +48,11 @@ interface ProjectSourceCollectionPointer {
   date: string | null
 }
 
+interface AgentPersonaPointer {
+  memoryId: string
+  revision: boolean
+}
+
 function recordValue(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
@@ -94,6 +99,14 @@ function projectSourceCollectionPointer(record: ActivityInboxRecord): ProjectSou
   const projectId = stringValue(metadata?.project_id)
   if (pointerType !== 'project_source_collection' || !projectId) return null
   return { projectId, date: stringValue(metadata?.local_date) }
+}
+
+function agentPersonaPointer(record: ActivityInboxRecord): AgentPersonaPointer | null {
+  const metadata = recordValue(record.metadata_json)
+  if (stringValue(metadata?.pointer_type) !== 'agent_persona_revision') return null
+  const memoryId = stringValue(metadata?.memory_id)
+  if (!memoryId) return null
+  return { memoryId, revision: metadata?.revision === true }
 }
 
 export interface ActivityQueueProps {
@@ -253,12 +266,15 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
         const briefing = briefingPointer(r)
         const recommendation = sourceRecommendationPointer(r)
         const projectCollection = projectSourceCollectionPointer(r)
+        const persona = agentPersonaPointer(r)
         const targetPath = briefing
           ? `/library/digests/${briefing.connectionId}/${briefing.date}`
           : recommendation
             ? `/sources?view=pending&connection_id=${encodeURIComponent(recommendation.connectionId)}`
             : projectCollection
               ? `/projects/${encodeURIComponent(projectCollection.projectId)}/sources${projectCollection.date ? `?date=${encodeURIComponent(projectCollection.date)}` : ''}`
+              : persona
+                ? `/memory/${encodeURIComponent(persona.memoryId)}`
               : `/activity/${r.id}`
         return (
           <Card key={r.id}>
@@ -290,6 +306,12 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                     {projectCollection.date && <Badge variant="muted">{projectCollection.date}</Badge>}
                   </div>
                 )}
+                {persona && (
+                  <div className="flex gap-1.5 flex-wrap mt-2">
+                    <Badge variant="secondary">Agent persona</Badge>
+                    <Badge variant="muted">{persona.revision ? 'revised' : 'created'}</Badge>
+                  </div>
+                )}
               </div>
               {(r.status === 'raw' || r.status === 'proposals_generated') && (
                 <div className="flex flex-wrap gap-1.5 shrink-0">
@@ -309,7 +331,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                   >
                     <Link to={targetPath}>
                       {briefing && <Newspaper className="size-3.5 mr-1" />}
-                      {briefing ? 'Open Digest' : recommendation ? 'Review Source' : projectCollection ? 'Open Sources' : 'Generate proposals'}
+                      {briefing ? 'Open Digest' : recommendation ? 'Review Source' : projectCollection ? 'Open Sources' : persona ? 'Review Persona' : 'Generate proposals'}
                     </Link>
                   </Button>
                   <Button

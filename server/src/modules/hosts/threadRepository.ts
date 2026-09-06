@@ -283,26 +283,27 @@ export class PgHostThreadRepository {
     }
   }
 
-  /** Close every Conversation × Agent thread for a Room member. A shared
-   * Conversation cwd is archived only when no other Agent still has a live
-   * thread for that Session. */
-  async closeConversationAgentForRoom(spaceId: string, roomId: string, agentId: string): Promise<HostThread[]> {
-    const result = await this.db.query<HostThread>(
+  /**
+   * Close every Conversation × Agent thread for a Room member.
+   *
+   * Two things are archived here and they have different owners. The Agent's
+   * **runtime profile** — its login, its vendor sessions, its CLI auto-memory
+   * — is the Agent's alone, so it is archived whenever that Agent leaves,
+   * which is what keeps what it learned in this Room out of the next one. The
+   * shared Conversation **cwd** belongs to every Agent in the Session, so it
+   * follows only when the last one leaves. Before the profile existed the
+   * second condition gated both, and `pending_archive_at` was left null for a
+   * departing Agent while others remained.
+   */
+  async closeConversationAgentForRoom(spaceId: string, roomId: string, agentId: string): Promise<
+    Array<HostThread & { include_workspace: boolean }>
+  > {
+    const result = await this.db.query<HostThread & { include_workspace: boolean }>(
       `UPDATE host_threads thread
           SET status = 'closed',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
-              pending_archive_at = CASE
-                WHEN NOT EXISTS (
-                  SELECT 1 FROM host_threads other
-                   WHERE other.id <> thread.id
-                     AND other.session_id = thread.session_id
-                     AND other.space_id = thread.space_id
-                     AND other.container_kind = 'conversation'
-                     AND other.status IN ('active', 'session_reset')
-                ) THEN COALESCE(thread.pending_archive_at, now())
-                ELSE NULL
-              END,
+              pending_archive_at = COALESCE(thread.pending_archive_at, now()),
               updated_at = now()
         FROM sessions conversation
        WHERE thread.session_id = conversation.id
@@ -312,10 +313,19 @@ export class PgHostThreadRepository {
          AND thread.agent_id = $3
          AND thread.container_kind = 'conversation'
          AND thread.status IN ('active', 'session_reset')
-      RETURNING thread.*`,
+      RETURNING thread.*, (
+        thread.workspace_mode = 'managed' AND NOT EXISTS (
+          SELECT 1 FROM host_threads other
+           WHERE other.id <> thread.id
+             AND other.session_id = thread.session_id
+             AND other.space_id = thread.space_id
+             AND other.container_kind = 'conversation'
+             AND other.status IN ('active', 'session_reset')
+        )
+      ) AS include_workspace`,
       [spaceId, roomId, agentId],
     );
-    return result.rows.map(normalizeReturnedThread);
+    return result.rows.map((row) => ({ ...normalizeReturnedThread(row), include_workspace: row.include_workspace }));
   }
 
   async resetConversationAgent(threadId: string): Promise<HostThread | null> {
@@ -348,6 +358,14 @@ export class PgHostThreadRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Close a direct-chat thread. `pendingArchive` used to mean "this thread has
+   * a managed workspace worth archiving"; it now means "there is host state to
+   * archive at all", which is true of every host-bound direct thread, because
+   * the Agent's runtime profile is archived whether or not the cwd was
+   * Rainver's to manage. Whether the workspace goes with it is decided at the
+   * request, not here.
+   */
   async closeDirectAgent(agentId: string, userId: string, pendingArchive = false): Promise<void> {
     await this.db.query(
       `UPDATE host_threads
@@ -362,25 +380,114 @@ export class PgHostThreadRepository {
     );
   }
 
+  /**
+   * Retires every vendor session this Agent has on one host.
+   *
+   * The other half of `host-state/reset`: the profiles that held those
+   * sessions are archived on the machine, so a thread that still believed it
+   * could resume `vendor_session_id` would fail on its next turn with the
+   * runtime reporting no such conversation. `session_reset` is the existing
+   * state for exactly that, and the retired ids are kept so ambient session
+   * import can still tell the Agent's old sessions from the owner's own.
+   *
+   * Two shapes of thread hold this Agent's sessions and they are matched
+   * differently. A Conversation or direct thread carries `agent_id` itself. A
+   * Task or Automation thread is a Location's and `ck_host_threads_owner`
+   * forces its `agent_id` null — but the profile the session lived in is keyed
+   * by the Agent that ran there, so the threads to retire are the ones whose
+   * **latest** Run was this Agent's: that is the profile the vendor session
+   * currently lives in. Matching only on the column would archive a
+   * `location` profile and leave its thread resuming into nothing; matching
+   * any Run ever would retire a session that now lives in another Agent's
+   * profile, which this reset does not touch.
+   */
+  async retireAgentSessionsOnHost(agentId: string, hostId: string): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE host_threads thread
+          SET status = 'session_reset',
+              retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
+              vendor_session_id = NULL,
+              updated_at = now()
+        WHERE thread.execution_host_id = $2
+          AND thread.status IN ('active', 'session_reset')
+          AND (
+            thread.agent_id = $1
+            OR (thread.agent_id IS NULL AND (
+              SELECT r.agent_id FROM runs r
+               WHERE r.host_task_thread_id = thread.id
+               ORDER BY r.created_at DESC LIMIT 1
+            ) = $1)
+          )`,
+      [agentId, hostId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  /**
+   * Retires a Location thread's vendor session because the next Run is a
+   * different Agent's. The session lives in the previous Agent's profile
+   * (`resolveRuntimeProfileScope` keys a `location` container by the Run's
+   * Agent), so resuming it from the new Agent's profile would fail with "no
+   * such conversation" and reset anyway — this says so at admission instead,
+   * and records the session it moved on from.
+   */
+  async retireLocationSessionForAgentChange(threadId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE host_threads
+          SET status = 'session_reset',
+              retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
+              vendor_session_id = NULL,
+              updated_at = now()
+        WHERE id = $1 AND agent_id IS NULL AND container_kind IS DISTINCT FROM 'direct'
+          AND container_kind IS DISTINCT FROM 'conversation'
+          AND status IN ('active', 'session_reset')`,
+      [threadId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Host state a reconnecting daemon still owes an archive for.
+   *
+   * Not restricted to `workspace_mode = 'managed'` any more: a Conversation
+   * pinned to a registered WorkspaceLocation has no Rainver-managed cwd but
+   * still has the Agent's runtime profile on that machine, and leaving that
+   * behind is the leak this phase closes. `include_workspace` says which of
+   * the two the daemon should move.
+   */
   async listPendingManagedWorkspaceArchives(hostId: string): Promise<Array<{
     id: string;
     agent_id: string;
     container_kind: "direct" | "conversation";
     container_id: string;
+    include_workspace: boolean;
   }>> {
     const result = await this.db.query<{
       id: string;
       agent_id: string;
       container_kind: "direct" | "conversation";
       container_id: string;
+      include_workspace: boolean;
     }>(
-      `SELECT id, agent_id, container_kind,
-              CASE WHEN container_kind = 'direct' THEN container_user_id
-                   ELSE session_id END AS container_id
-         FROM host_threads
-        WHERE execution_host_id = $1 AND workspace_mode = 'managed'
-          AND pending_archive_at IS NOT NULL AND status = 'closed'
-          AND agent_id IS NOT NULL AND container_kind IN ('direct', 'conversation')`,
+      `SELECT thread.id, thread.agent_id, thread.container_kind,
+              CASE WHEN thread.container_kind = 'direct' THEN thread.container_user_id
+                   ELSE thread.session_id END AS container_id,
+              (
+                thread.workspace_mode = 'managed' AND (
+                  thread.container_kind = 'direct' OR NOT EXISTS (
+                    SELECT 1 FROM host_threads other
+                     WHERE other.id <> thread.id
+                       AND other.session_id = thread.session_id
+                       AND other.space_id = thread.space_id
+                       AND other.container_kind = 'conversation'
+                       AND other.status IN ('active', 'session_reset')
+                  )
+                )
+              ) AS include_workspace
+         FROM host_threads thread
+        WHERE thread.execution_host_id = $1
+          AND thread.pending_archive_at IS NOT NULL AND thread.status = 'closed'
+          AND thread.agent_id IS NOT NULL AND thread.container_kind IN ('direct', 'conversation')`,
       [hostId],
     );
     return result.rows.filter((row) => Boolean(row.container_id));
@@ -389,7 +496,7 @@ export class PgHostThreadRepository {
   async acknowledgeManagedWorkspaceArchive(threadId: string): Promise<void> {
     await this.db.query(
       `UPDATE host_threads SET pending_archive_at = NULL, updated_at = now()
-        WHERE id = $1 AND workspace_mode = 'managed' AND status = 'closed'`,
+        WHERE id = $1 AND status = 'closed'`,
       [threadId],
     );
   }

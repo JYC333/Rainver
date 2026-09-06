@@ -371,8 +371,17 @@ because the column is bounded at 128 characters and a composed id is not.
 a person, Room or not: the allowance splits into the Room's Project write
 surface and `CONVERSATION_TOOL_ALLOWANCE`, which every group-dispatched Run
 gets. Remembering what someone told you is a capability of talking with them —
-what it writes is private to the speaker and touches no Project — so none of
-the reasoning that binds the Project writes to a Room applies. (A group with
+what it writes is private and touches no Project — so none of the reasoning
+that binds the Project writes to a Room applies. That reasoning survives the
+`agent` scope those two tools also write
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4): an agent-scope
+entry is not private to the *speaker* but to the Agent and its owner, and it
+still touches no Project and still crosses no audience that could not already
+see it — a note's origin-Room filter is what replaces "private to the speaker"
+there, and a persona's gate is §5. They are also the one action family
+registered for a Run with **no** instructing person, because §5 lets an
+unattended Run revise a persona; everything else the family can do refuses
+there with a reason rather than being invisible. (A group with
 no Room previously declared no capabilities at all, so its Agent could call
 nothing whatever its own permissions said.) They are the same shape applied to
 memory
@@ -385,11 +394,23 @@ bottleneck on what it learned — nothing was. A write that stays `private`,
 rationale in its provenance; one that would change reach — a wider
 visibility, a higher sensitivity, or replacing what a person or another Agent
 wrote — is turned into a `memory_create`/`memory_update` proposal by the
-executor rather than returned as an error. Both are origin-gated
-(`memory.write` is in `ORIGIN_GATED_PROJECT_WRITES`), both refuse without a
-rationale, and writing more than `SERVER_MEMORY_DIRECT_WRITES_PER_SESSION`
-entries within one session — or within one Run, where a conversation outside
-a Room has no session — is paused with one `uncertain` attention item. An Agent version with
+executor rather than returned as an error.
+
+`memory_type` also decides *whose* memory a write is: `note`, `decision` and
+`lesson` are the Agent's own and carry the Room they were learned in;
+`persona` is the one entry per Agent delivered everywhere, and its gate is the
+Run's trigger rather than its reach — the owner's own turn proposes it, anyone
+else's turn leaves a proposal only the owner may decide
+(`required_owner_user_id`, by identity and not by role), and an unattended
+origin applies it. That last case is the one exemption from
+`ORIGIN_GATED_PROJECT_WRITES`, resolved server-side by `memoryPolicyContext`
+and scoped to a persona write on an `agent`-scope entry; every other memory
+write stays origin-gated. Both actions refuse without a rationale, both allow
+at most one persona write per Run — a create counts against it — and writing more than
+`SERVER_MEMORY_DIRECT_WRITES_PER_SESSION` entries within one session — or
+within one Run, where a conversation outside a Room has no session — is paused
+with one `uncertain` attention item, counted under the person in the turn for a
+user-scope write and under the **Agent's owner** for an agent-scope one. An Agent version with
 `memory_policy_json.requires_proposal` writes only by proposal — the first
 place that flag is enforced rather than merely displayed.
 

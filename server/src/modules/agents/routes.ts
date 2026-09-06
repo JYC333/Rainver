@@ -40,6 +40,8 @@ import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import { prepareHostConversationDispatch } from "../agentGroups/service.js";
+import { renderAgentIdentityPrompt } from "../agentGroups/agentIdentityPrompt.js";
+import { TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
@@ -744,6 +746,118 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  /**
+   * "Clear this Agent's CLI memory on this host."
+   *
+   * Rainver owns an Agent's identity and its distilled Memory; the vendor
+   * CLI's own auto-memory, sessions and login are scratch that lives in the
+   * Agent's profile on the executing machine
+   * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
+   * This is the one action that clears that scratch: every profile the Agent
+   * has on the named Host is archived — not deleted, so a person who ran it by
+   * mistake still has what was there until the 30-day sweep — and no workspace
+   * is touched, so the work the Agent did survives.
+   *
+   * Owner-only twice over: the caller must own the Host (a Host is
+   * user-scoped) and, when the Agent has an owner, be that owner. A Room
+   * member cannot clear someone else's Agent.
+   *
+   * An Agent with **no** owner — the `space_shared` Space and Project
+   * Assistants — is cleared by whoever owns the Host, and that is the intended
+   * reading rather than an oversight: the state being cleared is on the
+   * caller's own machine, put there by their own runs, and there is no owner
+   * to defer to. It matches ADR 0003 §4, where an ownerless Agent has no
+   * Agent-scope Memory to protect either.
+   */
+  app.post("/api/v1/agents/:agentId/host-state/reset", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const agentId = params(request).agentId ?? "";
+    const hostId = typeof jsonBody(request).host_id === "string" ? String(jsonBody(request).host_id) : "";
+    if (!hostId) return reply.code(422).send({ detail: "host_id is required" });
+    try {
+      const pool = dbPool(context.config);
+      const agent = await pool.query<{ id: string; owner_user_id: string | null }>(
+        `SELECT id, owner_user_id FROM agents WHERE id = $1 AND space_id = $2 LIMIT 1`,
+        [agentId, identity.spaceId],
+      );
+      const owner = agent.rows[0];
+      if (!owner) return reply.code(404).send({ detail: "Agent not found in this space" });
+      if (owner.owner_user_id && owner.owner_user_id !== identity.userId) {
+        return reply.code(403).send({ detail: "Only the Agent's owner can clear its host state" });
+      }
+      const host = await pool.query<{ id: string }>(
+        `SELECT id FROM hosts WHERE id = $1 AND owner_user_id = $2 AND status <> 'revoked' LIMIT 1`,
+        [hostId, identity.userId],
+      );
+      if (!host.rows[0]) return reply.code(404).send({ detail: "Host not found" });
+      // The whole reset runs inside one transaction that locks this Agent's
+      // threads on this host. A read-then-act check would miss a dispatch that
+      // claims its lock a millisecond later, and the daemon would then rename
+      // the profile directory out from under a launching run. Holding the rows
+      // is also what makes the archive and the session retirement one
+      // decision: `claimConversationDispatch` blocks on them until this
+      // returns.
+      const outcome = await withTransaction(pool, async (client) => {
+        const threads = await client.query<{ id: string; dispatch_lock_id: string | null; run_in_flight: boolean }>(
+          `SELECT thread.id, thread.dispatch_lock_id,
+                  -- A Task or Automation thread never claims the dispatch
+                  -- lock; its admission serialises on the latest Run's status
+                  -- instead. Without asking that here, a reset would archive
+                  -- the profile under a Run still writing into it, and the
+                  -- Run's outcome would then re-arm the thread with a session
+                  -- whose store is gone.
+                  EXISTS (
+                    SELECT 1 FROM runs r
+                     WHERE r.host_task_thread_id = thread.id
+                       AND r.status <> ALL($3::text[])
+                  ) AS run_in_flight
+             FROM host_threads thread
+            WHERE thread.execution_host_id = $2
+              AND thread.status IN ('active', 'session_reset')
+              AND (
+                thread.agent_id = $1
+                OR (thread.agent_id IS NULL AND (
+                  SELECT r.agent_id FROM runs r
+                   WHERE r.host_task_thread_id = thread.id
+                   ORDER BY r.created_at DESC LIMIT 1
+                ) = $1)
+              )
+            FOR UPDATE OF thread`,
+          [agentId, hostId, [...TERMINAL_RUN_STATUSES]],
+        );
+        if (threads.rows.some((thread) => thread.dispatch_lock_id)) {
+          throw new ChatContextError("The Agent is handling a message; try again when it finishes", 409);
+        }
+        if (threads.rows.some((thread) => thread.run_in_flight)) {
+          throw new ChatContextError("The Agent has a Run in flight on this Host; try again when it finishes", 409);
+        }
+        // Retired before the host is asked, and rolled back with it if the ask
+        // fails. The two orderings fail differently and only one of them is
+        // recoverable: a thread left claiming a `vendor_session_id` whose store
+        // has been archived resumes into nothing, while a thread reset without
+        // the archive happening simply starts a fresh session in a profile that
+        // still holds the old one — wasteful, visible in the error the caller
+        // gets, and fixed by running it again.
+        const retired = await new PgHostThreadRepository(client).retireAgentSessionsOnHost(agentId, hostId);
+        const result = await sharedHostConnectionRegistry.resetAgentHostProfiles(hostId, agentId);
+        if (!result.ok) {
+          throw new ChatContextError(
+            result.error === "host_offline"
+              ? "The execution Host is offline"
+              : "The Host could not clear this Agent's profiles",
+            result.error === "host_offline" ? 409 : 502,
+          );
+        }
+        return { profiles_archived: result.changed, sessions_retired: retired };
+      });
+      return reply.send({ agent_id: agentId, host_id: hostId, ...outcome });
+    } catch (error) {
+      if (error instanceof ChatContextError) return reply.code(error.statusCode).send({ detail: error.body });
+      return sendDomainError(reply, error);
+    }
+  });
+
   app.post("/api/v1/agents/:agentId/chat", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -833,7 +947,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             })
             : Promise.reject(new ChatContextError("Host-bound chat is temporarily unavailable", 503)))
           : null;
-        if (req.restore_workspace && hostDispatch?.workspace.kind === "managed") {
+        // Not gated on a managed workspace: a direct chat pinned to a
+        // registered Location has no Rainver-managed cwd, but the Agent's
+        // runtime profile was archived when the session was deleted and is
+        // what this brings back.
+        if (req.restore_workspace && hostDispatch) {
           const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
             backend.execution_host_id!,
             "managed_workspace_restore",
@@ -841,6 +959,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               agent_id: agent.id,
               container_kind: "direct",
               container_id: identity.userId,
+              // A direct chat has one Agent, so whatever was archived comes
+              // back together — but only a managed container had a cwd to
+              // archive, which is the same condition its archive used.
+              include_workspace: hostDispatch.workspace.kind === "managed",
             },
           );
           if (!restored.ok) {
@@ -894,7 +1016,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           backend,
           sessionConfig,
           hostDispatch,
-          hostPromptContext: hostDispatch ? renderDirectHostPrompt(history, userMessage.id) : null,
+          hostPromptContext: hostDispatch
+            ? [
+              // The same identity block the Room turn sends: role, then what
+              // the Agent has become, then what it learned where the audience
+              // already reached — which in a direct chat is this one person.
+              // `transaction.db` is non-null wherever `hostDispatch` is: the
+              // branch that builds one rejects with a 503 without it.
+              await renderAgentIdentityPrompt(transaction.db!, {
+                spaceId: creation.spaceId,
+                agentId: agent.id,
+                roomId: null,
+                directUserId: identity.userId,
+              }),
+              renderDirectHostPrompt(history, userMessage.id),
+            ].filter(Boolean).join("\n\n") || null
+            : null,
         });
         const linked = await transaction.sessions.attachRunToUserMessage({
           space_id: creation.spaceId,
@@ -1051,6 +1188,10 @@ async function prepareChatRun(
       ...(input.sessionConfig.length ? { acp_session_config: input.sessionConfig } : {}),
       chat_turn: {
         schema_version: "chat_turn.v1",
+        // What this turn was asked, kept apart from the assembled prompt for
+        // the same reason a Room turn keeps it apart: the prompt also carries
+        // this Agent's own persona and notes, which are nobody else's to read.
+        assigned_task: input.message,
         session_id: input.sessionId,
         user_id: input.userId,
         user_message_id: input.currentMessage.id,

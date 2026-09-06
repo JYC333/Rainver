@@ -68,6 +68,7 @@ describe("finalizeChatTurn", () => {
   it("persists one idempotent assistant message before publishing completion", async () => {
     const calls: string[] = [];
     const events: RunEventInput[] = [];
+    let persistedMetadata: Record<string, unknown> | null = null;
     const completion = await finalizeChatTurn(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
       {
@@ -91,6 +92,7 @@ describe("finalizeChatTurn", () => {
             input,
           ) {
             calls.push("message");
+            persistedMetadata = input.metadata ?? null;
             return {
               id: "message-assistant-1",
               session_id: "session-1",
@@ -105,6 +107,16 @@ describe("finalizeChatTurn", () => {
         },
         resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(() => calls.push("continuity")),
+        // Direct chat has no Project, but its proposal is still a Run action.
+        async loadActionPreviews() {
+          return [{
+            action_id: "memory.remember",
+            status: "proposed" as const,
+            proposal_id: "proposal-persona",
+            title: "A more careful persona",
+            decidable_by_user_id: "user-1",
+          }];
+        },
       },
     );
 
@@ -130,6 +142,12 @@ describe("finalizeChatTurn", () => {
           assistant_message_id: "message-assistant-1",
         },
       }),
+    ]);
+    expect(persistedMetadata).toMatchObject({
+      action_previews: [expect.objectContaining({ proposal_id: "proposal-persona" })],
+    });
+    expect(completion?.action_previews).toEqual([
+      expect.objectContaining({ proposal_id: "proposal-persona" }),
     ]);
   });
 
@@ -183,6 +201,7 @@ describe("finalizeChatTurn", () => {
             status: "succeeded",
             artifact_refs: ["artifact-1"],
           });
+          expect(input.metadata).not.toHaveProperty("action_previews");
           return {
             id: "room-message-1",
             session_id: "session-1",
@@ -199,16 +218,23 @@ describe("finalizeChatTurn", () => {
       resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(() => { checkpoints += 1; }),
       async loadActionPreviews() {
-        return [];
+        return [{
+          action_id: "memory.remember",
+          status: "proposed" as const,
+          proposal_id: "proposal-private",
+          title: "Private persona text",
+          decidable_by_user_id: "somebody-else",
+        }];
       },
     };
 
-    await expect(finalizeChatTurn(
+    const firstCompletion = await finalizeChatTurn(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
       repository,
       roomRun,
       deps,
-    )).resolves.toMatchObject({
+    );
+    expect(firstCompletion).toMatchObject({
       ok: true,
       assistant_message: { id: "room-message-1" },
     });
@@ -224,6 +250,7 @@ describe("finalizeChatTurn", () => {
       genericWrites: 0,
       checkpoints: 1,
     });
+    expect(firstCompletion?.action_previews).toBeUndefined();
     expect(events).toHaveLength(1);
   });
 
@@ -495,6 +522,7 @@ describe("finalizeChatTurn", () => {
         },
         resolveAgentActorId: async (_space: string, agentId: string) => agentId,
         continuity: continuity(),
+        async loadActionPreviews() { return []; },
       },
     );
 

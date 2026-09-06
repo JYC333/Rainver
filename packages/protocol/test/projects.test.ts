@@ -85,6 +85,9 @@ describe("ProjectWorkUpdateSchema", () => {
     outcome: null,
     subject: { type: "inquiry_thread" as const, id: "33333333-3333-4333-8333-333333333333", title: "A question" },
     undo: { action: "archive_thread" as const, target_id: "33333333-3333-4333-8333-333333333333" },
+    // What this update replaced. Only an Agent's persona carries one today —
+    // deciding whether to put the previous version back needs both sides.
+    previous_summary: null,
     undone_by_event_id: null,
   };
 

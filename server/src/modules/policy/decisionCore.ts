@@ -889,6 +889,24 @@ const ruleUnattendedProjectWrite: Rule = (ctx) => {
   // write cannot be assumed to have had a person behind it.
   const triggerOrigin = str(ctx.trigger_origin);
   if (triggerOrigin && ATTENDED_TRIGGER_ORIGINS.has(triggerOrigin)) return null;
+  // The one named exception, and it is named in both records: ADR 0003 §5 and
+  // ADR 0017 §1–§2. An Agent's persona entry has its origin test the other way
+  // round — a person in a turn proposes it, an unattended origin applies it —
+  // because a persona reaches every Room the Agent sits in, so a turn must not
+  // carry it, while an Agent concluding something about itself is bounded by
+  // one revision per Run, a notification to the owner, and a one-step restore.
+  //
+  // Scoped to a persona write on an agent-scope entry, resolved server-side by
+  // `memoryPolicyContext` from the input or the target row. Never by removing
+  // `memory.write` from the gated set, which would relax the origin boundary
+  // for every other memory write with it.
+  // Flattened into the decision context by the gateway, like `trigger_origin`
+  // beside it.
+  if (
+    ctx.memory_persona_write === true
+    && action === "memory.write"
+    && (ctx.memory_action_id === "memory.remember" || ctx.memory_action_id === "memory.revise")
+  ) return null;
   return makeDecision({
     decision: "require_approval",
     message: `${action} from an unattended '${triggerOrigin}' run requires approval: nobody asked for this write in a conversation.`,

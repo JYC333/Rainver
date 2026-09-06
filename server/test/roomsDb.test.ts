@@ -16,6 +16,7 @@ import { seedConversationMessages } from "./support/domainSeeds.js";
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { runAssignedTask } from "../src/modules/runs/runAssignedTask.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
@@ -1896,6 +1897,68 @@ describe("Room workflow (real Postgres)", () => {
     expect(resumedRun.rows[0]?.prompt).not.toContain("Start the shared analysis.");
   });
 
+  it("opens a host-bound turn with the Agent's own identity, and only what this Room may hear", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    // The block itself is rendered and audience-tested elsewhere; what this
+    // asserts is that the dispatch actually sends it — the call site, which is
+    // the half a renderer test cannot reach.
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Identity Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Identity");
+    await db.pool.query(
+      `UPDATE agents SET role_instruction = 'Separate evidence from assumption.' WHERE id = 'agent-1'`,
+    );
+    const elsewhere = randomUUID();
+    await db.pool.query(
+      `INSERT INTO rooms (id, space_id, project_id, title, is_mainline, status, created_by_user_id, created_at, updated_at)
+       VALUES ($1,'space-1','project-1','Elsewhere',false,'active','user-1',now(),now())`,
+      [elsewhere],
+    );
+    await db.pool.query(
+      `INSERT INTO room_user_members (id, space_id, room_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,'space-1',$2,'user-2','member','active',now(),now())`,
+      [randomUUID(), elsewhere],
+    );
+    for (const [content, originRoom] of [
+      ["I answer briefly.", null],
+      ["this Room wants the recommendation last", created.room.id],
+      ["what the other Room said", elsewhere],
+    ] as const) {
+      await db.pool.query(
+        `INSERT INTO memory_entries (id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
+                                     owner_user_id, agent_id, origin_room_id, sensitivity_level, access_level,
+                                     namespace, title, visibility, confidence, importance, version, access_count, created_by)
+         VALUES ($1,'space-1','agent',$2,$3::text,'active',now(),now(),'user-1','agent-1',$4,'normal','full',
+                 'agent.default',$3::text,'private',1,0.5,1,0,'agent:agent-1')`,
+        [randomUUID(), originRoom === null ? "persona" : "note", content, originRoom],
+      );
+    }
+
+    const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+      content: "What do you make of this?",
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli", credential_profile_id: null }],
+    });
+    const prompt = (await db.pool.query<{ prompt: string }>(
+      "SELECT prompt FROM runs WHERE id = $1", [sent.run_ids[0]],
+    )).rows[0]?.prompt ?? "";
+
+    expect(prompt).toContain("Separate evidence from assumption.");
+    expect(prompt).toContain("I answer briefly.");
+    expect(prompt).toContain("this Room wants the recommendation last");
+    // The other Room seats someone this one does not, so what was learned
+    // there never reaches this prompt.
+    expect(prompt).not.toContain("what the other Room said");
+
+    // And a sibling Agent waiting on this Run is shown the task, not the
+    // prompt: one Agent's memory of itself is not another's to read.
+    const assignedTask = (await db.pool.query<{ assigned_task: string | null }>(
+      `SELECT model_override_json->'chat_turn'->>'assigned_task' AS assigned_task FROM runs WHERE id = $1`,
+      [sent.run_ids[0]],
+    )).rows[0]?.assigned_task;
+    expect(assignedTask).toBe("What do you make of this?");
+    expect(assignedTask).not.toContain("I answer briefly.");
+  });
+
   it("rejects duplicate recipient runs before persisting a Room turn", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -2171,6 +2234,7 @@ describe("Room workflow (real Postgres)", () => {
         executionHostId: "host-room-bound",
         workspaceLocationId: "location-1",
         runtimeInstallation: "own",
+        roleInstruction: "Separate evidence from assumption.",
       });
     await service.addAgent(owner, created.room.id, {
       agent_id: delegatedAgent.id,
@@ -2278,9 +2342,10 @@ describe("Room workflow (real Postgres)", () => {
       requested_runtime_profile_id: string | null;
       runtime_profile_selection_source: string | null;
       model_override_json: Record<string, unknown>;
+      prompt: string | null;
     }>(
       `SELECT agent_id, workspace_location_id, trust_mode, host_task_thread_id,
-              requested_runtime_profile_id, runtime_profile_selection_source, model_override_json
+              requested_runtime_profile_id, runtime_profile_selection_source, model_override_json, prompt
          FROM runs WHERE id = $1`,
       [delegated.child_run_id],
     );
@@ -2296,6 +2361,12 @@ describe("Room workflow (real Postgres)", () => {
       workspace: { kind: "location", workspace_location_id: "location-1" },
       host_thread: { schema_version: "host_thread.v1" },
     });
+    // A delegated specialist runs in the same vendor session as one that was
+    // @-mentioned, so its prompt opens with its own identity block — and a
+    // sibling waiting on it is shown the instruction, never that prompt
+    // (ADR 0003 §4, B68).
+    expect(delegatedRun.rows[0]?.prompt).toContain("Separate evidence from assumption.");
+    expect(runAssignedTask(delegatedRun.rows[0]!)).toBe("Delegate this host-bound investigation.");
     const delegatedThread = await db.pool.query<{ id: string; last_run_id: string; dispatch_lock_id: string | null }>(
       `SELECT id, last_run_id, dispatch_lock_id FROM host_threads
         WHERE session_id = $1 AND agent_id = $2 AND container_kind = 'conversation'`,

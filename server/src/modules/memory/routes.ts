@@ -78,7 +78,7 @@ interface MemoryServices {
     // §3), so it belongs to the same service surface the routes resolve —
     // reaching past the factory for a pool would make this the one path
     // nothing can substitute.
-    Pick<PgMemoryApplyRepository, "setOwnStatus">;
+    Pick<PgMemoryApplyRepository, "setOwnStatus" | "revertToPreviousVersion">;
 }
 
 type MemoryServicesFactory = (context: ModuleContext) => MemoryServices;
@@ -112,6 +112,7 @@ function memoryServices(context: ModuleContext): MemoryServices {
       search: readRepository.search.bind(readRepository),
       versions: readRepository.versions.bind(readRepository),
       setOwnStatus: applyRepository.setOwnStatus.bind(applyRepository),
+      revertToPreviousVersion: applyRepository.revertToPreviousVersion.bind(applyRepository),
       createMemoryProposal: proposalRepository.createMemoryProposal.bind(proposalRepository),
       updateMemoryProposal: proposalRepository.updateMemoryProposal.bind(proposalRepository),
       archiveMemoryProposal: proposalRepository.archiveMemoryProposal.bind(proposalRepository),
@@ -144,6 +145,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           memoryType: optionalString(q.type),
           status: q.status === undefined ? "active" : q.status,
           projectId: optionalString(q.project_id),
+          agentId: optionalString(q.agent_id),
           writtenBy: q.created_by === "agent" || q.created_by === "user" ? q.created_by : null,
           since: optionalString(q.since),
           sessionId: optionalString(q.session),
@@ -752,6 +754,34 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         command,
       );
       return reply.code(202).send(proposal);
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  /**
+   * Undo one revision in a single action: archive the version that is there
+   * and bring back the one it replaced.
+   *
+   * `DELETE` then `POST /restore` is two requests and leaves a window with no
+   * active version on the chain — which for an Agent's persona means an Agent
+   * with none at all. The Project's updates already offer this as
+   * `restore_memory`; this is the same reversal for a revision made outside
+   * any Project, which has no feed to offer it from.
+   */
+  app.post("/api/v1/memory/:memoryId/revert", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const memoryId = params(request).memoryId ?? "";
+    try {
+      const services = memoryServices(context);
+      const restored = await services.repository.revertToPreviousVersion(
+        identity.spaceId,
+        identity.userId,
+        memoryId,
+      );
+      if (!restored) return reply.code(404).send({ detail: "Memory not found" });
+      return reply.send(await services.repository.get(identity.spaceId, identity.userId, restored.id));
     } catch (error) {
       return sendDomainError(reply, error);
     }

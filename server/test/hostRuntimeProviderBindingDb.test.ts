@@ -23,6 +23,7 @@ import { hostProviderProxyBaseUrl } from "../src/modules/runs/hostProviderProxyA
 import {
   buildRemoteProviderBinding,
   resolveRemoteRunBinding,
+  resolveRuntimeProfileScope,
   RemoteProviderBindingError,
   recordRemoteRunBackend,
   PROFILE_ROOT_PLACEHOLDER,
@@ -941,6 +942,7 @@ describe("carrying the binding to the executing host", () => {
       hostId: HOST,
       adapterType: "claude_code",
       binding: { provider_id: CLAUDE_PROVIDER, model: "MiniMax-M2", origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, run, LOCATION),
       ttlSeconds: 60,
       leaseRegistry: registry,
       db: db.pool,
@@ -953,12 +955,18 @@ describe("carrying the binding to the executing host", () => {
     // machine's own login is not visible.
     expect(binding.frame.files).toEqual([]);
     expect(binding.frame.profile_env).toEqual({ HOME: ".", CLAUDE_CONFIG_DIR: ".claude" });
-    // Keyed by adapter and provider, never by run. Claude Code keeps its
-    // session transcripts inside CLAUDE_CONFIG_DIR, so a per-run profile is
-    // deleted along with the conversation the next turn resumes — which made
-    // every turn after the first fail with "no conversation found".
-    expect(binding.frame.profile_key).toBe(`claude_code/${CLAUDE_PROVIDER}`);
+    // Keyed by Agent × container × adapter × backend, never by run. Claude
+    // Code keeps its session transcripts inside CLAUDE_CONFIG_DIR, so a
+    // per-run profile is deleted along with the conversation the next turn
+    // resumes — which made every turn after the first fail with "no
+    // conversation found". And never by adapter and provider alone, which is
+    // what every Agent on the machine used to share.
+    expect(binding.frame.profile_key)
+      .toBe(`agents/${run.agent_id}/location/${LOCATION}/claude_code/${CLAUDE_PROVIDER}`);
     expect(binding.frame.profile_key).not.toContain(run.id);
+    // A bound run reaches its backend through the lease, so no login is linked
+    // into a profile that is not using one.
+    expect(binding.frame.login_link).toBeNull();
     // The upstream key is resolved inside the proxy; nothing here carries it.
     expect(JSON.stringify(binding.frame)).not.toContain("api.minimaxi.com");
     expect(registry.size()).toBe(1);
@@ -975,6 +983,7 @@ describe("carrying the binding to the executing host", () => {
     await buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: CLAUDE_PROVIDER, model: null, origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, run, LOCATION),
       ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     });
 
@@ -996,6 +1005,7 @@ describe("carrying the binding to the executing host", () => {
     await expect(buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: CLAUDE_PROVIDER, model: null, origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, run, LOCATION),
       ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toBeInstanceOf(RemoteProviderBindingError);
     // And it does not leave the lease it had already created behind.
@@ -1011,6 +1021,7 @@ describe("carrying the binding to the executing host", () => {
     await expect(buildRemoteProviderBinding({
       config: config(), run, hostId: HOST, adapterType: "claude_code",
       binding: { provider_id: OPENAI_PROVIDER, model: null, origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, run, LOCATION),
       ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toMatchObject({ code: "claude_compatible_base_url_required" });
     expect(registry.size()).toBe(0);
@@ -1042,6 +1053,7 @@ describe("the files a bound host is told to write", () => {
       config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       run: row.rows[0]!, hostId: HOST, adapterType,
       binding: { provider_id: providerId, model: "m-1", origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, row.rows[0]!, LOCATION),
       ttlSeconds: 60, leaseRegistry: new ProviderProxyLeaseRegistry(), db: db.pool,
     });
     return built.frame;
@@ -1061,7 +1073,7 @@ describe("the files a bound host is told to write", () => {
     // Codex is an OpenAI-compatible binding, so it routes through /openai/.
     expect(toml).toContain(`base_url = "${EXTERNAL}/openai/`);
     expect(frame.profile_env.CODEX_HOME).toBe(".codex");
-    expect(frame.profile_key).toBe(`codex_cli/${OPENAI_PROVIDER}`);
+    expect(frame.profile_key).toMatch(new RegExp(`^agents/[^/]+/location/${LOCATION}/codex_cli/${OPENAI_PROVIDER}$`));
 
     // Byte-for-byte what the server-host path writes for the same inputs. A
     // second implementation here is how the catalog shape silently diverged
@@ -1079,7 +1091,7 @@ describe("the files a bound host is told to write", () => {
     expect(config.provider.rainver_provider.npm).toBe("@ai-sdk/openai-compatible");
     expect(config.model).toBe("rainver_provider/m-1");
     expect(frame.profile_env.OPENCODE_CONFIG).toBe("opencode.json");
-    expect(frame.profile_key).toBe(`opencode/${OPENAI_PROVIDER}`);
+    expect(frame.profile_key).toMatch(new RegExp(`^agents/[^/]+/location/${LOCATION}/opencode/${OPENAI_PROVIDER}$`));
   });
 
   it("refuses a config-file runtime with no model rather than letting it pick its own", async () => {
@@ -1102,6 +1114,7 @@ describe("the files a bound host is told to write", () => {
       config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       run: row.rows[0]!, hostId: HOST, adapterType: "codex_cli",
       binding: { provider_id: OPENAI_PROVIDER, model: null, origin: "dispatch" },
+      scope: await resolveRuntimeProfileScope(db.pool, row.rows[0]!, LOCATION),
       ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toMatchObject({ code: "codex_model_required" });
     expect(registry.size()).toBe(0);
