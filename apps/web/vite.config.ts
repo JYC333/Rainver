@@ -78,6 +78,12 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // A full-page navigation to /api/... (the Google sign-in start and
+        // callback are top-level redirects, not fetches) must reach the
+        // server. Without this the SPA navigation fallback serves the cached
+        // index.html for it, the app loads at that URL, sees a 401 from /me,
+        // and bounces to /login without ever leaving the browser.
+        navigateFallbackDenylist: [/^\/api\//],
         globPatterns: ['**/*.{js,css,html}'],
         globIgnores: [
           '**/GraphView-*.js',
