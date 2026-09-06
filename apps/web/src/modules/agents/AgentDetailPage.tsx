@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, hostsApi, runtimeToolsApi } from '../../api/client'
-import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
+import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeAdapterOption, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
@@ -499,10 +499,37 @@ function ModelTab({
   const [isDefault, setIsDefault] = useState(selectedProfile?.is_default ?? profiles.length === 0)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [saving, setSaving] = useState(false)
-  const supportsProviderSelection = adapterType === 'model_api' || adapterType === 'claude_code' || adapterType === 'codex_cli'
-  const requireClaudeCompatible = adapterType === 'claude_code'
-  const requireOpenAiCompatible = adapterType === 'codex_cli'
-  const isCli = adapterType === 'claude_code' || adapterType === 'codex_cli'
+  // The runtime choice is the live adapter catalog (builtin CLIs and enabled
+  // ACP registry agents alike) plus the server's own API runtime — never a
+  // hand-kept list, which is how OpenCode and every registry agent went
+  // missing here. What a runtime supports (provider binding, which provider
+  // API) is read from the catalog row, not inferred from its name.
+  const [cliAdapters, setCliAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  useEffect(() => {
+    hostsApi.listRuntimeAdapters()
+      .then(result => setCliAdapters(result.items))
+      .catch(() => setCliAdapters([]))
+  }, [])
+  const adapter = cliAdapters.find(candidate => candidate.adapter_type === adapterType) ?? null
+  const runtimeOptions = useMemo(() => {
+    const options = [
+      { value: 'model_api', label: 'model_api — call a model provider (no tools)' },
+      ...[...cliAdapters]
+        .sort((a, b) => a.display_name.localeCompare(b.display_name))
+        .map(candidate => ({ value: candidate.adapter_type, label: `${candidate.display_name} (${candidate.adapter_type})` })),
+    ]
+    // A saved profile may name a runtime that is no longer in the catalog (a
+    // disabled registry agent); keep it selectable so the form does not
+    // silently move the profile to another runtime.
+    if (!options.some(option => option.value === adapterType)) {
+      options.push({ value: adapterType, label: `${adapterType} (not in the runtime catalog)` })
+    }
+    return options
+  }, [cliAdapters, adapterType])
+  const isCli = adapterType !== 'model_api'
+  const supportsProviderSelection = adapterType === 'model_api' || (adapter !== null && adapter.provider_binding !== false)
+  const requireClaudeCompatible = adapter?.provider_api === 'claude_compatible'
+  const requireOpenAiCompatible = adapter?.provider_api === 'openai_compatible'
   const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
   const [runtimeToolVersion, setRuntimeToolVersion] = useState(
     typeof runtimeConfig.runtime_tool_version === 'string' ? runtimeConfig.runtime_tool_version : '',
@@ -637,13 +664,14 @@ function ModelTab({
         <div className="space-y-1.5">
           <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Runtime</label>
           <select
+            aria-label="Runtime"
             value={adapterType}
             onChange={e => setAdapterType(e.target.value)}
             className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
           >
-            <option value="model_api">model_api</option>
-            <option value="claude_code">claude_code</option>
-            <option value="codex_cli">codex_cli</option>
+            {runtimeOptions.map(option => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </div>
       </div>
@@ -654,7 +682,7 @@ function ModelTab({
           required={false}
           requireClaudeCompatible={requireClaudeCompatible}
           requireOpenAiCompatible={requireOpenAiCompatible}
-          emptyLabel={requireClaudeCompatible ? 'Claude Code default' : requireOpenAiCompatible ? 'Codex default' : 'Agent/space default provider'}
+          emptyLabel={adapter ? `${adapter.display_name} default` : 'Agent/space default provider'}
         />
       )}
       {isCli && (

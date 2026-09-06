@@ -34,6 +34,7 @@ vi.mock('../api/client', () => ({
   },
   hostsApi: {
     list: listHostsMock,
+    listRuntimeAdapters: vi.fn(async () => ({ items: [] })),
   },
 }))
 

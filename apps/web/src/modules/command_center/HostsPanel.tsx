@@ -59,7 +59,6 @@ export default function HostsPanel() {
     loadAdapters()
     providersApi.list().then(setProviders).catch(error => toast.error(errMsg(error)))
   }, [loadAdapters])
-  const eligibleAdapters = useMemo(() => runtimeAdapters.filter(a => a.remote_eligible), [runtimeAdapters])
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
@@ -216,9 +215,15 @@ export default function HostsPanel() {
                   <div className="w-full">
                     <HostProxyAddress host={host} onChanged={() => { void load() }} />
                   </div>
+                  {/* Every adapter, not only the dispatch-eligible ones: a
+                      registry agent is installable and managed here even
+                      while `remote_eligible` is false (hosts.md, profile
+                      isolation), and filtering it out hid the copy the
+                      owner had just installed. Eligibility gates dispatch
+                      and the default-adapter choice above, not this list. */}
                   <HostAgents
                     host={host}
-                    adapters={eligibleAdapters}
+                    adapters={runtimeAdapters}
                     providers={providers}
                     isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
                     onChanged={async () => {

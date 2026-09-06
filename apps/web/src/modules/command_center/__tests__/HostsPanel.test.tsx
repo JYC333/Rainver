@@ -75,6 +75,21 @@ describe('HostsPanel', () => {
     expect(screen.queryByText(/gemini.*next phase/i)).toBeNull()
   })
 
+  it('lists an installed registry agent even though it is not dispatch-eligible', async () => {
+    // A registry agent's managed copy is installable and managed on the host
+    // while `remote_eligible` stays false (no login/state-root contract yet).
+    // Filtering the host list by eligibility hid the copy right after install.
+    const CURSOR_ADAPTER = { adapter_type: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, provider_binding: false }
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
+    vi.mocked(hostsApi.list).mockResolvedValue({
+      items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: [], versions: {}, installations: { acp_cursor: [{ id: 'managed:2.0.0', version: '2.0.0', logged_in: false, options: null }] } } }],
+    })
+    render(<HostsPanel />)
+    expect(await screen.findByTestId('host-agent-host-1-acp_cursor')).toHaveTextContent('managed · 2.0.0')
+    // Not offered as the host's default adapter: that choice is dispatch.
+    expect(screen.queryByRole('option', { name: 'Cursor' })).toBeNull()
+  })
+
   it('changes a supported Agent model source from inside that Agent row', async () => {
     vi.mocked(providersApi.list).mockResolvedValue([CLAUDE_PROVIDER])
     vi.mocked(hostsApi.setProviderBinding).mockResolvedValue({

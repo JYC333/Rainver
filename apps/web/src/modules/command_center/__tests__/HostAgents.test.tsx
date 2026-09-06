@@ -51,7 +51,10 @@ const ADAPTERS: HostRuntimeAdapterOption[] = [
   { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp' },
   { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode' },
   { adapter_type: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true },
-  { adapter_type: 'acp_dynamic', display_name: 'Cursor', command: 'acp_dynamic', capability_probe: 'acp_dynamic', remote_eligible: true, provider_binding: false },
+  // What the server really reports for a registry agent: installable and
+  // managed on a host, but not dispatch-eligible until its entry can name a
+  // login/state-root contract. It must still be listed here.
+  { adapter_type: 'acp_dynamic', display_name: 'Cursor', command: 'acp_dynamic', capability_probe: 'acp_dynamic', remote_eligible: false, provider_binding: false },
 ]
 const HOST = {
   id: 'h1', name: 'Laptop', kind: 'remote', status: 'online',
