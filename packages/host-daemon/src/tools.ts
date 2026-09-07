@@ -1,4 +1,4 @@
-import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec } from "@rainver/protocol";
+import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -111,19 +111,46 @@ export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
 }
 
 /** The login command inside a managed tree, rendered from the spec's template. */
-export function renderManagedLoginCommand(tree: string, login: ToolLoginSpec | null): string[] | null {
-  if (!login?.managed_command) return null;
-  return login.managed_command.map((part) => part
+/** A spec's managed command form with its placeholders filled for this tree and daemon. */
+export function renderManagedCommand(tree: string, parts: string[] | undefined): string[] | null {
+  if (!parts) return null;
+  return parts.map((part) => part
     .split("{tree}").join(tree)
     .split("{node}").join(process.execPath)
     .split("{platform}").join(platformKey())
     .split("{node_platform}").join(`${process.platform}-${process.arch}`));
 }
 
+export function renderManagedLoginCommand(tree: string, login: ToolLoginSpec | null): string[] | null {
+  return renderManagedCommand(tree, login?.managed_command);
+}
+
 /** Whether a login has been completed for this HOME, by the runtime's own credential file. */
 export function loggedIn(home: string, login: ToolLoginSpec | null): boolean | null {
   if (!login) return null;
   return existsSync(join(home, login.home_subdir, login.credential_file));
+}
+
+/**
+ * The accounts a multi-account CLI holds in this HOME — provider ids and
+ * credential kinds only. Undefined for a CLI whose spec declares no
+ * accounts format (single-account CLIs), an empty list when the file is
+ * missing or unreadable. Secrets are never read past the `type` field.
+ */
+export function heldAccounts(home: string, login: ToolLoginSpec | null): RuntimeAccount[] | undefined {
+  if (!login?.accounts_format) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, login.home_subdir, login.credential_file), "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    return Object.entries(parsed as Record<string, unknown>).flatMap(([id, value]): RuntimeAccount[] => {
+      const kind = value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string"
+        ? (value as { type: string }).type
+        : "unknown";
+      return id ? [{ id, kind }] : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export async function uninstallTool(frame: UninstallToolFrame): Promise<boolean> {

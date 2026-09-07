@@ -11,6 +11,8 @@ const mockedApi = vi.hoisted(() => ({
   loginInput: vi.fn(),
 }))
 
+vi.mock('../LoginTerminalView', () => import('../../../test/loginTerminalStandIn'))
+
 vi.mock('../../../api/client', () => ({
   hostsApi: {
     executionTargets: mockedApi.executionTargets,
@@ -98,7 +100,7 @@ describe('HostExecutionTargetPicker', () => {
     expect(screen.getByText('Login required')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Login' }))
     expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
-    expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own')
+    expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own', null, expect.any(AbortSignal))
   })
 
   it('offers a managed workspace without a Project Location', async () => {

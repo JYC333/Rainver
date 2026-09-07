@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { detectCapabilities } from "../src/capabilities.js";
 import { resolveAcpLaunch } from "../src/execution.js";
 import {
+  heldAccounts,
   installTool,
   installedTools,
   loggedIn,
@@ -100,5 +101,34 @@ describe("managed installations", () => {
     expect(await uninstallTool({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toBe(true);
     expect(await uninstallTool({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toBe(false);
     expect((await installedTools()).size).toBe(0);
+  });
+});
+
+describe("held accounts", () => {
+  const LOGIN = { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json", accounts_format: "json_object_by_provider" as const };
+
+  it("lists provider ids and credential kinds from a multi-account credential file, never the secrets", async () => {
+    const home = join(configDir, "home");
+    await mkdir(join(home, ".local/share/opencode"), { recursive: true });
+    await writeFile(join(home, ".local/share/opencode/auth.json"), JSON.stringify({
+      yitang: { type: "api", key: "sk-secret" },
+      anthropic: { type: "oauth", access: "tok", refresh: "tok" },
+      odd: "not-an-object",
+    }));
+    expect(heldAccounts(home, LOGIN)).toEqual([
+      { id: "yitang", kind: "api" },
+      { id: "anthropic", kind: "oauth" },
+      { id: "odd", kind: "unknown" },
+    ]);
+    expect(JSON.stringify(heldAccounts(home, LOGIN))).not.toContain("sk-secret");
+  });
+
+  it("is absent for a single-account CLI and empty when the file is missing or unreadable", async () => {
+    const home = join(configDir, "home2");
+    expect(heldAccounts(home, { ...LOGIN, accounts_format: undefined })).toBeUndefined();
+    expect(heldAccounts(home, LOGIN)).toEqual([]);
+    await mkdir(join(home, ".local/share/opencode"), { recursive: true });
+    await writeFile(join(home, ".local/share/opencode/auth.json"), "{ not json");
+    expect(heldAccounts(home, LOGIN)).toEqual([]);
   });
 });

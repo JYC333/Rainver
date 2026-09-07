@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec, type ToolManifest } from "./tools.js";
-import type { RuntimeOptions } from "@rainver/protocol";
+import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec, type ToolManifest } from "./tools.js";
+import type { RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
 import { homedir } from "node:os";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 
@@ -28,6 +28,8 @@ export interface RuntimeInstallation {
   logged_in: boolean | null;
   /** What this copy reports through ACP; null when it could not be asked. */
   options: RuntimeOptions | null;
+  /** The accounts a multi-account CLI holds; absent for single-account runtimes. */
+  accounts?: RuntimeAccount[];
 }
 
 /** What the server says to look for, per adapter (`hello_ack.runtime_probes`). */
@@ -212,22 +214,26 @@ export async function detectCapabilities(
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
         const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
+        const ownAccounts = heldAccounts(homedir(), lookup.login);
         found.push({
           id: OWN_INSTALLATION,
           version,
           logged_in: loginState(homedir(), lookup.login, asked),
           options: reportedOptions(lookup.login, asked),
+          ...(ownAccounts ? { accounts: ownAccounts } : {}),
         });
       }
     }
     for (const manifest of managed.get(lookup.adapter_type) ?? []) {
       const id = managedInstallationId(manifest.version);
       const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null;
+      const managedAccounts = heldAccounts(manifest.home, manifest.login);
       found.push({
         id,
         version: manifest.version,
         logged_in: loginState(manifest.home, manifest.login, asked),
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
+        ...(managedAccounts ? { accounts: managedAccounts } : {}),
       });
     }
     if (found.length > 0) installations[lookup.adapter_type] = found;

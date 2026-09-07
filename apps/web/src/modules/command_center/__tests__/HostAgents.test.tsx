@@ -16,6 +16,8 @@ const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginStre
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('../LoginTerminalView', () => import('../../../test/loginTerminalStandIn'))
+
 vi.mock('../../../api/client', async importOriginal => {
   const original = await importOriginal<typeof import('../../../api/client')>()
   return {
@@ -49,7 +51,7 @@ vi.mock('../../../api/client', async importOriginal => {
 
 const ADAPTERS: HostRuntimeAdapterOption[] = [
   { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp' },
-  { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode' },
+  { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', provider_binding: true, provider_api: 'openai_compatible' },
   { adapter_type: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true },
   // What the server really reports for a registry agent: installable and
   // managed on a host, but not dispatch-eligible until its entry can name a
@@ -62,7 +64,8 @@ const HOST = {
   capabilities_json: {
     runtimes: ['opencode'],
     installations: {
-      opencode: [{ id: 'own', version: 'opencode 1.18.11', logged_in: true }],
+      // OpenCode holds several accounts; the daemon reports ids and kinds only.
+      opencode: [{ id: 'own', version: 'opencode 1.18.11', logged_in: true, accounts: [{ id: 'yitang', kind: 'api' }] }],
       acp_goose: [{ id: 'managed:1.2.3', version: '1.2.3', logged_in: false }],
       // Cursor: advertises Agent Auth but needs its own CLI login first, so
       // Rainver reports the CLI login fallback — the one button the person sees.
@@ -88,7 +91,7 @@ describe('HostAgents', () => {
   it("lists only the agents this host has a copy of, with log-in and remove, and adds a managed copy", async () => {
     const onChanged = vi.fn()
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={onChanged} />)
-    expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · logged in')
+    expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · 1 account')
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).not.toContain('opencode 1.18.11')
     expect(screen.getByTestId('host-agent-h1-acp_goose').textContent).toContain('managed · 1.2.3 · not logged in')
     // Claude is in the catalog but not on this host: not a row, only a choice under "Add agent…".
@@ -111,14 +114,14 @@ describe('HostAgents', () => {
     expect(screen.queryByRole('button', { name: /Enable and install/ })).toBeNull()
   })
 
-  it('logs a copy in through the terminal, stripping escape codes and relaying typed input', async () => {
+  it('logs a copy in through the terminal, relaying the PTY stream and typed input', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Log in managed:1.2.3 of goose on Laptop' }))
     const terminal = await screen.findByTestId('runtime-login-terminal')
+    // The stream reaches the terminal as sent — escape codes included, for
+    // the emulator to render — and the auth URL stays visible.
     await waitFor(() => expect(terminal.textContent).toContain('code? '))
-    expect(terminal.textContent).not.toContain('[32m')
-    expect(screen.getByRole('link', { name: 'Open login link' })).toHaveAttribute('href', 'https://login.example.test/device?id=abc')
-    expect(terminal.textContent).not.toContain('https://login.example.test')
+    expect(terminal.textContent).toContain('https://login.example.test/device?id=abc')
     await userEvent.type(screen.getByLabelText('Login input'), 'abc{enter}')
     await waitFor(() => expect(loginInput).toHaveBeenCalledWith('h1', 'acp_goose', 'managed:1.2.3', 'abc\n'))
     await waitFor(() => expect(terminal.textContent).toContain('Logged in.'))
@@ -135,9 +138,39 @@ describe('HostAgents', () => {
     expect(screen.getByRole('button', { name: 'Device login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' }))
-    await waitFor(() => expect(loginStream).toHaveBeenCalledWith('h1', 'acp_browser_only', 'managed:3.0.0', { kind: 'acp', methodId: 'browser' }))
+    await waitFor(() => expect(loginStream).toHaveBeenCalledWith('h1', 'acp_browser_only', 'managed:3.0.0', { kind: 'acp', methodId: 'browser' }, expect.any(AbortSignal)))
     expect(screen.queryByLabelText('Login input')).toBeNull()
     await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
+  })
+
+  it('shows a multi-account CLI by account count, adds one, and removes one through the vendor logout', async () => {
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    const row = screen.getByTestId('host-agent-h1-opencode')
+    // The count in the row, the names on hover, never a secret.
+    expect(row.textContent).toContain('1 account')
+    expect(row.textContent).not.toContain('logged in')
+    await userEvent.hover(screen.getByText('own · 1.18.11 · 1 account'))
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip).toHaveTextContent('yitang · api')
+    expect(screen.getByLabelText('Model source for OpenCode on Laptop').textContent).toContain('Agent-managed (1 account)')
+    // Login adds an account here, so the button says so and stays prominent.
+    expect(screen.getByRole('button', { name: 'Add account to own of OpenCode on Laptop' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Log in again/ })).toBeNull()
+    const before = loginStream.mock.calls.length
+    await userEvent.click(screen.getByRole('button', { name: 'Remove account from own of OpenCode on Laptop' }))
+    await waitFor(() => expect(loginStream.mock.calls.length).toBe(before + 1))
+    expect(loginStream).toHaveBeenLastCalledWith('h1', 'opencode', 'own', { kind: 'logout' }, expect.any(AbortSignal))
+    await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged out.'))
+  })
+
+  it('offers Log out on a single-account copy that is logged in', async () => {
+    const host = { ...HOST, capabilities_json: { runtimes: ['claude'], installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: true }] } } } as unknown as Host
+    render(<HostAgents host={host} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Log in own of Claude Code on Laptop' })).toHaveTextContent('Log in again')
+    const before = loginStream.mock.calls.length
+    await userEvent.click(screen.getByRole('button', { name: 'Log out own of Claude Code on Laptop' }))
+    await waitFor(() => expect(loginStream.mock.calls.length).toBe(before + 1))
+    expect(loginStream).toHaveBeenLastCalledWith('h1', 'claude_code', 'own', { kind: 'logout' }, expect.any(AbortSignal))
   })
 
   it('starts a fresh session when the same copy is logged in again while its last panel is still open', async () => {
@@ -158,7 +191,7 @@ describe('HostAgents', () => {
     expect(screen.queryByRole('button', { name: /Cursor Login/ })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Log in managed:2.0.0 of Cursor on Laptop' }))
     await waitFor(() => expect(loginStream).toHaveBeenLastCalledWith(
-      'h1', 'acp_dynamic', 'managed:2.0.0', { kind: 'cli' },
+      'h1', 'acp_dynamic', 'managed:2.0.0', { kind: 'cli' }, expect.any(AbortSignal),
     ))
   })
 

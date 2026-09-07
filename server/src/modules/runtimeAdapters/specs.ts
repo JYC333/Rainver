@@ -49,8 +49,13 @@ export type RuntimeDistribution =
 export interface RuntimeLoginSpec {
   command: string[];
   managed_command?: string[];
+  /** The vendor's logout in the same two forms; absent when the CLI has none. */
+  logout_command?: string[];
+  managed_logout_command?: string[];
   home_subdir: string;
   credential_file: string;
+  /** Declared for a CLI that holds several accounts in its credential file (see the protocol schema). */
+  accounts_format?: "json_object_by_provider";
   hint?: string;
 }
 
@@ -347,8 +352,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     credentials: {
       login: {
         command: ["claude", "/login"],
+        logout_command: ["claude", "/logout"],
         // The bundled SDK ships the vendor binary per platform.
         managed_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/login"],
+        managed_logout_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/logout"],
         home_subdir: ".claude",
         // `claude /login` exits non-zero from its REPL; the credential file is
         // the reliable success signal.
@@ -426,6 +433,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       login: {
         command: ["codex", "login", "--device-auth"],
         managed_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "login", "--device-auth"],
+        logout_command: ["codex", "logout"],
+        managed_logout_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "logout"],
         home_subdir: ".codex",
         credential_file: "auth.json",
         hint: "Open the device-auth URL and enter the code shown.",
@@ -498,6 +507,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       login: {
         command: ["opencode", "auth", "login"],
         managed_command: ["{tree}/opencode", "auth", "login"],
+        // `auth logout` is a picker over the stored providers: removing one
+        // account of several, which is what a multi-account CLI needs.
+        logout_command: ["opencode", "auth", "logout"],
+        managed_logout_command: ["{tree}/opencode", "auth", "logout"],
+        accounts_format: "json_object_by_provider",
         home_subdir: ".local/share/opencode",
         credential_file: "auth.json",
         hint: "Follow the prompts to complete login.",

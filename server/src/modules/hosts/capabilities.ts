@@ -6,6 +6,7 @@ import {
   type RuntimeOptionChoice,
   type RuntimeOptions,
   type RuntimeSessionConfigOption,
+  type RuntimeAccount,
 } from "@rainver/protocol";
 
 /**
@@ -87,14 +88,25 @@ function options(value: unknown): RuntimeOptions | null {
       }
     : null;
 }
+function accounts(value: unknown): RuntimeAccount[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((item): RuntimeAccount[] => {
+    const entry = record(item);
+    return typeof entry.id === "string" && entry.id && typeof entry.kind === "string" && entry.kind
+      ? [{ id: entry.id, kind: entry.kind }]
+      : [];
+  });
+}
 function installation(value: unknown): RuntimeInstallation | null {
   const entry = record(value);
   if (typeof entry.id !== "string") return null;
+  const held = accounts(entry.accounts);
   return {
     id: entry.id,
     version: typeof entry.version === "string" ? entry.version : null,
     logged_in: typeof entry.logged_in === "boolean" ? entry.logged_in : null,
     options: options(entry.options),
+    ...(held ? { accounts: held } : {}),
   };
 }
 

@@ -116,6 +116,13 @@ export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>;
 export const OWN_INSTALLATION = "own";
 
 /** One copy of a runtime on a host: the machine's own PATH install, or a daemon-managed one. */
+/** One account a multi-account CLI holds: its provider id and the credential kind (`api`, `oauth`), never the secret. */
+export const RuntimeAccountSchema = z.object({
+  id: z.string().min(1).max(256),
+  kind: z.string().min(1).max(64),
+});
+export type RuntimeAccount = z.infer<typeof RuntimeAccountSchema>;
+
 export const RuntimeInstallationSchema = z.object({
   /** `own` or `managed:<version>`. */
   id: z.string(),
@@ -124,6 +131,8 @@ export const RuntimeInstallationSchema = z.object({
   logged_in: z.boolean().nullable(),
   /** Null when the copy could not be asked and has no configured model either. */
   options: RuntimeOptionsSchema.nullable(),
+  /** Present only for a CLI whose login spec declares an accounts format; the list may be empty. */
+  accounts: z.array(RuntimeAccountSchema).optional(),
 });
 export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 

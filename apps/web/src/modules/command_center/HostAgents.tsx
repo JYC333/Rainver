@@ -291,7 +291,7 @@ export default function HostAgents({
       {loginOpen && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
-            <span>Login · {adapters.find(adapter => adapter.adapter_type === loginOpen.adapterType)?.display_name ?? loginOpen.adapterType} · {loginOpen.installation}</span>
+            <span>{loginOpen.target.kind === 'logout' ? 'Logout' : 'Login'} · {adapters.find(adapter => adapter.adapter_type === loginOpen.adapterType)?.display_name ?? loginOpen.adapterType} · {loginOpen.installation}</span>
             <Button size="sm" variant="ghost" onClick={() => setLoginOpen(null)}>Close</Button>
           </div>
           <RuntimeLoginTerminal
@@ -301,7 +301,8 @@ export default function HostAgents({
             installation={loginOpen.installation}
             target={loginOpen.target.kind === 'acp'
               ? { kind: 'acp', methodId: loginOpen.target.method.id }
-              : loginOpen.target.kind === 'cli' ? { kind: 'cli' } : null}
+              : loginOpen.target.kind === 'cli' ? { kind: 'cli' }
+              : loginOpen.target.kind === 'logout' ? { kind: 'logout' } : null}
             interactive={loginOpen.target.kind !== 'acp' || loginOpen.target.method.type !== 'agent'}
             onDone={loggedIn => {
               void onChanged()

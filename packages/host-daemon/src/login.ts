@@ -1,8 +1,9 @@
 import type { HostDaemonFrame, HostServerFrameOf } from "@rainver/protocol";
+import { LOGIN_TERMINAL_COLS, LOGIN_TERMINAL_ROWS } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec } from "./tools.js";
+import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
 import { resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
@@ -45,6 +46,7 @@ function resolveAuthAgentLaunch(frame: LoginOpenFrame): { command: string; args:
 export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
   const ambient = Object.fromEntries(Object.entries(process.env).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
   if (frame.auth_method && frame.login_action) throw new Error("Choose either ACP authentication or CLI login");
+  if (frame.login_action === "logout") return resolveLogoutCommand(frame, ambient);
   if (frame.login_action === "cli") {
     if (frame.installation === OWN_INSTALLATION) throw new Error("CLI login fallback is only available for managed Agents");
     const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
@@ -80,6 +82,41 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
   const command = renderManagedLoginCommand(tree, manifest.login ?? frame.login) ?? manifest.login_command;
   if (!command) throw new Error("This installation does not declare a supported login method");
   return { command, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login: manifest.login ?? frame.login };
+}
+
+/**
+ * The vendor's own logout, from the login spec (`logout_command`, or its
+ * managed form in the copy's tree), or — for a registry agent Rainver logs in
+ * through its fixed `<entry> login` — the same entry's `logout`. Runs in the
+ * same isolated HOME as the login did; it is one more fixed command, never a
+ * remotely supplied one.
+ */
+function resolveLogoutCommand(
+  frame: LoginOpenFrame,
+  ambient: Record<string, string>,
+): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
+  if (frame.installation === OWN_INSTALLATION) {
+    const command = frame.login?.logout_command;
+    if (!command) throw new Error("This installation does not declare a logout command");
+    return { command, env: ambient, home: homedir(), login: frame.login };
+  }
+  const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
+  if (!manifest) throw new Error(`This daemon does not have ${frame.adapter_type} ${frame.installation} installed.`);
+  const login = manifest.login ?? frame.login;
+  const tree = join(toolsDir(), manifest.adapter_type, manifest.version);
+  const specCommand = renderManagedCommand(tree, login?.managed_logout_command);
+  if (specCommand) {
+    return { command: specCommand, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login };
+  }
+  if (login) throw new Error("This installation does not declare a logout command");
+  const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
+  if (!entryArgs) throw new Error("Reinstall this managed Agent before using CLI logout");
+  return {
+    command: [manifest.command, ...entryArgs, "logout"],
+    env: { ...ambient, ...manifest.env, HOME: manifest.home },
+    home: manifest.home,
+    login: null,
+  };
 }
 
 function sanitizedEnv(extra: Record<string, string>, home: string): Record<string, string> {
@@ -192,12 +229,55 @@ function openAgentAuthSession(
   };
 }
 
+/**
+ * What a login session accepts from the browser. The command behind the PTY
+ * is fixed by the adapter spec and stdin reaches only it, so this is not an
+ * authorization boundary; it bounds what a keyboard can plausibly produce
+ * so a misbehaving client cannot turn the channel into a firehose.
+ */
+export const LOGIN_INPUT_SESSION_MAX_CHARS = 256 * 1024;
+export const LOGIN_INPUT_BURST_CHARS = 32 * 1024;
+export const LOGIN_INPUT_CHARS_PER_SECOND = 8 * 1024;
+
+export interface LoginInputRefusal {
+  reason: string;
+  /** Too fast: the frame is dropped and the session goes on. Over the lifetime budget: the session ends. */
+  fatal: boolean;
+}
+
+/**
+ * Token bucket plus a per-session total; returns why a frame is refused, or
+ * null to admit it. A single frame's size is bounded by the wire schema
+ * (`LOGIN_INPUT_MAX_CHARS`) before any frame reaches this.
+ */
+export function createLoginInputGovernor(now: () => number = Date.now): (data: string) => LoginInputRefusal | null {
+  let tokens = LOGIN_INPUT_BURST_CHARS;
+  let last = now();
+  let total = 0;
+  return (data) => {
+    const at = now();
+    // A wall clock can step backwards (NTP after sleep); never let that
+    // drain the bucket.
+    tokens = Math.min(LOGIN_INPUT_BURST_CHARS, tokens + (Math.max(0, at - last) / 1000) * LOGIN_INPUT_CHARS_PER_SECOND);
+    last = at;
+    if (data.length > tokens) {
+      return { reason: `input arrived faster than ${LOGIN_INPUT_CHARS_PER_SECOND} characters per second; that input was dropped`, fatal: false };
+    }
+    tokens -= data.length;
+    total += data.length;
+    if (total > LOGIN_INPUT_SESSION_MAX_CHARS) {
+      return { reason: `this session has received more than ${LOGIN_INPUT_SESSION_MAX_CHARS} characters of input`, fatal: true };
+    }
+    return null;
+  };
+}
+
 /** `script(1)` differs between util-linux and BSD; both give the command a PTY and relay stdin. */
 function ptyArgv(command: string[]): { command: string; args: string[] } {
   const shellLine = command.map((part) => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
   // Size the terminal first: nothing else in the chain will, and a 0×0
   // terminal makes TUIs misbehave and wrap auth URLs.
-  const sized = `stty cols 200 rows 40 2>/dev/null; exec ${shellLine}`;
+  const sized = `stty cols ${LOGIN_TERMINAL_COLS} rows ${LOGIN_TERMINAL_ROWS} 2>/dev/null; exec ${shellLine}`;
   if (platform() === "darwin") return { command: "script", args: ["-q", "/dev/null", "sh", "-c", sized] };
   // util-linux runs `-c` through the shell itself.
   return { command: "script", args: ["-qfec", sized, "/dev/null"] };
@@ -219,13 +299,17 @@ export function openLoginSession(
   const resolved = resolveLoginCommand(frame);
   const pty = ptyArgv(resolved.command);
   log(`login ${frame.adapter_type} ${frame.installation}: ${resolved.command.join(" ")}`);
-  const env: Record<string, string> = { ...resolved.env, TERM: "xterm-256color", COLUMNS: "200", LINES: "40" };
+  const env: Record<string, string> = { ...resolved.env, TERM: "xterm-256color", COLUMNS: String(LOGIN_TERMINAL_COLS), LINES: String(LOGIN_TERMINAL_ROWS) };
   // A vendor login must not pick up an API key from the ambient environment
   // and skip the flow the person came here for.
   delete env.ANTHROPIC_API_KEY;
   delete env.OPENAI_API_KEY;
   const child: ChildProcess = spawn(pty.command, pty.args, { env, cwd: resolved.home, stdio: ["pipe", "pipe", "pipe"] });
+  // A write that lands as the program exits fails asynchronously (EPIPE) on
+  // stdin's own 'error' event; unhandled, that would take the daemon down.
+  child.stdin?.on("error", () => { /* the exit that follows is the report */ });
   let exited = false;
+  let closing = false;
   const finish = (code: number | null) => {
     if (exited) return;
     exited = true;
@@ -234,7 +318,9 @@ export function openLoginSession(
       type: "login_exit",
       session_id: frame.session_id,
       exit_code: code ?? -1,
-      logged_in: frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login),
+      logged_in: frame.login_action === "logout"
+        ? (resolved.login ? loggedIn(resolved.home, resolved.login) : code === 0 ? false : null)
+        : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login),
     });
   };
   child.stdout?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
@@ -244,11 +330,29 @@ export function openLoginSession(
     finish(-1);
   });
   child.on("close", (code) => finish(code));
+  const admit = createLoginInputGovernor();
+  let lastRefusal: string | null = null;
   const session: LoginSession = {
     write(data) {
+      if (closing) return;
+      const refused = admit(data);
+      if (refused) {
+        // Say it once per streak: a held key would otherwise paint the notice
+        // as fast as it drops keystrokes.
+        if (refused.reason !== lastRefusal) {
+          lastRefusal = refused.reason;
+          log(`login ${frame.adapter_type} ${frame.installation}: input refused (${refused.reason})${refused.fatal ? "; closing" : ""}`);
+          send({ type: "login_output", session_id: frame.session_id, data: `\r\n[rainver] ${refused.reason}${refused.fatal ? "; closing this login session" : ""}.\r\n` });
+        }
+        if (refused.fatal) session.close();
+        return;
+      }
+      lastRefusal = null;
       try { child.stdin?.write(data); } catch { /* the process is gone; exit follows */ }
     },
     close() {
+      if (closing) return;
+      closing = true;
       try { child.kill("SIGTERM"); } catch { /* already gone */ }
       setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, 3000).unref?.();
     },

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openLoginSession, resolveLoginCommand } from "../src/login.js";
+import { LOGIN_INPUT_BURST_CHARS, LOGIN_INPUT_SESSION_MAX_CHARS, createLoginInputGovernor, openLoginSession, resolveLoginCommand } from "../src/login.js";
+import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { toolsDir } from "../src/tools.js";
 
 let configDir: string;
@@ -133,3 +134,85 @@ async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+describe("logout", () => {
+  const SPEC = {
+    command: ["opencode", "auth", "login"], managed_command: ["{tree}/opencode", "auth", "login"],
+    logout_command: ["opencode", "auth", "logout"], managed_logout_command: ["{tree}/opencode", "auth", "logout"],
+    home_subdir: ".local/share/opencode", credential_file: "auth.json",
+  };
+
+  it("runs the vendor's logout for the machine's own copy and, inside its tree, for a managed copy", async () => {
+    const own = resolveLoginCommand({ session_id: "s", adapter_type: "opencode", installation: "own", login: SPEC, login_action: "logout" });
+    expect(own.command).toEqual(["opencode", "auth", "logout"]);
+    expect(own.env.HOME).toBe(process.env.HOME);
+
+    const dir = join(toolsDir(), "opencode", "1.0.0");
+    await mkdir(join(dir, "home"), { recursive: true });
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      adapter_type: "opencode", version: "1.0.0", command: join(dir, "opencode"), args: ["acp"], env: {}, home: join(dir, "home"),
+      login_command: [join(dir, "opencode"), "auth", "login"], login: SPEC, installed_at: "",
+    }));
+    const managed = resolveLoginCommand({ session_id: "s", adapter_type: "opencode", installation: "managed:1.0.0", login: null, login_action: "logout" });
+    expect(managed.command).toEqual([join(dir, "opencode"), "auth", "logout"]);
+    expect(managed.env.HOME).toBe(join(dir, "home"));
+  });
+
+  it("uses the fixed entry's `logout` for a registry agent Rainver logs in through `login`, and refuses everything else", async () => {
+    const dir = join(toolsDir(), "acp_cursor", "latest");
+    await mkdir(join(dir, "home"), { recursive: true });
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      adapter_type: "acp_cursor", version: "latest", command: join(dir, "cursor-agent"), args: ["acp"], entry_args: [], env: {}, home: join(dir, "home"),
+      login_command: null, login: null, installed_at: "",
+    }));
+    const registry = resolveLoginCommand({ session_id: "s", adapter_type: "acp_cursor", installation: "managed:latest", login: null, login_action: "logout" });
+    expect(registry.command).toEqual([join(dir, "cursor-agent"), "logout"]);
+
+    // A spec without a logout command fails closed rather than guessing one.
+    const noLogout = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
+    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "own", login: noLogout, login_action: "logout" })).toThrow(/logout command/);
+    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:9", login: null, login_action: "logout" })).toThrow(/not have/);
+  });
+});
+
+describe("login input governor", () => {
+  it("admits typing and a paste of the largest frame the wire allows", () => {
+    const admit = createLoginInputGovernor(() => 0);
+    expect(admit("a")).toBeNull();
+    expect(admit("\u001b[A")).toBeNull();
+    expect(admit("x".repeat(LOGIN_INPUT_MAX_CHARS))).toBeNull();
+  });
+
+  it("refuses input that outruns the per-second budget and admits again once it refills", () => {
+    let clock = 0;
+    const admit = createLoginInputGovernor(() => clock);
+    // Drain the burst allowance in maximal frames.
+    for (let sent = 0; sent < LOGIN_INPUT_BURST_CHARS; sent += LOGIN_INPUT_MAX_CHARS) {
+      expect(admit("x".repeat(LOGIN_INPUT_MAX_CHARS))).toBeNull();
+    }
+    expect(admit("y")).toMatchObject({ fatal: false, reason: expect.stringMatching(/faster than/) });
+    clock += 1000;
+    expect(admit("y")).toBeNull();
+  });
+
+  it("does not drain the bucket when the clock steps backwards", () => {
+    let clock = 10_000;
+    const admit = createLoginInputGovernor(() => clock);
+    expect(admit("a")).toBeNull();
+    clock -= 60_000;
+    expect(admit("b")).toBeNull();
+  });
+
+  it("refuses a session that has received more than its lifetime budget", () => {
+    let clock = 0;
+    const admit = createLoginInputGovernor(() => clock);
+    let sent = 0;
+    while (sent < LOGIN_INPUT_SESSION_MAX_CHARS) {
+      clock += 1000;
+      expect(admit("x".repeat(LOGIN_INPUT_MAX_CHARS))).toBeNull();
+      sent += LOGIN_INPUT_MAX_CHARS;
+    }
+    clock += 1000;
+    expect(admit("x")).toMatchObject({ fatal: true, reason: expect.stringMatching(/more than/) });
+  });
+});

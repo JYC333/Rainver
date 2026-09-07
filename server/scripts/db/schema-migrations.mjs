@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -67,11 +68,27 @@ function generateInto(outDir, name, { custom = false, reportOutput = true } = {}
   return /No schema changes/.test(output);
 }
 
-/** A short-lived scratch directory inside `server/` (git-ignored), so the relative-path rule holds. */
+/**
+ * A short-lived scratch directory for the drift check. The OS temp dir first
+ * — inside the server image `/app/server` belongs to root while the check
+ * runs as `node`, so a scratch dir there is not creatable — then the
+ * git-ignored `server/.tmp` for a host whose temp dir is unwritable. Either
+ * way drizzle-kit receives it as a path relative to `server/` (see
+ * `generateInto`).
+ */
 function scratchDir() {
-  const dir = join(serverRoot, ".tmp", `schema-check-${randomBytes(6).toString("hex")}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  const name = `rainver-schema-check-${randomBytes(6).toString("hex")}`;
+  const candidates = [join(tmpdir(), name), join(serverRoot, ".tmp", name)];
+  const failures = [];
+  for (const dir of candidates) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch (error) {
+      failures.push(`${dir}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`no writable scratch directory for the schema check:\n  ${failures.join("\n  ")}`);
 }
 
 function migrationFiles(dir) {

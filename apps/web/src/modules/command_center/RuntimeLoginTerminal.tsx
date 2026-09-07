@@ -1,41 +1,14 @@
-import { useEffect, useRef, useState, type ReactElement } from 'react'
-import { Button } from '../../components/ui/button'
-import { Input } from '../../components/ui/input'
+import { useEffect, useRef, useState } from 'react'
 import { hostsApi, type HostLoginTarget, type RuntimeLoginEvent } from '../../api/client'
 import { errMsg } from '../../lib/utils'
+import LoginTerminalView from './LoginTerminalView'
 
-// eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
-const MAX_CHARS = 20_000
-const HTTP_URL_RE = /https?:\/\/[^\s]+/g
-
-function linkedOutput(value: string) {
-  const parts: Array<string | ReactElement> = []
-  let cursor = 0
-  for (const match of value.matchAll(HTTP_URL_RE)) {
-    const at = match.index ?? 0
-    if (at > cursor) parts.push(value.slice(cursor, at))
-    parts.push(
-      <a
-        key={`${at}:${match[0]}`}
-        href={match[0]}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="text-primary underline underline-offset-2"
-      >
-        Open login link
-      </a>,
-    )
-    cursor = at + match[0].length
-  }
-  if (cursor < value.length) parts.push(value.slice(cursor))
-  return parts
-}
+const PENDING_OUTPUT_MAX_CHARS = 64 * 1024
 
 /**
- * The login terminal for one copy of a runtime on a host. Output is the
- * daemon's PTY stream with escape codes stripped; whatever is typed goes
- * back to the same session. Ends when the login command exits.
+ * The login terminal for one copy of a runtime on a host: the daemon's PTY
+ * stream rendered by a terminal emulator, with every keystroke sent back to
+ * the same session in order. Ends when the login command exits.
  */
 export default function RuntimeLoginTerminal({
   hostId,
@@ -52,21 +25,27 @@ export default function RuntimeLoginTerminal({
   interactive?: boolean
   onDone: (loggedIn: boolean | null) => void
 }) {
-  const [output, setOutput] = useState('')
   const [hint, setHint] = useState<string | null>(null)
   const [exit, setExit] = useState<{ exit_code: number; logged_in: boolean | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [line, setLine] = useState('')
-  const pre = useRef<HTMLPreElement>(null)
+  const [started, setStarted] = useState(false)
+  const startedRef = useRef(false)
+  // Output can arrive before the emulator has loaded; hold its tail until
+  // then. A fresh terminal only needs what is on screen, and a TUI that
+  // repaints at full speed would otherwise grow this without bound.
+  const writer = useRef<((data: string) => void) | null>(null)
+  const pending = useRef('')
+  // Keystrokes travel one request at a time, in order; keys typed while a
+  // request is in flight are sent together in the next one.
+  const queued = useRef('')
+  const sending = useRef<Promise<unknown>>(Promise.resolve())
 
   useEffect(() => {
     let cancelled = false
+    const abort = new AbortController()
     void (async () => {
       try {
-        const stream = target
-          ? hostsApi.loginStream(hostId, adapterType, installation, target)
-          : hostsApi.loginStream(hostId, adapterType, installation)
-        for await (const event of stream) {
+        for await (const event of hostsApi.loginStream(hostId, adapterType, installation, target ?? null, abort.signal)) {
           if (cancelled) break
           handle(event)
         }
@@ -75,7 +54,14 @@ export default function RuntimeLoginTerminal({
       }
     })()
     function handle(event: RuntimeLoginEvent) {
-      if (event.type === 'output') setOutput(previous => (previous + event.data.replace(ANSI_RE, '')).slice(-MAX_CHARS))
+      if (event.type === 'output') {
+        if (!startedRef.current) {
+          startedRef.current = true
+          setStarted(true)
+        }
+        if (writer.current) writer.current(event.data)
+        else pending.current = (pending.current + event.data).slice(-PENDING_OUTPUT_MAX_CHARS)
+      }
       if (event.type === 'hint') setHint(event.text)
       if (event.type === 'error') setError(event.message)
       if (event.type === 'exit') {
@@ -83,51 +69,51 @@ export default function RuntimeLoginTerminal({
         onDone(event.logged_in)
       }
     }
-    return () => { cancelled = true }
+    // Leaving closes the response, which is what ends the daemon's login
+    // session; a login program is never left waiting on the host.
+    return () => { cancelled = true; abort.abort() }
     // A terminal is one session; a new host/copy is a new component.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId, adapterType, installation, target?.kind, target?.kind === 'acp' ? target.methodId : null])
 
-  useEffect(() => {
-    if (pre.current) pre.current.scrollTop = pre.current.scrollHeight
-  }, [output])
-
-  async function send() {
-    const data = `${line}\n`
-    setLine('')
-    try {
-      await hostsApi.loginInput(hostId, adapterType, installation, data)
-    } catch (caught) {
-      setError(errMsg(caught))
-    }
+  function send(data: string) {
+    // Nothing is listening after exit; the emulator is told to stop taking
+    // input, and this guards the moment between the exit event and that.
+    if (exit) return
+    queued.current += data
+    sending.current = sending.current
+      .then(() => {
+        const batch = queued.current
+        queued.current = ''
+        return batch ? hostsApi.loginInput(hostId, adapterType, installation, batch) : null
+      })
+      .catch(caught => setError(errMsg(caught)))
   }
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-muted/30 p-2" data-testid="runtime-login-terminal">
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-      <pre ref={pre} className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-snug" aria-label="Login terminal">
-        {output ? linkedOutput(output) : (exit ? '' : 'Starting login…')}
-      </pre>
+      {!started && !exit && <p className="text-xs text-muted-foreground">Starting login…</p>}
+      <LoginTerminalView
+        interactive={interactive && !exit}
+        onData={send}
+        onError={setError}
+        onReady={write => {
+          writer.current = write
+          if (pending.current) {
+            write(pending.current)
+            pending.current = ''
+          }
+        }}
+      />
       {error && <p className="text-xs text-destructive">{error}</p>}
-      {exit ? (
+      {exit && (
         <p className="text-xs">
-          {exit.logged_in === true ? 'Logged in.' : exit.logged_in === false ? `Login ended without a credential (exit ${exit.exit_code}).` : `Session ended (exit ${exit.exit_code}).`}
+          {target?.kind === 'logout'
+            ? exit.exit_code === 0 ? 'Logged out.' : `Logout ended with exit ${exit.exit_code}.`
+            : exit.logged_in === true ? 'Logged in.' : exit.logged_in === false ? `Login ended without a credential (exit ${exit.exit_code}).` : `Session ended (exit ${exit.exit_code}).`}
         </p>
-      ) : interactive ? (
-        <form
-          className="flex items-center gap-2"
-          onSubmit={event => { event.preventDefault(); void send() }}
-        >
-          <Input
-            aria-label="Login input"
-            value={line}
-            onChange={event => setLine(event.target.value)}
-            placeholder="Type here and press Enter — codes, answers, commands"
-            autoFocus
-          />
-          <Button type="submit" size="sm" variant="outline">Send</Button>
-        </form>
-      ) : null}
+      )}
     </div>
   )
 }

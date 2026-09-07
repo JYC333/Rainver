@@ -3,7 +3,7 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { HostDaemonFrameSchema, HostHelloInfoSchema, type HostHelloInfo } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostHelloInfoSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
@@ -437,9 +437,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       ? String((request.query as Record<string, unknown>).auth_method_id)
       : null;
     const rawLoginAction = (request.query as Record<string, unknown>).login_action;
-    const loginAction = rawLoginAction === "cli" ? "cli" as const : null;
+    const loginAction = rawLoginAction === "cli" ? "cli" as const : rawLoginAction === "logout" ? "logout" as const : null;
     if (rawLoginAction !== undefined && !loginAction) {
-      return reply.code(400).send({ detail: "login_action must be 'cli'" });
+      return reply.code(400).send({ detail: "login_action must be 'cli' or 'logout'" });
     }
     if (authMethodId && loginAction) {
       return reply.code(400).send({ detail: "Choose either auth_method_id or login_action" });
@@ -451,8 +451,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (authMethodId && !authMethod) {
       return reply.code(422).send({ detail: `Authentication method '${authMethodId}' is not advertised by this installation` });
     }
-    if (loginAction && !cliLoginAvailable) {
+    if (loginAction === "cli" && !cliLoginAvailable) {
       return reply.code(422).send({ detail: "CLI login is not available for this installation" });
+    }
+    // Logout is the vendor's own command from the login spec, or — for a
+    // registry agent Rainver logs in through its fixed `login` — the same
+    // entry's `logout`. Nothing else is ever run.
+    if (loginAction === "logout" && !probe.login?.logout_command && !cliLoginAvailable) {
+      return reply.code(422).send({ detail: "This installation does not declare a logout command" });
     }
     if (!probe.login && !authMethod && !loginAction) {
       let selectionDetail = "This installation does not advertise a supported login method";
@@ -491,7 +497,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply;
     }
     activeLoginSessions.set(key, sessionId);
-    const hint = authMethod?.description ?? probe.login?.hint;
+    const hint = loginAction === "logout" ? null : authMethod?.description ?? probe.login?.hint;
     if (hint) emit({ type: "hint", text: hint });
     reply.raw.once("close", () => {
       if (activeLoginSessions.get(key) === sessionId) {
@@ -508,6 +514,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const { adapterType, installation } = params(request);
     const data = body<{ data?: unknown }>(request).data;
     if (!adapterType || !installation || typeof data !== "string") return reply.code(400).send({ detail: "data is required" });
+    if (data.length > LOGIN_INPUT_MAX_CHARS) {
+      return reply.code(413).send({ detail: `Login input is limited to ${LOGIN_INPUT_MAX_CHARS} characters per message` });
+    }
     const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, adapterType, installation));
     if (!sessionId || !sharedHostConnectionRegistry.sendLoginInput(resolved.hostId, sessionId, data)) {
       return reply.code(409).send({ detail: "No login session is open for this installation" });

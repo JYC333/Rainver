@@ -30,6 +30,25 @@ import {
 } from "./ambientSessions.js";
 import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 
+/**
+ * The most a single `login_input` frame may carry. Keystrokes are bytes; a
+ * pasted key or code is well under this, and anything larger is not typing.
+ * Enforced by the server route (413) and by the daemon's frame schema, so
+ * neither end relies on the other.
+ */
+export const LOGIN_INPUT_MAX_CHARS = 4096;
+
+/**
+ * The login PTY grid. The daemon sizes the terminal to this before the
+ * login command starts and the browser renders the same grid, so vendor
+ * pickers wrap and place their cursor identically at both ends. A classic
+ * 24-row terminal: tall enough for every vendor's login and device-code
+ * screens, short enough that the panel does not push the host card off the
+ * page. Wrapped URLs stay clickable (the web-links addon follows wraps).
+ */
+export const LOGIN_TERMINAL_COLS = 120;
+export const LOGIN_TERMINAL_ROWS = 24;
+
 // ---------------------------------------------------------------------------
 // Shared pieces
 // ---------------------------------------------------------------------------
@@ -51,8 +70,17 @@ export const WORK_SKILL_PATH_PLACEHOLDER = "rainver:work-skill-path";
 export const RuntimeLoginSpecSchema = z.object({
   command: z.array(z.string()),
   managed_command: z.array(z.string()).optional(),
+  /** The vendor's logout, in the same two forms; absent when the CLI has none. */
+  logout_command: z.array(z.string()).optional(),
+  managed_logout_command: z.array(z.string()).optional(),
   home_subdir: z.string(),
   credential_file: z.string(),
+  /**
+   * How the credential file lists accounts, for a CLI that holds several
+   * (OpenCode): a JSON object keyed by provider id whose values carry a
+   * `type`. Only ids and types are ever read from it, never secrets.
+   */
+  accounts_format: z.literal("json_object_by_provider").optional(),
   hint: z.string().optional(),
 });
 export type RuntimeLoginSpec = z.infer<typeof RuntimeLoginSpecSchema>;
@@ -282,8 +310,8 @@ export const HostLoginOpenFrameSchema = z.object({
   argv: z.array(z.string()).optional(),
   /** Selected from this installation's last ACP initialize response. */
   auth_method: RuntimeAuthMethodSchema.nullable().optional(),
-  /** Rainver-owned compatibility flow; mutually exclusive with `auth_method`. */
-  login_action: z.literal("cli").nullable().optional(),
+  /** Rainver-owned fixed actions (CLI login, or the vendor's logout); mutually exclusive with `auth_method`. */
+  login_action: z.enum(["cli", "logout"]).nullable().optional(),
 });
 export const HostAmbientImportFrameSchema = z.object({
   type: z.literal("ambient_import"),
@@ -353,7 +381,7 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
   HostLoginOpenFrameSchema,
-  z.object({ type: z.literal("login_input"), session_id: IdSchema, data: z.string() }),
+  z.object({ type: z.literal("login_input"), session_id: IdSchema, data: z.string().max(LOGIN_INPUT_MAX_CHARS) }),
   z.object({ type: z.literal("login_close"), session_id: IdSchema }),
   HostAmbientImportFrameSchema,
   HostFolderReadFrameSchema,

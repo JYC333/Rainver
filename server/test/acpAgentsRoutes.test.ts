@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -265,6 +266,19 @@ describe("ACP registry agents", () => {
     });
     expect(methodRequired.statusCode).toBe(422);
     expect(methodRequired.json().detail).toMatch(/auth_method_id is required/);
+    // Logout is the spec's command or the CLI-login entry's `logout`; this
+    // registry copy has neither, so it fails closed instead of guessing.
+    const noLogout = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?login_action=logout`,
+    });
+    expect(noLogout.statusCode).toBe(422);
+    expect(noLogout.json().detail).toMatch(/logout command/);
+    const badAction = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?login_action=bogus`,
+    });
+    expect(badAction.statusCode).toBe(400);
     const seen: Record<string, unknown>[] = [];
     socket.addEventListener("message", (event) => {
       const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
@@ -307,6 +321,14 @@ describe("ACP registry agents", () => {
       payload: JSON.stringify({ data: "abc\n" }),
     });
     expect(input.statusCode).toBe(204);
+    // One message is bounded by the wire's LOGIN_INPUT_MAX_CHARS; larger is not typing.
+    const oversized = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/input`,
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ data: "x".repeat(LOGIN_INPUT_MAX_CHARS + 1) }),
+    });
+    expect(oversized.statusCode).toBe(413);
     await readUntil(() => events.some((event) => event.type === "exit"));
     expect(events.map((event) => event.type)).toEqual(["output", "output", "exit"]);
     expect(events[2]).toMatchObject({ exit_code: 0, logged_in: true });

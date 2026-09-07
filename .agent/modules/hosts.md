@@ -709,11 +709,29 @@ the host can actually provide the required PTY. Terminal commands use a PTY
 from `script(1)` (no native addon to build on the host; Windows unsupported for now), with `HOME`
 set to that copy's home and any ambient `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
 removed. Output comes back as
-`login_output` frames (`{ type: "output" }` on the stream, escape codes
-stripped in the UI); http(s) URLs in that output render as a short clickable
-**Open login link** rather than exposing an unbroken raw URL; typed text goes
+`login_output` frames (`{ type: "output" }` on the stream, rendered as-is by
+the browser's terminal emulator, escape codes included; http(s) URLs in it
+are clickable through the web-links addon); typed text goes
 through `POST .../login/input` →
-`login_input`; the command's exit is `login_exit { exit_code, logged_in }`,
+`login_input` — a real terminal in the browser (`LoginTerminalView`, xterm.js,
+loaded on first use) renders the PTY stream and sends every keystroke as the
+byte sequence a terminal would, so vendor pickers such as `opencode auth
+login` work with arrow keys and Enter; keystrokes are sent one request each,
+chained to keep their order. Input is bounded at three points that do not
+rely on each other: the wire schema and the route cap one message at
+`LOGIN_INPUT_MAX_CHARS` (4096, 413 above it), and the daemon's session
+admits input through a token bucket (32 KiB burst, 8 KiB/s) — a too-fast
+frame is dropped with a one-line notice and the session goes on — and a
+256 KiB lifetime budget, which ends the session with a visible reason.
+Known limits: the grid is fixed at `LOGIN_TERMINAL_COLS × LOGIN_TERMINAL_ROWS`
+at both ends (no resize frame yet; `script(1)` gives the daemon no PTY fd to
+resize), so the browser scrolls sideways when the card is narrower; and input
+travels one authenticated request per batch of keystrokes rather than over a
+socket, which is why the daemon bounds it.
+None of that is an authorization boundary — stdin reaches only the fixed
+login program the adapter spec names, behind `exec`, so there is never a
+shell to type into — it bounds the channel to what a keyboard can produce;
+the command's exit is `login_exit { exit_code, logged_in }`,
 after which the daemon clears that copy's ACP capability cache and heartbeats
 so both `installations[].logged_in` and its advertised auth methods are current.
 Some Agents advertise Agent Auth but wait indefinitely for credentials their
@@ -748,6 +766,23 @@ own profiles; the daemon terminal never reads or copies credential contents.
 It may **link** one owner's login file into that owner's Agent profiles on the
 same machine (above) — the CLI opens its own file and the daemon never holds
 the bytes.
+
+**Logout and accounts.** `login_action=logout` runs the vendor's own logout
+from the login spec (`logout_command`, or `managed_logout_command` inside a
+managed tree: `claude /logout`, `codex logout`, `opencode auth logout`), or —
+for a registry agent Rainver logs in through its fixed `<entry> login` — that
+same entry's `logout`; anything else is refused (422), never guessed. It runs
+in the copy's HOME on the same PTY terminal, so OpenCode's picker over stored
+providers works as the "remove one account" it is. A CLI whose credential
+file holds several accounts declares `accounts_format` in its login spec
+(`json_object_by_provider`, OpenCode's `auth.json`); the daemon reports each
+copy's `accounts` as provider ids and credential kinds (`api`, `oauth`) and
+never reads past the `type` field. The host card shows such a copy as
+`own · 1.18 · 2 accounts` with the names on hover, its login as **Add
+account** and its logout as **Remove account**, and its Model source's ambient
+option as "Agent-managed (2 accounts)"; a single-account CLI keeps
+**Log in / Log in again** (a login replaces the account) and gains **Log out**
+while logged in.
 
 Enabling a registry agent (`modules/acpAgents`, instance admin) publishes a
 dynamic adapter `acp_<id>` (`runtimeAdapters/dynamicSpecs.ts`) whose command

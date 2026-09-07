@@ -11,11 +11,21 @@ import type {
   RuntimeInstallation,
 } from '../../types/api'
 import { AMBIENT_BACKEND, eligibleProviders } from './backendChoice'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../../components/ui/tooltip'
 
 export type HostAgentLoginTarget =
   | { kind: 'configured' }
   | { kind: 'acp'; method: RuntimeAuthMethod }
   | { kind: 'cli' }
+  | { kind: 'logout' }
+
+/** "Agent-managed account", or how many the Agent's own credential store holds when it can hold several. */
+function ambientLabel(copies: RuntimeInstallation[]): string {
+  const held = copies.flatMap(copy => copy.accounts ?? [])
+  const declares = copies.some(copy => copy.accounts !== undefined)
+  if (!declares) return 'Agent-managed account'
+  return held.length === 0 ? 'Agent-managed (no accounts yet)' : `Agent-managed (${held.length} account${held.length === 1 ? '' : 's'})`
+}
 
 /** Version probes often repeat the CLI name; the row already names the Agent. */
 function versionLabel(version: string | null): string {
@@ -76,20 +86,48 @@ export default function HostAgentRow({
           // daemon's probe and every Run session authenticate with it — so
           // offering it as a second button only looked like a duplicate.
           const authMethods = entry.options?.cli_login_available ? [] : entry.options?.auth_methods ?? []
+          // A CLI that holds several accounts (OpenCode) reports them by
+          // provider id and kind. Its login *adds* one and its logout *removes*
+          // one, so the words say that; a single-account CLI's login replaces
+          // the account, which "Log in again" already says.
+          const accounts = entry.accounts
+          const multiAccount = accounts !== undefined
+          const accountSummary = multiAccount
+            ? accounts.length === 0 ? 'no accounts' : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
+            : null
+          const canLogout = entry.logged_in === true || (multiAccount && accounts.length > 0)
+          const badge = (
+            <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
+              {entry.id === 'own' ? 'own' : 'managed'} · {versionLabel(entry.version)}
+              {multiAccount ? ` · ${accountSummary}` : entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
+            </Badge>
+          )
           return <span key={entry.id} className="flex shrink-0 items-center gap-1">
-              <Badge variant={entry.logged_in === false ? 'warning' : 'secondary'}>
-                {entry.id === 'own' ? 'own' : 'managed'} · {versionLabel(entry.version)}
-                {entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
-              </Badge>
+              {multiAccount && accounts.length > 0 ? (
+                // The names on hover, in the app's tooltip rather than the
+                // browser's title bubble; the row itself stays one line.
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild><span tabIndex={0} className="inline-flex">{badge}</span></TooltipTrigger>
+                    <TooltipContent>
+                      <ul className="space-y-0.5">
+                        {accounts.map(account => (
+                          <li key={account.id}><span className="font-medium">{account.id}</span> · {account.kind}</li>
+                        ))}
+                      </ul>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : badge}
               {authMethods.length === 0 && !entry.options?.cli_login_available && entry.logged_in !== null && (
                 <Button
                   size="sm"
-                  variant={entry.logged_in ? 'ghost' : 'outline'}
-                  aria-label={`Log in ${entry.id} of ${adapter.display_name} on ${host.name}`}
+                  variant={multiAccount ? 'outline' : entry.logged_in ? 'ghost' : 'outline'}
+                  aria-label={`${multiAccount ? 'Add account to' : 'Log in'} ${entry.id} of ${adapter.display_name} on ${host.name}`}
                   disabled={host.status !== 'online'}
                   onClick={() => onLogin(entry.id, { kind: 'configured' })}
                 >
-                  {entry.logged_in ? 'Log in again' : 'Log in'}
+                  {multiAccount ? 'Add account' : entry.logged_in ? 'Log in again' : 'Log in'}
                 </Button>
               )}
               {authMethods.map(method => (
@@ -114,6 +152,17 @@ export default function HostAgentRow({
                   onClick={() => onLogin(entry.id, { kind: 'cli' })}
                 >
                   {entry.logged_in ? 'Log in again' : 'Log in'}
+                </Button>
+              )}
+              {canLogout && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`${multiAccount ? 'Remove account from' : 'Log out'} ${entry.id} of ${adapter.display_name} on ${host.name}`}
+                  disabled={host.status !== 'online'}
+                  onClick={() => onLogin(entry.id, { kind: 'logout' })}
+                >
+                  {multiAccount ? 'Remove account' : 'Log out'}
                 </Button>
               )}
               {entry.id !== 'own' && (
@@ -154,7 +203,7 @@ export default function HostAgentRow({
               disabled={providerBusy}
               onChange={onChooseProvider}
               options={[
-                { value: AMBIENT_BACKEND, label: 'Agent-managed account' },
+                { value: AMBIENT_BACKEND, label: ambientLabel(copies) },
                 ...providerOptions.map(provider => ({
                   value: provider.id,
                   label: provider.default_model ? `${provider.name} · ${provider.default_model}` : provider.name,

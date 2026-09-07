@@ -2013,31 +2013,46 @@ export const hostsApi = {
    * the copy's login command on a PTY and this relays it, frame by frame,
    * until the command exits. Type through `loginInput`.
    */
-  async *loginStream(hostId: string, adapterType: string, installation: string, target?: HostLoginTarget | null): AsyncGenerator<RuntimeLoginEvent> {
+  /**
+   * The login event stream. Pass a signal and abort it when the panel goes
+   * away: closing the response is what tells the server to end the daemon's
+   * login session, so an abandoned panel does not leave a login program
+   * waiting on the host.
+   */
+  async *loginStream(hostId: string, adapterType: string, installation: string, target?: HostLoginTarget | null, signal?: AbortSignal): AsyncGenerator<RuntimeLoginEvent> {
     const query = target?.kind === 'acp'
       ? `?auth_method_id=${encodeURIComponent(target.methodId)}`
-      : target?.kind === 'cli' ? '?login_action=cli' : ''
+      : target?.kind === 'cli' ? '?login_action=cli'
+      : target?.kind === 'logout' ? '?login_action=logout' : ''
     const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/stream${query}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
-    const response = await fetch(url, { headers })
+    const response = await fetch(url, { headers, signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     if (!response.body) throw new Error('No response body')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        const line = block.trim()
-        if (!line.startsWith('data: ')) continue
-        try { yield JSON.parse(line.slice(6)) as RuntimeLoginEvent } catch { /* ignore malformed SSE */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          const line = block.trim()
+          if (!line.startsWith('data: ')) continue
+          try { yield JSON.parse(line.slice(6)) as RuntimeLoginEvent } catch { /* ignore malformed SSE */ }
+        }
       }
+    } catch (caught) {
+      // An abort is the caller leaving, not a failure to report.
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) throw caught
+    } finally {
+      // A consumer that stops iterating lands here too; release the connection.
+      void reader.cancel().catch(() => undefined)
     }
   },
   loginInput: (hostId: string, adapterType: string, installation: string, data: string) =>
@@ -2229,6 +2244,7 @@ export type RuntimeLoginEvent =
 export type HostLoginTarget =
   | { kind: 'acp'; methodId: string }
   | { kind: 'cli' }
+  | { kind: 'logout' }
 
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
 export interface RuntimeInstallResult {
