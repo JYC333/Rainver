@@ -5086,5 +5086,11 @@ export type {
   ProjectConversationsResponse,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
+  DeploymentJob,
+  DeploymentJobDetail,
+  DeploymentJobEvent,
+  DeploymentJobType,
+  DeploymentStage,
+  DeploymentStatus,
 } from '@rainver/protocol'
 export type { ProjectBoardResponse as ProjectBoard, TaskWorkViewResponse as TaskWorkView } from '@rainver/protocol'

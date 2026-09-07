@@ -26,6 +26,7 @@ import { reconcileInformationDigestAutomations } from "../informationDigest/auto
 import { RoomConversationSummaryService } from "../rooms/conversationSummaryService.js";
 import { RoomConversationTitleService } from "../rooms/conversationTitleService.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
+import { DeploymentService } from "../deployment/service.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -55,6 +56,19 @@ export function startBackgroundServices(
       run: async () => {
         if (!config.databaseUrl) return;
         await SpaceAssistantService.reconcileSeedFollowersForAllSpaces(getDbPool(config.databaseUrl), config, log);
+      },
+    },
+    {
+      // A deployer that dies mid-update leaves a `running` job nothing will
+      // ever finish; without this the single-active invariant would block
+      // every later update until someone edited the row by hand.
+      name: "deployment_lost_deployer_sweep",
+      intervalSeconds: 300,
+      runOnStart: false,
+      run: async () => {
+        if (!config.databaseUrl) return;
+        const failed = await new DeploymentService(getDbPool(config.databaseUrl)).sweepLostJobs();
+        if (failed > 0) log?.warn(`[deployment] failed ${failed} job(s) whose deployer stopped reporting`);
       },
     },
     {

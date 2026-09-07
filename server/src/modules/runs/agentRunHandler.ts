@@ -17,6 +17,12 @@ import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { protocolRunStatus } from "./orchestrationResults.js";
 import { withDbTransaction } from "../routeUtils/common.js";
+import {
+  DRAINED_TRIGGER_ORIGINS,
+  INSTANCE_UPDATE_PENDING,
+  instanceUpdatePending,
+} from "../deployment/drainAdmission.js";
+import { effectiveTriggerOrigin } from "../systemActions/effectiveTriggerOrigin.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -143,6 +149,21 @@ async function handleAgentRun(
   // thread-bound Run (the supervisor retry, an authorization re-enqueue, the
   // resume endpoint, direct chat). See `hostThreadDispatchInputs`.
   const queuedRun = await repository.getRun(job.space_id, runId);
+  // ADR 0020 section 4: the drain has to converge, so an unattended Run does
+  // not start while an instance update is queued or draining. Deferring keeps
+  // the retry budget intact (`deferJob` gives the attempt back), so this is a
+  // wait, never a failed Run. Conversation-originated Runs are unaffected.
+  // The origin is read one hop up for a delegated Run: a child of an unattended
+  // root is unattended work too, and reading the raw column would make one hop
+  // of `agent.delegate` a way past the drain. The parent is parked in
+  // `waiting_for_dependency` while its child runs, so it is not counted by the
+  // drain and deferring the child does not stall it.
+  if (queuedRun && await instanceUpdatePending(config)) {
+    const origin = await effectiveTriggerOrigin(getDbPool(config.databaseUrl!), queuedRun);
+    if (DRAINED_TRIGGER_ORIGINS.has(origin)) {
+      throw new JobDeferredError(INSTANCE_UPDATE_PENDING, 30_000);
+    }
+  }
   const hostThread = hostThreadDispatchInputs(queuedRun ?? { host_task_thread_id: null, model_override_json: null });
   let result: Awaited<ReturnType<RunOrchestrationService["executeRun"]>>;
   try {

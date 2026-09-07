@@ -17,6 +17,7 @@ export * from "./contentAccess.js";
 export * from "./contentProjectShares.js";
 export * from "./crossSpaceRetrieval.js";
 export * from "./decisions.js";
+export * from "./deployment.js";
 export * from "./domainChangeOutbox.js";
 export * from "./evolution.js";
 export * from "./focusAreas.js";

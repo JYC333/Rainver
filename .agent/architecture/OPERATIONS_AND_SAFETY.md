@@ -198,11 +198,18 @@ Operator restores an archived Folder: `PATCH /projects/{id}/folders/{folderId}` 
 ## Deployment Boundary
 
 - App container does not restart or rebuild itself.
-- Product deployment routes currently fail closed with 501; deployment is operator-triggered only.
+- Production runs CI-published images (`ghcr.io/jyc333/rainver-*`, tag from
+  `RAINVER_IMAGE_TAG`, default `stable`); the prod machine pulls and never builds.
+  Rolling back is re-running `start.sh --prod` with a `sha-<commit>` tag.
+- Product deployment routes create instance-admin `deployment_jobs`; the deployer's pull loop claims one every thirty seconds and reports each stage. A failed stage ends the job with that stage named and the dump path in its log tail; nothing rolls back automatically. An update is refused when no deployer has reported in three minutes, because a queued one pauses unattended work until the sweep releases it.
+- **An update carries the four images and nothing else.** The compose files, `ops/scripts` and `migrate.sh` come from the host checkout, and the deployer's own image is never recreated (ADR 0020 §6). A release that changes any of them — or the server↔deployer internal contract — needs a host step: `git pull && ops/scripts/start.sh --prod`. The instance reports the skew as `deployer_behind` in Instance Settings — a content digest of `deployer/` and `ops/` stamped on every image, so it fires when that surface changed rather than after every update — and the panel names that command; it cannot detect a stale `ops/` on its own, so treat the deployer image and the checkout as moving together.
+- Migrations are applied before the services are recreated, so a release's schema must stay readable by the build it replaces (B59).
 - The privileged deployer socket is container-private and is not reachable from server or agent runtimes.
 - Deployer `ALLOWED_JOB_TYPES`: `rebuild_rainver`, `restart_rainver`, `health_check`. No arbitrary shell.
-- Self-evolution/code-patch/capability paths cannot submit deployer jobs. A future product
-  trigger requires server-side human-approval verification and durable audit first.
+- Self-evolution/code-patch/capability paths cannot submit deployer jobs. The product
+  trigger is an administrator-created job the deployer pulls (ADR 0020); its stage
+  events are the durable audit, and no Agent, automation, job, or scheduler path can
+  create one. An update is refused outside production.
 - The instance must not be exposed directly to the public internet until TLS termination,
   rate limiting, and general CSRF-token hardening have been implemented and reviewed.
 

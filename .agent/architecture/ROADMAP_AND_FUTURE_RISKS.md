@@ -337,7 +337,8 @@ OpenCode-first Router preference and does not route the managed API path through
 
 **Prerequisites**
 - Run finalization, task evaluation bridge, artifacts, proposals, and source monitoring remain auditable.
-- Deployment remains host-deployer-only and proposal-gated.
+- Deployment remains deployer-only; the product trigger is administrator-request-gated
+  (ADR 0020), never Agent- or automation-reachable.
 
 **Risk watch**
 - Self-evolution can expand scope or deployment authority if proposal and evaluation gates are bypassed.

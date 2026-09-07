@@ -554,13 +554,13 @@ completion pair.
 
 ## Deployment Boundaries
 
-**B41** — The main app container does not directly restart or rebuild itself. The current product deployment routes are fail-closed (`POST /api/v1/deployments/jobs` returns 501), and no production server service submits deployer jobs. The only current deployment triggers are explicit operator execution of the allowlisted scripts or an operator-controlled client inside the privileged deployer container.
+**B41** — The main app container does not directly restart or rebuild itself, and the server never holds Docker authority. A product deployment trigger is a job record the server stores and the privileged deployer *pulls* over the internal-token channel; the server never pushes into the deployer and never executes deployment steps itself ([ADR 0020](decisions/0020-instance-update-through-deployer-pull.md)). Both halves exist: `deployment_jobs` with its append-only stage events, admin routes under `/api/v1/deployments/`, and internal routes under `/internal/deployment/` that only the internal token reaches; the deployer's pull loop claims a queued job on its heartbeat and reports each stage back. An update is refused outside production, where images are built from a checkout the sidecar does not mount. Explicit operator execution of the allowlisted scripts remains a separate, unchanged trigger.
 
 **B42** — The deployer Unix socket is never exposed on TCP and remains private to the privileged deployer container. It must not be placed in `RAINVER_HOME`, mounted into the server container, or made reachable from an agent runtime or sandbox. Filesystem permissions are defense in depth, not an approval mechanism.
 
-**B43** — The deployer accepts exactly `rebuild_rainver`, `restart_rainver`, and `health_check`; these jobs accept no request arguments. It never accepts arbitrary commands, request-to-environment overrides, self-evolution jobs, code-patch jobs, capability jobs, or caller-selected script paths. The deployer protocol does not validate proposal state. A future product deployment trigger must therefore verify a human-approved proposal in the server authority before submitting one of these jobs and must add durable audit coverage in the same change.
+**B43** — The deployer's Unix socket accepts exactly `rebuild_rainver`, `restart_rainver`, and `health_check`; its pull loop accepts exactly `update` and `check_update`. None of these jobs accepts request arguments. The deployer never accepts arbitrary commands, request-to-environment overrides, self-evolution jobs, code-patch jobs, capability jobs, caller-selected script paths, image tags, or channel changes. A deployment job may be created only by the instance administrator through an authenticated admin route; that request is the per-instance human approval ADR 0017 §1 requires for deployment, and the job row with its stage events is the durable audit. No Proposal applier, Agent, automation, job, or scheduler path may create one. The deployer never writes the instance `.env`; channel selection and rollback are host operations.
 
-**B44** — The deployer container's Docker socket plus read-write repository mount is host-equivalent authority. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The CLI sandbox executor is a separate run path with a fixed image, fixed resource policy, deny-by-default network, and allowlisted mounts; it is never routed through the deployer protocol.
+**B44** — The deployer container's Docker socket is host-equivalent authority. Its repository mount is `ops/`, read-only — the compose files and ops scripts the deployment steps read, and no writable checkout. The instance mode root is mounted at its host path so that client-side Compose reads and daemon-side volume sources name the same directory, and the container never edits the instance `.env`. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The update job recreates `server`, `frontend`, and `sandbox-runner` only; the deployer never recreates itself. The CLI sandbox executor is a separate run path with a fixed image, fixed resource policy, deny-by-default network, and allowlisted mounts; it is never routed through the deployer protocol.
 
 **B44A** — An Rainver instance must never be directly exposed to the public internet. The current frontend has no production TLS termination, rate limiting, or general CSRF-token hardening. Any move toward internet exposure must first implement and review those controls and update the security boundary documentation.
 
@@ -581,7 +581,12 @@ backfills written into that same file. A migration that any database has
 applied is never edited, renamed, or removed — the runner records checksums
 and refuses a changed one, and `baselineSchema.test.ts` pins the baseline's
 hash. Do not fold a change into an earlier file, and do not add compatibility
-shims in application code for a shape a migration has already replaced.
+shims in application code for a shape a migration has already replaced. A release's
+migrations run while the build they replace is still serving (ADR 0020 §5 puts
+`migrate` before `recreate`), so each one must leave the schema readable by the
+previous build — expand in the release that needs the new shape, contract in a
+later one. That is a constraint on what a single release may drop or rename, not
+a licence for compatibility code: B58 still applies to the application.
 
 **B60** — Internal UUIDs remain valid storage and transport identifiers. Users
 never type them in normal product flows, but that is a UI requirement, not a

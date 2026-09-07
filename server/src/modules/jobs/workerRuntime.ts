@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { JobHandlerRegistry } from "./handlerRegistry.js";
+import { JobDeferredError, JobHandlerRegistry } from "./handlerRegistry.js";
 import { PgJobQueueRepository } from "./repository.js";
 import { JobWorker } from "./worker.js";
 import { waitForJobWake, wakeJobWorkers } from "./wakeSignal.js";
@@ -12,6 +12,11 @@ import { registerSourcePostProcessingHandler } from "../sources/postProcessing/j
 import { registerSourceAnnotationHandler } from "../sourceAnnotation/index.js";
 import { registerRetrievalEmbeddingHandler } from "../retrieval/embedding/job.js";
 import type { PluginHost } from "../plugins/host/index.js";
+import {
+  INSTANCE_UPDATE_PENDING,
+  instanceUpdatePending,
+  UNATTENDED_RUN_JOB_TYPES,
+} from "../deployment/drainAdmission.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { RunMaterializationService } from "../runs/materializationService.js";
 import { OperationalAlertService } from "../notifications/operationalAlerts.js";
@@ -63,6 +68,26 @@ export interface JobsWorkerHandle {
   stop(): Promise<void>;
 }
 
+/**
+ * ADR 0020 section 4: while an instance update is queued or draining, a job
+ * family that would start an unattended Run waits instead. `deferJob` returns
+ * the attempt, so nothing fails for this and the work runs after the update.
+ */
+function deferWhileInstanceUpdates(config: ServerConfig, registry: JobHandlerRegistry): void {
+  // The wrapped handlers register only with a database, and so does the
+  // predicate they consult. `wrap` throws on a job type nobody registered, so
+  // the gate cannot silently fail to apply.
+  if (!config.databaseUrl) return;
+  for (const jobType of UNATTENDED_RUN_JOB_TYPES) {
+    registry.wrap(jobType, (handler) => async (job) => {
+      if (await instanceUpdatePending(config)) {
+        throw new JobDeferredError(INSTANCE_UPDATE_PENDING, 30_000);
+      }
+      return handler(job);
+    });
+  }
+}
+
 export function buildJobHandlerRegistry(
   config: ServerConfig,
   pluginHost?: PluginHost,
@@ -90,6 +115,7 @@ export function buildJobHandlerRegistry(
   registerResearchOperationCancelHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
+  deferWhileInstanceUpdates(config, registry);
   return registry;
 }
 

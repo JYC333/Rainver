@@ -13,7 +13,7 @@
 | Capability marketplace or install/discovery UX | Not implemented (file-defined registry; local workspace roots; external enable state in `config/settings.yaml`; no remote install) |
 | Automatic system self-evolution | Removed; no privileged Evolver Agent or implicit fallback |
 | App-container self-deployment | Blocked by deployer allowlist |
-| Deployment job persistence | 501-gated (`POST /deployments/jobs` → 501) |
+| Deployment from an Agent, automation, or Proposal | Blocked; only the instance admin creates a deployment job |
 | Arbitrary deployer commands | Blocked; only `rebuild_rainver`, `restart_rainver`, `health_check` |
 | Automatic restore | Not implemented; restore is always manual |
 | Cloud / offsite backup sync | Not implemented |

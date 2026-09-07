@@ -48,7 +48,8 @@ rainver/
 Runtime data (DB, config, secrets, logs, workspaces, sandboxes) never lives in the repo.
 It lives under a host-side parent `RAINVER_ROOT` (default `~/.rainver-data`), one mode root per
 environment: `$RAINVER_ROOT/dev`, `$RAINVER_ROOT/test`, `$RAINVER_ROOT/prod`. Each mode root
-is bind-mounted into the containers as `RAINVER_HOME=/rainver`.
+is bind-mounted into the containers as `RAINVER_HOME=/rainver`; the deployer sidecar is the
+exception and mounts it at its host path, because it hands those paths to Compose.
 Local DB/system scripts use the same compose/env path as `ops/scripts/start.sh`: mode validation,
 `$RAINVER_ROOT/<mode>`, `$RAINVER_ROOT/<mode>/.env`, `RAINVER_MODE_ROOT`, compose project,
 and `docker compose --env-file ...` are centralized in `ops/scripts/lib/local-compose.sh`.
@@ -66,7 +67,7 @@ The local PostgreSQL containers use stable names: `rainver-dev-postgres`,
 #    ~/.rainver-data/dev/.env holds infra-only settings (e.g. POSTGRES_PASSWORD for --prod).
 ```
 
-`start.sh` builds the sandbox image on first run, then starts frontend + server + deployer via Docker Compose. Data lives under **`~/.rainver-data/<mode>/`** (default mode `dev`). Browser API traffic reaches the TypeScript server through the frontend proxy.
+`start.sh` builds the dev images on first run, then starts frontend + server + sandbox-runner + deployer via Docker Compose. Data lives under **`~/.rainver-data/<mode>/`** (default mode `dev`). Browser API traffic reaches the TypeScript server through the frontend proxy.
 
 ```
 Web UI:           http://localhost:3000   # Docker maps container 5173 → host 3000 (dev compose)
@@ -78,8 +79,8 @@ API:              http://localhost:3000/api/v1   # server entrypoint
 ```bash
 ./ops/scripts/start.sh           # Docker Compose — dev (default)
 ./ops/scripts/start.sh --test    # separate ports + ~/.rainver-data/test
-./ops/scripts/start.sh --prod    # http://localhost:28400 by default
-./ops/scripts/start.sh --build   # force image rebuild
+./ops/scripts/start.sh --prod    # http://localhost:28400 by default; pulls CI images from GHCR
+./ops/scripts/start.sh --build   # force image rebuild (dev/test only)
 ```
 
 Test mode exposes the same API through `http://localhost:3100/api/v1`. The test frontend talks to the server service inside the compose network.
@@ -136,7 +137,7 @@ LLM agents can execute arbitrary shell commands. To protect the host:
   present Docker isolation as active protection for high/critical-risk runs.
 
 The **server does not mount the Docker socket** and does not spawn host containers directly.
-The privileged **deployer** sidecar has `/var/run/docker.sock` plus a read-write repository
+The privileged **deployer** sidecar has `/var/run/docker.sock` and a read-only `ops/`
 mount, but its Unix socket is private to that container. The server and agent runtimes cannot
 reach it. One-shot Docker sandbox execution remains unimplemented and fail-closed.
 

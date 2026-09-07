@@ -41,8 +41,6 @@ export interface ServerConfig {
   rainverHome: string;
   /** Instance-owned runtime CLI installation root. */
   cliToolsRoot: string;
-  /** Immutable image used for one-shot Docker CLI execution. */
-  cliSandboxImage: string;
   /** Dedicated scoped Sandbox Runner endpoint. File-capable CLIs fail closed when unavailable. */
   sandboxRunnerHost: string;
   sandboxRunnerPort: number;
@@ -159,7 +157,6 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_DATABASE_URL",
   "RAINVER_HOME",
   "RUNTIME_TOOLS_ROOT",
-  "SERVER_CLI_SANDBOX_IMAGE",
   "SANDBOX_RUNNER_HOST",
   "SANDBOX_RUNNER_PORT",
   "SANDBOX_RUNNER_SERVER_HOST",
@@ -440,13 +437,6 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   const cliToolsRoot = resolve(
     env.RUNTIME_TOOLS_ROOT?.trim() || resolve(rainverHome, "runtime-tools"),
   );
-  const cliSandboxImage = env.SERVER_CLI_SANDBOX_IMAGE?.trim() || "rainver-sandbox";
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$/.test(cliSandboxImage)) {
-    throw new ConfigError(
-      "SERVER_CLI_SANDBOX_IMAGE must be a valid local image reference",
-      "invalid_sandbox_image",
-    );
-  }
   const sandboxRunnerHost = env.SANDBOX_RUNNER_HOST?.trim() || "sandbox-runner";
   if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerHost)) {
     throw new ConfigError("SANDBOX_RUNNER_HOST must be a hostname", "invalid_sandbox_runner_host");
@@ -709,7 +699,6 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     databaseUrl,
     rainverHome,
     cliToolsRoot,
-    cliSandboxImage,
     sandboxRunnerHost,
     sandboxRunnerPort,
     sandboxRunnerServerHost,
@@ -785,7 +774,6 @@ export function describeConfig(config: ServerConfig): string {
     `notificationMaxPayloadBytes=${config.notificationMaxPayloadBytes}`,
     `rainverHome=${config.rainverHome}`,
     `cliToolsRoot=${config.cliToolsRoot}`,
-    `cliSandboxImage=${config.cliSandboxImage}`,
     `workspaceRoot=${config.workspaceRoot}`,
     `sandboxRoot=${config.sandboxRoot}`,
     `artifactStorageRoot=${config.artifactStorageRoot}`,

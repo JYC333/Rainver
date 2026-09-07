@@ -98,8 +98,8 @@ Do not rely on any of these for daily dogfood workflows.
 | Connector marketplace / integration lifecycle | Not implemented |
 | Full capability marketplace or install/discovery UX | Not implemented |
 | Automatic system self-evolution | Removed; Evolution runs require an explicit Agent |
-| App-container self-deployment | Blocked by 501 product routes and private deployer socket |
-| Deployment job persistence | 501-gated (`POST /deployments/jobs` → 501) |
+| App-container self-deployment | Blocked: only the instance admin creates a deployment job, and the deployer socket is private |
+| Deployment from an Agent, automation, or Proposal | Blocked; deployment jobs are instance-admin only (ADR 0020) |
 | Arbitrary deployer commands | Blocked; exactly three argument-free core jobs are allowlisted |
 | Automatic restore | Not implemented; restore is always manual |
 | Cloud/offsite backup sync | Not implemented |
@@ -208,7 +208,7 @@ credentials must resolve through the CLI CredentialBroker.
 
 ### Deployment posture
 
-- `POST /deployments/jobs` returns 501. Deployment job persistence is absent.
+- `POST /deployments/jobs` is instance-admin only and creates a `deployment_jobs` row; that request is the human approval, and the job's stage events are the audit (ADR 0020). No Agent, automation, job, scheduler, or Proposal path can create one.
 - Deployer `ALLOWED_JOB_TYPES` is exactly `rebuild_rainver`,
   `restart_rainver`, and `health_check`; these jobs accept no request arguments.
 - The deployer socket is private to its privileged sidecar; product paths cannot submit jobs.
@@ -488,17 +488,17 @@ curl -s "http://localhost:3000/api/v1/home/summary?space_id=<user-a-personal-spa
 ### Step 12 — Disabled surfaces check
 
 ```bash
-# Deployment jobs must be 501
+# Deployment jobs are instance-admin only, and take no arbitrary job type
 curl -s -X POST "http://localhost:3000/api/v1/deployments/jobs" \
   -H "X-API-Key: <user-a-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"job_type": "arbitrary", "target": "local"}'
-# Expected: 501
+# Expected: 403 for a non-admin; 422 for that body as the admin
 
-# Deployment jobs list must be empty
+# The job list is admin-only too
 curl -s "http://localhost:3000/api/v1/deployments/jobs" \
   -H "X-API-Key: <user-a-api-key>"
-# Expected: []
+# Expected: 403 for a non-admin; {"items": [...]} as the admin
 ```
 
 In the frontend:
@@ -839,7 +839,7 @@ Backup manifest inspected: <yes / no>
 | Artifact archive/delete API not yet implemented | Artifacts accumulate; deferred |
 | Activity archive/delete not yet implemented | Deferred |
 | Workspace stale status has no recovery UI | Operator must use `PATCH /workspaces/{id}` |
-| Deployment job persistence absent | 501-gated; manual deployment only |
+| Instance update has no automatic rollback | A failed stage ends the job; recovery is the documented host procedure |
 | Local advisory lock only (single-host) | Distributed locking is future scope |
 | Cloud/offsite backup absent | Manual GPG + offsite upload if required |
 | `context_sources` table removed from schema | A future first-class Source model would be a new table |

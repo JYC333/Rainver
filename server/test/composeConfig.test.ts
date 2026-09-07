@@ -92,16 +92,34 @@ describe("compose server config", () => {
   });
 
   it("builds the frontend from the repo root so official plugin pages are included", () => {
-    for (const mode of ["dev", "test", "prod"] as const) {
+    for (const mode of ["dev", "test"] as const) {
       const block = frontendServiceBlock(mode);
       expect(block).toContain("context: ../../");
       expect(block).toContain("dockerfile: apps/web/Dockerfile");
-    }
-    for (const mode of ["dev", "test"] as const) {
-      const block = frontendServiceBlock(mode);
       expect(block).toContain("../../apps/web:/repo/apps/web");
       expect(block).toContain("../../plugins:/repo/plugins:ro");
     }
+  });
+
+  it("runs production from the CI-published images and never builds on the host", () => {
+    const prod = composeText("prod");
+    expect(prod).not.toContain("build:");
+    for (const [service, image] of [
+      ["server", "rainver-server"],
+      ["frontend", "rainver-frontend"],
+      ["sandbox-runner", "rainver-sandbox-runner"],
+      ["deployer", "rainver-deployer"],
+    ] as const) {
+      expect(prod).toContain(
+        `  ${service}:\n    image: ghcr.io/jyc333/${image}:\${RAINVER_IMAGE_TAG:-stable}`,
+      );
+    }
+    const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
+    expect(startScript).not.toContain("docker build");
+    expect(startScript).toContain('"${COMPOSE[@]}" pull');
+    // The prod image carries the publishing commit; a local build leaves it unset.
+    const dockerfile = readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8");
+    expect(dockerfile).toContain("ENV APP_VERSION=${RAINVER_BUILD_SHA}");
   });
 
   it("uses distinct loopback-only production host ports by default", () => {
@@ -180,6 +198,47 @@ describe("compose server config", () => {
     }
   });
 
+  it("limits the deployer to a read-only ops mount and the internal-token env", () => {
+    for (const mode of ["dev", "test", "prod"] as const) {
+      const block = deployerServiceBlock(mode);
+      // B44/ADR 0020 §6: no writable checkout inside the privileged sidecar.
+      expect(block).not.toContain("../../:/repo");
+      expect(block).toContain("- ../../ops:/repo/ops:ro");
+      // The mode root is mounted at its host path so client-side compose reads
+      // (env_file) and daemon-side volume sources agree.
+      const modeRoot = `\${RAINVER_MODE_ROOT:-$HOME/.rainver-data/${mode}}`;
+      expect(block).toContain(`- ${modeRoot}:${modeRoot}`);
+      expect(block).toContain(`RAINVER_HOST_MODE_ROOT=${modeRoot}`);
+      expect(block).toContain("RAINVER_ENV_FILE_READONLY=1");
+      expect(block).toContain(`${modeRoot}/.deployer.env`);
+      // The deployer gets the internal token only, never database or session
+      // credentials.
+      expect(block).not.toContain(".server.env");
+      expect(block).not.toContain("POSTGRES_PASSWORD");
+    }
+  });
+
+  it("hands compose the host mode root and keeps the deployer out of the instance .env", () => {
+    const lib = readFileSync(join(repoRoot, "ops", "scripts", "lib", "local-compose.sh"), "utf8");
+    expect(lib).toContain('export RAINVER_MODE_ROOT="${RAINVER_HOST_MODE_ROOT:-$MODE_ROOT}"');
+    // A container whose two host-path inputs disagree must fail, not read one
+    // directory while mounting another.
+    expect(lib).toContain('"$RAINVER_HOST_MODE_ROOT" != "$MODE_ROOT"');
+    expect(lib).toContain("DEPLOYER_SERVER_URL");
+    // B43: creating, editing, or regenerating deployment inputs is refused for a
+    // read-only caller — all three write paths, not just one.
+    expect(lib.match(/RAINVER_ENV_FILE_READONLY:-0/g)).toHaveLength(3);
+    for (const script of ["rebuild.sh", "restart.sh", "health_check.sh"]) {
+      const text = readFileSync(join(repoRoot, "deployer", "scripts", script), "utf8");
+      expect(text).toContain("HOST_MODE_ROOT=\"${RAINVER_HOST_MODE_ROOT:?");
+      expect(text).not.toContain('RAINVER_MODE_ROOT="$INSTANCE_ROOT"');
+    }
+    // The schema check bind-mounts the checkout; it must refuse rather than let
+    // the daemon invent those directories on the host.
+    const migrate = readFileSync(join(repoRoot, "ops", "scripts", "db", "migrate.sh"), "utf8");
+    expect(migrate).toContain('if [[ ! -d "$REPO_ROOT/server/src" ]]; then');
+  });
+
   it("keeps namespace privileges and the narrow token on the dedicated Runner", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
       const server = serverServiceBlock(mode);
@@ -204,10 +263,10 @@ describe("compose server config", () => {
     }
     expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))
       .toContain("bubblewrap");
+    // The Runner is a compose service; start.sh builds no standalone sandbox
+    // image and never mounts the sandbox source tree.
     const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
-    expect(startScript).toContain(
-      'docker build --network=host -f "$REPO_ROOT/sandbox/Dockerfile" -t "$SANDBOX_IMAGE" "$REPO_ROOT"',
-    );
+    expect(startScript).not.toContain("sandbox/Dockerfile");
     expect(startScript).not.toContain('"$REPO_ROOT/sandbox/"');
     for (const path of ["workspaces", "runtime-tools", "cache/runtime-homes", "cache/conversation-runtime-homes", "cache/login-homes"]) {
       expect(startScript).toContain(`\"$MODE_ROOT/${path}\"`);

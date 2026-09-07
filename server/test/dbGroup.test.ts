@@ -33,7 +33,12 @@ describe("dbMigrationOps", () => {
       expect(start).not.toContain("pnpm");
       expect(start).toContain("run_database_migrations()");
       expect(start).toContain('"$REPO_ROOT/ops/scripts/db/migrate.sh" --mode "$MODE"');
-      expect(start).toContain("ensure_server_image_for_migrations");
+      // The server image must exist before migrate.sh runs it: dev/test build
+      // it, prod pulls the CI-published stack and never builds on the host.
+      expect(start).toContain("ensure_images");
+      expect(start).toContain('"${COMPOSE[@]}" pull');
+      expect(start).toContain('"${COMPOSE[@]}" build server');
+      expect(start).not.toContain("docker build");
     });
 
     it("keeps the private dev setup outside the repo and imports it after migration", () => {

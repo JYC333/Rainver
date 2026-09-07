@@ -26,6 +26,7 @@ import stat
 from datetime import datetime, UTC
 from pathlib import Path
 
+from poll import build_poller
 from protocol import ALLOWED_JOB_TYPES
 
 log = logging.getLogger("deployer")
@@ -144,6 +145,14 @@ async def main() -> None:
 
     log.info("deployer listening on %s", socket_path)
 
+    # The instance-update pull loop runs beside the socket server. It is
+    # configured by the generated .deployer.env; without it this container is
+    # exactly the operator-only deployer it has always been.
+    poller = build_poller()
+    poll_task = asyncio.create_task(poller.run_forever()) if poller else None
+    if poll_task is None:
+        log.info("instance update pull loop disabled: DEPLOYER_SERVER_URL or SERVER_INTERNAL_TOKEN is unset")
+
     # Graceful shutdown on SIGTERM/SIGINT
     shutdown_event = asyncio.Event()
 
@@ -156,9 +165,34 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown()))
 
-    await shutdown_event.wait()
+    # The pull loop is supervised, not fired and forgotten. If it ever ends on
+    # its own the container would go on running — socket served, no heartbeat —
+    # and nothing would notice or restart it: this container is the one thing
+    # an instance update cannot recreate, so its restart policy is the only way
+    # back. Ending the process hands the decision to that policy.
+    stop = asyncio.create_task(shutdown_event.wait())
+    await asyncio.wait(
+        {stop, *([poll_task] if poll_task is not None else [])},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    loop_ended = poll_task is not None and poll_task.done()
+    if loop_ended:
+        assert poll_task is not None
+        error = None if poll_task.cancelled() else poll_task.exception()
+        log.error("instance update pull loop ended (%s); exiting so the container restarts", error)
+        server.close()
+    stop.cancel()
+    if poll_task is not None and not poll_task.done():
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
     await server.wait_closed()
     log.info("deployer shutdown complete")
+    if loop_ended:
+        # Non-zero so `restart: unless-stopped` brings both entries back.
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

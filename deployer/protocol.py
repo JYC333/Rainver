@@ -17,6 +17,22 @@ CoreJobType = Literal[
 
 JobType = CoreJobType
 
+#: The Unix socket allowlist. Exactly these three, no request arguments (B43).
 ALLOWED_JOB_TYPES: set[str] = {
     *[v for v in CoreJobType.__args__],
+}
+
+# ── Instance update pull loop (ADR 0020) ─────────────────────────────────────
+#
+# A second entry, not a widening of the first: the deployer *pulls* these from
+# the server over the internal-token channel. They never reach the socket
+# allowlist above, and neither takes caller arguments.
+
+PullJobType = Literal[
+    "update",        # pull, drain, dump+migrate, recreate, health
+    "check_update",  # read the digest the configured tag points at
+]
+
+PULL_JOB_TYPES: set[str] = {
+    *[v for v in PullJobType.__args__],
 }

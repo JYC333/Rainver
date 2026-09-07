@@ -433,10 +433,12 @@ runtime_tools:
 deployment:
   docs:
     - .agent/modules/deployment.md
-    - .agent/modules/proposals.md
+    - .agent/decisions/0020-instance-update-through-deployer-pull.md
     - .agent/BOUNDARIES.md
   code_roots:
     - deployer/
+    - ops/compose
+    - ops/scripts
     - server/src/modules/deployment/
     - server/migrations
 

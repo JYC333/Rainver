@@ -108,7 +108,7 @@ capture / trigger
 ### App runtime must not self-deploy with arbitrary host authority
 
 - The app container does not directly restart or rebuild itself.
-- Product deployment routes return 501 and no production server path calls the deployer.
+- Product deployment routes create and read `deployment_jobs` for the instance administrator only; no production server path calls the deployer, and the server holds no Docker authority.
 - The deployer socket is private to its host-equivalent sidecar and accepts only the three
   core operator job types. Evolution, code-patch, capability, and agent paths cannot reach it.
 - The instance is not directly exposed to the public internet.
@@ -139,7 +139,7 @@ capture / trigger
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
 | Project Folder file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
-| Deployment / deployer calls | Authenticated 501 stub; operator-only deployer allowlist | Deferred / fail-closed |
+| Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
 | Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |
 | Future automation trigger | No model yet — reserved | Not built |
 | Future connector sync | No model yet | Not built |

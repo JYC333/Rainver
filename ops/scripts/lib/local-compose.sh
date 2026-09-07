@@ -40,7 +40,18 @@ local_compose_init() {
   export COMPOSE_DIR
   export ENV_DIR
   export MODE_ROOT
-  export RAINVER_MODE_ROOT="$MODE_ROOT"
+
+  # Compose volume sources are resolved by the *host* Docker daemon, so a caller
+  # running inside a container (the deployer sidecar) must hand Compose the host
+  # path. RAINVER_HOST_MODE_ROOT carries that host path; on the host itself the
+  # variable is unset and MODE_ROOT already is it. A container whose RAINVER_ROOT
+  # and RAINVER_HOST_MODE_ROOT disagree would read .env from one directory and
+  # mount another, so that is a hard error rather than a silent split.
+  if [[ -n "${RAINVER_HOST_MODE_ROOT:-}" && "$RAINVER_HOST_MODE_ROOT" != "$MODE_ROOT" ]]; then
+    echo "ERROR: RAINVER_HOST_MODE_ROOT ($RAINVER_HOST_MODE_ROOT) does not match \$RAINVER_ROOT/$MODE ($MODE_ROOT)" >&2
+    exit 1
+  fi
+  export RAINVER_MODE_ROOT="${RAINVER_HOST_MODE_ROOT:-$MODE_ROOT}"
 
   # Host shells and Node tooling often export DEBUG for their own purposes
   # (for example DEBUG=release). Keep that generic variable out of compose;
@@ -53,6 +64,12 @@ local_compose_init() {
 local_compose_ensure_mode_env_file() {
   if [[ -f "$ENV_FILE" ]]; then
     return 0
+  fi
+
+  if [[ "${RAINVER_ENV_FILE_READONLY:-0}" == "1" ]]; then
+    echo "ERROR: $ENV_FILE is missing and this caller may not create it" >&2
+    echo "       (RAINVER_ENV_FILE_READONLY=1). Provision the instance on the host." >&2
+    exit 1
   fi
 
   local template="$ENV_DIR/.env.$MODE.example"
@@ -265,6 +282,15 @@ local_compose_set_env_value() {
   local file="${3:-$ENV_FILE}"
   local tmp
 
+  # B43: the deployer never writes the instance .env. It runs these helpers
+  # through migrate.sh, where every value is already provisioned, so refusing
+  # here is a boundary guard rather than a normal branch — it fails the stage
+  # loudly instead of letting a privileged container edit deployment inputs.
+  if [[ "${RAINVER_ENV_FILE_READONLY:-0}" == "1" ]]; then
+    echo "ERROR: refusing to write $key into $file (RAINVER_ENV_FILE_READONLY=1)" >&2
+    exit 1
+  fi
+
   install -d -m 700 "$(dirname "$file")"
   [[ -f "$file" ]] || : > "$file"
   tmp="$(mktemp "${file}.tmp.XXXXXX")"
@@ -349,11 +375,26 @@ local_compose_ensure_server_database_env() {
 # helpers must be independently runnable on a fresh mode root, not depend on
 # start.sh having generated this file first.
 local_compose_generate_server_env() {
+  # Deployment inputs are the host operator's. A caller that may not write the
+  # instance .env may not regenerate the files derived from it either: doing so
+  # from the deployer would rewrite the server's credential env during an update.
+  if [[ "${RAINVER_ENV_FILE_READONLY:-0}" == "1" ]]; then
+    return 0
+  fi
+
   local server_env="$MODE_ROOT/.server.env"
   local runner_env="$MODE_ROOT/.runner.env"
+  local deployer_env="$MODE_ROOT/.deployer.env"
   grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
     "$ENV_FILE" > "$server_env"
   printf 'SANDBOX_RUNNER_TOKEN=%s\n' \
     "$(local_compose_setting SERVER_INTERNAL_TOKEN)" > "$runner_env"
-  chmod 600 "$server_env" "$runner_env"
+  # The deployer pull loop authenticates to the server with the same internal
+  # token the sandbox runner uses (ADR 0020 §1). It never receives database,
+  # provider, or session credentials.
+  {
+    printf 'SERVER_INTERNAL_TOKEN=%s\n' "$(local_compose_setting SERVER_INTERNAL_TOKEN)"
+    printf 'DEPLOYER_SERVER_URL=%s\n' "http://server:8010"
+  } > "$deployer_env"
+  chmod 600 "$server_env" "$runner_env" "$deployer_env"
 }

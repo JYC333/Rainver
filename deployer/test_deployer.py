@@ -28,6 +28,42 @@ class FakeWriter:
         return json.loads(self.buffer.decode().strip())
 
 
+class PollLoopSupervisionTests(unittest.IsolatedAsyncioTestCase):
+    """
+    Nothing in the product can restart this container, so a pull loop that dies
+    must not leave it running with no heartbeat behind it.
+    """
+
+    async def run_main(self, run_forever) -> None:
+        import tempfile
+        from pathlib import Path
+
+        class FakePoller:
+            async def run_forever(self) -> None:
+                await run_forever()
+
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / "deployer.sock")
+            with patch.dict("os.environ", {"DEPLOYER_SOCKET": socket_path}), \
+                    patch.object(deployer, "build_poller", return_value=FakePoller()):
+                await deployer.main()
+
+    async def test_a_dead_pull_loop_ends_the_process_for_the_restart_policy(self) -> None:
+        async def explode() -> None:
+            raise RuntimeError("poll loop bug")
+
+        with self.assertRaises(SystemExit) as caught:
+            await self.run_main(explode)
+        self.assertEqual(caught.exception.code, 1)
+
+    async def test_a_loop_that_simply_returns_is_treated_the_same(self) -> None:
+        async def finish() -> None:
+            return None
+
+        with self.assertRaises(SystemExit):
+            await self.run_main(finish)
+
+
 class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):
     def test_protocol_and_script_map_are_exactly_core_jobs(self) -> None:
         expected = {"rebuild_rainver", "restart_rainver", "health_check"}

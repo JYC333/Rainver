@@ -57,6 +57,18 @@ export class JobHandlerRegistry {
     return this.handlers.get(jobType);
   }
 
+  /**
+   * Replace a registered handler with one built from it. The seam exists so a
+   * cross-cutting admission rule (an instance update draining unattended work)
+   * lives in one declarative place instead of being repeated inside each
+   * domain's handler.
+   */
+  wrap(jobType: string, wrapper: (handler: JobHandler) => JobHandler): void {
+    const handler = this.handlers.get(jobType);
+    if (!handler) throw new UnknownJobTypeError(jobType);
+    this.handlers.set(jobType, wrapper(handler));
+  }
+
   registeredJobTypes(): string[] {
     return [...this.handlers.keys()].sort();
   }

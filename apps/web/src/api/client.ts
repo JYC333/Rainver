@@ -49,6 +49,10 @@ import type {
   CaptureResponse,
   ChatTurnAccepted,
   ChatTurnRequest,
+  DeploymentJob,
+  DeploymentJobDetail,
+  DeploymentJobType,
+  DeploymentStatus,
   DiagnosticTurnPart,
   RunTurn,
   TurnPart,
@@ -3461,6 +3465,17 @@ export const instanceOperationsApi = {
   get: () => get<InstanceOperationsSettings>('/system/instance-settings'),
   update: (body: InstanceOperationsSettingsUpdate) =>
     put<InstanceOperationsSettings>('/system/instance-settings', body),
+}
+
+// ── Instance update (ADR 0020; instance admin only) ───────────────────────
+export const deploymentApi = {
+  status: () => get<DeploymentStatus>('/deployments/status'),
+  /** Creating the job is the administrator's approval; it takes no arguments. */
+  createJob: (jobType: DeploymentJobType) =>
+    post<DeploymentJob>('/deployments/jobs', { job_type: jobType }),
+  job: (jobId: string) => get<DeploymentJobDetail>(`/deployments/jobs/${jobId}`),
+  /** Only from `queued`: once the deployer has it, the job runs to its end. */
+  cancelJob: (jobId: string) => post<DeploymentJob>(`/deployments/jobs/${jobId}/cancel`, {}),
 }
 
 // ── Auth / Identity ───────────────────────────────────────────────────────

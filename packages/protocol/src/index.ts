@@ -158,3 +158,6 @@ export * from "./prompts.js";
 
 // One Agent turn as ordered parts, projected from either event log
 export * from "./turnParts.js";
+
+// Instance update contracts (admin job + deployer pull loop)
+export * from "./deployment.js";

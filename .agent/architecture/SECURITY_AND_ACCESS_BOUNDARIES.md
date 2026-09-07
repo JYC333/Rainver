@@ -718,11 +718,28 @@ invariants for the server host.
 
 ### Deployment and network exposure
 
-- The deployer has host-equivalent authority because it mounts docker.sock and the
-  repository read-write. Its Unix socket is private to the deployer sidecar and is not an
-  app, agent, evolution, code-patch, capability, automation, job, or scheduler surface.
-- Product deployment routes currently fail closed with 501. A future trigger must verify
-  human approval in the server authority and persist durable audit state before submission.
+- The deployer has host-equivalent authority because it mounts docker.sock. Its Unix
+  socket is private to the deployer sidecar and is not an app, agent, evolution,
+  code-patch, capability, automation, job, or scheduler surface.
+- The sidecar mounts `ops/` read-only and no checkout, and receives only the internal
+  token through `.deployer.env`. That token is the instance's one internal credential
+  and the sandbox runner holds it too, so the integrity of a job's stage events is
+  bounded by the runner's, not by the admin route: an internal-token holder can
+  claim a queued job or report a stage, but only the instance administrator can
+  create one. ADR 0020 §1 chose that reuse deliberately; confirming it is still the
+  right trust boundary is an item on the instance-update acceptance in
+  [`../tasks/deferred-register.md`](../tasks/deferred-register.md). `RAINVER_ENV_FILE_READONLY=1` makes the shared ops
+  library refuse to create or edit the instance `.env` and refuse to regenerate the
+  files derived from it. The mode root itself stays writable — the deployer writes the
+  pre-migration dump there — so this is a guard on the deployment scripts, not a
+  sandbox; docker.sock remains the authority that matters.
+- Product deployment routes are instance-admin only
+  ([ADR 0020](../decisions/0020-instance-update-through-deployer-pull.md)): creating a
+  `deployment_jobs` row is the human approval, and the job's append-only stage events are
+  the audit. `/internal/deployment/*` accepts the internal token alone and can report
+  stages and claim work, never create it. The server gains no Docker authority under it:
+  the pull loop runs in the deployer sidecar, which is the only container that talks to
+  docker.sock or a registry.
 - The instance must not be exposed directly to the public internet. Production TLS
   termination, rate limiting, and general CSRF-token hardening are not implemented.
 

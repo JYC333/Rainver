@@ -24,7 +24,6 @@ function sourcesConfig(): ServerConfig {
     rainverHome: "/tmp/rainver",
     workspaceRoot: "/tmp/rainver/workspaces",
     cliToolsRoot: "/tmp/rainver/runtime-tools",
-    cliSandboxImage: "rainver-sandbox",
     sandboxRunnerHost: "sandbox-runner",
     sandboxRunnerPort: 8020,
     sandboxRunnerServerHost: "server",

@@ -117,6 +117,10 @@ RUN pnpm install --prod --frozen-lockfile \
 FROM node:24.18.0-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# CI passes the publishing commit so /api/v1/status reports which build a
+# pulled image is. A local build leaves it empty and the status stays null.
+ARG RAINVER_BUILD_SHA=""
+ENV APP_VERSION=${RAINVER_BUILD_SHA}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git \

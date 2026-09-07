@@ -128,6 +128,12 @@ run_drizzle_schema_check_docker() {
     return 0
   fi
 
+  if [[ ! -d "$REPO_ROOT/server/src" ]]; then
+    echo "ERROR: the schema check mounts $REPO_ROOT/server, which this caller does not have." >&2
+    echo "       Run migrations for $MODE from a checkout on the host." >&2
+    exit 1
+  fi
+
   echo "[migrate] checking Drizzle schema artifacts before database bootstrap..."
   "${COMPOSE[@]}" run --rm -T --no-deps \
     -v "$REPO_ROOT/server/src:/app/server/src:ro" \

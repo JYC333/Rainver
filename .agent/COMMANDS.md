@@ -17,14 +17,26 @@ pnpm install --frozen-lockfile
 ./ops/scripts/start.sh --test
 ./ops/scripts/start.sh --prod
 
-# Force rebuild images
+# Force rebuild images (dev/test only; prod never builds on the host)
 ./ops/scripts/start.sh --build
 
 # Start in the background (docker compose up -d). Every service carries
 # `restart: unless-stopped`, so a detached stack also comes back after a host
-# reboot once Docker is up. Update a running prod instance with:
-#   git pull && ./ops/scripts/start.sh --prod --build --detach
+# reboot once Docker is up.
 ./ops/scripts/start.sh --prod --detach
+
+# Production images: CI (.github/workflows/ci.yml, publish-images job) builds
+# server, frontend, sandbox-runner, and deployer after the verify job passes
+# and pushes them to ghcr.io/jyc333/rainver-<name>. dev pushes tag `edge`,
+# master pushes `stable`, every push also tags `sha-<commit>`. The prod
+# compose file pulls `${RAINVER_IMAGE_TAG:-stable}`; set RAINVER_IMAGE_TAG in
+# $RAINVER_ROOT/prod/.env to follow edge or pin/roll back to a sha tag. The
+# checkout on a prod machine exists only for these scripts and compose files.
+# Update a running prod instance (pull images, migrate with pg_dump, recreate):
+git pull && ./ops/scripts/start.sh --prod --detach
+# Roll back: set RAINVER_IMAGE_TAG=sha-<previous commit> and run the same command.
+# The GHCR packages are linked to this repository by the workflow push and
+# inherit its public visibility; a prod machine pulls without logging in.
 ```
 
 ## Server
