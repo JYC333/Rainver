@@ -1,7 +1,9 @@
 import type { CliStdioController } from "./localCliExecution.js";
-import type {
-  CanonicalModelUsage,
-  CanonicalUsage,
+import {
+  acpAgentAuthMethodId,
+  isAcpAuthRequiredError,
+  type CanonicalModelUsage,
+  type CanonicalUsage,
 } from "@rainver/protocol";
 // D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
 // §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
@@ -96,16 +98,28 @@ export function createCliConversationController(input: {
 
 type Send = (message: Record<string, unknown>) => void;
 
+/** Between `session/new` (2) and the first `session/set_config_option` (3.xx); never a prompt id (4+). */
+const AUTHENTICATE_REQUEST_ID = 2.5;
+
 /**
  * General Agent Client Protocol controller. All three conversation runtimes
  * use the same lifecycle on both server-host and remote paths; Claude's ACP
  * adapter replaced its stream-json path in P4 of the runtime replatform.
  */
 export class AcpController implements CliStdioController {
-  private phase: "initialize" | "session_new" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
+  private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
   private resumeHandshakeFailed = false;
+  /**
+   * ACP Agent Auth is per process: an Agent whose copy is logged in on its
+   * host (Cursor, after `agent login`) still answers the first session
+   * request with "authenticate first". The method it advertised in
+   * `initialize` is kept so that answer is handled here, once, rather than
+   * surfacing as a failed Run the user has to understand.
+   */
+  private agentAuthMethodId: string | null = null;
+  private authenticated = false;
   private configIndex = 0;
   private activeConfigRequestId: number | null = null;
   private advertisedConfigOptions: Record<string, unknown>[] = [];
@@ -170,6 +184,30 @@ export class AcpController implements CliStdioController {
       return;
     }
     if (message.error) {
+      if (
+        this.phase === "session_new"
+        && message.id === 2
+        && !this.authenticated
+        && this.agentAuthMethodId
+        && isAcpAuthRequiredError(message.error)
+      ) {
+        this.phase = "authenticate";
+        send({
+          jsonrpc: "2.0",
+          id: AUTHENTICATE_REQUEST_ID,
+          method: "authenticate",
+          params: { methodId: this.agentAuthMethodId },
+        });
+        return;
+      }
+      if (this.phase === "authenticate" && message.id === AUTHENTICATE_REQUEST_ID) {
+        this.fail(
+          `${this.label()} ACP authentication with '${this.agentAuthMethodId}' failed: ${rpcErrorMessage(message.error)}. `
+            + "Log this Agent in on its host first.",
+          closeStdin,
+        );
+        return;
+      }
       if (this.phase === "session_new" && message.id === 2 && this.input.runtime_session_id) {
         this.resumeHandshakeFailed = true;
       }
@@ -201,21 +239,17 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.input.on_protocol_event?.(message);
+      this.agentAuthMethodId = acpAgentAuthMethodId(message.result);
       this.phase = "session_new";
       if (this.input.runtime_session_id) this.sessionId = this.input.runtime_session_id;
       this.captureSelectedModel(record(message.result));
-      send({
-        jsonrpc: "2.0",
-        id: 2,
-        method: this.input.runtime_session_id ? "session/resume" : "session/new",
-        params: {
-          ...(this.input.runtime_session_id
-            ? { sessionId: this.input.runtime_session_id }
-            : {}),
-          cwd: this.input.cwd,
-          mcpServers: [],
-        },
-      });
+      this.openSession(send);
+      return;
+    }
+    if (message.id === AUTHENTICATE_REQUEST_ID && this.phase === "authenticate") {
+      this.authenticated = true;
+      this.phase = "session_new";
+      this.openSession(send);
       return;
     }
     if (message.id === 2 && this.phase === "session_new") {
@@ -425,6 +459,22 @@ export class AcpController implements CliStdioController {
       params: { sessionId: this.sessionId, configId: selection.id, value: selection.value },
     });
     return true;
+  }
+
+  /** `session/new`, or `session/resume` for a bound conversation; sent again after `authenticate`. */
+  private openSession(send: Send): void {
+    send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: this.input.runtime_session_id ? "session/resume" : "session/new",
+      params: {
+        ...(this.input.runtime_session_id
+          ? { sessionId: this.input.runtime_session_id }
+          : {}),
+        cwd: this.input.cwd,
+        mcpServers: [],
+      },
+    });
   }
 
   private prompt(send: Send): void {

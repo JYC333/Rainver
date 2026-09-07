@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,79 @@ describe("host release installer", () => {
       expect(result.stdout).toContain("No runtime or release archives were downloaded.");
       expect(await readFile(join(systemdDir, "rainver-host-update.timer"), "utf8")).toContain("OnUnitActiveSec=6h");
       expect(await readFile(systemctlLog, "utf8")).toContain("enable --now rainver-host-update.timer");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "linux")("reuses the shared Node runtime on update instead of downloading it again", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-host-node-reuse-test-"));
+    const installRoot = join(root, "install");
+    const binDir = join(root, "bin");
+    const systemdDir = join(root, "systemd");
+    const configDir = join(root, "config");
+    const releaseDir = join(root, "release");
+    const packageDir = join(root, "package");
+    const fakeBin = join(root, "fake-bin");
+    const buildId = "00112233445566778899aabbccddeeff00112233";
+    const releaseArch = process.arch === "arm64" ? "arm64" : "x64";
+
+    try {
+      const hostPayload = join(packageDir, "rainver-host");
+      const adapterPayload = join(packageDir, "rainver-host-adapters");
+      const sharedNodeDir = join(installRoot, "runtime", "node-v24-shared");
+      await Promise.all([
+        mkdir(join(hostPayload, "app", "dist"), { recursive: true }),
+        mkdir(adapterPayload, { recursive: true }),
+        mkdir(releaseDir, { recursive: true }),
+        mkdir(fakeBin, { recursive: true }),
+        mkdir(join(sharedNodeDir, "bin"), { recursive: true }),
+      ]);
+      // The machine's own Node is a 25: present, but not what Rainver Host
+      // runs on. The shared runtime a previous install downloaded is a 24.
+      await writeFile(
+        join(fakeBin, "node"),
+        '#!/bin/sh\ncase "$1" in --version) echo v25.2.1 ;; -p) echo 25 ;; *) exit 1 ;; esac\n',
+        { mode: 0o755 },
+      );
+      await writeFile(join(fakeBin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await symlink(process.execPath, join(sharedNodeDir, "bin", "node"));
+      await symlink("node-v24-shared", join(installRoot, "runtime", "node-current"));
+
+      const installer = await readFile(installerPath);
+      const buildIdFile = `${buildId}\n`;
+      await writeFile(join(releaseDir, "install-host.sh"), installer, { mode: 0o755 });
+      await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
+      await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host"], process.env);
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-adapters-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host-adapters"], process.env);
+      // Deliberately no Node archive in the release: a download attempt fails the install.
+      const assets = ["BUILD_ID", "install-host.sh", `rainver-host-linux-${releaseArch}.tar.gz`, `rainver-host-adapters-linux-${releaseArch}.tar.gz`];
+      const sums = await Promise.all(assets.map(async asset => (
+        `${createHash("sha256").update(await readFile(join(releaseDir, asset))).digest("hex")}  ${asset}`
+      )));
+      await writeFile(join(releaseDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
+
+      const result = await runCommand("/bin/bash", [installerPath, "--update"], {
+        ...process.env,
+        PATH: `${fakeBin}${delimiter}/usr/bin${delimiter}/bin`,
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        RAINVER_HOST_INSTALL_ROOT: installRoot,
+        RAINVER_HOST_BIN_DIR: binDir,
+        RAINVER_HOST_SYSTEMD_DIR: systemdDir,
+        RAINVER_HOST_CONFIG_DIR: configDir,
+        RAINVER_HOST_RELEASE_BASE_URL: `file://${releaseDir}`,
+      });
+
+      expect(result.stdout).toContain("System Node.js v25.2.1 is not usable (Rainver Host needs 24.x); reusing the shared runtime v24.");
+      expect(result.stdout).not.toContain("Downloading shared Node.js runtime");
+      expect(result.stdout).toContain(`Downloading Rainver Host stable for linux-${releaseArch}...`);
+      expect(await readFile(join(installRoot, "current", "BUILD_ID"), "utf8")).toBe(buildIdFile);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

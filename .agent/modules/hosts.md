@@ -651,9 +651,16 @@ everything about a copy lives on the copy. The capability report is
 `{ runtimes, versions, installations }`: `installations[adapter_type]` holds
 one `{ id, version, logged_in, options }` per copy (`logged_in` comes from
 the configured credential file for built-ins, otherwise from whether ACP
-session setup succeeds when the Agent advertises authentication — a session
-failure that is not ACP's `auth_required` leaves it unknown but keeps the
-advertised methods, since they are a registry agent's only login path;
+session setup succeeds when the Agent advertises authentication. ACP Agent
+Auth is per process, so the probe does what a Run's session controller does:
+when the first `session/new` answers "authenticate first" — the protocol's
+`auth_required` reason, or the message-only phrasing Cursor uses, both
+recognised by the protocol package's `isAcpAuthRequiredError` — it calls
+`authenticate` with the advertised Agent-Auth method once and opens the
+session again, so a copy logged in on its host reports `logged_in: true`
+rather than the protocol's first refusal. A refused `authenticate` reports
+`false`; any other session failure leaves it unknown but keeps the advertised
+methods, since they are a registry agent's only login path;
 `options.config_options` and `options.auth_methods` are the generic ACP
 capabilities that copy advertised; `options.cli_login_available` is a separate
 Rainver compatibility capability and is never represented as an ACP method).
@@ -710,12 +717,20 @@ through `POST .../login/input` →
 after which the daemon clears that copy's ACP capability cache and heartbeats
 so both `installations[].logged_in` and its advertised auth methods are current.
 Some Agents advertise Agent Auth but wait indefinitely for credentials their
-own CLI must create first. A managed installation without an explicit login
-spec is probed with its fixed top-level `login --help`; when that succeeds,
-Rainver reports a separate restricted **CLI login** compatibility capability
-without altering any Agent Auth or Terminal Auth method the Agent advertised.
-The login request selects either an ACP method id or this Rainver-owned action,
-never a synthetic ACP method. It runs only that
+own CLI must create first (Cursor: `agent login`, then `authenticate` with
+`cursor_login`). A managed installation without an explicit login spec is
+probed with its fixed top-level `login --help`; when that succeeds, Rainver
+reports a separate restricted **CLI login** compatibility capability without
+altering any Agent Auth or Terminal Auth method the Agent advertised. In the
+host card that copy shows **one** Log in — the CLI login, the step a person
+has to do — and not the advertised Agent-Auth method beside it: that
+handshake runs unattended afterwards, in the daemon's probe and in every Run
+session (`cliConversationProtocol.ts` answers an authenticate-first
+`session/new` with `authenticate` and reopens the session; a refused
+`authenticate` fails the Run with a "log this Agent in on its host first"
+error). Agents without the CLI fallback still show every method they
+advertised. The login request selects either an ACP method id or this
+Rainver-owned action, never a synthetic ACP method. It runs only that
 installation's fixed executable entry plus the
 `login` subcommand in the same isolated HOME; it accepts terminal input but
 does not expose a shell or a remotely supplied command. New manifests preserve

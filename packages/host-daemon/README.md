@@ -2,9 +2,10 @@
 
 `rainver-host` connects a machine you own to a Rainver control plane and runs
 as a systemd user service. The target machine does not need this repository or
-pnpm. The installer uses an existing Node.js 24 installation when available;
-otherwise it downloads one shared fallback runtime that is not duplicated by
-daemon updates.
+pnpm. The installer uses an existing Node.js 24 installation when available
+(another major, such as 25, does not qualify); otherwise it downloads one
+shared fallback runtime, which every later update reuses rather than
+downloading again.
 
 Vendor runtimes are not bundled: install the official `codex`, `claude`, or
 other CLI you intend to use on the host. Rainver checks the host's captured

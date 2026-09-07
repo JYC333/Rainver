@@ -1673,6 +1673,86 @@ describe("vendor structured event normalization", () => {
     });
   });
 
+  it("authenticates with the advertised Agent-Auth method when session/new requires it, then opens the session again", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    const close = () => { closed = true; };
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1, authMethods: [
+      { id: "cursor_login", name: "Cursor Login", description: "Run 'agent login' first if not logged in." },
+    ] } }, send, close);
+    // Cursor's phrasing: no `reason`, the message says it.
+    controller.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, message: "Authentication required", data: { message: "Please run 'agent login' first" } } }, send, close);
+    expect(closed).toBe(false);
+    expect(sent.map((message) => message.method)).toEqual(["initialize", "session/new", "authenticate"]);
+    expect(sent[2]).toMatchObject({ id: 2.5, params: { methodId: "cursor_login" } });
+    controller.receive({ jsonrpc: "2.0", id: 2.5, result: {} }, send, close);
+    expect(sent.map((message) => message.method)).toEqual(["initialize", "session/new", "authenticate", "session/new"]);
+    controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } }, send, close);
+    expect(sent.map((message) => message.method)).toEqual(["initialize", "session/new", "authenticate", "session/new", "session/prompt"]);
+    expect(sent[4]).toMatchObject({ id: 4, params: { sessionId: "session-1" } });
+    expect(closed).toBe(false);
+    expect(controller.result().error).toBeNull();
+  });
+
+  it("fails closed with a host-login hint when the Agent rejects authenticate", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    const close = () => { closed = true; };
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1, authMethods: [{ id: "cursor_login", name: "Cursor Login" }] } }, send, close);
+    controller.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, data: { reason: "auth_required" } } }, send, close);
+    controller.receive({ jsonrpc: "2.0", id: 2.5, error: { code: -32000, message: "No credentials" } }, send, close);
+    expect(closed).toBe(true);
+    expect(controller.result().error).toBe(
+      "OpenCode ACP authentication with 'cursor_login' failed: No credentials. Log this Agent in on its host first.",
+    );
+  });
+
+  it("does not attempt authenticate when the Agent advertised no Agent-Auth method, and never twice", () => {
+    const controller = createCliConversationController({
+      adapter_type: "opencode",
+      prompt: "hello",
+      cwd: "/workspace",
+    })!;
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    const close = () => { closed = true; };
+    controller.start(send);
+    controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1, authMethods: [{ id: "device", name: "Device", type: "terminal" }] } }, send, close);
+    controller.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, data: { reason: "auth_required" } } }, send, close);
+    expect(closed).toBe(true);
+    expect(sent.map((message) => message.method)).toEqual(["initialize", "session/new"]);
+    expect(controller.result().error).toBe("OpenCode ACP RPC failed: unknown protocol error");
+
+    const second = createCliConversationController({ adapter_type: "opencode", prompt: "hello", cwd: "/workspace" })!;
+    const sentAgain: Record<string, unknown>[] = [];
+    let closedAgain = false;
+    const sendAgain = (message: Record<string, unknown>) => sentAgain.push(message);
+    const closeAgain = () => { closedAgain = true; };
+    second.start(sendAgain);
+    second.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1, authMethods: [{ id: "cursor_login", name: "Cursor Login" }] } }, sendAgain, closeAgain);
+    second.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, data: { reason: "auth_required" } } }, sendAgain, closeAgain);
+    second.receive({ jsonrpc: "2.0", id: 2.5, result: {} }, sendAgain, closeAgain);
+    // Still refused after a successful authenticate: a real failure, not a loop.
+    second.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, data: { reason: "auth_required" } } }, sendAgain, closeAgain);
+    expect(closedAgain).toBe(true);
+    expect(sentAgain.map((message) => message.method)).toEqual(["initialize", "session/new", "authenticate", "session/new"]);
+  });
+
   it("resumes an opaque OpenCode session before prompting", () => {
     const controller = createCliConversationController({
       adapter_type: "opencode",

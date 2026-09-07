@@ -13,8 +13,9 @@ describe('ACP authentication method parsing', () => {
     ])
   })
 
-  it('recognizes only the explicit ACP authentication-required reason', () => {
+  it('recognizes the ACP authentication-required reason and the message-only phrasing', () => {
     expect(isAcpAuthRequiredError({ code: -32000, data: { reason: 'auth_required' } })).toBe(true)
+    expect(isAcpAuthRequiredError({ code: -32000, message: 'Authentication required' })).toBe(true)
     expect(isAcpAuthRequiredError({ code: -32000, message: 'workspace failed' })).toBe(false)
     expect(isAcpAuthRequiredError(null)).toBe(false)
   })
@@ -100,5 +101,43 @@ describe('probeAcpOptions failure reporting', () => {
     const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 5_000, r => reasons.push(r))
     expect(result).toBeNull()
     expect(reasons[0]).toMatch(/session\/new failed with a reason other than auth_required and initialize advertised no auth method: .*workspace failed/)
+  })
+})
+
+describe('probeAcpOptions authentication', () => {
+  // A fake Cursor: advertises cursor_login, refuses the first session with the
+  // message-only phrasing, accepts authenticate when told to, then opens.
+  function fakeAgent(acceptsAuthenticate: boolean): string {
+    return `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      setInterval(() => {}, 1000);
+      let authenticated = false;
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        const reply = (body) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\\n");
+        if (msg.method === "initialize") return reply({ result: { authMethods: [{ id: "cursor_login", name: "Cursor Login" }] } });
+        if (msg.method === "authenticate") {
+          if (${acceptsAuthenticate}) { authenticated = true; return reply({ result: {} }); }
+          return reply({ error: { code: -32000, message: "No credentials" } });
+        }
+        if (msg.method === "session/new") {
+          if (!authenticated) return reply({ error: { code: -32000, message: "Authentication required", data: { message: "run 'agent login' first" } } });
+          return reply({ result: { sessionId: "s1", configOptions: [] } });
+        }
+      });
+    `
+  }
+
+  it('authenticates with the advertised Agent-Auth method and reports a logged-in copy', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const result = await probeAcpOptions(process.execPath, ['-e', fakeAgent(true)], {}, process.cwd(), 10_000)
+    expect(result).toMatchObject({ authenticated: true, auth_methods: [expect.objectContaining({ id: 'cursor_login' })] })
+  })
+
+  it('reports a copy whose authenticate is refused as not logged in, methods intact', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const result = await probeAcpOptions(process.execPath, ['-e', fakeAgent(false)], {}, process.cwd(), 10_000)
+    expect(result).toEqual({ config_options: [], auth_methods: [expect.objectContaining({ id: 'cursor_login' })], authenticated: false })
   })
 })

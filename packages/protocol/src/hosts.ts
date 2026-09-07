@@ -71,6 +71,37 @@ export const RuntimeAuthMethodSchema = z.object({
 });
 export type RuntimeAuthMethod = z.infer<typeof RuntimeAuthMethodSchema>;
 
+/**
+ * Whether an ACP JSON-RPC error means "authenticate first". The protocol's
+ * explicit signal is `data.reason: "auth_required"`; not every Agent uses it
+ * (Cursor answers `session/new` with `message: "Authentication required"`),
+ * so the message is read too. Shared by the server's session controller and
+ * the host daemon's probe so both react the same way: authenticate with the
+ * Agent-advertised method, then open the session again.
+ */
+export function isAcpAuthRequiredError(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const error = value as { message?: unknown; data?: unknown };
+  const data = error.data && typeof error.data === "object" ? (error.data as { reason?: unknown }) : null;
+  if (data?.reason === "auth_required") return true;
+  return typeof error.message === "string" && /authentication required|not (?:logged|signed) in|unauthenticated/i.test(error.message);
+}
+
+/** The first Agent-Auth method an ACP `initialize` result advertised, or null. */
+export function acpAgentAuthMethodId(initializeResult: unknown): string | null {
+  const methods = initializeResult && typeof initializeResult === "object"
+    ? (initializeResult as { authMethods?: unknown }).authMethods
+    : null;
+  if (!Array.isArray(methods)) return null;
+  for (const raw of methods) {
+    if (!raw || typeof raw !== "object") continue;
+    const method = raw as { id?: unknown; type?: unknown };
+    if (typeof method.id !== "string" || !method.id) continue;
+    if (method.type === undefined || method.type === "agent") return method.id;
+  }
+  return null;
+}
+
 /** What a copy of a runtime says during ACP initialization/session setup. */
 export const RuntimeOptionsSchema = z.object({
   config_options: z.array(RuntimeSessionConfigOptionSchema),

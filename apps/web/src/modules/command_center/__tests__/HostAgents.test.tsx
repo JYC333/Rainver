@@ -55,6 +55,7 @@ const ADAPTERS: HostRuntimeAdapterOption[] = [
   // managed on a host, but not dispatch-eligible until its entry can name a
   // login/state-root contract. It must still be listed here.
   { adapter_type: 'acp_dynamic', display_name: 'Cursor', command: 'acp_dynamic', capability_probe: 'acp_dynamic', remote_eligible: false, provider_binding: false },
+  { adapter_type: 'acp_browser_only', display_name: 'Kite', command: 'acp_browser_only', capability_probe: 'acp_browser_only', remote_eligible: false, provider_binding: false },
 ]
 const HOST = {
   id: 'h1', name: 'Laptop', kind: 'remote', status: 'online',
@@ -63,12 +64,21 @@ const HOST = {
     installations: {
       opencode: [{ id: 'own', version: 'opencode 1.18.11', logged_in: true }],
       acp_goose: [{ id: 'managed:1.2.3', version: '1.2.3', logged_in: false }],
+      // Cursor: advertises Agent Auth but needs its own CLI login first, so
+      // Rainver reports the CLI login fallback — the one button the person sees.
       acp_dynamic: [{
         id: 'managed:2.0.0', version: '2.0.0', logged_in: false,
         options: { config_options: [], authenticated: false, auth_methods: [
+          { id: 'cursor_login', name: 'Cursor Login', description: 'Uses existing Cursor credentials', type: 'agent', args: [], env: {} },
+        ], cli_login_available: true },
+      }],
+      // An Agent whose advertised methods are the whole login story.
+      acp_browser_only: [{
+        id: 'managed:3.0.0', version: '3.0.0', logged_in: false,
+        options: { config_options: [], authenticated: false, auth_methods: [
           { id: 'browser', name: 'Browser login', description: 'Open a browser', type: 'agent', args: [], env: {} },
           { id: 'device', name: 'Device login', description: null, type: 'terminal', args: ['login'], env: {} },
-        ], cli_login_available: true },
+        ] },
       }],
     },
   },
@@ -112,23 +122,40 @@ describe('HostAgents', () => {
     await userEvent.type(screen.getByLabelText('Login input'), 'abc{enter}')
     await waitFor(() => expect(loginInput).toHaveBeenCalledWith('h1', 'acp_goose', 'managed:1.2.3', 'abc\n'))
     await waitFor(() => expect(terminal.textContent).toContain('Logged in.'))
+    // A successful login puts the panel away by itself after a moment.
+    expect(screen.getByTestId('runtime-login-terminal')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('runtime-login-terminal')).toBeNull(), { timeout: 6_000 })
   })
 
-  it('shows every authentication method advertised by an ACP agent', async () => {
+  it('shows every authentication method advertised by an ACP agent that has no CLI login fallback', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
     expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Model source')
     expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Agent-managed · no Rainver override')
-    expect(screen.getByRole('button', { name: 'Browser login for managed:2.0.0 of Cursor on Laptop' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Device login for managed:2.0.0 of Cursor on Laptop' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Log in managed:2.0.0 of Cursor on Laptop' })).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:2.0.0 of Cursor on Laptop' }))
-    await waitFor(() => expect(loginStream).toHaveBeenCalledWith('h1', 'acp_dynamic', 'managed:2.0.0', { kind: 'acp', methodId: 'browser' }))
+    expect(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Device login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' }))
+    await waitFor(() => expect(loginStream).toHaveBeenCalledWith('h1', 'acp_browser_only', 'managed:3.0.0', { kind: 'acp', methodId: 'browser' }))
     expect(screen.queryByLabelText('Login input')).toBeNull()
     await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
   })
 
-  it('keeps the managed CLI fallback separate from ACP authentication methods', async () => {
+  it('starts a fresh session when the same copy is logged in again while its last panel is still open', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    const button = screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })
+    const before = loginStream.mock.calls.length
+    await userEvent.click(button)
+    await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
+    // The host row is not refreshed by this fixture, so the label is unchanged.
+    await userEvent.click(button)
+    await waitFor(() => expect(loginStream.mock.calls.length).toBe(before + 2))
+  })
+
+  it('offers one Log in, the managed CLI login, when the Agent needs its own CLI login before its Agent Auth', async () => {
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    // The advertised Agent-Auth method is not a second button: the daemon and
+    // every Run session authenticate with it unattended once the CLI is logged in.
+    expect(screen.queryByRole('button', { name: /Cursor Login/ })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Log in managed:2.0.0 of Cursor on Laptop' }))
     await waitFor(() => expect(loginStream).toHaveBeenLastCalledWith(
       'h1', 'acp_dynamic', 'managed:2.0.0', { kind: 'cli' },

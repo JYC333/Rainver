@@ -70,7 +70,12 @@ export default function HostAgentRow({
       <span className="w-28 shrink-0 truncate font-medium" title={adapter.display_name}>{adapter.display_name}</span>
       <span className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {copies.map(entry => {
-          const authMethods = entry.options?.auth_methods ?? []
+          // One Log in when Rainver's managed CLI login exists: that is the
+          // step the person actually has to do. The Agent-Auth handshake the
+          // Agent advertised alongside it runs unattended afterwards — the
+          // daemon's probe and every Run session authenticate with it — so
+          // offering it as a second button only looked like a duplicate.
+          const authMethods = entry.options?.cli_login_available ? [] : entry.options?.auth_methods ?? []
           return <span key={entry.id} className="flex shrink-0 items-center gap-1">
               <Badge variant={entry.logged_in === false ? 'warning' : 'secondary'}>
                 {entry.id === 'own' ? 'own' : 'managed'} · {versionLabel(entry.version)}

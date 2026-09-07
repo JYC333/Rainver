@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { RuntimeAuthMethod, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
+import { isAcpAuthRequiredError, type RuntimeAuthMethod, type RuntimeOptionChoice, type RuntimeOptions, type RuntimeSessionConfigOption } from "@rainver/protocol";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 
 /**
@@ -95,10 +95,7 @@ export function parseAcpSessionOptions(resultValue: unknown): RuntimeOptions {
   return { config_options: parsed };
 }
 
-/** ACP's explicit signal that session creation is blocked on authentication. */
-export function isAcpAuthRequiredError(value: unknown): boolean {
-  return record(record(value).data).reason === "auth_required";
-}
+export { isAcpAuthRequiredError } from "@rainver/protocol";
 
 export function parseAcpSessionProbeResult(
   result: unknown,
@@ -151,6 +148,16 @@ export function probeAcpOptions(
     let authMethods: RuntimeAuthMethod[] = [];
     let settled = false;
     let stderr = "";
+    // ACP Agent Auth is per process: a copy that is logged in on this host
+    // still answers its first session request with "authenticate first". Do
+    // what a Run's session controller does — authenticate with the advertised
+    // Agent-Auth method once and ask again — so `authenticated` reports the
+    // copy's real state rather than the protocol's first refusal.
+    let authenticateTried = false;
+    let sessionRequestId = 2;
+    const openSession = () => {
+      send({ jsonrpc: "2.0", id: sessionRequestId, method: "session/new", params: { cwd, mcpServers: [] } });
+    };
     const stderrTail = () => {
       const text = stderr.trim();
       return text ? `; stderr: ${text.slice(-600).replace(/\s+/g, " ")}` : "";
@@ -207,10 +214,16 @@ export function probeAcpOptions(
           }
           authMethods = parseAcpAuthMethods(record(message.result).authMethods)
             .filter((method) => method.type !== "terminal" || terminalAuthAvailable());
-          send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd, mcpServers: [] } });
+          openSession();
           continue;
         }
-        if (message.id === 2) {
+        if (message.id === sessionRequestId) {
+          const agentMethod = authMethods.find((method) => method.type === "agent");
+          if (message.error && !authenticateTried && agentMethod && isAcpAuthRequiredError(message.error)) {
+            authenticateTried = true;
+            send({ jsonrpc: "2.0", id: 3, method: "authenticate", params: { methodId: agentMethod.id } });
+            continue;
+          }
           const parsed = parseAcpSessionProbeResult(message.result, message.error, authMethods);
           finish(
             parsed,
@@ -218,6 +231,17 @@ export function probeAcpOptions(
               ? `session/new failed with a reason other than auth_required and initialize advertised no auth method: ${JSON.stringify(message.error)}`
               : undefined,
           );
+          continue;
+        }
+        if (message.id === 3) {
+          if (message.error) {
+            // The copy is not logged in on this host: report exactly that, with
+            // the methods intact so the Log in button exists.
+            finish({ config_options: [], auth_methods: authMethods, authenticated: false });
+            continue;
+          }
+          sessionRequestId = 4;
+          openSession();
         }
       }
     });

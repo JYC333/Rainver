@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry, type ModelProviderOut } from '../../api/client'
@@ -12,6 +12,9 @@ import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 import { useHostProviderBindings } from './useHostProviderBindings'
 
 /** The copies of an adapter a host reports (the server has already normalized older daemons' reports). */
+/** How long a finished, successful login stays on screen before the panel closes itself. */
+export const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
+
 export function installationsOn(host: Host, adapter: HostRuntimeAdapterOption): RuntimeInstallation[] {
   return host.capabilities_json?.installations?.[adapter.adapter_type] ?? []
 }
@@ -45,7 +48,18 @@ export default function HostAgents({
     next.delete(key)
     return next
   })
+  // A successful login shows its "Logged in." line for a moment and then
+  // puts the panel away by itself; a failed one stays open so the output can
+  // be read. Cleared when another login starts or the card unmounts.
+  const loginCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearLoginCloseTimer = () => {
+    if (loginCloseTimer.current) clearTimeout(loginCloseTimer.current)
+    loginCloseTimer.current = null
+  }
+  useEffect(() => clearLoginCloseTimer, [])
   const [loginOpen, setLoginOpen] = useState<{
+    /** Increments per click so the same copy's Log in always starts a fresh session, even while its last one is still on screen. */
+    attempt: number
     adapterType: string
     installation: string
     target: HostAgentLoginTarget
@@ -199,7 +213,10 @@ export default function HostAgents({
             providerBusy={providerBindings.loading || providerBindings.busyAdapter === adapter.adapter_type}
             onInstall={() => { void install(adapter) }}
             onUninstall={entry => { void uninstall(adapter, entry) }}
-            onLogin={(installation, target) => setLoginOpen({ adapterType: adapter.adapter_type, installation, target })}
+            onLogin={(installation, target) => {
+              clearLoginCloseTimer()
+              setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, adapterType: adapter.adapter_type, installation, target }))
+            }}
             onChooseProvider={providerId => { void providerBindings.choose(adapter.adapter_type, providerId) }}
           />
         ))}
@@ -278,7 +295,7 @@ export default function HostAgents({
             <Button size="sm" variant="ghost" onClick={() => setLoginOpen(null)}>Close</Button>
           </div>
           <RuntimeLoginTerminal
-            key={`${loginOpen.adapterType}:${loginOpen.installation}:${loginOpen.target.kind === 'acp' ? loginOpen.target.method.id : loginOpen.target.kind}`}
+            key={`${loginOpen.attempt}:${loginOpen.adapterType}:${loginOpen.installation}:${loginOpen.target.kind === 'acp' ? loginOpen.target.method.id : loginOpen.target.kind}`}
             hostId={host.id}
             adapterType={loginOpen.adapterType}
             installation={loginOpen.installation}
@@ -286,7 +303,16 @@ export default function HostAgents({
               ? { kind: 'acp', methodId: loginOpen.target.method.id }
               : loginOpen.target.kind === 'cli' ? { kind: 'cli' } : null}
             interactive={loginOpen.target.kind !== 'acp' || loginOpen.target.method.type !== 'agent'}
-            onDone={onChanged}
+            onDone={loggedIn => {
+              void onChanged()
+              clearLoginCloseTimer()
+              if (loggedIn === true) {
+                loginCloseTimer.current = setTimeout(() => {
+                  loginCloseTimer.current = null
+                  setLoginOpen(null)
+                }, LOGIN_PANEL_AUTO_CLOSE_MS)
+              }
+            }}
           />
         </div>
       )}

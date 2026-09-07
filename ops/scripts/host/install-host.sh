@@ -120,7 +120,13 @@ EOF
   fi
 }
 
-echo "Checking Rainver Host ${release_channel} release metadata..."
+# The installer refreshes itself first: when the published script differs
+# from this copy, the published one takes over below with
+# --resolved-installer and repeats these downloads for its own verification.
+# Announce the check once, from the copy the person actually invoked.
+if [[ "$resolved_installer" == false ]]; then
+  echo "Checking Rainver Host ${release_channel} release metadata..."
+fi
 download_file "$RELEASE_BASE_URL/install-host.sh" "$temp_dir/install-host.sh"
 download_file "$RELEASE_BASE_URL/SHA256SUMS" "$temp_dir/SHA256SUMS"
 installer_hash="$(awk '$2 == "install-host.sh" { print $1; exit }' "$temp_dir/SHA256SUMS")"
@@ -132,6 +138,7 @@ printf '%s  %s\n' "$installer_hash" "$temp_dir/install-host.sh" | sha256sum --ch
 if [[ "$resolved_installer" == false && -f "$0" ]] \
   && grep -q -- '--resolved-installer)' "$temp_dir/install-host.sh" \
   && ! cmp -s "$0" "$temp_dir/install-host.sh"; then
+  echo "Continuing with the published installer."
   /bin/bash "$temp_dir/install-host.sh" --resolved-installer "${original_args[@]}"
   exit $?
 fi
@@ -241,14 +248,37 @@ fi
 mkdir -p "$INSTALL_ROOT/releases" "$INSTALL_ROOT/runtime" "$BIN_DIR" "$SYSTEMD_DIR" "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
+# Rainver Host runs on Node.js 24 (the server package pins `>=24 <25`). A
+# system Node of that major is used as is; anything else — none, or another
+# major — falls back to the shared runtime under $INSTALL_ROOT/runtime, which
+# is downloaded once and reused by every later update while it is still a 24.
+node_major_of() {
+  "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true
+}
 node_command="$(command -v node || true)"
 node_major=""
+node_version=""
 if [[ -n "$node_command" ]]; then
-  node_major="$("$node_command" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+  node_major="$(node_major_of "$node_command")"
+  node_version="$("$node_command" --version 2>/dev/null | tr -d '\r\n' || true)"
 fi
-if [[ "$node_major" != "24" ]]; then
+shared_node="$INSTALL_ROOT/runtime/node-current/bin/node"
+if [[ "$node_major" == "24" ]]; then
+  echo "Using system Node.js ${node_version}: $node_command"
+elif [[ -x "$shared_node" && "$(node_major_of "$shared_node")" == "24" ]]; then
+  if [[ -n "$node_version" ]]; then
+    echo "System Node.js ${node_version} is not usable (Rainver Host needs 24.x); reusing the shared runtime $("$shared_node" --version | tr -d '\r\n')."
+  else
+    echo "No system Node.js found (Rainver Host needs 24.x); reusing the shared runtime $("$shared_node" --version | tr -d '\r\n')."
+  fi
+  node_command="$shared_node"
+else
   node_asset="rainver-host-node-linux-${release_arch}.tar.gz"
-  echo "No compatible system Node.js found."
+  if [[ -n "$node_version" ]]; then
+    echo "System Node.js ${node_version} is not usable (Rainver Host needs 24.x); downloading the shared runtime once."
+  else
+    echo "No system Node.js found (Rainver Host needs 24.x); downloading the shared runtime once."
+  fi
   download_and_verify "$node_asset" "shared Node.js runtime for linux-${release_arch}"
   mkdir -p "$temp_dir/unpacked-node"
   tar -xzf "$temp_dir/$node_asset" -C "$temp_dir/unpacked-node"
@@ -263,8 +293,6 @@ if [[ "$node_major" != "24" ]]; then
   ln -s "$(basename "$node_dir")" "$INSTALL_ROOT/runtime/.node-current-$$"
   mv -Tf "$INSTALL_ROOT/runtime/.node-current-$$" "$INSTALL_ROOT/runtime/node-current"
   node_command="$INSTALL_ROOT/runtime/node-current/bin/node"
-else
-  echo "Using system Node.js: $node_command"
 fi
 
 asset="rainver-host-linux-${release_arch}.tar.gz"
