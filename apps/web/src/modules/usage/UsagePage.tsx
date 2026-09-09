@@ -4,19 +4,15 @@ import {
   CheckCircle2,
   Database,
   Filter,
-  History,
   Loader2,
   RefreshCw,
   TableProperties,
-  Upload,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type {
   UsageAccuracy,
   UsageBreakdownItem,
   UsageBudgetPreviewResponse,
-  UsageCliHistoryImportResponse,
-  UsageCliHistoryRuntime,
   UsageDimensionsResponse,
   UsageEventDTO,
   UsageExecutionChannel,
@@ -28,7 +24,7 @@ import type {
   UsageTimeseriesResponse,
   UsageTotals,
 } from '@rainver/protocol'
-import { credentialsApi, usageApi, type UsageApiQuery } from '../../api/client'
+import { usageApi, type UsageApiQuery } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
@@ -45,7 +41,6 @@ import {
 } from '../../components/ui/table'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
-import type { CliCredentialProfileOut } from '../../types/api'
 
 type AccuracyFilter = UsageAccuracy | 'all'
 type ChannelFilter = UsageExecutionChannel | 'all'
@@ -113,11 +108,6 @@ const GROUP_OPTIONS: SelectOption[] = [
   { value: 'agent', label: 'Agent' },
   { value: 'task', label: 'Task' },
   { value: 'custom_dimension', label: 'Custom dimension' },
-]
-
-const RUNTIME_OPTIONS: SelectOption[] = [
-  { value: 'claude_code', label: 'Claude Code' },
-  { value: 'codex_cli', label: 'Codex CLI' },
 ]
 
 const BAR_COLORS = [
@@ -226,11 +216,6 @@ function parseSessionFilter(value: string): SessionFilter {
     return { kind, value: sessionValue }
   }
   return { kind: 'all' }
-}
-
-function profileLabel(profile: CliCredentialProfileOut): string {
-  const state = profile.logged_in ? 'logged in' : 'not logged in'
-  return `${profile.name} (${state})`
 }
 
 function safeItems<T>(items: T[] | undefined): T[] {
@@ -400,13 +385,6 @@ export default function UsagePage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
-  const [importRuntime, setImportRuntime] = useState<UsageCliHistoryRuntime>('claude_code')
-  const [profiles, setProfiles] = useState<CliCredentialProfileOut[]>([])
-  const [profilesLoading, setProfilesLoading] = useState(false)
-  const [importProfileId, setImportProfileId] = useState('default')
-  const [importPreview, setImportPreview] = useState<UsageCliHistoryImportResponse | null>(null)
-  const [importBusy, setImportBusy] = useState(false)
-
   const resolvedGroupBy = groupBy === 'custom_dimension'
     ? (customDimensionKey ? `dimension:${customDimensionKey}` : 'provider')
     : groupBy
@@ -509,70 +487,6 @@ export default function UsagePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, queryKey, customDimensionKey])
 
-  useEffect(() => {
-    let cancelled = false
-    async function loadProfiles() {
-      if (!activeSpaceId) {
-        setProfiles([])
-        return
-      }
-      setProfilesLoading(true)
-      try {
-        const nextProfiles = await credentialsApi.profiles(importRuntime, activeSpaceId)
-        if (!cancelled) {
-          setProfiles(nextProfiles)
-          setImportProfileId(current => {
-            if (current === 'default') return current
-            return nextProfiles.some(profile => profile.id === current) ? current : 'default'
-          })
-        }
-      } catch (error) {
-        if (!cancelled) toast.error(errMsg(error))
-      } finally {
-        if (!cancelled) setProfilesLoading(false)
-      }
-    }
-    void loadProfiles()
-    return () => { cancelled = true }
-  }, [activeSpaceId, importRuntime])
-
-  async function previewImport() {
-    if (!activeSpaceId) return
-    setImportBusy(true)
-    try {
-      const result = await usageApi.previewCliHistory({
-        runtime: importRuntime,
-        source_kind: 'managed_profile',
-        target_space_id: activeSpaceId,
-        credential_profile_id: importProfileId === 'default' ? undefined : importProfileId,
-      })
-      setImportPreview(result)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setImportBusy(false)
-    }
-  }
-
-  async function commitImport() {
-    if (!activeSpaceId || !importPreview) return
-    setImportBusy(true)
-    try {
-      const result = await usageApi.commitCliHistory({
-        import_batch_id: importPreview.import_batch_id,
-        target_space_id: activeSpaceId,
-        confirmation: true,
-      })
-      setImportPreview(result)
-      toast.success('Usage history imported')
-      await loadDashboard(query)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setImportBusy(false)
-    }
-  }
-
   const providerOptions = useMemo<SelectOption[]>(() => [
     { value: 'all', label: 'All providers' },
     ...safeItems(data.dimensions?.providers)
@@ -625,11 +539,6 @@ export default function UsagePage() {
     { value: '', label: 'No dimension key' },
     ...safeItems(data.dimensions?.custom_dimension_keys).map(key => ({ value: key, label: key })),
   ], [data.dimensions?.custom_dimension_keys])
-
-  const profileOptions = useMemo<SelectOption[]>(() => [
-    { value: 'default', label: profilesLoading ? 'Loading profiles' : 'Default profile' },
-    ...profiles.map(profile => ({ value: profile.id, label: profileLabel(profile) })),
-  ], [profiles, profilesLoading])
 
   const timeBuckets = useMemo(
     () => buildTimeseriesBuckets(data.timeseries?.items ?? []),
@@ -1087,70 +996,6 @@ export default function UsagePage() {
                 </div>
               </Card>
 
-              <Card>
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>CLI History Import</CardTitle>
-                  <History className="size-4 text-muted-foreground" />
-                </div>
-                <div className="space-y-3">
-                  <Field label="Runtime">
-                    <Select
-                      ariaLabel="Runtime"
-                      options={RUNTIME_OPTIONS}
-                      value={importRuntime}
-                      onChange={value => {
-                        setImportRuntime(value as UsageCliHistoryRuntime)
-                        setImportPreview(null)
-                      }}
-                    />
-                  </Field>
-                  <Field label="Profile">
-                    <Select
-                      ariaLabel="Profile"
-                      options={profileOptions}
-                      value={importProfileId}
-                      onChange={value => {
-                        setImportProfileId(value)
-                        setImportPreview(null)
-                      }}
-                      disabled={profilesLoading}
-                    />
-                  </Field>
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={previewImport} disabled={importBusy || profilesLoading}>
-                      {importBusy && !importPreview ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-                      Preview
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={commitImport}
-                      disabled={importBusy || !importPreview || importPreview.confirmation_required === false}
-                    >
-                      {importBusy && importPreview ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-                      Commit
-                    </Button>
-                  </div>
-                  {importPreview && (
-                    <div className="rounded-lg border border-border p-3 text-sm" data-testid="usage-import-preview">
-                      <div className="mb-2 flex items-center justify-between gap-3">
-                        <span className="font-medium">{importPreview.status}</span>
-                        <Badge variant="secondary">{importPreview.detected_runtime ?? importRuntime}</Badge>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                        <span>Candidate events</span>
-                        <span className="text-right font-mono text-foreground">{formatNumber(importPreview.candidate_event_count)}</span>
-                        <span>Duplicates</span>
-                        <span className="text-right font-mono text-foreground">{formatNumber(importPreview.duplicate_count)}</span>
-                        <span>Imported</span>
-                        <span className="text-right font-mono text-foreground">{formatNumber(importPreview.imported_event_count ?? 0)}</span>
-                        <span>Total tokens</span>
-                        <span className="text-right font-mono text-foreground">{formatTokens(importPreview.totals.total_tokens)}</span>
-                      </div>
-                      <p className="mt-2 text-xs text-muted-foreground">{importPreview.privacy_notice}</p>
-                    </div>
-                  )}
-                </div>
-              </Card>
             </div>
           </div>
         </>

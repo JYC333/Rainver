@@ -33,9 +33,6 @@ export * from "./model.js";
 // Provider + credential-channel contracts
 export * from "./providers.js";
 
-// CLI credential-channel contracts
-export * from "./credentials.js";
-
 // Network profile contracts
 export * from "./networkProfiles.js";
 export * from "./hosts.js";

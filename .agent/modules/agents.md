@@ -46,7 +46,8 @@ IDs on the workflow and operation, so incremental runs keep the same managed
 execution selection. Research setup does not expose runtime adapter or CLI
 credential configuration.
 
-OpenCode supports both CLI login state and a direct ModelProvider path. Provider
+OpenCode supports both the login its copy holds on its host and a direct
+ModelProvider path. Provider
 mode materializes a sandbox-local `opencode.json` using
 `@ai-sdk/openai-compatible` and an expiring provider-proxy lease. Raw provider
 API keys are never passed through subprocess environment variables.
@@ -231,9 +232,9 @@ Rules:
 
 - Creating an Agent also creates one default runtime profile from the initial
   `AgentVersion` runtime/model values.
-- Runtime profiles store adapter type, optional ModelProvider/model, optional
-  CLI credential profile, runtime config, runtime policy, enabled state, and
-  default state.
+- Runtime profiles store adapter type, optional ModelProvider/model, the
+  execution host and installation for a CLI runtime, runtime config, runtime
+  policy, enabled state, and default state.
 - Run creation accepts `runtime_profile_id`; when omitted it selects the first
   enabled profile with `is_default=true`, falling back to the oldest enabled
   profile. If no enabled profile exists, legacy `AgentVersion` runtime/model
@@ -306,7 +307,7 @@ none.
 - Policy decisions (policy module)
 - Project Folder/sandbox lifecycle (`server/src/modules/projectFolders/` and runtime adapter execution sandboxes)
 - Capability definitions (capability module)
-- Provider credentials (`ModelProvider` encrypted config + `server/src/modules/providers/`; CLI profiles through the CredentialBroker)
+- Provider credentials (`ModelProvider` encrypted config + `server/src/modules/providers/`); a CLI runtime uses the login held by its copy on its execution host, which Rainver never sees
 - Run execution orchestration (`server/src/modules/runs/` + job worker)
 
 ## Key Models
@@ -348,9 +349,9 @@ AgentRuntimeProfile:
   runtime_policy_json          — runtime policy/default adapter metadata
   enabled, is_default
   Note: mutable product configuration. Runs snapshot the profile at creation.
-  Note: the profile has no dedicated credential column. A CLI conversation
-        turn resolves its credential profile from the signed-in user's
-        conversation backend binding, never from a space-shared profile.
+  Note: the profile has no credential column, and neither does anything else.
+        A CLI runs on the execution host this profile names and uses the login
+        held by the copy there (ADR 0016 §7).
 
 Run:
   id, space_id, agent_id, agent_version_id, runtime_profile_id
@@ -613,7 +614,7 @@ need a native, no-credential execution path.
 - `server/src/modules/runs/orchestrationService.ts` — canonical orchestrator
 - `server/src/modules/runs/` and `policy/` — risk/sandbox mapping and file-access adapter validation
 - `server/src/modules/runtimeAdapters/specs.ts` — RuntimeAdapterSpec catalog
-- `server/src/modules/runs/vendorCliAdapter.ts` — GenericCliRuntimeAdapter local CLI execution
+- `server/src/modules/runs/remoteHostCliAdapter.ts` — the host daemon CLI adapter local CLI execution
 - `server/src/modules/agents/` — system AgentTemplate/AgentVersion behavior
 - `server/src/modules/agents/routes.ts` — agent HTTP API incl. `/config`, `/current-version`,
   `/versions/{id}/restore`, `/proposals`
@@ -629,5 +630,5 @@ need a native, no-credential execution path.
 ## Related Docs
 
 - [runtime-adapters.md](runtime-adapters.md) — adapter registry, three-way separation, license notes
-- [sandbox.md](sandbox.md) — sandbox levels, worktree vs Docker routing
+- [hosts.md](hosts.md) — execution hosts, the strict-mode namespace, and what became of the sandbox line
 - [provider-policy.md](provider-policy.md) — model provider configuration

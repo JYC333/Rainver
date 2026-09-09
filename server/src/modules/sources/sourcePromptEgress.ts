@@ -5,7 +5,7 @@ import {
   type RetrievalEgressDestination,
 } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/specs.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 import { normalizeSourceConnectionReadGovernance } from "./sourceConsent.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
@@ -102,7 +102,7 @@ export async function resolveAgentPromptEgressDestination(
     stringValue(runtimeConfig.adapter_type) ||
     stringValue(runtimePolicy.default_adapter_type) ||
     "model_api";
-  const mode = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType]?.model.model_provider_mode ?? "none";
+  const mode = getRuntimeAdapterSpec(adapterType)?.model.model_provider_mode ?? "none";
   if (profile.model_provider_id) {
     if (!profile.provider_type) {
       throw new HttpError(409, "Selected agent model provider is not available in this space.");

@@ -171,28 +171,52 @@ export default function HostsPanel() {
                 <Card key={host.id} className="p-3 flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium">{host.name}</span>
+                  {/* The row is seeded as `server`; the card names it the way
+                      the product talks about it. */}
+                  <span className="text-sm font-medium">{host.kind === 'server' ? 'Server' : host.name}</span>
                   <Badge variant={HOST_STATUS_VARIANT[host.status]}>{host.status}</Badge>
                   <Badge variant="outline">{host.kind}</Badge>
                   <Badge variant="outline">{host.environment_kind ?? host.platform ?? 'unknown environment'}</Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {host.kind === 'server'
-                    ? 'Built-in server execution host'
-                    : `${host.platform ?? '—'} / ${host.arch ?? '—'} · daemon ${host.daemon_version ?? 'unknown'} · last seen ${fmt(host.last_heartbeat_at)}`}
+                  {host.kind === 'server' ? 'Built-in execution host · strictly isolated · ' : ''}
+                  {`${host.platform ?? '—'} / ${host.arch ?? '—'} · daemon ${host.daemon_version ?? 'unknown'} · last seen ${fmt(host.last_heartbeat_at)}`}
                 </p>
               </div>
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <Button size="sm" variant="destructive" onClick={() => revoke(host.id)}>Revoke</Button>
               )}
               {host.kind === 'server' && (
-                // Only a run dispatched to a host daemon carries a provider
-                // binding, so this host has no backend to choose. Say so here:
-                // otherwise the card next to one that does have the control
-                // reads as the control being broken.
+                // The built-in host is not anyone's machine: it serves every
+                // Space of the instance, one isolated namespace per Run, and
+                // installing or logging in a copy on it is instance-admin work.
+                // Members still see what is installed, because that is what
+                // says whether their Run can run here at all.
                 <p className="w-full border-t pt-2 text-xs text-muted-foreground">
-                  CLI runs here use the server machine's own logins. Paired remote hosts manage login and model source per Agent.
+                  The instance's own execution host: every Run is isolated in its own namespace, and
+                  {host.max_concurrent_runs !== null && host.max_concurrent_runs !== undefined
+                    ? ` up to ${host.max_concurrent_runs} run${host.max_concurrent_runs === 1 ? '' : 's'} execute at once.`
+                    : ' its capacity is set per machine.'}
+                  {currentUser?.is_instance_admin ? '' : ' Installing and logging in its agents is instance-admin work.'}
                 </p>
+              )}
+              {/* Every adapter, not only the dispatch-eligible ones: a
+                  registry agent is installable and managed here even while
+                  `remote_eligible` is false (hosts.md, profile isolation), and
+                  filtering it out hid the copy that had just been installed.
+                  Eligibility gates dispatch and the default-adapter choice
+                  below, not this list. */}
+              {host.status !== 'revoked' && (
+                <HostAgents
+                  host={host}
+                  adapters={runtimeAdapters}
+                  providers={providers}
+                  isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
+                  manageable={host.kind === 'remote' || Boolean(currentUser?.is_instance_admin)}
+                  onChanged={async () => {
+                    await Promise.all([load(), loadAdapters()])
+                  }}
+                />
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <div className="w-full flex items-center gap-2">
@@ -211,26 +235,9 @@ export default function HostsPanel() {
                 </div>
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
-                <>
-                  <div className="w-full">
-                    <HostProxyAddress host={host} onChanged={() => { void load() }} />
-                  </div>
-                  {/* Every adapter, not only the dispatch-eligible ones: a
-                      registry agent is installable and managed here even
-                      while `remote_eligible` is false (hosts.md, profile
-                      isolation), and filtering it out hid the copy the
-                      owner had just installed. Eligibility gates dispatch
-                      and the default-adapter choice above, not this list. */}
-                  <HostAgents
-                    host={host}
-                    adapters={runtimeAdapters}
-                    providers={providers}
-                    isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
-                    onChanged={async () => {
-                      await Promise.all([load(), loadAdapters()])
-                    }}
-                  />
-                </>
+                <div className="w-full">
+                  <HostProxyAddress host={host} onChanged={() => { void load() }} />
+                </div>
               )}
                 </Card>
               ))}

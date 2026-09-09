@@ -14,6 +14,12 @@ export interface CliExecutionResult {
    * most of diagnosing a stuck run.
    */
   idle_seconds?: number;
+  /**
+   * What this Run reached through the host's egress proxy, and what it was
+   * refused. Present only for a strict host that ran one; a paired machine
+   * uses the machine's own network and reports nothing.
+   */
+  egress?: Array<{ allowed: boolean; host: string; port: number; reason: string | null; at: string }>;
 }
 
 export interface ReadOnlyCliExecutionOptions {
@@ -54,7 +60,6 @@ export interface CliCommandExecutor {
     terminal?: boolean;
     read_only?: ReadOnlyCliExecutionOptions;
     workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
-    egress_profile?: "none" | "provider" | "tools" | "provider_and_tools";
   }): Promise<CliExecutionResult>;
 }
 
@@ -69,9 +74,8 @@ export interface CliStdioController {
    * Async by contract (execution-topology-and-project-control-plane-plan.md
    * P0.2): an SDK-backed implementation's next `send()` can depend on a
    * Promise resolving, which never happens synchronously within this call.
-   * `CodexQuotaController` (`providers/cli/codexUsageProbe.ts`) — the
-   * unrelated Codex app-server RPC controller sharing this interface — stays
-   * synchronous in effect by resolving immediately.
+   * The remote CLI adapter's own controller stays synchronous in effect by
+   * resolving immediately.
    */
   receive(message: Record<string, unknown>, send: (message: Record<string, unknown>) => void, closeStdin: () => void): Promise<void>;
   reject(message: string): void;

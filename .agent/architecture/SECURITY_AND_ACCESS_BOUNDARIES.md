@@ -27,7 +27,7 @@ All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
 - `GET /jobs/handlers`
-- `GET /runtime-tools...`, `POST /runtime-tools/{runtime}/install`, `POST /runtime-tools/{runtime}/activate`
+- `POST /hosts/{hostId}/installations/{adapterType}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
 - `GET /providers/vendors`, `/providers/presets`
 
 ---
@@ -647,21 +647,30 @@ the recipient remains an active member.
 - Provider API responses explicitly exclude `api_key`. The internal provider
   invocation target (which carries the decrypted key) must not be exposed
   outside the service/adapter layer.
-- Provider and CLI credentials are user-owned resources. Active-space use is
-  controlled by explicit grant rows; ungranted use fails before secret/profile
-  resolution.
-- CLI runtime tool installs are instance state, not user or space secrets.
-  `INSTANCE_ADMIN_EMAIL` gates install/activate mutations. Space owners/admins
-  can only enable/disable and select allowed/default installed versions for
-  their own space.
-- Provider edit/key replacement and CLI login/profile mutation are owner-only.
-  Login PTY input is resolved through the authenticated owner's profile before
-  it can reach an active runtime session; a profile id alone grants no access.
-  Space owners/admins may disable grants for their space without reading or
-  editing secret material.
-- CLI credentials are stored as filesystem-managed paths; no secret material appears in API
-  responses or SSE event streams. The secret-free `available` endpoint omits
-  `source_path`.
+- ModelProvider credentials are user-owned resources. Active-space use is
+  controlled by explicit grant rows; ungranted use fails before secret
+  resolution. Provider edit and key replacement are owner-only; Space
+  owners/admins may disable grants for their Space without reading or editing
+  secret material.
+- **A CLI's login is not a control-plane credential** ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)
+  §7, B45–B49). It lives with the copy on the host that runs it, in that
+  copy's own state directory. The control plane brokers none of it, stores no
+  path to it, and has no row that could leak it: there is nothing here to
+  redact because nothing arrives. Logging a copy in is an interactive PTY the
+  daemon runs on the host and relays over the host WebSocket
+  (`/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`);
+  the terminal bytes cross the control plane but are never persisted.
+- Runtime adapter versions are host state, not user or Space secrets, and
+  there is no per-Space version selection: one version per adapter per host
+  ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md) §9), replaced
+  by drain-then-replace with one kept previous version as the rollback target.
+  Install, rollback, uninstall and login on a **paired** host are its
+  registered owner's alone. The same routes on the **built-in** host require
+  instance admin (`requireInstanceAdmin`), because there is one copy per
+  instance and every member spends it; they answer 403 rather than 404,
+  since that host is on every member's list already. Install, rollback and
+  uninstall are recorded in `host_runtime_changes`; a login is not — it changes
+  no version, and the row's `action` column has no value for it.
 - `AgentVersionOut`, `RunOut`, and `ArtifactOut` schemas contain no credential fields.
 - Run trace exposes AgentVersion system prompt presence/hash metadata only; it
   does not inline raw system prompt text, raw rendered context text, or artifact
@@ -672,24 +681,25 @@ the recipient remains an active member.
 
 ## 10. Project Folder and Artifact Path Safety
 
-**Scope note (amended 2026-08-21, [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
-everything in this section describes the **server host** only. A Project
-Folder row bound to a remote (personal) execution host never reaches this
-code path at all: the control plane holds no path for it, PathPolicy is
-not invoked on the server and there is no bubblewrap namespace — the remote
-daemon spawns Runs natively on the machine's own filesystem under trusted-host
-mode (B62). For Files & Code browse reads, the daemon runs the same shared
-`@rainver/folder-read` PathPolicy and byte/file-count limits before returning
-data over the `folder_read` channel. This is a narrower trust model for
-execution hosts the user owns and has paired, not a relaxation of these
-invariants for the server host.
+**Scope note (revised 2026-09-08, [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
+the control plane resolves no host path for *any* host (B64). Execution
+isolation is a property of the host daemon's trust mode, not of this code
+path: a **strict** host (the instance's built-in one) wraps every Run in a
+rootless bubblewrap namespace the daemon builds on the machine
+(`packages/host-daemon/src/strictNamespace.ts`); a **trusted** paired host
+spawns natively with no namespace and no mount containment (B62). Neither
+runs the server-side sandbox this section once described — it is deleted.
+What remains below is the control plane's own file access: Artifact export,
+and the Project Folder reads it serves. For Files & Code browse reads on any
+host, the daemon runs the same shared `@rainver/folder-read` PathPolicy and
+byte/file-count limits before returning data over the `folder_read` channel.
 
 **Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
 - A registered Project Folder is one shared workspace with no personal area.
-  Its whole root is available to Project-authorized readers and mounted
-  read-only into CLI sandboxes; personal material belongs in database-backed
-  personal content. File-level ACLs are intentionally not a second source of
-  truth for an externally mutable filesystem.
+  Its whole root is available to Project-authorized readers; personal material
+  belongs in database-backed personal content. File-level ACLs are
+  intentionally not a second source of truth for an externally mutable
+  filesystem.
 - `PathPolicy` (`@rainver/folder-read`) is enforced before any disk access.
 - `project_folder.read` policy is enforced before tree/file/status/diff reads.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
@@ -702,18 +712,30 @@ invariants for the server host.
   secret-like key/value lines are redacted.
 - Forbidden write suffixes: `.py`, `.sh`, `.bash`, `.zsh`, `.fish`.
 - Paths resolved to absolute before validation; no symlink race conditions.
-- Low/medium-risk local CLI execution uses a rootless bubblewrap namespace:
-  an empty filesystem view receives only system runtime trees, exact
-  DNS/NSS/linker/CA configuration paths (never the whole `/etc`), runtime
-  tools, registered Folder entries, generated context, brokered HOME, and Run
-  Exchange paths. Folder/context mounts are read-only and the view root is
-  remounted read-only; other spaces and host paths are absent. Only brokered
-  HOME and Run Exchange output paths under configured managed roots are
-  writable. Namespace preflight failure is fail-closed.
+
+**Strict-host Run isolation** (`packages/host-daemon/src/strictNamespace.ts`,
+built on the host, not here): an empty root receives only system runtime trees,
+exact DNS/NSS/linker/CA configuration paths (never the whole `/etc`), the Run's
+HOME, its working directory bound per the Run's `sandbox_mode`, and the
+explicit binds the daemon materialized for it — its run directory, a managed
+copy's tree, the daemon's own package. Each is bound at its own path rather
+than remapped, because the daemon is the only component that resolves paths.
+Other Runs' workspaces, other Agents' profiles, the instance's secrets, its
+internal token and the daemon's own registration are absent from both the
+namespace and the environment. Network reach follows the Run's
+`egress_profile`, but **only `none` is containment** — the namespace gets
+`--unshare-net`. `default` and `install` point the Run's proxy variables at the
+daemon's CONNECT proxy, which refuses and records; a process that ignores those
+variables reaches the network anyway. See section 10's egress paragraph, which
+states the same limit.
+Namespace preflight failure is fail-closed.
 
 **Artifact export** (`server/src/modules/artifacts/` and run artifact materialization):
 - paths escaping the artifact storage root return no file.
-- Paths resolving into sandbox roots are rejected.
+- Paths resolving into the configured sandbox root are rejected
+  (`artifacts/repository.ts`) — a defence-in-depth check kept after the
+  server-side sandbox was deleted, since the root remains a configured
+  location on the machine.
 - Artifact read checks verify space and visibility before a stored file is resolved.
 
 ### Deployment and network exposure
@@ -722,11 +744,13 @@ invariants for the server host.
   socket is private to the deployer sidecar and is not an app, agent, evolution,
   code-patch, capability, automation, job, or scheduler surface.
 - The sidecar mounts `ops/` read-only and no checkout, and receives only the internal
-  token through `.deployer.env`. That token is the instance's one internal credential
-  and the sandbox runner holds it too, so the integrity of a job's stage events is
-  bounded by the runner's, not by the admin route: an internal-token holder can
-  claim a queued job or report a stage, but only the instance administrator can
-  create one. ADR 0020 §1 chose that reuse deliberately; confirming it is still the
+  token through `.deployer.env`. It is now the **only** holder besides the server:
+  the execution-host container used to receive the same token as
+  `SANDBOX_RUNNER_TOKEN`, and that stopped when the Runner it authenticated was
+  deleted — the daemon holds a bearer token for its own Host row and nothing that
+  reaches an internal route. So the integrity of a job's stage events is bounded by
+  the deployer's alone: an internal-token holder can claim a queued job or report a
+  stage, but only the instance administrator can create one. ADR 0020 §1 chose that reuse deliberately; confirming it is still the
   right trust boundary is an item on the instance-update acceptance in
   [`../tasks/deferred-register.md`](../tasks/deferred-register.md). `RAINVER_ENV_FILE_READONLY=1` makes the shared ops
   library refuse to create or edit the instance `.env` and refuse to regenerate the
@@ -742,6 +766,37 @@ invariants for the server host.
   docker.sock or a registry.
 - The instance must not be exposed directly to the public internet. Production TLS
   termination, rate limiting, and general CSRF-token hardening are not implemented.
+
+### A Run's network reach on the built-in host
+
+Three profiles, stated by the dispatch and applied by the daemon:
+
+| Profile | What it means |
+| --- | --- |
+| `none` | No network. The namespace is unshared, so this is the only one that **confines**. |
+| `default` | The general web, git and the vendor a subscription belongs to, through the host's egress proxy. Package registries are refused with a reason the runtime prints. |
+| `install` | `default` plus package registries. Comes only from the dispatch, which the server composes; a standing grant on the Agent runtime profile is refused, because writing one takes only read access to an ordinary Agent. No product surface grants it yet (deferred register). |
+
+**`default` and `install` are policy and a record, not containment.** The
+container reaches the Internet over its own bridge, and a strict namespace
+without `--unshare-net` keeps that network; `HTTP_PROXY` *points* a Run at the
+proxy, and every vendor CLI, git and package manager follows it. A process that
+deliberately opens its own socket does not. Do not read the refusal of a
+package registry as a guarantee that a Run cannot fetch one — read it as the
+policy a cooperating runtime is held to, plus a per-Run record of what it
+reached, reported on the Run's events.
+
+**One part of it does hold regardless.** The proxy refuses any address inside
+this instance's own network — RFC 1918, loopback, link-local, unique-local,
+carrier-grade NAT, and the cloud metadata endpoint — under every profile,
+`install` included, and it checks the *resolved* address rather than the name,
+so a public name pointing at a private address is refused too. That is the
+proxy declining rather than the client neglecting to ask, so it is a boundary
+against a Run reaching the database, a sibling container, or instance
+credentials. It is not a boundary against a Run that bypasses the proxy
+entirely, which the `host-egress` bridge still permits; making it one needs a
+userspace network helper under `--unshare-net`, recorded in the deferred
+register.
 
 ---
 

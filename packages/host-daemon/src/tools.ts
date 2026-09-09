@@ -1,7 +1,7 @@
 import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rename, writeFile } from "node:fs/promises";
 import { arch, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -87,6 +87,14 @@ export function readToolManifestSync(adapterType: string, installation: string):
 }
 
 /** Every managed installation on this machine, grouped by adapter. */
+/**
+ * The *current* managed copy of each adapter — one per adapter (ADR 0016 §9).
+ *
+ * A version kept behind the current one is a rollback target, not a second
+ * installation: reporting it would put two copies of one Agent on the host
+ * card, each with its own login, which is exactly the confusion one-version
+ * addresses.
+ */
 export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
   const result = new Map<string, ToolManifest[]>();
   let adapters: string[];
@@ -96,16 +104,8 @@ export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
     return result;
   }
   for (const adapterType of adapters) {
-    let versions: string[];
-    try {
-      versions = await readdir(join(toolsDir(), adapterType));
-    } catch {
-      continue;
-    }
-    for (const version of versions) {
-      const manifest = readToolManifestSync(adapterType, managedInstallationId(version));
-      if (manifest) result.set(adapterType, [...(result.get(adapterType) ?? []), manifest]);
-    }
+    const current = managedVersionsFor(adapterType)[0];
+    if (current) result.set(adapterType, [current]);
   }
   return result;
 }
@@ -161,6 +161,56 @@ export async function uninstallTool(frame: UninstallToolFrame): Promise<boolean>
 }
 
 /**
+ * Every managed version of one adapter on this machine, newest install first.
+ *
+ * The current copy is the newest; at most one older copy is kept behind it, as
+ * the one-step rollback target (ADR 0016 §9). Older than that is
+ * deleted on the next install — a version nobody can roll back to is only a
+ * login state nobody remembers.
+ */
+export function managedVersionsFor(adapterType: string): ToolManifest[] {
+  if (!SAFE_SEGMENT.test(adapterType)) return [];
+  let versions: string[];
+  try {
+    versions = readdirSync(join(toolsDir(), adapterType));
+  } catch {
+    return [];
+  }
+  return versions
+    .flatMap((directory) => {
+      const manifest = readToolManifestSync(adapterType, managedInstallationId(directory));
+      // Keyed by the directory it was found in, not by what the file claims:
+      // a manifest whose `version` disagrees would otherwise make a rollback
+      // delete some other version's directory. `installed_at` may be missing
+      // in a manifest an older release wrote, and must not throw on the
+      // heartbeat path — an unknown install time sorts oldest.
+      return manifest ? [{ ...manifest, version: directory, installed_at: manifest.installed_at ?? "" }] : [];
+    })
+    .sort((a, b) => b.installed_at.localeCompare(a.installed_at));
+}
+
+/** The version an upgrade of this adapter could be undone to, or null when there is none. */
+export function rollbackTargetFor(adapterType: string): ToolManifest | null {
+  return managedVersionsFor(adapterType)[1] ?? null;
+}
+
+/**
+ * Undoes the last upgrade by deleting the current copy, promoting the one
+ * kept behind it.
+ *
+ * Deliberately not a re-install: the point of keeping the directory is that
+ * the previous copy still holds its own login, so rolling back does not ask
+ * anyone to log in again.
+ */
+export async function rollbackTool(adapterType: string): Promise<ToolManifest | null> {
+  const versions = managedVersionsFor(adapterType);
+  const [current, previous] = versions;
+  if (!current || !previous) return null;
+  await rm(toolDir(adapterType, current.version), { recursive: true, force: true });
+  return previous;
+}
+
+/**
  * Installs into a staging directory and renames it into place, so a
  * half-finished install never reads as an installed tool. Re-installing an
  * existing version replaces it.
@@ -187,12 +237,15 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
     await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
     await rm(finalDir, { recursive: true, force: true });
     await rename(stagingDir, finalDir);
-    // One managed copy per adapter: a re-install at another version replaces
-    // the old one rather than accumulating versions, each with a login state
-    // nobody remembers. Two accounts of one agent is not what a version
-    // directory is for.
+    // One current copy per adapter, plus exactly one kept behind it so the
+    // upgrade has something to be undone to (ADR 0016 §9). Anything older goes:
+    // a version nobody can roll back to is a login state nobody remembers.
+    const keep = new Set([frame.version, ...managedVersionsFor(frame.adapter_type)
+      .filter((manifest) => manifest.version !== frame.version)
+      .slice(0, 1)
+      .map((manifest) => manifest.version)]);
     for (const sibling of await readdir(join(toolsDir(), frame.adapter_type)).catch(() => [] as string[])) {
-      if (sibling !== frame.version) await rm(join(toolsDir(), frame.adapter_type, sibling), { recursive: true, force: true });
+      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.adapter_type, sibling), { recursive: true, force: true });
     }
     // The launch was resolved against the staging path; rewrite every
     // string of it against the final one.

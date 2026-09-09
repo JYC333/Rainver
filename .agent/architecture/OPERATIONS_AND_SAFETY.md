@@ -52,22 +52,35 @@ instance-scoped settings store and take effect without a server restart.
 | `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
 | `workspaces/` — Project Folder files | Always |
+| `cache/host-daemon/` — the built-in execution host's own state | **Not yet**, and it holds login state — see below |
 | `backups/` — previous archives | **Never** (recursion prevention) |
 | `sandboxes/` — ephemeral sandbox | **Never** |
 | `cache/` — ephemeral cache | **Never** |
 | `logs/` — application logs | Only if `BACKUP_INCLUDE_LOGS=true` |
 
-CLI continuity stores only opaque vendor-session bindings and acknowledged
-Runtime Context cursors. Each physical invocation runs through the typed
-Sandbox Runner with a private HOME and managed workspace mount. Missing or
-invalid state rotates fail closed and reconstructs from authoritative Context
-Events/checkpoints plus canonical refs; no shared vendor HOME is replay
-authority.
+**A gap this topology created.** The built-in execution host keeps its managed
+copies of runtimes, **their login state**, every Agent's runtime profile and its
+managed workspaces under `cache/host-daemon/`, because they are the daemon's own
+directory rather than the server's. `cache/` has always been excluded from
+backups, and CLI login state used to live in `secrets/`, which the separate
+credential archive covers. A restored instance therefore comes back without the
+built-in host's logins, and an operator has to log each copy in again from the
+host card. Either that directory joins the credential archive or the daemon's
+config root moves out of `cache/`; until then this is a stated recovery step,
+not an assumption.
 
-Project Folder mounts are resolved by Sandbox Runner from managed ids. The
-application server cannot send host paths, commands, images, or environment
-maps, and it has no local subprocess fallback. Namespace or Runner failure is
-terminal. Runtime Context Delivery is sent directly to the adapter and no
+CLI continuity is the vendor session inside the Agent's own runtime profile on
+the execution host, tracked by the control plane as an opaque
+`vendor_session_id`. Each physical invocation runs through that host's daemon:
+on the built-in host in a fresh bubblewrap namespace with a per-Run HOME, on a
+paired host natively under the owner's trust. Missing or invalid state fails
+closed and the next turn starts a fresh session rather than resuming into one
+whose store is gone; no shared vendor HOME is replay authority.
+
+Paths are resolved on the host from a Location id or a managed container. The
+application server cannot send host paths, images, or environment maps, has no
+local subprocess fallback, and no longer has a vendor CLI of its own to fall
+back to. Namespace failure is terminal. Runtime Context Delivery is sent directly to the adapter and no
 read-only-context staging directory or generated vendor context file exists.
 
 **PostgreSQL backup:** `BackupService` uses `pg_dump -Fc --no-owner --no-acl` (custom format) for a consistent snapshot. It fails closed if `BACKUP_DATABASE_URL` is unset or `pg_dump` fails — no partial archive is produced. `db_snapshot_method` in the manifest is `"pg_dump_custom"`. The dump is restored with `pg_restore`. The live `db/postgres` data directory is **never** copied into an archive — the database is only captured logically.

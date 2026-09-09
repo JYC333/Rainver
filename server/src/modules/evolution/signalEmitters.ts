@@ -7,7 +7,6 @@ export const SIGNAL_DEDUP_WINDOWS_SECONDS = {
   proposal: 24 * 60 * 60,
   verification: 60 * 60,
   supervisor: 15 * 60,
-  conformance: 24 * 60 * 60,
 } as const;
 
 export interface RunFinalizationSignalInput {
@@ -56,17 +55,6 @@ export interface SupervisorOutcomeSignalInput {
   targetId: string;
   sourceId: string;
   outcome: string;
-  summary: string;
-  payload?: Record<string, unknown>;
-  severity?: SignalSeverity;
-}
-
-export interface ConformanceViolationSignalInput {
-  spaceId: string;
-  targetId: string;
-  sourceId: string;
-  runtimeType: string;
-  violation: string;
   summary: string;
   payload?: Record<string, unknown>;
   severity?: SignalSeverity;
@@ -197,44 +185,6 @@ export class EvolutionSignalEmitter {
     });
   }
 
-  async emitConformanceViolation(input: ConformanceViolationSignalInput): Promise<SignalEmissionResult> {
-    return this.emitRules([{
-      spaceId: input.spaceId,
-      targetId: input.targetId,
-      signalType: "runtime_conformance_violation",
-      sourceType: "conformance",
-      sourceId: input.sourceId,
-      severity: input.severity ?? "error",
-      summary: input.summary,
-      payload: { ...input.payload, runtime_type: input.runtimeType, violation: input.violation },
-      dedupWindowSeconds: SIGNAL_DEDUP_WINDOWS_SECONDS.conformance,
-    }]);
-  }
-
-  async emitConformanceViolationForRuntime(input: {
-    sourceId: string;
-    runtimeType: string;
-    runtimeVersion: string;
-    violation: string;
-    summary: string;
-    payload?: Record<string, unknown>;
-    severity?: SignalSeverity;
-    spaceId: string;
-  }): Promise<SignalEmissionResult> {
-    const targetId = await this.ensureTargetForRuntime(input.spaceId, input.runtimeType, input.runtimeVersion);
-    if (!targetId) return emptyEmission(false);
-    return this.emitConformanceViolation({
-      spaceId: input.spaceId,
-      targetId,
-      sourceId: input.sourceId,
-      runtimeType: input.runtimeType,
-      violation: input.violation,
-      summary: input.summary,
-      payload: input.payload,
-      severity: input.severity,
-    });
-  }
-
   private async targetForRun(spaceId: string, runId: string): Promise<string | null> {
     const result = await this.db.query<{ target_id: string | null }>(
       `SELECT d.target_id
@@ -343,43 +293,6 @@ export class EvolutionSignalEmitter {
       [spaceId, proposalId, createdByRunId],
     );
     return result.rows[0]?.target_id ?? null;
-  }
-
-  private async ensureTargetForRuntime(spaceId: string, runtimeType: string, runtimeVersion: string): Promise<string | null> {
-    const now = this.clock().toISOString();
-    const result = await this.db.query<{ id: string }>(
-      `WITH lock AS (
-         SELECT pg_advisory_xact_lock(hashtext($1)) AS acquired
-       ), existing AS (
-         SELECT id FROM evolution_targets
-          WHERE space_id = $2 AND target_type = 'project_folder'
-            AND target_ref_type = 'runtime_adapter' AND target_ref_id = $3
-            AND status = 'active'
-          ORDER BY created_at ASC, id ASC LIMIT 1
-       ), inserted AS (
-         INSERT INTO evolution_targets (
-           id, space_id, target_type, target_ref_type, target_ref_id,
-           capability_key, current_version_id, risk_level, status, enabled,
-           engine_policy_json, metadata_json, created_at, updated_at
-         )
-         SELECT $4, $2, 'project_folder', 'runtime_adapter', $3,
-                NULL, NULL, 'medium', 'active', true,
-                '{"source":"d1_runtime_conformance"}'::jsonb,
-                $5::jsonb, $6, $6 FROM lock
-          WHERE NOT EXISTS (SELECT 1 FROM existing)
-         RETURNING id
-       )
-       SELECT id FROM existing UNION ALL SELECT id FROM inserted LIMIT 1`,
-      [
-        `evolution-runtime-target:${spaceId}:${runtimeType}:${runtimeVersion}`,
-        spaceId,
-        `${runtimeType}:${runtimeVersion}`,
-        randomUUID(),
-        JSON.stringify({ target_name: `Runtime ${runtimeType} ${runtimeVersion}`, runtime_type: runtimeType, runtime_version: runtimeVersion, auto_provisioned: true }),
-        now,
-      ],
-    );
-    return result.rows[0]?.id ?? null;
   }
 
   private async emitRules(rules: SignalRule[]): Promise<SignalEmissionResult> {

@@ -10,6 +10,7 @@ import { PgRunRepository } from "../runs/repository.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import {
   advanceTaskStage,
+  completeTask,
   handoffTask,
   linkTaskEntities,
   reportOnTask,
@@ -184,6 +185,16 @@ export function registerProjectWorkSystemActionExecutors(
     return {
       modelResult: { ok: true, ...result },
       summary: { tool_name: "task.report", ok: true, task_id: result.task_id },
+    };
+  });
+
+  executors.set("task.complete" as SystemActionId, async (input, dispatch) => {
+    const body = input as { task_id: string; summary: string };
+    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
+    const result = await withTaskIdHelp(body.task_id, () => completeTask(pool, context, body));
+    return {
+      modelResult: { ok: true, ...result },
+      summary: { tool_name: "task.complete", ok: true, task_id: result.task_id, status: result.status },
     };
   });
 

@@ -53,7 +53,7 @@ export class RoomService {
   }
 
   private rosterService(): RoomRosterService {
-    return new RoomRosterService(this.config, this.pool);
+    return new RoomRosterService(this.pool);
   }
 
   /**
@@ -588,7 +588,6 @@ export class RoomService {
     backends?: Array<{
       agent_id: string;
       runtime_profile_id: string;
-      credential_profile_id?: string | null;
       session_config?: RuntimeSessionConfigSelection[];
     }>;
   }) {
@@ -698,7 +697,6 @@ export class RoomService {
     backends?: Array<{
       agent_id: string;
       runtime_profile_id: string;
-      credential_profile_id?: string | null;
       session_config?: RuntimeSessionConfigSelection[];
     }>;
   }) {
@@ -871,7 +869,6 @@ export class RoomService {
       backends: Array<{
         agent_id: string;
         runtime_profile_id: string;
-        credential_profile_id?: string | null;
         session_config?: RuntimeSessionConfigSelection[];
       }>;
       /** See `AddMessageInput.created_at`; set when references precede it. */
@@ -985,7 +982,6 @@ export class RoomService {
       const clientBackends = (input.backends ?? []).map((backend) => ({
         agent_id: backend.agent_id,
         runtime_profile_id: backend.runtime_profile_id,
-        credential_profile_id: backend.credential_profile_id ?? null,
         ...(backend.session_config?.length ? { session_config: backend.session_config } : {}),
       }));
       const effectiveSegments = input.recipient_segments?.length

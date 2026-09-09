@@ -61,9 +61,9 @@ function initializedResponse(online = true) {
     summary: {
       session_id: 'session-1', state: 'initialized',
       host: { ...host, online },
-      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'claude_cli', runtime_installation: 'claude' },
+      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude_cli', runtime_installation: 'claude' },
       runtimes: [
-        { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'claude_cli', runtime_installation: 'claude' },
+        { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude_cli', runtime_installation: 'claude' },
       ],
       primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null },
       attachments: [], dispatch_locked: false, queue_paused_at: null,
@@ -135,7 +135,7 @@ describe('ConversationExecutionPreflight', () => {
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', {
       selection: { execution_host_id: 'host-1', primary: { kind: 'managed' } },
       runtime: {
-        agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null,
+        agent_id: 'agent-1', runtime_profile_id: 'runtime-1',
         adapter_type: 'claude_cli', runtime_installation: 'claude',
       },
     }))
@@ -164,7 +164,7 @@ describe('ConversationExecutionPreflight', () => {
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', {
       selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-1' } },
       runtime: {
-        agent_id: 'agent-1', runtime_profile_id: null, credential_profile_id: null,
+        agent_id: 'agent-1', runtime_profile_id: null,
         adapter_type: 'claude_cli', runtime_installation: 'claude',
       },
     }))
@@ -231,7 +231,7 @@ describe('ConversationExecutionPreflight', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
       additional_runtimes: [{
-        agent_id: 'agent-2', runtime_profile_id: 'runtime-research-backup', credential_profile_id: null,
+        agent_id: 'agent-2', runtime_profile_id: 'runtime-research-backup',
         adapter_type: 'codex_cli', runtime_installation: 'codex',
       }],
     })))

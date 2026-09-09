@@ -312,7 +312,6 @@ class FakeClient {
           adapter_type: "model_api",
           model_provider_id: "provider-1",
           model_name: "gpt-test",
-          credential_profile_id: null,
           runtime_config_json: {},
           runtime_policy_json: {},
           enabled: true,

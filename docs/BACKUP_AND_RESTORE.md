@@ -212,7 +212,7 @@ ops/scripts/system/restore-credentials.sh \
   <credential-archive.tar.gz> --mode prod --force --restore-env
 ```
 
-Generated `.server.env` and `.runner.env` files are not archived; the ops scripts recreate them
+Generated `.server.env` and `.deployer.env` files are not archived; the ops scripts recreate them
 from the reviewed mode `.env`.
 
 ### Manual encrypted offsite copy (required for host-loss protection)

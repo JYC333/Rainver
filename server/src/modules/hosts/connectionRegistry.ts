@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
-import type { HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf } from "@rainver/protocol";
+import type { HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
 
 /** A request frame's payload: everything but the tag and the id the registry assigns. */
 export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostServerFrameOf<T>, "type" | "request_id">;
+
+/**
+ * What a host says when a Run ends. `egress` is present only for a strict
+ * host, and only when the Run reached (or was refused) something: a paired
+ * machine runs no proxy, and a Run that touched no network has nothing to
+ * report.
+ */
+export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress">;
 /** A `list_dirs` / `workspace_register` / `workspace_forget` reply, whole. */
 type HostActionType = "list_dirs" | "workspace_register" | "workspace_forget";
 type HostActionResult<T extends HostActionType> = Omit<HostDaemonFrameOf<`${T}_result`>, "type" | "request_id">;
@@ -63,7 +71,7 @@ interface PendingRun {
    * the `launched` frame's doc comment in `packages/host-daemon/src/execution.ts`.
    */
   onLaunched?: () => void;
-  resolveComplete: (result: { exit_code: number; timed_out: boolean; error: string | null }) => void;
+  resolveComplete: (result: HostRunCompletion) => void;
   graceTimer: ReturnType<typeof setTimeout> | null;
   /**
    * ACP runtime replatform P2 (discovery review fix): a controller-driven
@@ -98,6 +106,22 @@ export interface AmbientImportResult {
    * evidence of nothing.
    */
   listed_session_ids: string[] | null;
+}
+
+/**
+ * What one `command_run` produced, plus whether the host answered at all —
+ * a command that failed and a host that never replied are different facts and
+ * a verifier has to be able to say which.
+ */
+export interface HostCommandOutcome {
+  ok: boolean;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  timed_out: boolean;
+  error: string | null;
+  /** The workspace's top-level names, when the request asked for them. */
+  entries?: string[];
 }
 
 export interface ToolInstallResult {
@@ -155,6 +179,8 @@ interface PendingLogin {
 
 /** An install is a download plus an `npm install`; minutes, not seconds. */
 const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+/** How much longer than the command's own budget the server waits, for the round trip and the daemon's own kill. */
+const HOST_COMMAND_GRACE_MS = 30 * 1000;
 /**
  * An import replays every changed session, and each replay starts an agent
  * process on the host. A folder with a month of history can take minutes; the
@@ -165,15 +191,31 @@ const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 export const FOLDER_READ_TIMEOUT_MS = 15_000;
 export const HOST_ACTION_TIMEOUT_MS = 15_000;
 const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
+/**
+ * Long enough for Codex to start its app-server and answer, short enough that
+ * a refresh sweep over several copies does not stall behind one wedged CLI.
+ */
+const USAGE_PROBE_TIMEOUT_MS = 45_000;
+
+function unavailableQuota(error: string): HostUsageQuota {
+  return { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error };
+}
 
 export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly pendingInstalls = new Map<string, { hostId: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly launchWaiters = new Map<string, Array<{ runId: string; start: () => void; cancel: () => void }>>();
+  private readonly pendingCommands = new Map<string, { hostId: string; resolve: (result: HostCommandOutcome) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly pendingImports = new Map<string, {
     hostId: string;
     onSession: (session: unknown) => void;
     resolve: (result: AmbientImportResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly pendingUsageProbes = new Map<string, {
+    hostId: string;
+    resolve: (quota: HostUsageQuota) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
   private readonly pendingFolderReads = new Map<string, {
@@ -204,6 +246,14 @@ export class HostConnectionRegistry {
    * a hang, not patience.
    */
   private failPendingRequests(hostId: string): void {
+    for (const [requestId, pending] of this.pendingCommands) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingCommands.delete(requestId);
+      clearTimeout(pending.timer);
+      // A verification recipe may have a five-minute budget; waiting it out
+      // against a host that is known gone is a hang, not patience.
+      pending.resolve({ ok: false, error: "host_disconnected", exit_code: 1, stdout: "", stderr: "", timed_out: false });
+    }
     for (const [requestId, pending] of this.pendingInstalls) {
       if (pending.hostId !== hostId) continue;
       this.pendingInstalls.delete(requestId);
@@ -221,6 +271,12 @@ export class HostConnectionRegistry {
       this.pendingFolderReads.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "host_offline" });
+    }
+    for (const [requestId, pending] of this.pendingUsageProbes) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingUsageProbes.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve(unavailableQuota("This host went offline before it answered."));
     }
     for (const [requestId, pending] of this.pendingManagedWorkspaces) {
       if (pending.hostId !== hostId) continue;
@@ -298,6 +354,26 @@ export class HostConnectionRegistry {
    * a field that is not on the contract cannot be sent, and one that is
    * cannot be dropped on the other side unnoticed.
    */
+  /**
+   * How many Runs this host is already executing, by the dispatches this
+   * process is still waiting on. It is the same number the cap is about: a
+   * pending entry exists from the moment a `launch` is sent until the Run
+   * settles, including across a reconnect grace window.
+   */
+  private inFlightFor(hostId: string): number {
+    let count = 0;
+    for (const entry of this.pending.values()) if (entry.hostId === hostId) count += 1;
+    return count;
+  }
+
+  /** Starting a waiter reserves the slot synchronously in `pending`. */
+  private releaseSlot(hostId: string): void {
+    const waiters = this.launchWaiters.get(hostId);
+    const next = waiters?.shift();
+    if (waiters && waiters.length === 0) this.launchWaiters.delete(hostId);
+    next?.start();
+  }
+
   dispatchLaunch(
     hostId: string,
     runId: string,
@@ -305,19 +381,66 @@ export class HostConnectionRegistry {
     onOutput?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
-  ): Promise<{ exit_code: number; timed_out: boolean; error: string | null }> {
-    const connection = this.connections.get(hostId);
-    if (!connection?.sink) return Promise.resolve({ exit_code: -1, timed_out: false, error: "host_offline" });
-    const sink = connection.sink;
+    maxConcurrentRuns: number | null = null,
+  ): Promise<HostRunCompletion> {
+    if (!maxConcurrentRuns || this.inFlightFor(hostId) < maxConcurrentRuns) {
+      return this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched);
+    }
     return new Promise((resolve) => {
-      const launchId = randomUUID();
-      this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [] });
-      const launch: HostLaunchFrame = { ...frame, type: "launch", run_id: runId, launch_id: launchId };
-      sink.send(launch);
+      const waiters = this.launchWaiters.get(hostId) ?? [];
+      waiters.push({
+        runId,
+        start: () => { resolve(this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched)); },
+        cancel: () => resolve({ exit_code: -1, timed_out: false, error: "run_abandoned_before_launch" }),
+      });
+      this.launchWaiters.set(hostId, waiters);
     });
   }
 
+  private sendLaunch(
+    hostId: string,
+    runId: string,
+    frame: HostLaunchPayload,
+    onOutput?: (chunk: string) => void,
+    onStderr?: (chunk: string) => void,
+    onLaunched?: () => void,
+  ): Promise<HostRunCompletion> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) {
+      this.releaseSlot(hostId);
+      return Promise.resolve({ exit_code: -1, timed_out: false, error: "host_offline" });
+    }
+    const sink = connection.sink;
+    const launchId = randomUUID();
+    const completion = new Promise<HostRunCompletion>((resolve) => {
+      this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [] });
+    });
+    const launch: HostLaunchFrame = { ...frame, type: "launch", run_id: runId, launch_id: launchId };
+    try {
+      sink.send(launch);
+    } catch {
+      this.receiveComplete(hostId, runId, { exit_code: -1, timed_out: false, error: "host_offline" }, launchId);
+    }
+    // Every path that resolves this promise is a Run that has stopped
+    // executing — a `complete` frame, a host that was offline, a disconnect
+    // that outlasted its grace window — so releasing here covers them all
+    // without each having to remember to.
+    return completion.finally(() => { this.releaseSlot(hostId); });
+  }
+
   sendTerminate(hostId: string, runId: string, force: boolean): boolean {
+    // A run still waiting for a slot has no process to signal and the daemon
+    // has never heard of it — dropping the frame there and doing nothing else
+    // would leave it to launch when a slot freed. Marking it abandoned is what
+    // actually stops it.
+    const waiters = this.launchWaiters.get(hostId);
+    const queuedIndex = waiters?.findIndex((waiter) => waiter.runId === runId) ?? -1;
+    if (waiters && queuedIndex >= 0) {
+      const [queued] = waiters.splice(queuedIndex, 1);
+      if (!waiters.length) this.launchWaiters.delete(hostId);
+      queued!.cancel();
+      return true;
+    }
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return false;
     connection.sink.send({ type: "terminate", run_id: runId, force });
@@ -360,7 +483,7 @@ export class HostConnectionRegistry {
    * grace: a daemon that drops mid-install starts over on the next request,
    * and the operator sees the failure now rather than after a grace period.
    */
-  requestToolAction<T extends "install_tool" | "uninstall_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
+  requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
     const requestId = randomUUID();
@@ -415,6 +538,49 @@ export class HostConnectionRegistry {
     this.pendingImports.delete(requestId);
     clearTimeout(pending.timer);
     pending.resolve(result);
+  }
+
+  /**
+   * Asks a host how much of one copy's subscription is left.
+   *
+   * The answer is always a quota, never a rejection: "unavailable, because …"
+   * is what the host card shows, and a thrown error here would only turn one
+   * unreadable copy into a failed page.
+   */
+  requestUsageProbe(hostId: string, frame: Omit<HostRequestPayload<"usage_probe">, "timeout_seconds">): Promise<HostUsageQuota> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve(unavailableQuota("This host is offline."));
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingUsageProbes.delete(requestId);
+        resolve(unavailableQuota("This host did not answer in time."));
+      }, USAGE_PROBE_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingUsageProbes.set(requestId, { hostId, resolve, timer });
+      try {
+        connection.sink!.send({
+          ...frame,
+          type: "usage_probe",
+          request_id: requestId,
+          // The host gives up first, so a probe that hangs comes back with the
+          // runtime's own reason rather than this timeout's.
+          timeout_seconds: Math.floor(USAGE_PROBE_TIMEOUT_MS / 1000) - 5,
+        });
+      } catch {
+        clearTimeout(timer);
+        this.pendingUsageProbes.delete(requestId);
+        resolve(unavailableQuota("This host is offline."));
+      }
+    });
+  }
+
+  receiveUsageProbeResult(hostId: string, requestId: string, quota: HostUsageQuota): void {
+    const pending = this.pendingUsageProbes.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingUsageProbes.delete(requestId);
+    pending.resolve(quota);
   }
 
   /** Asks a daemon for one bounded live tree/file/Git read. */
@@ -596,6 +762,43 @@ export class HostConnectionRegistry {
   }
 
   /** Routes a daemon's `tool_result` frame to the request that asked. */
+  /**
+   * Runs one server-defined command in a workspace on this host and waits for
+   * the whole answer.
+   *
+   * The timeout is the caller's, not a fixed one: one recipe lints and another
+   * builds and tests, and a shared ceiling would either kill the slow one or
+   * leave the quick one hanging. Its own budget is the command's plus a margin
+   * for the round trip, so a daemon that never answers still fails.
+   */
+  runHostCommand(
+    hostId: string,
+    frame: Omit<HostServerFrameOf<"command_run">, "type" | "request_id">,
+  ): Promise<HostCommandOutcome> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) {
+      return Promise.resolve({ ok: false, error: "host_offline", exit_code: 1, stdout: "", stderr: "", timed_out: false });
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingCommands.delete(requestId);
+        resolve({ ok: false, error: "host_timeout", exit_code: 1, stdout: "", stderr: "", timed_out: true });
+      }, frame.timeout_seconds * 1000 + HOST_COMMAND_GRACE_MS);
+      timer.unref?.();
+      this.pendingCommands.set(requestId, { hostId, resolve, timer });
+      connection.sink!.send({ ...frame, type: "command_run", request_id: requestId });
+    });
+  }
+
+  receiveCommandResult(hostId: string, requestId: string, result: Omit<HostCommandOutcome, "ok">): void {
+    const pending = this.pendingCommands.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingCommands.delete(requestId);
+    pending.resolve({ ...result, ok: result.error === null });
+  }
+
   receiveToolResult(hostId: string, requestId: string, result: ToolInstallResult): void {
     const pending = this.pendingInstalls.get(requestId);
     if (!pending || pending.hostId !== hostId) return;
@@ -631,7 +834,7 @@ export class HostConnectionRegistry {
   }
 
   /** Routes a daemon's `complete` frame and clears the pending entry. */
-  receiveComplete(hostId: string, runId: string, result: { exit_code: number; timed_out: boolean; error: string | null }, launchId: string): void {
+  receiveComplete(hostId: string, runId: string, result: HostRunCompletion, launchId: string): void {
     const pending = this.currentDispatch(hostId, runId, launchId);
     if (!pending) return;
     if (pending.graceTimer) clearTimeout(pending.graceTimer);

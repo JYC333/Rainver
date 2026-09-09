@@ -1,7 +1,7 @@
 # Evolution Signal System
 
 This document describes the current rule-based signal path. It is the D1
-foundation for the later evaluation, supervisor, and conformance consumers.
+foundation for the later evaluation and supervisor consumers.
 
 ## Ownership and storage
 
@@ -31,7 +31,6 @@ runs and unrelated proposals do not create orphan evolution signals.
 | A future proposal status requests changes | `proposal_request_changes` | Emitter rule is ready; no such current status exists |
 | A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; A2 engine owns result production |
 | A supervisor records an outcome | `supervisor_outcome` | `PgRunSupervisor` emits after its durable decision |
-| A runtime conformance check fails | `runtime_conformance_violation` | `RuntimeConformanceService` emits after persistence |
 | An autonomous Run exceeds its review wait bound | `supervisor_outcome` | `AutonomyRecoveryService` emits after cancellation and operational alert persistence |
 
 Signals expose a triage state (`new`, `acknowledged`, `dismissed`, or
@@ -114,9 +113,9 @@ later rolls back.
 D1 does not claim that a successful run passed acceptance criteria. Verification
 facts are now owned by the A2 engine; finalized failed verification results
 produce a `verification_failed` signal through the same bounded target and
-deduplication path. Supervisor facts remain owned by A3 and runtime
-conformance facts by C3; both production hooks emit through the bounded
-target/deduplication path. The D1 triage/dismiss surface is now present;
+deduplication path. Supervisor facts remain owned by A3 and emit through the
+same bounded target/deduplication path. The runtime-conformance emitter is
+gone with the C3 suite (2026-09-09). The D1 triage/dismiss surface is now present;
 proposal `request_changes` remains a future status because the current proposal
 lifecycle has no such state.
 

@@ -32,6 +32,14 @@
 #   ops/scripts/db/migrate.sh [--mode dev|test|prod]            # docker-native (default)
 #   ops/scripts/db/migrate.sh --host [--mode dev|test|prod]     # host mode, external Postgres
 #   ops/scripts/db/migrate.sh --mode dev --pre-migration-backup # opt into pre-migration dump
+#   ops/scripts/db/migrate.sh --allow-maintenance               # apply a maintenance migration too
+#
+# Maintenance migrations:
+#   A migration marked `-- rainver:maintenance` drops something the running
+#   release still reads, so applying it under a live server breaks that server.
+#   This script refuses one unless --allow-maintenance is given; the only
+#   caller that gives it is `start.sh --maintenance`, which has already stopped
+#   the applications and taken a dump (ADR 0016 §10).
 #   DATABASE_URL=postgresql://... ops/scripts/db/migrate.sh --host
 
 set -euo pipefail
@@ -43,6 +51,7 @@ source "$SCRIPT_DIR/../lib/local-compose.sh"
 MODE="${RAINVER_MODE:-dev}"
 RUN_MODE="docker"
 PRE_MIGRATION_BACKUP="${PRE_MIGRATION_BACKUP:-0}"
+ALLOW_MAINTENANCE="${ALLOW_MAINTENANCE:-0}"
 
 # ── Argument parsing (before computing mode-dependent paths) ───────────────────
 while [[ $# -gt 0 ]]; do
@@ -51,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --host) RUN_MODE="host"; shift ;;
     --docker) RUN_MODE="docker"; shift ;;
     --pre-migration-backup) PRE_MIGRATION_BACKUP="1"; shift ;;
+    --allow-maintenance) ALLOW_MAINTENANCE="1"; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,2\}//'; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
   esac
@@ -228,6 +238,24 @@ ensure_pre_migration_backup() {
     rm -f "$dump_path"
     exit 1
   fi
+  # Non-empty is not the same as restorable: a dump that streams and then dies
+  # (disk full, client disconnect) leaves a truncated custom-format file that
+  # only fails when someone needs it. `pg_restore -l` reads the archive's table
+  # of contents and is the cheapest thing that actually opens it.
+  # No filename argument on the container form. Naming the stdin device path
+  # makes pg_restore reopen it, which loses the pipe and reports "did not find
+  # magic string in file header" for an archive that is perfectly good — the
+  # check then aborts the upgrade on a backup that was never broken. Reading
+  # stdin as a stream is what the other two callers of this same check already
+  # do (`db/restore.sh`, `db/save-dev-setup.sh`).
+  if ! command -v pg_restore >/dev/null 2>&1 || ! pg_restore -l "$dump_path" >/dev/null 2>&1; then
+    if [[ "$RUN_MODE" == "host" ]] || ! "${COMPOSE[@]}" exec -T postgres pg_restore -l >/dev/null 2>&1 < "$dump_path"; then
+      echo "ERROR: the pre-migration dump is not readable by pg_restore — it is truncated or corrupt." >&2
+      echo "       Kept for inspection at: $dump_path" >&2
+      echo "       Aborting BEFORE migrations run." >&2
+      exit 1
+    fi
+  fi
   chmod 600 "$dump_path"
   echo "[migrate] pre-migration backup written: $dump_path ($(du -sh "$dump_path" | cut -f1))"
 }
@@ -266,6 +294,56 @@ run_host() {
   echo "Migrations complete."
 }
 
+# ── Maintenance gate ──────────────────────────────────────────────────────────
+# Asked before anything is applied. The runner exits 10 when a pending
+# migration may only run with the applications stopped, 0 when none does.
+#
+# Any other status is a gate that could not be asked — a crashed runner, a
+# stale image whose binary does not know the subcommand, an unreachable
+# database — and the safe reading of "I do not know" before an irreversible
+# migration is to stop, not to proceed. Failing open here would apply a
+# destructive migration under a running server, which is the one thing this
+# gate exists to prevent.
+assert_no_pending_maintenance() {
+  [[ "$ALLOW_MAINTENANCE" == "1" ]] && return 0
+  local pending status=0
+  if [[ "$RUN_MODE" == "host" ]]; then
+    # Host mode resolves its target lazily; without this the URL is unbound
+    # here and the whole check dies under `set -u` before it asks anything.
+    resolve_host_database_url
+    # And it runs from source, so `dist/` may be absent or stale — the gate
+    # runs before `run_host`'s own build. Building here rather than reading a
+    # stale binary: with the refusal below, an unbuilt tree would otherwise
+    # make every post-pull host migration fail.
+    (cd "$REPO_ROOT/server" && pnpm run build >/dev/null) || {
+      echo "ERROR: could not build the migration runner to check for a maintenance migration." >&2
+      exit 1
+    }
+    pending="$(cd "$REPO_ROOT/server" && SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+      SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
+      node dist/db/migrateCli.js maintenance-pending)" || status=$?
+  else
+    pending="$("${COMPOSE[@]}" run --rm -T --no-deps \
+      -e SERVER_DATABASE_URL="$(compose_admin_database_url)" \
+      -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
+      server node dist/db/migrateCli.js maintenance-pending)" || status=$?
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    return 0
+  elif [[ "$status" -ne 10 ]]; then
+    echo "ERROR: could not determine whether a pending migration needs an offline upgrade" >&2
+    echo "       (migration runner exited $status). Refusing to migrate on an unanswered gate." >&2
+    echo "$pending" | sed 's/^/         /' >&2
+    exit 1
+  fi
+  echo "ERROR: a pending migration requires an offline maintenance upgrade:" >&2
+  echo "$pending" | sed 's/^/         /' >&2
+  echo "       It removes something this release still reads, so applying it while" >&2
+  echo "       the applications are running would break them." >&2
+  echo "       Run: ./ops/scripts/start.sh --$MODE --maintenance" >&2
+  exit 1
+}
+
 # ── Target database bootstrap + pre-migration backup gate ─────────────────────
 if [[ "$RUN_MODE" == "docker" ]]; then
   run_drizzle_schema_check_docker
@@ -273,6 +351,8 @@ if [[ "$RUN_MODE" == "docker" ]]; then
 else
   run_drizzle_schema_check_host
 fi
+
+assert_no_pending_maintenance
 
 # prod always requires it; other modes only when explicitly opted in.
 if [[ "$MODE" == "prod" || "$PRE_MIGRATION_BACKUP" == "1" ]]; then

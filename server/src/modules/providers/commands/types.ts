@@ -135,19 +135,6 @@ export interface ProviderSpaceGrantInput {
   network_profile_id?: string | null;
 }
 
-export interface CliCredentialAuditInput {
-  space_id: string;
-  run_id?: string | null;
-  runtime_adapter_type?: string | null;
-  credential_profile_id?: string | null;
-  trigger_origin?: string | null;
-  fallback_used?: boolean;
-  fallback_reason?: string | null;
-  broker_error?: boolean;
-  cleanup_status?: string;
-  action?: string;
-}
-
 export interface ProviderCommandStore {
   createProvider(spaceId: string, userId: string, input: ModelProviderCreateInput): Promise<unknown>;
   updateProvider(
@@ -185,7 +172,6 @@ export interface ProviderCommandStore {
   resolveProviderApiKey(spaceId: string, providerId: string): Promise<string>;
   resolveCredentialApiKey(spaceId: string, credentialId: string): Promise<string>;
   listConfiguredModels(spaceId: string, providerId: string): Promise<string[]>;
-  recordCliCredentialUsage(input: CliCredentialAuditInput): Promise<string>;
   listPool(spaceId: string, providerId: string): Promise<unknown>;
   addPoolCredential(
     spaceId: string,

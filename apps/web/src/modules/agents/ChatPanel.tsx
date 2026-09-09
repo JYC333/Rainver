@@ -229,10 +229,7 @@ export default function ChatPanel({
           message,
           session_id: sessionId,
           ...(projectId ? { project_id: projectId } : {}),
-          backend: {
-            runtime_profile_id: backend.runtime_profile_id,
-            credential_profile_id: backend.credential_profile_id ?? null,
-          },
+          backend: { runtime_profile_id: backend.runtime_profile_id },
           ...(sessionConfig.length ? { session_config: sessionConfig } : {}),
           ...(restoreWorkspace ? { restore_workspace: true } : {}),
         },
@@ -503,36 +500,24 @@ export default function ChatPanel({
   )
 }
 
+/**
+ * One choice per runtime profile. A CLI backend used to fan out into one
+ * choice per brokered credential profile; a CLI now runs on an execution host
+ * with its own login, so the profile names the whole choice.
+ */
 function flattenBackendChoices(options: ConversationBackendOption[]): BackendChoice[] {
-  return options.flatMap<BackendChoice>(option => {
-    if (!option.requires_cli_credential) {
-      const backend: ConversationBackendBinding = {
-        runtime_profile_id: option.runtime_profile_id,
-        adapter_type: option.adapter_type,
-        credential_profile_id: null,
-      };
-      return [{
-        key: backendKey(backend),
-        label: `${option.name} · ${option.model_name ?? option.adapter_type}`,
-        backend,
-        usable: option.usable !== false,
-        reason: option.reason,
-      }]
+  return options.map<BackendChoice>(option => {
+    const backend: ConversationBackendBinding = {
+      runtime_profile_id: option.runtime_profile_id,
+      adapter_type: option.adapter_type,
     }
-    return option.credential_profiles.map(credential => {
-      const backend: ConversationBackendBinding = {
-        runtime_profile_id: option.runtime_profile_id,
-        adapter_type: option.adapter_type,
-        credential_profile_id: credential.id,
-      }
-      return {
-        key: backendKey(backend),
-        label: `${option.name} · ${option.adapter_type} · ${credential.name}${credential.is_default ? ' (default)' : ''}`,
-        backend,
-        usable: option.usable !== false,
-        reason: option.reason,
-      }
-    })
+    return {
+      key: backendKey(backend),
+      label: `${option.name} · ${option.model_name ?? option.adapter_type}`,
+      backend,
+      usable: option.usable !== false,
+      reason: option.reason,
+    }
   })
 }
 
@@ -553,8 +538,8 @@ function catalogBackend(
   return defaultBackend(options)
 }
 
-function backendKey(backend: Pick<ConversationBackendBinding, 'runtime_profile_id' | 'credential_profile_id'>) {
-  return `${backend.runtime_profile_id}:${backend.credential_profile_id ?? ''}`
+function backendKey(backend: Pick<ConversationBackendBinding, 'runtime_profile_id'>) {
+  return backend.runtime_profile_id
 }
 
 

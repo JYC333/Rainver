@@ -8,6 +8,6 @@ export async function register(options: { serverUrl: string; pairingCode: string
   }
   const serverUrl = normalizeServerUrl(options.serverUrl);
   const result = await registerHost(serverUrl, options.pairingCode);
-  await saveConfig({ server_url: serverUrl, host_id: result.host_id, token: result.token, workspaces: {} });
+  await saveConfig({ server_url: serverUrl, host_id: result.host_id, token: result.token, trust: "trusted", workspaces: {} });
   return { host_id: result.host_id, name: result.name };
 }

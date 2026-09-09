@@ -186,18 +186,48 @@ export async function seedRun(
   );
 }
 
-/** The unowned server host (machine + host rows) that Project Folder tests attach locations to. */
-export async function seedServerHost(pool: Pool, input: { id: string; now?: string }): Promise<void> {
+/**
+ * The unowned built-in host (machine + host rows).
+ *
+ * Reports a live heartbeat and a logged-in copy of each CLI, because that is
+ * what a running built-in host looks like and every check now asks it the same
+ * questions it asks a paired machine — it is a daemon in a container that can
+ * be stopped, and only *ownership* does not apply to it (ADR 0016 §3). Pass
+ * `installations: {}` for a host that is up with nothing installed.
+ */
+export async function seedServerHost(pool: Pool, input: {
+  id: string;
+  now?: string;
+  installations?: Record<string, Array<{ id: string; version: string | null; logged_in: boolean | null; options: null }>>;
+}): Promise<void> {
   const now = input.now ?? new Date().toISOString();
+  // One adapter by default: enough for the host to be a usable backend, and
+  // few enough that a test asserting an option list is not surprised by copies
+  // it never asked for. Pass `installations` for anything else.
+  //
+  // `managed:`, not `own`: `own` is whatever the daemon found on the machine's
+  // PATH, and the built-in host's container ships no vendor CLI — every copy
+  // there is one its daemon installed. Seeding `own` would model a state a
+  // real strict host cannot report.
+  const installations = input.installations ?? {
+    claude_code: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null }],
+  };
   await pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ($1, NULL, 'Test server', 'server', $2, $2)`,
     [input.id, now],
   );
   await pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $2, $2)`,
-    [input.id, now],
+    `INSERT INTO hosts (
+       id, owner_user_id, machine_id, name, kind, environment_kind, status,
+       capabilities_json, last_heartbeat_at, created_at, updated_at
+     ) VALUES ($1, NULL, $1, 'server', 'server', 'server', 'online', $3::jsonb, now(), $2, $2)`,
+    // `now()`, not the caller's `now`: liveness is judged against a 45s
+    // staleness window, and a caller that pins `now` for deterministic
+    // created_at ordering would otherwise be pinning the heartbeat too.
+    // Created and updated stay on the caller's clock, where determinism
+    // actually matters.
+    [input.id, now, JSON.stringify({ runtimes: [], versions: {}, installations })],
   );
 }
 

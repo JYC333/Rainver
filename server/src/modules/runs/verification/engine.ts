@@ -1,5 +1,4 @@
-import { stat } from "node:fs/promises";
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, } from "node:path";
 import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
@@ -14,13 +13,16 @@ import {
   type VerificationSummary,
   type VerifierType,
   type EvaluationVerificationResult,
+  type VerificationTarget,
 } from "./types.js";
 import { PgVerificationRepository, type VerificationPlanReader } from "./repository.js";
 import type { Queryable } from "../runRepositoryTypes.js";
-import { SandboxRunnerVerificationExecutor } from "../../sandboxRunner/client.js";
 import type { CliExecutionResult } from "../localCliExecution.js";
+import { HostCommandVerificationExecutor } from "./hostCommandExecutor.js";
 
 const MAX_COMMAND_TIMEOUT_SECONDS = 300;
+/** The verifiers whose answer comes from the workspace's git state. */
+const GIT_BACKED_VERIFIERS = new Set(["file_changed", "diff_scope", "no_forbidden_change"]);
 const KNOWN_VERIFIER_TYPES = new Set<string>([
   "command",
   "test",
@@ -60,7 +62,7 @@ interface ChangedFiles {
 }
 
 export interface VerificationCommandExecutor {
-  run(input: { runId: string; cwd: string; command: string[]; timeoutSeconds: number }): Promise<CliExecutionResult>;
+  run(input: { runId: string; target: VerificationTarget; command: string[]; timeoutSeconds: number }): Promise<CliExecutionResult>;
 }
 
 export class PgVerificationEngine {
@@ -83,7 +85,7 @@ export class PgVerificationEngine {
     return new PgVerificationEngine(
       getDbPool(config.databaseUrl),
       undefined,
-      new SandboxRunnerVerificationExecutor(config),
+      new HostCommandVerificationExecutor(),
     );
   }
 
@@ -107,12 +109,16 @@ export class PgVerificationEngine {
     });
     if (declarations.length === 0) return [];
 
-    const changed = await changedFiles(
-      input.run.id,
-      input.sandbox_cwd,
-      input.base_commit_sha,
-      this.commandExecutor,
-    );
+    // Only when a declaration actually asks about changed files. This used to
+    // be gated by `sandbox_cwd` being null for anything but a server-host run;
+    // now that every Run names a host workspace it would send `git diff` and
+    // `git status` to that host for every Run with any acceptance criterion at
+    // all — twice, pre- and post-materialization — including on a paired
+    // machine, where they are spawns on someone's own laptop.
+    const needsChangedFiles = declarations.some((declaration) => GIT_BACKED_VERIFIERS.has(declaration.verifier_type));
+    const changed = needsChangedFiles
+      ? await changedFiles(input.run.id, input.execution_target, input.base_commit_sha, this.commandExecutor)
+      : { paths: [], error: null };
     const rawResults: RawVerificationResult[] = [];
     for (const declaration of declarations) {
       rawResults.push(await evaluateDeclaration(input, declaration, changed, this.commandExecutor));
@@ -472,9 +478,9 @@ async function evaluateByType(
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
   const type = declaration.verifier_type;
   if (["command", "test", "lint", "typecheck"].includes(type)) {
-    return evaluateCommand(input.run.id, input.sandbox_cwd, declaration, commandExecutor);
+    return evaluateCommand(input.run.id, input.execution_target, declaration, commandExecutor);
   }
-  if (type === "file_exists") return evaluateFileExistsAsync(input.sandbox_cwd, declaration.config, input.host_kind);
+  if (type === "file_exists") return evaluateFileExistsAsync(input.run.id, input.execution_target, declaration.config, commandExecutor);
   if (type === "file_changed") return evaluateFileChanged(changed, declaration.config);
   if (type === "diff_scope") return evaluateDiffScope(changed, declaration.config);
   if (type === "no_forbidden_change") return evaluateNoForbiddenChange(changed, declaration.config);
@@ -508,12 +514,12 @@ async function evaluateByType(
 
 async function evaluateCommand(
   runId: string,
-  sandboxCwd: string | null,
+  target: VerificationTarget | null,
   declaration: VerificationDeclaration,
   executor?: VerificationCommandExecutor,
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
-  if (!sandboxCwd) return unavailable("A sandbox is required for command verification.");
-  if (!executor) return unavailable("Sandbox Runner verification is unavailable.");
+  if (!target) return unavailable("An execution host workspace is required for command verification.");
+  if (!executor) return unavailable("Host command verification is unavailable.");
   const command = commandArgv(declaration.config.command);
   if (!command || command.length === 0) return unavailable("Validation command is missing.");
   if (command.some((part) => /[;&|<>]/.test(part))) {
@@ -525,7 +531,7 @@ async function evaluateCommand(
     Math.max(1, requestedTimeout ?? MAX_COMMAND_TIMEOUT_SECONDS),
   );
   const started = Date.now();
-  const execution = await executor.run({ runId, cwd: sandboxCwd, command, timeoutSeconds: timeout });
+  const execution = await executor.run({ runId, target, command, timeoutSeconds: timeout });
   if (execution.returncode === 0 && !execution.timed_out) {
     return {
       status: "passed",
@@ -540,52 +546,60 @@ async function evaluateCommand(
   }
   const runnerUnavailable = execution.failure_code === "sandbox_runner_unavailable"
     || execution.failure_code === "sandbox_namespace_unavailable";
+  // What the host actually said, kept rather than replaced. Both of these are
+  // read by a person deciding what to do next, and a summary that names only
+  // the verifier leaves them with a Run that "failed its acceptance checks"
+  // and no way to learn that the workspace could not be resolved or that a
+  // test asserted something false. Bounded, because a recipe can print a lot.
+  const said = (execution.stderr || execution.stdout || "").trim().split("\n").filter(Boolean).at(-1)?.slice(0, 300);
   return {
     status: runnerUnavailable ? "error" : "failed",
-    summary: runnerUnavailable
-      ? `${declaration.verifier_type} command could not start in Sandbox Runner.`
-      : `${declaration.verifier_type} command failed.`,
+    summary: [
+      runnerUnavailable
+        ? `${declaration.verifier_type} command could not be run on the execution host.`
+        : `${declaration.verifier_type} command failed (exit ${execution.returncode}).`,
+      said,
+    ].filter(Boolean).join(" "),
     evidence_refs_json: { source: "validation_recipe", command: command[0], verifier_type: declaration.verifier_type },
     details_json: {
       exit_code: execution.returncode,
       timed_out: execution.timed_out,
       failure_code: execution.failure_code ?? null,
       duration_ms: Date.now() - started,
+      ...(said ? { host_message: said } : {}),
     },
   };
 }
 
+/**
+ * Asked on the host, like every other verifier, rather than `stat`-ed here.
+ *
+ * This used to resolve the path against a server directory, which worked only
+ * while the server owned the workspace. `test -e` through the same command
+ * channel needs no second mechanism and no second set of path rules, and it is
+ * the same answer on the built-in host and a paired machine.
+ */
 async function evaluateFileExistsAsync(
-  sandboxCwd: string | null,
+  runId: string,
+  target: VerificationTarget | null,
   config: Record<string, unknown>,
-  hostKind?: "server" | "remote",
+  executor?: VerificationCommandExecutor,
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
-  // ADR 0016 P2: `sandbox_cwd` on a remote-host run has no meaning on this
-  // machine — never `stat` it. No remote Run exists yet (P3), so this
-  // branch is unreachable today; it exists so P3 does not have to
-  // remember to add it.
-  if (hostKind && hostKind !== "server") {
-    return unavailable("file_exists verification is not available for a remote execution host.");
-  }
   const path = stringValue(config.path) ?? stringValue(config.value);
-  if (!sandboxCwd) return unavailable("A sandbox is required for file_exists verification.");
+  if (!target) return unavailable("An execution host workspace is required for file_exists verification.");
+  if (!executor) return unavailable("Host command verification is unavailable.");
   if (!path || !safeRelativePath(path)) return unavailable("file_exists requires a safe relative path.");
-  try {
-    const info = await stat(resolve(sandboxCwd, path));
-    return {
-      status: info.isFile() || info.isDirectory() ? "passed" : "failed",
-      summary: info.isFile() || info.isDirectory() ? `Required path '${path}' exists.` : `Required path '${path}' is not usable.`,
-      evidence_refs_json: { source: "sandbox", path },
-      details_json: { kind: info.isFile() ? "file" : info.isDirectory() ? "directory" : "other" },
-    };
-  } catch {
-    return {
-      status: "failed",
-      summary: `Required path '${path}' does not exist.`,
-      evidence_refs_json: { source: "sandbox", path },
-      details_json: {},
-    };
+  const execution = await executor.run({ runId, target, command: ["test", "-e", path], timeoutSeconds: 30 });
+  if (execution.failure_code || execution.timed_out) {
+    return unavailable(`file_exists verification could not reach the execution host: ${execution.stderr || execution.failure_code || "timed out"}`);
   }
+  const exists = execution.returncode === 0;
+  return {
+    status: exists ? "passed" : "failed",
+    summary: exists ? `Required path '${path}' exists.` : `Required path '${path}' does not exist.`,
+    evidence_refs_json: { source: "execution_host", path },
+    details_json: {},
+  };
 }
 
 function evaluateFileChanged(
@@ -753,17 +767,17 @@ function matchesJsonType(value: unknown, type: string): boolean {
 
 async function changedFiles(
   runId: string,
-  sandboxCwd: string | null,
+  target: VerificationTarget | null,
   baseCommitSha: string | null,
   executor?: VerificationCommandExecutor,
 ): Promise<ChangedFiles> {
-  if (!sandboxCwd) return { paths: [], error: "A sandbox is required for git verification." };
-  if (!executor) return { paths: [], error: "Sandbox Runner git verification is unavailable." };
+  if (!target) return { paths: [], error: "An execution host workspace is required for git verification." };
+  if (!executor) return { paths: [], error: "Git verification could not be run on the execution host." };
   const base = baseCommitSha && /^[0-9a-f]{7,64}$/i.test(baseCommitSha) ? baseCommitSha : "HEAD";
   try {
-    const diff = await executor.run({ runId, cwd: sandboxCwd, command: ["git", "diff", "--name-only", base], timeoutSeconds: 30 });
-    const status = await executor.run({ runId, cwd: sandboxCwd, command: ["git", "status", "--porcelain"], timeoutSeconds: 30 });
-    if (diff.returncode !== 0 || status.returncode !== 0) throw new Error("git failed");
+    const diff = await executor.run({ runId, target, command: ["git", "diff", "--name-only", base], timeoutSeconds: 30 });
+    const status = await executor.run({ runId, target, command: ["git", "status", "--porcelain"], timeoutSeconds: 30 });
+    if (diff.returncode !== 0 || status.returncode !== 0 || diff.failure_code || status.failure_code || diff.timed_out || status.timed_out) throw new Error("git failed or returned incomplete evidence");
     const paths = new Set<string>();
     for (const value of diff.stdout.split(/\r?\n/)) if (value.trim()) paths.add(normalizeGitPath(value.trim()));
     for (const value of status.stdout.split(/\r?\n/)) {

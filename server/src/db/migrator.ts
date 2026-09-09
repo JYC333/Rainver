@@ -54,6 +54,23 @@ export interface MigrationStatus {
   version: string;
   name: string;
   applied: boolean;
+  /** Whether this one may only be applied with the applications stopped. */
+  maintenance: boolean;
+}
+
+/**
+ * The marker a migration carries when the running release cannot survive it.
+ *
+ * Most migrations are compatible with the code already running and apply on an
+ * ordinary start or a UI update. A migration that drops something the running
+ * server still reads is not: applying it under a live server breaks that
+ * server, so it is applied only by the offline maintenance path (ADR 0016 §10). The distinction is compatibility with the running version, not
+ * whether a database changes.
+ */
+export const MAINTENANCE_MARKER = "-- rainver:maintenance";
+
+export function requiresMaintenance(sql: string): boolean {
+  return sql.split("\n", 20).some((line) => line.trim() === MAINTENANCE_MARKER);
 }
 
 const MIGRATION_FILE_RE = /^(\d+)_(.+)\.sql$/;
@@ -181,6 +198,7 @@ export async function status(pool: Pool, dir: string): Promise<MigrationStatus[]
       version: f.version,
       name: f.name,
       applied: done.has(f.version),
+      maintenance: requiresMaintenance(f.sql),
     }));
   } finally {
     client.release();

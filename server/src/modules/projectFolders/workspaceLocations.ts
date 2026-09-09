@@ -167,10 +167,9 @@ export class PgWorkspaceLocationRepository {
           AND folder.status = 'active'
           AND folder.space_id = $2
           AND folder.project_id = $3
-        WHERE host.owner_user_id = $1
-          AND host.kind = 'remote'
+        WHERE (host.owner_user_id = $1 OR host.kind = 'server')
           AND host.status <> 'revoked'
-        ORDER BY host.name ASC, folder.name ASC NULLS LAST, location.created_at ASC NULLS LAST`,
+        ORDER BY (host.kind = 'server') DESC, host.name ASC, folder.name ASC NULLS LAST, location.created_at ASC NULLS LAST`,
       [userId, spaceId, projectId],
     );
     const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown; default_adapter_type: string | null }>();
@@ -319,7 +318,7 @@ export class PgWorkspaceLocationRepository {
     );
     const row = result.rows[0];
     if (!row) return null;
-    const hostOnline = row.execution_host_kind === "server" || (row.host_status === "online" && !isStale(row.last_heartbeat_at));
+    const hostOnline = row.host_status === "online" && !isStale(row.last_heartbeat_at);
     return { ...row, host_online: hostOnline };
   }
 
@@ -427,7 +426,7 @@ function locationToOut(
 ): WorkspaceLocationOut {
   const hostOwner = row.host_owner_user_id ?? null;
   const hostName = row.host_name ?? null;
-  const hostOnline = row.execution_host_kind === "server" || (row.host_status === "online" && !isStale(row.last_heartbeat_at));
+  const hostOnline = row.host_status === "online" && !isStale(row.last_heartbeat_at);
   return {
     id: row.id,
     project_folder_id: row.project_folder_id,
@@ -517,7 +516,7 @@ export async function resolveActiveLocationWithHost(
   if (!row) throw new HttpError(404, "Project Folder not found");
   return {
     ...row,
-    host_online: row.execution_host_kind === "server" || (row.host_status === "online" && !isStale(row.last_heartbeat_at)),
+    host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
   };
 }
 

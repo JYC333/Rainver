@@ -41,7 +41,3 @@ export const NetworkProfileUpdateRequestSchema = z.object({
   no_proxy: z.string().nullish(),
   enabled: z.boolean().optional(),
 });
-
-export const CliCredentialProfileUpdateRequestSchema = z.object({
-  network_profile_id: IdSchema.nullish(),
-});

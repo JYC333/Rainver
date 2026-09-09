@@ -138,6 +138,23 @@ describe('Project Board', () => {
     )
   })
 
+  it('makes the whole card the drag surface, without making it a button', async () => {
+    renderBoard()
+    const card = await screen.findByTestId('board-card-task-waiting')
+    // Reaching for a four-pixel grip is not how a board is used, so the card
+    // itself takes the pointer. It must not become a focusable control in the
+    // process — it holds the title link, and a button wrapping a link is not a
+    // structure a keyboard or a screen reader can work with.
+    expect(card).toHaveAttribute('data-testid')
+    expect(card.tagName).toBe('DIV')
+    expect(card).not.toHaveAttribute('role', 'button')
+    expect(card).not.toHaveAttribute('tabindex')
+    // The keyboard target stays its own control, and keeps the drag attributes.
+    const handle = screen.getByTestId('board-card-handle-task-waiting')
+    expect(handle.tagName).toBe('BUTTON')
+    expect(card).toContainElement(handle)
+  })
+
   it('shows the WIP limit without preventing anything', async () => {
     renderBoard()
     // The limit is information. Refusing a move because of it would override a

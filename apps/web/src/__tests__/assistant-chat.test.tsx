@@ -77,8 +77,6 @@ describe('AssistantChatPage conversation backends', () => {
       name: 'Managed',
       adapter_type: 'model_api',
       model_name: 'gpt-test',
-      requires_cli_credential: false,
-      credential_profiles: [],
     }], binding: null })
     hostsMock.mockResolvedValue({ items: [] })
     turnMock.mockReset()
@@ -242,32 +240,29 @@ describe('AssistantChatPage conversation backends', () => {
     renderPage()
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-1:')
+      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-1')
     })
   })
 
-  it('restores the user × session CLI backend binding', async () => {
+  it('restores the session\'s persisted CLI backend binding', async () => {
     backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-managed',
+      name: 'Managed',
+      adapter_type: 'model_api',
+      model_name: 'gpt-test',
+    }, {
       runtime_profile_id: 'runtime-cli',
       name: 'Subscription',
       adapter_type: 'claude_code',
       model_name: null,
-      requires_cli_credential: true,
-      credential_profiles: [
-        { id: 'credential-default', name: 'Default', is_default: true },
-        { id: 'credential-1', name: 'Personal', is_default: false },
-      ],
     }], binding: {
       runtime_profile_id: 'runtime-cli',
       adapter_type: 'claude_code',
-      credential_profile_id: 'credential-1',
     } })
     renderPage('/agents/a1/chat?session=s1')
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue(
-        'runtime-cli:credential-1',
-      )
+      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-cli')
     })
     expect(backendsMock).toHaveBeenCalledWith('a1', {
       spaceId: 'personal-1',
@@ -297,8 +292,6 @@ describe('AssistantChatPage conversation backends', () => {
         name: 'Managed',
         adapter_type: 'model_api',
         model_name: 'gpt-test',
-        requires_cli_credential: false,
-        credential_profiles: [],
       }],
       binding: null,
     })
@@ -310,7 +303,6 @@ describe('AssistantChatPage conversation backends', () => {
         message: 'hello',
         backend: {
           runtime_profile_id: 'runtime-1',
-          credential_profile_id: null,
         },
       }),
       expect.any(Object),
@@ -350,7 +342,6 @@ describe('AssistantChatPage conversation backends', () => {
         backend: {
           runtime_profile_id: 'runtime-1',
           adapter_type: 'model_api',
-          credential_profile_id: null,
         },
       })
       options?.onTurn?.({
@@ -393,7 +384,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-done/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -448,7 +439,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-fail/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -502,7 +493,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-blocked/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -646,7 +637,6 @@ describe('AssistantChatPage conversation backends', () => {
       name: 'Host runtime',
       adapter_type: 'claude_code',
       model_name: null,
-      requires_cli_credential: false,
       usable: true,
       host_bound: true,
       host_id: 'host-1',
@@ -654,7 +644,6 @@ describe('AssistantChatPage conversation backends', () => {
       host_name: 'Workstation',
       host_online: true,
       host_owner_is_me: true,
-      credential_profiles: [],
     }], binding: null })
     hostsMock.mockResolvedValue({ items: [{ id: 'host-1', owner_user_id: 'u1', name: 'Workstation', status: 'online', managed_workspaces_json: [{
       agent_id: 'a1', container_kind: 'direct', container_id: 'u1', archived_available: true,

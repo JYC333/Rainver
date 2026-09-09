@@ -59,7 +59,7 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'projects',   label: 'Projects',   to: '/projects',    icon: FolderKanban, scope: 'space' },
   { id: 'agents',     label: 'Agents',     to: '/agents',      icon: Bot,         scope: 'space' },
   { id: 'evolution',  label: 'Evolution',  to: '/evolution',   icon: GitBranch,   scope: 'home' },
-  { id: 'instance-settings', label: 'Instance Settings', to: '/instance-settings', icon: ServerCog, scope: 'home', footer: true, requiresInstanceAdmin: true, activePaths: ['/runtime-tools'] },
+  { id: 'instance-settings', label: 'Instance Settings', to: '/instance-settings', icon: ServerCog, scope: 'home', footer: true, requiresInstanceAdmin: true },
   { id: 'space-settings', label: 'Space Settings', to: '/space-settings', icon: Building2, scope: 'space', footer: true, requiresSpaceAdmin: true, activePaths: ['/network-profiles', '/plugins', '/retrieval-settings', '/prompts'] },
   { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true },
 ]
@@ -195,7 +195,7 @@ export type RouteScope = 'home' | 'space'
  * Top-level paths that are NOT inside a Space, so they never get a `/spaces/:id` prefix.
  * Home is user-scoped (cross-space); Settings/Time/Cards are neutral system surfaces.
  */
-const USER_SCOPED_PREFIXES = ['/home', '/settings', '/instance-settings', '/runtime-tools', '/cli-profiles', '/time', '/cards', '/evolution', '/login']
+const USER_SCOPED_PREFIXES = ['/home', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
 
 function isUserScopedPath(path: string): boolean {
   return USER_SCOPED_PREFIXES.some(p => path === p || path.startsWith(`${p}/`))

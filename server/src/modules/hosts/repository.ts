@@ -121,14 +121,15 @@ export function isStale(lastHeartbeatAt: string | null): boolean {
 }
 
 function hostOut(row: HostRow): HostOut {
-  // The server host is an in-process execution boundary, not a daemon
-  // connection. It has no heartbeat by design, so liveness staleness only
-  // applies to remote hosts.
-  const status = row.kind === "server"
-    ? "online"
-    : row.status === "online" && isStale(row.last_heartbeat_at)
-      ? "offline"
-      : row.status;
+  // The built-in host is a daemon connection like any other now — the same
+  // `rainver-host` process, in strict mode, inside `sandbox-runner`. It used
+  // to be reported permanently `online` because it was an in-process execution
+  // boundary with no heartbeat to be stale; reporting that today would hide
+  // exactly the failure an operator needs to see, which is the instance's own
+  // execution host not being connected.
+  const status = row.status === "online" && isStale(row.last_heartbeat_at)
+    ? "offline"
+    : row.status;
   return {
     id: row.id,
     owner_user_id: row.owner_user_id,
@@ -170,8 +171,11 @@ export class PgHostRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     const inserted = await this.pool.query<{ id: string }>(
+      // `offline`, not `online`: the built-in host is a daemon connection now
+      // — the same `rainver-host` in strict mode, inside `sandbox-runner` —
+      // and it is online once it has said hello, like every other host.
       `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, created_at, updated_at)
-       VALUES ($1, NULL, $2, 'server', 'server', 'server', 'online', $3, $3)
+       VALUES ($1, NULL, $2, 'server', 'server', 'server', 'offline', $3, $3)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [id, machineId, now],
@@ -181,6 +185,34 @@ export class PgHostRepository {
     const winner = await this.pool.query<{ id: string }>(`SELECT id FROM hosts WHERE kind = 'server' LIMIT 1`);
     if (!winner.rows[0]) throw new Error("Failed to bootstrap the server host");
     return winner.rows[0].id;
+  }
+
+  /**
+   * The built-in host's bearer token, rotated because its published copy is
+   * gone or no longer matches this row.
+   *
+   * `status = 'offline'` rather than leaving it: whatever daemon was
+   * authenticated with the old token is about to be cut off, and a row still
+   * claiming `online` would make the host card lie until the next heartbeat.
+   */
+  async rotateBuiltinHostToken(hostId: string): Promise<string> {
+    const token = rawToken();
+    const result = await this.pool.query(
+      `UPDATE hosts SET token_hash = $2, status = 'offline', updated_at = now()
+        WHERE id = $1 AND kind = 'server'`,
+      [hostId, hashToken(token)],
+    );
+    if ((result.rowCount ?? 0) === 0) throw new Error("The built-in host row is missing; cannot issue its credential");
+    return token;
+  }
+
+  /** Whether the published credential still authenticates as the built-in host. */
+  async builtinHostTokenMatches(hostId: string, token: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM hosts WHERE id = $1 AND kind = 'server' AND token_hash = $2 LIMIT 1`,
+      [hostId, hashToken(token)],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   /**
@@ -411,7 +443,13 @@ export class PgHostRepository {
    */
   async recordDiffArtifact(
     run: RunForUpload,
-    hostOwnerUserId: string,
+    /**
+     * Who this artifact belongs to. A paired host passes its owner, which is
+     * also the Run's; the built-in host has no owner, so the Run's owner is the
+     * only answer — and an artifact landing with a null owner has no
+     * attribution at all.
+     */
+    hostOwnerUserId: string | null,
     input: { diff: string; truncated: boolean },
   ): Promise<{ artifact_id: string }> {
     const id = randomUUID();
@@ -452,7 +490,13 @@ export class PgHostRepository {
    */
   async recordOutputArtifacts(
     run: RunForUpload,
-    hostOwnerUserId: string,
+    /**
+     * Who this artifact belongs to. A paired host passes its owner, which is
+     * also the Run's; the built-in host has no owner, so the Run's owner is the
+     * only answer — and an artifact landing with a null owner has no
+     * attribution at all.
+     */
+    hostOwnerUserId: string | null,
     files: Array<{ name: string; content: string }>,
   ): Promise<{ artifact_ids: string[]; skipped: string[] }> {
     const artifactIds: string[] = [];

@@ -31,13 +31,12 @@ export function ConversationBackendSetupCard({
             Configure an API provider
           </Link>
         )}
-        {setupTargets.includes('cli_credentials') && (
-          <Link to="/cli-profiles" target="_blank" rel="noreferrer" className="text-sm underline">
-            Grant a server CLI credential
-          </Link>
-        )}
+        {/* Both remaining targets lead to the same place: a CLI is logged in
+            on an execution host (ADR 0016), so there is nowhere else to send
+            someone. Shown unconditionally because it is always true, and
+            named as the server states it. */}
         <Link to="/command-center" target="_blank" rel="noreferrer" className="text-sm underline">
-          Pair or sign in on a host CLI
+          Log a CLI in on an execution host
         </Link>
       </div>
     </Card>

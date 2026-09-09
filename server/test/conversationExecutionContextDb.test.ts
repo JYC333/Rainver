@@ -103,7 +103,7 @@ beforeEach(async () => {
        id, space_id, agent_id, name, adapter_type, execution_host_id,
        workspace_mode, runtime_installation, runtime_config_json, runtime_policy_json,
        enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', $4, 'managed', 'own', '{}', '{}', true, true, $5, $5)`,
+     ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', $4, 'managed', 'managed:1.0.0', '{}', '{}', true, true, $5, $5)`,
     [RUNTIME, SPACE, AGENT, HOST, now],
   );
 });
@@ -178,9 +178,8 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: RUNTIME,
-          credential_profile_id: null,
           adapter_type: "claude_code",
-          runtime_installation: "own",
+          runtime_installation: "managed:1.0.0",
         },
       },
     );
@@ -199,7 +198,7 @@ describe("Conversation execution schema", () => {
     const preflight = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
     expect(preflight.summary).toMatchObject({
       state: "initialized",
-      runtime: { agent_id: AGENT, adapter_type: "claude_code", runtime_installation: "own" },
+      runtime: { agent_id: AGENT, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       can_send: false,
       blocked_reason: expect.stringContaining("no longer matches the pinned Host, CLI, or Primary Workspace"),
     });
@@ -211,7 +210,6 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: RUNTIME,
-          credential_profile_id: null,
           adapter_type: "codex_cli",
           runtime_installation: "own",
         },
@@ -299,7 +297,6 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: null,
-          credential_profile_id: null,
           adapter_type: "codex_cli",
           runtime_installation: "own",
         },
@@ -338,7 +335,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     const thread = await db.pool.query<{ id: string }>(
@@ -370,7 +367,6 @@ describe("Conversation execution schema", () => {
       runtime_profile_selection_source: "explicit",
       allow_system_assistant: true,
       model_override_json: {
-        conversation_backend: { credential_profile_id: null },
         host_thread: { schema_version: "host_thread.v1", thread_id: thread.rows[0]!.id },
       },
     });
@@ -426,7 +422,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
 
@@ -488,7 +484,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
 
@@ -503,7 +499,13 @@ describe("Conversation execution schema", () => {
       [randomUUID(), SPACE, room.rows[0]!.id, AGENT, VIEWER, OWNER, now],
     );
     const granted = await service.preflight({ spaceId: SPACE, userId: VIEWER }, SESSION);
-    expect(granted.available_runtime_profiles).toEqual([
+    // Asserted on the *profile* entries: the host also reports its own
+    // installed copies as profile-less candidates for the same participant,
+    // and enumerating them here would restate what the earlier "uses
+    // Host-reported CLIs directly" test already covers. They are gated by the
+    // Room grant too — the `hidden` and `revoked` assertions below are
+    // unfiltered `[]` for exactly that reason.
+    expect(granted.available_runtime_profiles.filter((entry) => entry.runtime_profile_id !== null)).toEqual([
       expect.objectContaining({ runtime_profile_id: RUNTIME, agent_id: AGENT }),
     ]);
     expect(granted.summary.runtime).toEqual(expect.objectContaining({
@@ -538,7 +540,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     await expect(db.pool.query(
@@ -551,15 +553,11 @@ describe("Conversation execution schema", () => {
     const constraints = await db.pool.query<{ conname: string; confdeltype: string }>(
       `SELECT conname, confdeltype
          FROM pg_constraint
-        WHERE conname IN (
-          'session_conversation_backends_bound_by_user_id_fkey',
-          'session_conversation_backends_credential_owner_fkey'
-        )
+        WHERE conname IN ('session_conversation_backends_bound_by_user_id_fkey')
         ORDER BY conname ASC`,
     );
     expect(constraints.rows).toEqual([
       { conname: "session_conversation_backends_bound_by_user_id_fkey", confdeltype: "a" },
-      { conname: "session_conversation_backends_credential_owner_fkey", confdeltype: "a" },
     ]);
   });
 
@@ -579,7 +577,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "location", workspace_location_id: LOCATION } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     await db.pool.query(
@@ -620,7 +618,9 @@ describe("Conversation execution schema", () => {
     expect(draft.available_primary_locations).toEqual([
       expect.objectContaining({ workspace_location_id: replacementLocation }),
     ]);
-    expect(draft.available_runtime_profiles).toEqual([
+    // The stale pinned Location is what this is about; the host's own
+    // profile-less candidates carry no Location pin and are covered elsewhere.
+    expect(draft.available_runtime_profiles.filter((entry) => entry.runtime_profile_id !== null)).toEqual([
       expect.objectContaining({ runtime_profile_id: RUNTIME, usable: false }),
     ]);
     expect(draft.summary).toMatchObject({ state: "draft", can_send: false });
@@ -659,7 +659,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, credential_profile_id: null, adapter_type: "claude_code", runtime_installation: "own" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     const mutation = { action: "attach" as const, mutation_id: randomUUID(), project_folder_id: ATTACHED_FOLDER, workspace_location_id: ATTACHED_LOCATION, access_mode: "read" as const };

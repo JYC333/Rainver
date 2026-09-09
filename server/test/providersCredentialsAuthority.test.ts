@@ -151,9 +151,6 @@ function fakeStore(): ProviderCommandStore {
     async listConfiguredModels(_spaceId, _providerId) {
       return ["gpt-4o-mini"];
     },
-    async recordCliCredentialUsage(_input) {
-      return "event-1";
-    },
   };
 }
 
@@ -267,50 +264,10 @@ describe("providers and credentials server authority", () => {
     expect(put.json()).toMatchObject({ task: "reflector" });
   });
 
-  it("owns CLI methods, status, and internal credential resolution", async () => {
+  it("owns internal credential resolution", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());
     app = buildModuleServer(await authorityConfig(), [providersModule]);
-
-    const methods = await app.inject({
-      method: "GET",
-      url: "/api/v1/credentials/cli/methods?space_id=space-1",
-    });
-    expect(methods.statusCode).toBe(200);
-    expect(
-      methods.json().find((row: { runtime: string }) => row.runtime === "claude_code"),
-    ).toMatchObject({
-      method: "cli",
-      supports_cli: true,
-    });
-    expect(
-      methods.json().find((row: { runtime: string }) => row.runtime === "codex_cli"),
-    ).toMatchObject({
-      method: "cli",
-      supports_cli: true,
-    });
-
-    const legacyProfile = await app.inject({
-      method: "GET",
-      url: "/api/v1/credentials/cli/profiles/codex_cli/default?space_id=space-1",
-    });
-    expect(legacyProfile.statusCode).toBe(404);
-
-    const available = await app.inject({
-      method: "GET",
-      url: "/api/v1/credentials/cli/available?runtime=codex_cli&space_id=space-1",
-    });
-    expect(available.statusCode).toBe(200);
-    expect(available.json()).toEqual([]);
-
-    const status = await app.inject({
-      method: "GET",
-      url: "/api/v1/credentials/cli/status?space_id=space-1",
-    });
-    expect(status.statusCode).toBe(200);
-    expect(
-      status.json().find((row: { runtime: string }) => row.runtime === "codex_cli"),
-    ).toMatchObject({ logged_in: false, profile_id: null });
 
     const denied = await app.inject({
       method: "POST",

@@ -194,7 +194,6 @@ class AgentGroupServiceDb {
           adapter_type: "model_api",
           model_provider_id: "provider-1",
           model_name: "gpt-4o-mini",
-          credential_profile_id: null,
           runtime_config_json: {},
           runtime_policy_json: {},
           enabled: true,

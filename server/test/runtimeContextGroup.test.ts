@@ -521,12 +521,11 @@ describe("runtimeContextCliContinuityDb", () => {
       userId: USER,
       agentId: AGENT,
       runtimeProfileId: RUNTIME,
-      credentialProfileId: null,
       adapterType: "codex_cli",
       providerId: null,
       model: "gpt-4o",
       agentVersionId: VERSION,
-      runtimeToolVersion: "test.v1",
+      runtimeInstallation: "own",
       control: snapshot,
     };
   }

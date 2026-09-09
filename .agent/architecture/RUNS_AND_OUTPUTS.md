@@ -101,14 +101,12 @@ missing this event, including stale/orphaned and retry-exhausted work. While
 the adapter is running, non-durable `chat.text_delta` frames reach the client
 as a growing `text` part, so the reply renders incrementally.
 
-Conversation backend selection is a user × session binding. The selectable
-runtime profiles come from the Agent, while CLI credentials come only from the
-signed-in user's enabled space grants. The chosen backend is frozen on the Run.
-Shared Agent runtime profiles never store a user credential. Direct CLI chat
-uses the same accepted Runtime Context Delivery and typed Sandbox Runner
-boundary as every CLI invocation. Vendor context files are not created; the
-instructing user's scoped continuity is acquired by Runtime Context and rendered
-directly at invocation.
+Conversation backend selection is frozen on the Run. Host CLI Runs select an
+installation and isolated Agent/container profile on their execution host;
+the copy's login is linked there. Direct CLI chat receives a prompt and work
+surface over ACP and resumes its vendor session, without server-brokered
+Runtime Context Delivery or CLI credential grants. In-process runtimes retain
+the Runtime Context Gateway and its user-scoped Delivery/continuity rules.
 There is no synchronous Chat endpoint or second Chat execution path. Run
 cancellation remains the normal Run stop operation.
 
@@ -331,12 +329,13 @@ records structural validation metadata and the engine verifies changed files
 and forbidden-path boundaries; the proposal payload no longer claims that
 patch validation is skipped.
 
-Command execution and git worktree inspection use the typed Sandbox Runner
-`verification` runtime. That runtime receives one managed workspace mount and
-the immutable recipe argv, runs without a shell or network in an empty-root
-namespace, exposes the Runner-owned Node toolchain path, rejects output beyond
-the fixed 64 KiB evidence ceiling, and has no application-server subprocess
-fallback.
+Command execution and Git inspection use the typed `command_run` host frame,
+with one workspace identity and recipe argv. There is no shell or ambient
+environment inheritance. The built-in host adds an empty-root namespace with
+no network; a trusted host runs natively and retains native network access.
+The aggregate stdout/stderr budget is 256 KiB; overflow terminates the command
+and reports an error, so a partial changed-file list cannot pass verification.
+There is no application-server subprocess fallback.
 
 `PostRunFinalizationService` reads these results. A declared failed/error
 check makes a successful runtime evaluation `failed`; a declared but skipped
@@ -383,13 +382,15 @@ requeues after approval (`same_attempt` for an in-flight policy pause,
 `new_attempt` for a Supervisor terminal hold) and `POST /abandon` records a
 cancelled terminal outcome after review. There is no implicit automatic resume.
 
-CLI cancellation is two-phase: the Run enters `cancelling`, the process gets
-SIGTERM, the server waits for exit, and escalates to SIGKILL when needed. The
-Run is marked `cancelled` only after exit confirmation; otherwise it remains
-`cancelling` with a confirmation-timeout result. On worker startup, stale
-running/cancelling runs whose process registry was lost become `orphaned`, are
-finalized, and pass through the same supervisor policy. Local CLI attempts also
-have a no-output/no-activity watchdog that emits `cli_stall_timeout`.
+CLI cancellation is two-phase: the Run enters `cancelling`, the control plane
+asks the host daemon to terminate the process group, and the Run is marked
+`cancelled` only after the daemon confirms exit; otherwise it stays
+`cancelling` with a `cancel_confirmation_timeout` result. Since ADR 0016 the
+signals are the daemon's — no CLI process runs in the server. On worker
+startup, stale running/cancelling runs whose in-flight state was lost become
+`orphaned`, are finalized, and pass through the same supervisor policy. A
+daemon attempt also has a no-output/no-activity watchdog, which reports
+`runtime_stall_timeout`.
 
 `manual_review` and `model_judge` are represented as declared, skipped
 verifier types only. They are not completion evidence until their respective
@@ -470,7 +471,7 @@ Adapters that consume model config today depend on runtime requirements.
 `claude_code` and `codex_cli` may receive model hints only when the underlying
 CLI supports them. `capability` records model config but does not call an LLM.
 Claude execution must go through the `claude_code`
-RuntimeAdapterSpec and `GenericCliRuntimeAdapter`.
+RuntimeAdapterSpec and `the host daemon CLI adapter`.
 
 Conversation text deltas are ephemeral transport events. The server keeps a
 bounded, five-minute in-process replay buffer so an SSE subscriber that connects

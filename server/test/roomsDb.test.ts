@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -33,7 +33,6 @@ import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
-import { RuntimeToolRegistry, type RuntimeToolInstallRunner } from "../src/modules/runtimeTools/service.js";
 import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import {
@@ -60,63 +59,9 @@ import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/s
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
 let testRoot: string | undefined;
-let credentialOne: string;
-let credentialTwo: string;
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
-const INSTALLED_CLAUDE_CODE_VERSION = "1.2.3";
 
-/**
- * Fakes only what `RuntimeToolRegistry.install("claude_code", ...)` needs on
- * disk to consider the tool genuinely installed — mirrors the claude-only
- * path of `FakeInstaller` in runtimeToolsService.test.ts. This is orthogonal
- * to CLI login: `SpaceAssistantService`'s provisioning disables a Room's
- * runtime-cli profile whenever the tool isn't installed at all, independent
- * of whether any user has since logged in via it (the `.credentials.json`
- * fixtures below already fake login correctly on their own).
- */
-class FakeClaudeCodeInstaller implements RuntimeToolInstallRunner {
-  async run(input: { package_ref: string; prefix: string; cache_dir: string }): Promise<void> {
-    if (input.package_ref.startsWith("@agentclientprotocol/claude-agent-acp@")) {
-      const acpDir = join(input.prefix, "node_modules", "@agentclientprotocol", "claude-agent-acp");
-      const sdkDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-agent-sdk");
-      const sdkNativeDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64");
-      await mkdir(acpDir, { recursive: true });
-      await mkdir(sdkDir, { recursive: true });
-      await mkdir(sdkNativeDir, { recursive: true });
-      await writeFile(join(acpDir, "package.json"), JSON.stringify({ version: INSTALLED_CLAUDE_CODE_VERSION }));
-      await writeFile(join(sdkDir, "package.json"), JSON.stringify({
-        version: "0.3.232",
-        optionalDependencies: {
-          "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.232",
-        },
-      }));
-      await writeFile(join(sdkNativeDir, "package.json"), JSON.stringify({ version: "0.3.232" }));
-      await mkdir(join(input.prefix, "node_modules", ".bin"), { recursive: true });
-      const acpBin = join(input.prefix, "node_modules", ".bin", "claude-agent-acp");
-      await writeFile(acpBin, "#!/bin/sh\nexit 0\n");
-      await chmod(acpBin, 0o755);
-      return;
-    }
-    const packageDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-code");
-    const nativeDir = join(input.prefix, "node_modules", "@anthropic-ai", "claude-code-linux-x64");
-    await mkdir(nativeDir, { recursive: true });
-    await writeFile(join(nativeDir, "package.json"), JSON.stringify({ version: INSTALLED_CLAUDE_CODE_VERSION }));
-    await writeFile(join(nativeDir, "claude"), "x".repeat(5000));
-    await chmod(join(nativeDir, "claude"), 0o755);
-    await mkdir(join(packageDir, "bin"), { recursive: true });
-    await writeFile(join(packageDir, "bin", "claude.exe"), "x".repeat(5000));
-    await chmod(join(packageDir, "bin", "claude.exe"), 0o755);
-    await writeFile(join(packageDir, "package.json"), JSON.stringify({
-      version: INSTALLED_CLAUDE_CODE_VERSION,
-      optionalDependencies: { "@anthropic-ai/claude-code-linux-x64": INSTALLED_CLAUDE_CODE_VERSION },
-    }));
-    await mkdir(join(input.prefix, "node_modules", ".bin"), { recursive: true });
-    const bin = join(input.prefix, "node_modules", ".bin", "claude");
-    await writeFile(bin, "#!/bin/sh\nexit 0\n");
-    await chmod(bin, 0o755);
-  }
-}
 
 async function addRoomMember(roomId: string, userId: string): Promise<void> {
     await db.pool.query(
@@ -141,16 +86,6 @@ const db = useTestDatabase(import.meta.filename, { max: 10 });
 beforeAll(async () => {
   if (!db.available) return;
   testRoot = await mkdtemp(join(tmpdir(), "rainver-room-db-"));
-  credentialOne = join(testRoot, "credential-one");
-  credentialTwo = join(testRoot, "credential-two");
-  await Promise.all([
-    mkdir(credentialOne, { recursive: true }),
-    mkdir(credentialTwo, { recursive: true }),
-  ]);
-  await Promise.all([
-    writeFile(join(credentialOne, ".credentials.json"), "{}"),
-    writeFile(join(credentialTwo, ".credentials.json"), "{}"),
-  ]);
   service = new RoomService(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
     RAINVER_HOME: testRoot,
@@ -159,12 +94,6 @@ beforeAll(async () => {
     SERVER_DATABASE_URL: db.connectionUri,
     RAINVER_HOME: testRoot,
   }), db.pool);
-  // Installs the fake claude_code tool once for the whole file: on-disk
-  // state under testRoot, independent of the per-test DB fixtures below.
-  await new RuntimeToolRegistry(
-    loadConfig({ RAINVER_HOME: testRoot }),
-    new FakeClaudeCodeInstaller(),
-  ).install("claude_code", { version: INSTALLED_CLAUDE_CODE_VERSION });
 }, 120_000);
 
 afterAll(async () => {
@@ -192,17 +121,6 @@ beforeEach(async () => {
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ('space-1', 'Room Space', 'team', 'user-1', $1, $1)`,
     [now],
-  );
-  // Enables the claude_code tool this file installed once in beforeAll
-  // (on-disk state) for this fresh space (DB state, truncated per test) —
-  // without this, SpaceAssistantService's provisioning disables the
-  // fixture's runtime-cli profile regardless of the on-disk install.
-  await db.pool.query(
-    `INSERT INTO space_runtime_tool_policies (
-       id, space_id, runtime, enabled, default_version, allowed_versions_json,
-       updated_by_user_id, created_at, updated_at
-     ) VALUES ($2, 'space-1', 'claude_code', true, $3, '[]'::jsonb, 'user-1', $1, $1)`,
-    [now, randomUUID(), INSTALLED_CLAUDE_CODE_VERSION],
   );
   await db.pool.query(
     `INSERT INTO space_memberships (
@@ -275,8 +193,20 @@ beforeEach(async () => {
     [now],
   );
   await db.pool.query(
-    `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, created_at, updated_at)
-     VALUES ('host-1', NULL, 'machine-1', 'server', 'server', 'server', 'online', $1, $1)`,
+    // The built-in host reports the copy these Rooms dispatch to, and a
+    // heartbeat, like any other host. It used to need neither: a server-host
+    // Room turn ran a CLI the server spawned itself. It runs the copy this
+    // host's daemon has now, so a host with no installation — or no
+    // heartbeat — is one nothing can be dispatched to, which is the check
+    // `prepareHostConversationDispatch` makes for every host alike.
+    `INSERT INTO hosts (
+       id, owner_user_id, machine_id, name, kind, environment_kind, status,
+       capabilities_json, last_heartbeat_at, created_at, updated_at
+     ) VALUES (
+       'host-1', NULL, 'machine-1', 'server', 'server', 'server', 'online',
+       '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
+       $1, $1, $1
+     )`,
     [now],
   );
   await db.pool.query(
@@ -347,31 +277,9 @@ beforeEach(async () => {
        runtime_policy_json, enabled, is_default, created_at, updated_at
      ) VALUES (
        'runtime-cli', 'space-1', 'agent-1', 'Subscription',
-       'claude_code', 'host-1', 'managed', 'own', '{}'::jsonb, '{}'::jsonb,
+       'claude_code', 'host-1', 'managed', 'managed:1.0.0', '{}'::jsonb, '{}'::jsonb,
        true, true, $1, $1
      )`,
-    [now],
-  );
-  await db.pool.query(
-    `INSERT INTO cli_credential_profiles (
-       id, owner_user_id, runtime, name, source_path, target_path,
-       readonly, notes, created_at, updated_at
-     ) VALUES
-       ('credential-user-1', 'user-1', 'claude_code', 'Owner login',
-        $2, '.claude', true, '', $1, $1),
-       ('credential-user-2', 'user-2', 'claude_code', 'Member login',
-        $3, '.claude', true, '', $1, $1)`,
-    [now, credentialOne, credentialTwo],
-  );
-  await db.pool.query(
-    `INSERT INTO cli_credential_space_grants (
-       id, profile_id, space_id, owner_user_id, granted_by_user_id,
-       enabled, is_default, created_at, updated_at
-     ) VALUES
-       ('grant-user-1', 'credential-user-1', 'space-1', 'user-1', 'user-1',
-        true, true, $1, $1),
-       ('grant-user-2', 'credential-user-2', 'space-1', 'user-2', 'user-1',
-        true, true, $1, $1)`,
     [now],
   );
 });
@@ -406,7 +314,7 @@ async function seedConversation(
        created_at, updated_at
      )
      SELECT gen_random_uuid()::varchar, member.space_id, member.agent_id,
-            'Conversation fixture CLI', 'claude_code', $3::varchar, $4::varchar, $5::varchar, 'own',
+            'Conversation fixture CLI', 'claude_code', $3::varchar, $4::varchar, $5::varchar, 'managed:1.0.0',
             '{}'::jsonb, '{}'::jsonb, true, false, now(), now()
        FROM room_agent_members member
       WHERE member.space_id = $1 AND member.room_id = $2 AND member.status = 'active'
@@ -416,7 +324,7 @@ async function seedConversation(
              AND profile.enabled = true AND profile.execution_host_id = $3::varchar
              AND profile.workspace_mode = $5::varchar
              AND profile.workspace_location_id IS NOT DISTINCT FROM $4::varchar
-             AND profile.adapter_type = 'claude_code' AND profile.runtime_installation = 'own'
+             AND profile.adapter_type = 'claude_code' AND profile.runtime_installation = 'managed:1.0.0'
         )`,
     [
       scope.spaceId,
@@ -443,9 +351,8 @@ async function seedConversation(
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
         adapter_type: "claude_code",
-        runtime_installation: "own",
+        runtime_installation: "managed:1.0.0",
       },
     },
   );
@@ -625,7 +532,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     await db.pool.query(
@@ -657,7 +563,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     expect(first.message).toMatchObject({
@@ -724,7 +629,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     expect(retried.message.id).toBe(first.message.id);
@@ -783,7 +687,6 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    await db.pool.query("UPDATE cli_credential_space_grants SET enabled = false WHERE space_id = 'space-1'");
     const now = new Date().toISOString();
     await db.pool.query(
       `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
@@ -797,7 +700,7 @@ describe("Room workflow (real Postgres)", () => {
        ) VALUES (
          'host-owner', 'user-1', 'machine-owner', 'Owner laptop', 'remote',
          'linux_native', 'online',
-         '{"installations":{"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
+         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
          $1, $1, $1
        )`,
       [now],
@@ -951,7 +854,10 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    await db.pool.query("UPDATE cli_credential_space_grants SET enabled = false WHERE space_id = 'space-1'");
+    // The built-in host is the other eligible backend now that no CLI runs on
+    // the server itself (ADR 0016), so "no backend" means no provider *and*
+    // no host with a logged-in copy.
+    await db.pool.query("UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = 'host-1'");
     const owner = { spaceId: "space-1", userId: "user-1" };
     // Provisioning can fail, so it belongs on the action that needs it. Making
     // it fail Room creation — and, once the mainline is created with the
@@ -1059,7 +965,6 @@ describe("Room workflow (real Postgres)", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: null,
         }],
       },
     );
@@ -1262,7 +1167,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     const groupId = dispatched.task_group_ids[0]!;
@@ -1310,7 +1214,6 @@ describe("Room workflow (real Postgres)", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: null,
         }],
       },
     );
@@ -1328,7 +1231,6 @@ describe("Room workflow (real Postgres)", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: null,
         }],
       },
     );
@@ -1429,10 +1331,9 @@ describe("Room workflow (real Postgres)", () => {
 
     const bindings = await db.pool.query<{
       bound_by_user_id: string;
-      credential_profile_id: string | null;
       agent_id: string;
     }>(
-      `SELECT bound_by_user_id, credential_profile_id, agent_id
+      `SELECT bound_by_user_id, agent_id
          FROM session_conversation_backends
         WHERE session_id = $1
         ORDER BY bound_by_user_id ASC`,
@@ -1441,7 +1342,6 @@ describe("Room workflow (real Postgres)", () => {
     expect(bindings.rows).toEqual([
       {
         bound_by_user_id: "user-1",
-        credential_profile_id: null,
         agent_id: "agent-1",
       },
     ]);
@@ -1479,7 +1379,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
 
@@ -1547,7 +1446,6 @@ describe("Room workflow (real Postgres)", () => {
     const backends = [{
       agent_id: "agent-1",
       runtime_profile_id: "runtime-cli",
-      credential_profile_id: null,
     }];
     const focused = await service.sendMessage(owner, created.room.id, first.id, {
       content: "Is this done?",
@@ -1642,7 +1540,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     const runPrompt = await db.pool.query<{ prompt: string }>("SELECT prompt FROM runs WHERE id=$1", [sent.run_ids[0]]);
@@ -1690,7 +1587,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
 
@@ -1700,11 +1596,7 @@ describe("Room workflow (real Postgres)", () => {
     const runs = new PgRunRepository(db.pool);
     const queued = await runs.getRun("space-1", sent.run_ids[0]!);
     expect(queued).not.toBeNull();
-    const routed = await new PgRouteDecisionRepository(db.pool, undefined, {
-      availableProfiles: async () => [
-        { id: "credential-user-1", logged_in: true },
-      ],
-    }).routeRun(queued!);
+    const routed = await new PgRouteDecisionRepository(db.pool).routeRun(queued!);
     expect(routed.runtime_profile_id).toBe("runtime-cli");
 
     // Production execution binds the queued Run to its Work Context before
@@ -1768,7 +1660,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     const firstRun = await db.pool.query<{
@@ -1846,7 +1737,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     await seedConversationMessages(db.pool, {
@@ -1871,7 +1761,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     });
     const resumedRun = await db.pool.query<{
@@ -1936,7 +1825,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "What do you make of this?",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli", credential_profile_id: null }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli"}],
     });
     const prompt = (await db.pool.query<{ prompt: string }>(
       "SELECT prompt FROM runs WHERE id = $1", [sent.run_ids[0]],
@@ -1977,7 +1866,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: null,
       }],
     })).rejects.toMatchObject({ statusCode: 422 });
 
@@ -2106,7 +1994,7 @@ describe("Room workflow (real Postgres)", () => {
     await db.pool.query(
       `UPDATE agent_runtime_profiles
           SET execution_host_id = 'host-1', workspace_mode = 'managed',
-              workspace_location_id = NULL, runtime_installation = 'own'
+              workspace_location_id = NULL, runtime_installation = 'managed:1.0.0'
         WHERE id = $1`,
       [runtimeProfile.rows[0]!.id],
     );
@@ -2118,9 +2006,8 @@ describe("Room workflow (real Postgres)", () => {
         runtime: {
           agent_id: presetSpecialist!.agent_id,
           runtime_profile_id: runtimeProfile.rows[0]!.id,
-          credential_profile_id: null,
           adapter_type: "claude_code",
-          runtime_installation: "own",
+          runtime_installation: "managed:1.0.0",
         },
       },
     );
@@ -2133,7 +2020,6 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{
         agent_id: presetSpecialist!.agent_id,
         runtime_profile_id: runtimeProfile.rows[0]!.id,
-        credential_profile_id: null,
       }],
     });
     expect(roomDispatch.run_ids).toHaveLength(1);
@@ -2175,7 +2061,7 @@ describe("Room workflow (real Postgres)", () => {
        ) VALUES (
          'host-room-bound', 'user-1', 'machine-1', 'Room host', 'remote',
          'linux_native', 'online', now(),
-         '{"installations":{"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
+         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
          now(), now()
        );
        UPDATE workspace_locations
@@ -2183,10 +2069,10 @@ describe("Room workflow (real Postgres)", () => {
         WHERE id = 'location-1';
        UPDATE agent_runtime_profiles
           SET execution_host_id = 'host-room-bound', workspace_mode = 'location',
-              workspace_location_id = 'location-1', runtime_installation = 'own'
+              workspace_location_id = 'location-1', runtime_installation = 'managed:1.0.0'
         WHERE id = 'runtime-cli'`,
     );
-    const agent = await new PgAgentRepository(db.pool, loadConfig({ RAINVER_HOME: testRoot }))
+    const agent = await new PgAgentRepository(db.pool)
       .create({
         spaceId: owner.spaceId,
         projectId: "project-1",
@@ -2198,7 +2084,7 @@ describe("Room workflow (real Postgres)", () => {
         runtimePolicyJson: { default_adapter_type: "claude_code" },
         executionHostId: "host-room-bound",
         workspaceLocationId: "location-1",
-        runtimeInstallation: "own",
+        runtimeInstallation: "managed:1.0.0",
       });
     await service.addAgent(owner, created.room.id, {
       agent_id: agent.id,
@@ -2221,7 +2107,7 @@ describe("Room workflow (real Postgres)", () => {
        )`,
       [agent.id],
     );
-    const delegatedAgent = await new PgAgentRepository(db.pool, loadConfig({ RAINVER_HOME: testRoot }))
+    const delegatedAgent = await new PgAgentRepository(db.pool)
       .create({
         spaceId: owner.spaceId,
         projectId: "project-1",
@@ -2233,7 +2119,7 @@ describe("Room workflow (real Postgres)", () => {
         runtimePolicyJson: { default_adapter_type: "claude_code" },
         executionHostId: "host-room-bound",
         workspaceLocationId: "location-1",
-        runtimeInstallation: "own",
+        runtimeInstallation: "managed:1.0.0",
         roleInstruction: "Separate evidence from assumption.",
       });
     await service.addAgent(owner, created.room.id, {
@@ -2607,7 +2493,7 @@ describe("Room workflow (real Postgres)", () => {
     const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask a specialist to look into this.",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli", credential_profile_id: null }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli"}],
     });
     const managerRunId = sent.run_ids[0]!;
     // The Manager's own turn must reach a terminal status before another
@@ -2724,7 +2610,7 @@ describe("Room workflow (real Postgres)", () => {
     const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask a specialist and wait for the result.",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli", credential_profile_id: null }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli"}],
     });
     const managerRunId = sent.run_ids[0]!;
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
@@ -2836,7 +2722,7 @@ describe("Room workflow (real Postgres)", () => {
     const conversation = await seedConversation(owner, created.room.id, "Main");
     const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Ask two specialists in parallel, no need to wait.",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli", credential_profile_id: null }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli"}],
     });
     const managerRunId = sent.run_ids[0]!;
     await db.pool.query(

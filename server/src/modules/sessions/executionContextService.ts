@@ -101,7 +101,6 @@ export class ConversationExecutionContextService {
           if (existingBinding) {
             const existingThread = await repository.getConversationThread(identity.spaceId, session.id, runtime.agent_id);
             if ((runtime.runtime_profile_id !== null && existingBinding.runtime_profile_id !== runtime.runtime_profile_id)
-              || existingBinding.credential_profile_id !== runtime.credential_profile_id
               || existingThread?.adapter_type !== runtime.adapter_type
               || existingThread?.runtime_installation !== runtime.runtime_installation) {
               throw new ConversationExecutionContextError(409, "CLI runtime is fixed for this Conversation Agent; start a new Conversation to change it");
@@ -115,7 +114,6 @@ export class ConversationExecutionContextService {
             userId: identity.userId,
             agentId: selectedProfile.agent_id,
             profileId: selectedProfile.id,
-            credentialProfileId: runtime.credential_profile_id,
           });
           const thread = await new PgHostThreadRepository(client).getOrCreateForConversationAgent({
             executionHostId: host.id,
@@ -209,7 +207,6 @@ export class ConversationExecutionContextService {
         const existingBinding = await repository.getBinding(identity.spaceId, session.id, participant.agent_id);
         if (existingBinding && (
           existingBinding.runtime_profile_id !== participant.id
-          || existingBinding.credential_profile_id !== null
         )) {
           throw new ConversationExecutionContextError(409, "The Conversation Agent runtime is already initialized with a different CLI");
         }
@@ -219,7 +216,6 @@ export class ConversationExecutionContextService {
           userId: identity.userId,
           agentId: participant.agent_id,
           profileId: participant.id,
-          credentialProfileId: null,
         });
         const thread = await threads.getOrCreateForConversationAgent({
           executionHostId: host.id,
@@ -681,7 +677,6 @@ export class ConversationExecutionContextService {
     return {
       agent_id: agentId,
       runtime_profile_id: binding.runtime_profile_id,
-      credential_profile_id: binding.credential_profile_id,
       adapter_type: thread.adapter_type,
       runtime_installation: thread.runtime_installation,
     };
@@ -701,8 +696,7 @@ export class ConversationExecutionContextService {
       runtimes.push({
         agent_id: binding.agent_id,
         runtime_profile_id: binding.runtime_profile_id,
-        credential_profile_id: binding.credential_profile_id,
-        adapter_type: thread.adapter_type,
+          adapter_type: thread.adapter_type,
         runtime_installation: thread.runtime_installation,
       });
     }
@@ -727,7 +721,6 @@ export class ConversationExecutionContextService {
       ? await repository.getConversationThread(session.space_id, session.id, runtime.agent_id)
       : null;
     if (binding && ((runtime.runtime_profile_id !== null && binding.runtime_profile_id !== runtime.runtime_profile_id)
-      || binding.credential_profile_id !== runtime.credential_profile_id
       || thread?.adapter_type !== runtime.adapter_type
       || thread?.runtime_installation !== runtime.runtime_installation)) {
       throw new ConversationExecutionContextError(409, "CLI runtime is fixed for this Conversation Agent; start a new Conversation to change it");
@@ -770,16 +763,17 @@ export class ConversationExecutionContextService {
     runtime: ConversationRuntimeChoice,
     userId: string,
   ): Promise<RuntimeProfileRow> {
-    if (runtime.credential_profile_id !== null) {
-      throw new ConversationExecutionContextError(422, "Host-bound CLI runtimes use the selected Host installation and do not accept a server credential profile");
-    }
     if (!await repository.canAgentParticipate(session, runtime.agent_id, userId)) {
       throw new ConversationExecutionContextError(403, "The selected Agent is not a participant in this Conversation");
     }
     let runtimeProfileId = runtime.runtime_profile_id;
     if (runtimeProfileId === null) {
-      if (host.kind !== "remote") {
-        throw new ConversationExecutionContextError(422, "The selected CLI requires a reusable runtime profile on the server Host");
+      // Every CLI runs on a host daemon now, the built-in one included, so a
+      // reusable runtime profile is what any of them needs — the message used
+      // to say the server host was the exception, and it is the one host this
+      // refusal made unusable.
+      if (host.kind !== "remote" && host.kind !== "server") {
+        throw new ConversationExecutionContextError(422, "The selected CLI requires an execution host");
       }
       const ensured = await new PgAgentRepository(this.pool).ensureHostRuntimeProfileInTransaction(db, {
         spaceId: session.space_id,
@@ -817,7 +811,6 @@ function runtimeChoice(candidate: ConversationExecutionRuntimeProfile): Conversa
   return {
     agent_id: candidate.agent_id,
     runtime_profile_id: candidate.runtime_profile_id,
-    credential_profile_id: null,
     adapter_type: candidate.adapter_type,
     runtime_installation: candidate.runtime_installation,
   };
@@ -911,7 +904,7 @@ function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "23505");
 }
 
-function locationIsOnline(location: Pick<ExecutionLocationRow, "host_kind" | "host_status" | "last_heartbeat_at">): boolean {
+export function locationIsOnline(location: Pick<ExecutionLocationRow, "host_kind" | "host_status" | "last_heartbeat_at">): boolean {
   return hostIsOnline({
     kind: location.host_kind,
     status: location.host_status,
@@ -954,7 +947,9 @@ function hostInstallationAvailability(
   adapterType: string,
   installationId: string | null,
 ): { usable: boolean; reason: string | null } {
-  if (host.kind === "server") return { usable: true, reason: null };
+  // The built-in host reports its installations like any other daemon, and a
+  // container with nothing installed reports none. Waiving the check for it
+  // offered a copy that does not exist and failed at launch instead.
   const installation = normalizeHostCapabilities(host.capabilities_json).installations[adapterType]
     ?.find((candidate) => candidate.id === installationId);
   if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };

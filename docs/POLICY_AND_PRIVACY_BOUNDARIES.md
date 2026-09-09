@@ -232,7 +232,7 @@ PolicyGateway section above for the allowed preflight-only sites.
 | Action | Enforcement Point | Decision inputs (context) | Behavior |
 |--------|------------------|-----------------------------|----------|
 | `runtime.execute` | `RunOrchestrationService` before adapter execution | `agent_status`, `tool_name`, `trigger_origin`, `adapter_type`, risk/sandbox fields | DENY/REQUIRE_APPROVAL prevents execution; records PolicyDecisionRecord + RunEvent |
-| `runtime.use_credential` | `RunOrchestrationService` before provider credential resolution for runtimes whose credential mode is `model_provider_api_key` | `trigger_origin`, `instructed_by_user_id`; `resource_space_id` from Credential row | DENY/REQUIRE_APPROVAL prevents credential resolution. CLI-profile runtimes use the CLI CredentialBroker path, not ModelProvider API keys. **fail_closed**. |
+| `runtime.use_credential` | `RunOrchestrationService` before provider credential resolution for runtimes whose credential mode is `model_provider_api_key` | `trigger_origin`, `instructed_by_user_id`; `resource_space_id` from Credential row | DENY/REQUIRE_APPROVAL prevents credential resolution. A CLI runtime resolves no credential here — its login is held by its copy on the execution host (ADR 0016). **fail_closed**. |
 | `context.inject_memory` | `ContextPrepareService` via `enforce()` before context assembly | `trigger_origin` | Cross-space DENY; records PolicyDecisionRecord on DENY |
 | `context.render_for_runtime` | `RunOrchestrationService` before adapter execution | `has_context_taint` | Cross-space DENY; records PolicyDecisionRecord on DENY |
 | `artifact.persist` | `RunMaterializationService` via `enforce()` before file/row write | `artifact_type`, `visibility`, workspace/project IDs, storage shape | DENY/REQUIRE_APPROVAL blocks file and Artifact row; **fail_closed** durable audit. |
@@ -287,8 +287,8 @@ ModelProvider/API-key credential checks. To stay consistent with real execution,
 automation policy preflight does not treat space default ModelProviders as a
 credential source; the credential policy chain is only explicit run provider,
 runtime adapter provider, agent version provider, then runtime adapter
-credential. CLI-profile runtimes rely on runtime preflight and the CLI
-CredentialBroker, not `runtime.use_credential` simulation.
+credential. A CLI runtime relies on runtime preflight and on the login its copy holds on
+its execution host, not on `runtime.use_credential` simulation.
 Every wired runtime adapter must have an explicit runtime requirements entry.
 Unknown non-empty adapter types fail with a stable configuration error instead
 of silently using `model_provider_mode=none`.

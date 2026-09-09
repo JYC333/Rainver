@@ -296,6 +296,37 @@ describe("manual close gate", () => {
     expect(events.rowCount).toBe(0);
   });
 
+  it("closes a Task that declared nothing, without asking about the missing review", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task });
+    const repository = new PgTaskRepository(db.pool!);
+
+    // An evaluation comes from an execution Run's review, so most Tasks never
+    // have one. Prompting on it fired for essentially every close, which
+    // trains the person to click through and buries the reason that is a
+    // claim about deliverables under one that is only a process step.
+    await repository.updateTask(owner, task, { status: "done" });
+
+    const after = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
+    expect(after.rows[0]?.status).toBe("done");
+  });
+
+  it("still says in the record that the close went past a review", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task });
+    await new PgTaskRepository(db.pool!).updateTask(owner, task, { status: "done" });
+
+    const events = await db.pool!.query<{ data_json: Record<string, unknown> }>(
+      `SELECT data_json FROM project_work_events WHERE subject_id = $1 AND event_kind = 'task.accepted'`,
+      [task],
+    );
+    // The acceptance is where the basis lives: closed on an override, and the
+    // one requirement it went past named.
+    expect(events.rows[0]?.data_json).toMatchObject({ basis: "override", overridden: ["evaluation"] });
+  });
+
   it("closes on an acknowledged override and records what was skipped", async (ctx) => {
     if (!db.available) return ctx.skip();
     const task = randomUUID();

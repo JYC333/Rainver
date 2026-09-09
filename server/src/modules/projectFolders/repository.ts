@@ -52,7 +52,6 @@ export interface ProjectFolderRow {
   system_managed: boolean;
   registered_from: string | null;
   metadata_json: Record<string, unknown> | null;
-  allow_external_root: boolean;
   snapshot_retention_days: number | null;
   snapshot_max_count: number | null;
   created_at: unknown;
@@ -747,7 +746,6 @@ export class PgProjectFolderRepository {
         relative_path: relativePath,
         folder_protected: Boolean(folder.protected),
         folder_system_managed: Boolean(folder.system_managed),
-        folder_external_root: Boolean(folder.allow_external_root),
         ...(options.hostId ? { host_id: options.hostId } : {}),
         audit_reasons: auditReasons,
       },
@@ -906,7 +904,6 @@ function folderReadAuditReasons(
 ): string[] {
   const reasons: string[] = [];
   if (folder.system_managed) reasons.push("system_managed");
-  if (folder.allow_external_root) reasons.push("external_root");
   if (folder.protected) reasons.push("protected_folder");
   if (readKind === "git_diff" && relativePath === null) reasons.push("full_diff");
   if (looksSecretLikePath(relativePath)) reasons.push("secret_like_path");

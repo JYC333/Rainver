@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { saveConfig } from "../src/config.js";
+import { captureWorkspaceDiff } from "../src/gitDiff.js";
 import {
   archiveAgentProfiles,
   archiveLegacyProfileTree,
@@ -27,7 +28,7 @@ let stateDir: string;
 beforeEach(async () => {
   stateDir = await mkdtemp(join(tmpdir(), "rainver-managed-workspaces-"));
   process.env.RAINVER_HOST_CONFIG_DIR = stateDir;
-  await saveConfig({ server_url: "http://127.0.0.1:1", host_id: "host-1", token: "token", workspaces: {} });
+  await saveConfig({ server_url: "http://127.0.0.1:1", host_id: "host-1", token: "token", trust: "trusted", workspaces: {} });
 });
 
 afterEach(async () => {
@@ -168,3 +169,31 @@ describe("managed workspaces", () => {
     }]);
   });
 });
+
+/**
+ * ADR 0016 section 11 rests undo on git. A managed workspace was a plain
+ * directory, so for the place an Agent works when a Conversation names no
+ * Folder that was false: the Run captured no diff, nothing could be reverted,
+ * and nobody could see what had been written.
+ */
+describe("a managed workspace is a repository", () => {
+  it("initialises one on first use, so its Runs have a diff and an undo", async () => {
+    const path = await ensureManagedWorkspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", { kind: "conversation", id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb01" });
+    await writeFile(join(path, "note.txt"), "written by a Run\n", "utf8");
+
+    expect(await captureWorkspaceDiff(path)).toContain("note.txt");
+  });
+
+  it("leaves a workspace that is already a repository alone", async () => {
+    const path = await ensureManagedWorkspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", { kind: "conversation", id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb02" });
+    await writeFile(join(path, "kept.txt"), "first\n", "utf8");
+    const gitDir = join(path, ".git");
+    const before = await stat(gitDir);
+
+    // A second Run in the same Conversation reaches the same directory.
+    await ensureManagedWorkspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", { kind: "conversation", id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb02" });
+
+    expect((await stat(gitDir)).birthtimeMs).toBe(before.birthtimeMs);
+    expect(await readFile(join(path, "kept.txt"), "utf8")).toBe("first\n");
+  });
+})

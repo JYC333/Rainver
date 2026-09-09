@@ -22,7 +22,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema } from "./common.js";
+import { IdSchema, ISODateTimeSchema } from "./common.js";
 import {
   AmbientSessionCountSchema,
   AmbientSessionImportSchema,
@@ -230,6 +230,43 @@ export const HostLaunchWorkspaceAccessSchema = z.object({
 });
 export type HostLaunchWorkspaceAccess = z.infer<typeof HostLaunchWorkspaceAccessSchema>;
 
+/**
+ * The isolation a **strict** host applies to this Run.
+ *
+ * A trusted (paired) host ignores it: its whole trust model is that the owner
+ * already extends this machine the trust a native process has (B62). A strict
+ * host — the built-in host inside `sandbox-runner` — wraps every Run in a
+ * bubblewrap namespace, and these two values are the policy the control plane
+ * owns: how the workspace is bound, and whether the namespace gets a network
+ * at all. Everything else about the namespace is derived on the host, because
+ * only the host knows its own paths (B64).
+ *
+ * Omitted, a strict host falls closed on both axes: a read-only workspace and
+ * no network at all. A dispatch that needs either says so; one that forgot to
+ * fails visibly rather than quietly receiving the container's network.
+ */
+export const HostLaunchIsolationSchema = z.object({
+  sandbox_mode: z.enum(["read_only", "read_write"]),
+  /**
+   * What this Run may reach on the network.
+   *
+   * - `none` — no network at all. The namespace is unshared, so this is the
+   *   only profile that *confines* rather than directs.
+   * - `default` — the general web and git, through the host's egress proxy.
+   *   Package registries are refused with a reason the runtime can print.
+   * - `install` — `default` plus package registries, for a Run that was
+   *   granted them (ADR 0017's exposure row).
+   *
+   * `default` and `install` point the Run at the proxy with `HTTP_PROXY`,
+   * which every vendor CLI, git and package manager honours and a process
+   * that opens its own socket does not. They are policy and a record, not
+   * containment; the proxy's private-range refusal is the one part that holds
+   * regardless, because the proxy declines rather than the client.
+   */
+  egress_profile: z.enum(["none", "default", "install"]),
+});
+export type HostLaunchIsolation = z.infer<typeof HostLaunchIsolationSchema>;
+
 export const ManagedWorkspaceContainerKindSchema = z.enum(["direct", "conversation"]);
 
 export const FolderReadKindSchema = z.enum(["tree", "file", "git_status", "git_diff"]);
@@ -281,10 +318,103 @@ export const HostLaunchFrameSchema = z.object({
    * purpose — environment and one file, with no branch on which agent runs.
    */
   work_surface: HostLaunchWorkSurfaceSchema.optional(),
+  /** Namespace policy for a strict host; ignored by a trusted one. */
+  isolation: HostLaunchIsolationSchema.optional(),
 });
 export type HostLaunchFrame = z.infer<typeof HostLaunchFrameSchema>;
 /** What a dispatcher supplies; the registry adds `type`, `run_id` and the `launch_id` nonce. */
 export type HostLaunchPayload = Omit<HostLaunchFrame, "type" | "run_id" | "launch_id">;
+
+/**
+ * A fixed command the control plane runs in a Run's workspace on this host.
+ *
+ * The Verification Engine is the only sender: a verification recipe is a
+ * server-side definition, and the daemon executes what it is handed rather
+ * than choosing anything. That makes
+ * the boundary a server-side one, unlike `login_open`, where the command comes
+ * from the adapter spec and the daemon builds it: nothing in a frame may name a
+ * command the control plane did not define, and the routes that send this are
+ * the enforcement point.
+ *
+ * It is deliberately not a `launch`: there is no runtime, no session, no
+ * provider binding and no work surface, and it answers once with the whole
+ * output instead of streaming. A strict host still wraps it in a namespace —
+ * verification asks questions *about* a Run's workspace and has no more right
+ * to the machine than the Run did.
+ */
+export const HostCommandRunFrameSchema = z.object({
+  type: z.literal("command_run"),
+  request_id: IdSchema,
+  /** Whose workspace to run in; resolved on the host, like every other path. */
+  workspace: LaunchWorkspaceSchema.optional(),
+  workspace_location_id: IdSchema.optional(),
+  /** Which Run this asks about, for correlation in host logs; the command gets its own directory either way. */
+  run_id: IdSchema.optional(),
+  /**
+   * Run in a throwaway directory the daemon makes for this request instead of
+   * a workspace, for a question about an installed copy rather than about
+   * anyone's work.
+   */
+  scratch_workspace: z.boolean().optional(),
+  /**
+   * Run the installed copy of this adapter rather than a command on PATH. The
+   * daemon resolves the executable from that copy's manifest and appends
+   * `command` as its arguments — so the thing that runs is one the daemon
+   * installed, and the control plane names only the arguments.
+   */
+  adapter_type: z.string().min(1).optional(),
+  installation: z.string().min(1).optional(),
+  command: z.array(z.string().min(1)).min(1),
+  stdin: z.string().nullable().optional(),
+  timeout_seconds: z.number().positive(),
+  isolation: HostLaunchIsolationSchema.optional(),
+});
+
+/**
+ * What one copy's subscription has left.
+ *
+ * Asked of the host because that is where the login is: a subscription's quota
+ * is readable only with the credential the copy holds, and the whole point of
+ * keeping credentials with the copy (ADR 0016 §7) is that nothing brokers them
+ * back here. The daemon answers with numbers — never the token, never the
+ * credential file — and the control plane caches them beside the copy.
+ */
+export const HostUsageProbeFrameSchema = z.object({
+  type: z.literal("usage_probe"),
+  request_id: IdSchema,
+  adapter_type: z.string().min(1),
+  installation: z.string().min(1),
+  /**
+   * Where this runtime keeps its credential inside a login home. The daemon
+   * has it in a managed copy's manifest but not for the machine's own
+   * installation, and the adapter spec is the source either way.
+   */
+  login: RuntimeLoginSpecSchema.nullable(),
+  timeout_seconds: z.number().positive(),
+});
+
+/** The shape the control plane already caches; `available: false` with a reason is a real answer. */
+export const HostUsageQuotaSchema = z.object({
+  available: z.boolean(),
+  session_pct: z.number().nullable(),
+  session_resets: z.string().nullable(),
+  week_pct: z.number().nullable(),
+  week_resets: z.string().nullable(),
+  error: z.string().nullable(),
+});
+export type HostUsageQuota = z.infer<typeof HostUsageQuotaSchema>;
+
+/**
+ * Undoes the last upgrade of one managed copy, by promoting the version kept
+ * behind it. Carries no version: the daemon holds exactly one rollback target
+ * (ADR 0016 §9), and naming one here would let the control plane ask for a
+ * directory it cannot see.
+ */
+export const HostRollbackToolFrameSchema = z.object({
+  type: z.literal("rollback_tool"),
+  request_id: IdSchema,
+  adapter_type: z.string().min(1),
+});
 
 export const HostInstallToolFrameSchema = z.object({
   type: z.literal("install_tool"),
@@ -378,6 +508,9 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
    * turn starts fresh rather than resuming into a profile that is gone.
    */
   z.object({ type: z.literal("agent_profiles_reset"), request_id: IdSchema, agent_id: IdSchema }),
+  HostCommandRunFrameSchema,
+  HostUsageProbeFrameSchema,
+  HostRollbackToolFrameSchema,
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
   HostLoginOpenFrameSchema,
@@ -411,7 +544,36 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     exit_code: z.number(),
     timed_out: z.boolean(),
     error: z.string().nullable(),
+    /**
+     * What this Run reached through the host's egress proxy, and what it was
+     * refused. Reported on completion rather than streamed: it explains a Run
+     * after the fact ("why did the install fail"), and a Run that reaches
+     * nothing sends nothing. Absent on a paired host, which runs no proxy.
+     */
+    egress: z.array(z.object({
+      allowed: z.boolean(),
+      host: z.string(),
+      port: z.number().int(),
+      reason: z.string().nullable(),
+      at: ISODateTimeSchema,
+    })).max(200).optional(),
   }),
+  /**
+   * One `command_run`'s whole result. Not streamed: a verification recipe is a
+   * question with an answer, and its caller waits.
+   */
+  z.object({
+    type: z.literal("command_result"),
+    request_id: IdSchema,
+    exit_code: z.number(),
+    stdout: z.string(),
+    stderr: z.string(),
+    timed_out: z.boolean(),
+    error: z.string().nullable(),
+    /** Present only when the request asked; the workspace's top-level names. */
+    entries: z.array(z.string()).optional(),
+  }),
+  z.object({ type: z.literal("usage_probe_result"), request_id: IdSchema, quota: HostUsageQuotaSchema }),
   z.object({ type: z.literal("login_output"), session_id: IdSchema, data: z.string() }),
   z.object({ type: z.literal("login_exit"), session_id: IdSchema, exit_code: z.number(), logged_in: z.boolean().nullable() }),
   /** One frame per session: a folder's history is megabytes even trimmed. */

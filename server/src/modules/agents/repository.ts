@@ -3,11 +3,6 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError } from "../routeUtils/common.js";
-import { RuntimeToolRegistry } from "../runtimeTools/index.js";
-import {
-  isCliRuntimeTool,
-  resolveRuntimeToolVersionForSpace,
-} from "../runtimeTools/policies.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -16,8 +11,7 @@ import {
   type ScopedSettingsRead,
 } from "../settings/index.js";
 import {
-  BUILTIN_RUNTIME_ADAPTER_SPECS,
-  type RuntimeAdapterType,
+  getRuntimeAdapterSpec,
 } from "../runtimeAdapters/specs.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
@@ -223,7 +217,6 @@ export interface AgentCreateInput {
   modelConfigJson?: Record<string, unknown> | null;
   runtimeConfigJson?: Record<string, unknown> | null;
   /** Pre-resolved by the caller outside the transaction for CLI profiles. */
-  runtimeToolVersion?: string | null;
   contextPolicyJson?: Record<string, unknown> | null;
   memoryPolicyJson?: Record<string, unknown> | null;
   capabilitiesJson?: unknown[] | null;
@@ -445,16 +438,13 @@ export class PgAgentChatRepository {
 }
 
 export class PgAgentRepository {
-  constructor(
-    private readonly pool: Pool,
-    private readonly config?: ServerConfig,
-  ) {}
+  constructor(private readonly pool: Pool) {}
 
   static fromConfig(config: ServerConfig): PgAgentRepository {
     if (!config.databaseUrl) {
       throw new HttpError(502, "SERVER_DATABASE_URL is required");
     }
-    return new PgAgentRepository(getDbPool(config.databaseUrl), config);
+    return new PgAgentRepository(getDbPool(config.databaseUrl));
   }
 
   async list(
@@ -940,14 +930,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       });
     }
     await this.validateModelSelection(client, input.spaceId, adapterType, providerId, modelName, hostBound);
-    const runtimeConfigJson = await this.resolveRuntimeConfig(
-      client,
-      input.spaceId,
-      adapterType,
-      input.runtimeConfigJson ?? DEFAULT_RUNTIME_CONFIG,
-      input.runtimeToolVersion,
-      hostBound,
-    );
+    const runtimeConfigJson = this.resolveRuntimeConfig(adapterType, input.runtimeConfigJson ?? DEFAULT_RUNTIME_CONFIG);
     return this.createAgentWithVersion(client, {
       spaceId: input.spaceId,
       projectId: input.projectId ?? null,
@@ -998,7 +981,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimePolicyJson?: Record<string, unknown> | null;
       isDefault?: boolean;
       /** Pre-resolved by the caller outside the transaction for CLI profiles. */
-      runtimeToolVersion?: string | null;
       actorUserId?: string;
     },
   ): Promise<AgentRuntimeProfileOut> {
@@ -1040,7 +1022,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimePolicyJson: input.runtimePolicyJson,
       enabled: true,
       isDefault: input.isDefault ?? existing.rows[0]?.is_default ?? false,
-      runtimeToolVersion: input.runtimeToolVersion,
       agentId,
       actorUserId: input.actorUserId,
     }, client);
@@ -1206,9 +1187,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         stringValue(versionPatch.runtime_config_json?.adapter_type) ||
         stringValue(current.runtime_policy_json?.default_adapter_type),
       );
-      const runtimeConfigJson = await this.resolveRuntimeConfig(
-        client,
-        spaceId,
+      const runtimeConfigJson = this.resolveRuntimeConfig(
         currentAdapterType,
         versionPatch.runtime_config_json ?? current.runtime_config_json,
       );
@@ -1604,7 +1583,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     modelName: string | null,
     hostBound = false,
   ): Promise<void> {
-    const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
+    const spec = getRuntimeAdapterSpec(adapterType);
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
     if (modelName && !providerId && !hostBound) {
       throw new HttpError(400, "default_model_provider_id is required when default_model is set");
@@ -1724,11 +1703,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     const row = target.rows[0];
     if (!row) throw new HttpError(404, "Host or Workspace Location not found");
-    if (row.host_owner_user_id !== input.actorUserId) {
+    // Two safety models (ADR 0016 §3, B63). A paired host is its owner's, so
+    // binding an Agent to one requires being that owner. The built-in host has
+    // no owner and serves every Space — the per-Run namespace is what makes it
+    // safe — so there is no ownership to check, and refusing it here was what
+    // made the host the execution-target picker offers impossible to select.
+    if (row.host_owner_user_id !== null && row.host_owner_user_id !== input.actorUserId) {
       throw new HttpError(403, "The execution host must belong to the caller");
     }
-    if (row.host_kind !== "remote" || row.host_status === "revoked") {
-      throw new HttpError(422, "Host-bound Agents require a paired remote execution host");
+    if ((row.host_kind !== "remote" && row.host_kind !== "server") || row.host_status === "revoked") {
+      throw new HttpError(422, "Host-bound Agents require a live execution host");
     }
     if (input.workspaceMode === "location") {
       if (row.location_space_id !== input.spaceId || row.folder_space_id !== input.spaceId) {
@@ -1750,39 +1734,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     }
   }
 
-  private async resolveRuntimeConfig(
-    db: Queryable,
-    spaceId: string,
+  /**
+   * The Agent's runtime config, with the adapter it belongs to.
+   *
+   * A CLI runtime used to carry a `runtime_tool_version` here, chosen from
+   * copies the *server* had installed under `runtime-tools/`. There are no
+   * server-side copies any more: a CLI Agent names a host and an installation
+   * on it (`execution_host_id` + `runtime_installation`, ADR 0016), and that
+   * pair is the only thing that decides which copy runs.
+   */
+  private resolveRuntimeConfig(
     adapterType: string,
     input: Record<string, unknown>,
-    preparedRuntimeToolVersion?: string | null,
-    hostBound = false,
-  ): Promise<Record<string, unknown>> {
-    const config: Record<string, unknown> = { ...input, adapter_type: adapterType };
-    if (!isCliRuntimeTool(adapterType)) return config;
-    if (hostBound) return config;
-    if (preparedRuntimeToolVersion) {
-      const requestedVersion = stringValue(config["runtime_tool_version"]);
-      if (requestedVersion && requestedVersion !== preparedRuntimeToolVersion) {
-        throw new HttpError(
-          409,
-          `Prepared runtime tool version '${preparedRuntimeToolVersion}' does not match requested version '${requestedVersion}'`,
-        );
-      }
-      return { ...config, runtime_tool_version: preparedRuntimeToolVersion };
-    }
-    if (!this.config) {
-      throw new HttpError(500, "Server config is required to resolve CLI runtime tool versions");
-    }
-    const requestedVersion = stringValue(config["runtime_tool_version"]);
-    const version = await resolveRuntimeToolVersionForSpace(
-      db,
-      new RuntimeToolRegistry(this.config),
-      spaceId,
-      adapterType,
-      requestedVersion,
-    );
-    return { ...config, runtime_tool_version: version };
+  ): Record<string, unknown> {
+    return { ...input, adapter_type: adapterType };
   }
 
   private async requireAgent(
@@ -1989,7 +1954,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     if (Object.hasOwn(input.runtimeConfigJson, "credential_profile_id")) {
       throw new HttpError(
         422,
-        "CLI credentials are selected per user and conversation, not on Agent runtime profiles",
+        "Rainver brokers no CLI credential: a CLI Agent names an execution host and an installation on it",
       );
     }
     const id = randomUUID();
@@ -2045,7 +2010,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimePolicyJson?: Record<string, unknown> | null;
       enabled?: boolean;
       isDefault?: boolean;
-      runtimeToolVersion?: string | null;
       actorUserId?: string;
     },
     db: Queryable = this.pool,
@@ -2101,14 +2065,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       });
     }
     await this.validateRuntimeProfileSelection(spaceId, adapterType, modelProviderId, modelName, db, hostBound);
-    const runtimeConfigJson = await this.resolveRuntimeConfig(
-      db,
-      spaceId,
-      adapterType,
-      normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType),
-      input.runtimeToolVersion,
-      hostBound,
-    );
+    const runtimeConfigJson = this.resolveRuntimeConfig(adapterType, normalizedRuntimeConfig(input.runtimeConfigJson ?? {}, adapterType));
     return {
       name,
       adapterType,
@@ -2133,7 +2090,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     db: Queryable = this.pool,
     hostBound = false,
   ): Promise<void> {
-    const spec = BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType];
+    const spec = getRuntimeAdapterSpec(adapterType);
     if (!spec) throw new HttpError(400, `Unknown adapter_type ${JSON.stringify(adapterType)}`);
     if (modelName && !providerId && !hostBound) {
       throw new HttpError(400, "model_provider_id is required when model_name is set");

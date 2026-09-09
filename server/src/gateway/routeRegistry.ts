@@ -28,10 +28,7 @@ import { dailyReportsModule } from "../modules/dailyReports/index.js";
 import { backupsModule } from "../modules/backups/index.js";
 import { providersModule } from "../modules/providers/index.js";
 import { networkProfilesModule } from "../modules/networkProfiles/index.js";
-import { runtimeToolsModule } from "../modules/runtimeTools/index.js";
 import { acpAgentsModule } from "../modules/acpAgents/index.js";
-import { runtimeConformanceModule } from "../modules/runtimeConformance/index.js";
-import { runtimeToolBindingsModule } from "../modules/runtimeToolBindings/index.js";
 import { runtimeHostModule } from "../modules/runtimeHost/index.js";
 import { usageModule } from "../modules/usage/index.js";
 import { runsModule } from "../modules/runs/index.js";
@@ -117,11 +114,8 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   capabilitiesModule,
   streamingModule,
   notificationsModule,
-  runtimeToolsModule,
-  runtimeConformanceModule,
   networkProfilesModule,
   providersModule,
-  runtimeToolBindingsModule,
   runtimeHostModule,
   usageModule,
   runsModule,

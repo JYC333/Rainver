@@ -65,7 +65,7 @@ capture / trigger
 
 ### Credential resolution boundary
 
-- Runtime adapters obtain credentials through the server provider/credential broker in `server/src/modules/providers/`.
+- The `model_api` runtime obtains credentials through `server/src/modules/providers/`. A CLI runtime obtains none from here: it uses the login held by its copy on the execution host that runs it (ADR 0016).
 - Raw secret values must never appear in adapter config outputs, run steps, artifacts, or logs.
 - Direct env-variable credential reads in adapters are not allowed for new work.
 

@@ -18,8 +18,7 @@ import { ProjectResearchPipelineService } from "../projectResearch/index.js";
 import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityMonitorService.js";
 import { processAllUnclaimedDomainChangeEvents } from "../knowledgePromotion/revalidationService.js";
 import { sweepConversationRuntimeState } from "../runs/conversationRuntimeState.js";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
-import { createCliUsageRefreshTask } from "../providers/cli/usageScheduler.js";
+import { HOST_USAGE_REFRESH_INTERVAL_SECONDS, refreshAllHostUsage } from "../hosts/usageService.js";
 import { setBackgroundServicesStatusSource } from "./runtimeStatus.js";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService.js";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning.js";
@@ -276,14 +275,19 @@ export function startBackgroundServices(
   }
 
   if (config.databaseUrl) {
-    // Previously a detached setInterval started from the provider routes, so it
-    // survived shutdown and never reported a failure or a liveness record.
-    const broker = new CliCredentialBroker(config);
-    tasks.push(
-      createCliUsageRefreshTask(broker, {
-        isEnabled: () => broker.isCliUsageAutoRefreshEnabled(),
-      }),
-    );
+    // Subscription quota is readable only on the host that holds the login, so
+    // this asks each online host about each copy someone has logged into and
+    // caches the numbers. A fallback path: nobody is waiting on it, and it
+    // exists so a card is not blank when nothing has run for a while.
+    tasks.push({
+      name: "host_usage_quota_refresh",
+      intervalSeconds: HOST_USAGE_REFRESH_INTERVAL_SECONDS,
+      runOnStart: false,
+      run: async () => {
+        const probed = await refreshAllHostUsage(getDbPool(config.databaseUrl!));
+        if (probed > 0) log?.info(`[scheduler] host_usage_quota_refresh probed ${probed} copy(ies)`);
+      },
+    });
   }
 
   if (config.backupEnabled) {

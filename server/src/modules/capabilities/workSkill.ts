@@ -145,7 +145,10 @@ ${options.conversation
 3. Report what happened with \`task.report\` — at least once when you finish,
    and on any meaningful intermediate result. This is the only account a
    person will read.
-4. If you need a person to decide something, \`task.request_review\` and stop.
+4. When the work the Task asked for is done, \`task.complete\` with a summary.
+   Reporting is not closing: a Task nobody closed sits on the board as
+   unfinished work, and the person has to move it by hand.
+5. If you need a person to decide something, \`task.request_review\` and stop.
    Do not guess and continue.`}
 ${options.deliverOutputs ? OUTPUT_DELIVERY_SECTION : ""}
 ## Rules
@@ -171,7 +174,7 @@ initiative.
  * to make a runtime discover a file on its own: every mechanism that would
  * (a vendor's skills directory) also moves that vendor's login state, which
  * for an unbound run is the machine's own and must stay where it is
- * (ADR 0016 §4). Keeping a few lines inline rather than only the path means an
+ * (ADR 0016 §5). Keeping a few lines inline rather than only the path means an
  * agent that never opens the file still reports back.
  */
 export function workSkillPromptPointer(

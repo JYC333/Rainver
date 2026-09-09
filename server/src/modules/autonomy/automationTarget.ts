@@ -2,9 +2,9 @@ import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { automationTargetHandlerRegistry } from "../automations/targetRegistry.js";
 import { PgAutomationRepository } from "../automations/repository.js";
+import { readHostUsage } from "../hosts/usageService.js";
 import { HttpError } from "../routeUtils/common.js";
 import { AutonomyService } from "./service.js";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import type {
   AutonomousAdmissionPolicy,
   AutonomousQuotaSnapshot,
@@ -107,8 +107,8 @@ async function launchTickConfig(
   if (!policy) throw new HttpError(422, "Autonomous launch policy is invalid");
   const pool = getDbPool(config.databaseUrl);
   const configuredProfileId = stringValue(automation.config_json?.runtime_profile_id);
-  const profile = await pool.query<{ id: string; adapter_type: string }>(
-    `SELECT id, adapter_type
+  const profile = await pool.query<{ id: string; adapter_type: string; execution_host_id: string | null; runtime_installation: string | null }>(
+    `SELECT id, adapter_type, execution_host_id, runtime_installation
        FROM agent_runtime_profiles
       WHERE space_id = $1 AND agent_id = $2 AND enabled = true
         AND ($3::varchar IS NOT NULL AND id = $3 OR $3::varchar IS NULL AND is_default = true)
@@ -120,44 +120,29 @@ async function launchTickConfig(
   if (!runtimeProfile) throw new HttpError(422, "Autonomous launch requires an enabled Agent runtime profile");
   const runtime = runtimeProfile.adapter_type;
   if (runtime !== "claude_code" && runtime !== "codex_cli") {
-    return {
-      policy,
-      runtimeProfileId: runtimeProfile.id,
-      quota: unavailableQuota(runtime, "unsupported autonomous quota runtime"),
-    };
+    return { policy, runtimeProfileId: runtimeProfile.id, quota: unavailableQuota(runtime) };
   }
-  const broker = new CliCredentialBroker(config);
-  const credential = await broker.resolveProfile(
-    runtime,
-    null,
-    true,
-    automation.space_id,
-    automation.owner_user_id,
-  );
-  if (!credential) {
-    return {
-      policy,
-      runtimeProfileId: runtimeProfile.id,
-      quota: unavailableQuota(runtime, "credential profile unavailable"),
-    };
+  // Subscription quota is read on the host that holds the login and cached
+  // here (ADR 0016 §7). An autonomous launch that cannot see a fresh number
+  // is refused by `autonomousAdmission`, which is the safe direction: the
+  // whole point of the gate is not to spend someone's subscription unattended.
+  if (!runtimeProfile.execution_host_id || !runtimeProfile.runtime_installation) {
+    return { policy, runtimeProfileId: runtimeProfile.id, quota: unavailableQuota(runtime) };
   }
-  const cached = await broker.quotaForProfile(runtime, credential.id);
-  const values = [cached?.session_pct, cached?.week_pct]
+  const cached = (await readHostUsage(pool, runtimeProfile.execution_host_id))
+    .find((row) => row.adapter_type === runtime && row.installation === runtimeProfile.runtime_installation);
+  const values = [cached?.quota.session_pct, cached?.quota.week_pct]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return {
     policy,
     runtimeProfileId: runtimeProfile.id,
     quota: {
       runtime,
-      credential_profile_id: credential.id,
-      available: cached?.available === true && values.length > 0,
+      execution_host_id: runtimeProfile.execution_host_id,
+      installation: runtimeProfile.runtime_installation,
+      available: cached?.quota.available === true && values.length > 0,
       utilization_pct: values.length ? Math.max(...values) : null,
       checked_at: cached?.checked_at ?? null,
-      // The cache is shared by the scheduled probe and a Run's piggybacked
-      // reading, so provenance must come from the cached entry itself
-      // (`claude_code` can legitimately be either) rather than an assumption
-      // keyed off runtime — that would misrepresent the admission audit trace.
-      source: cached?.source ?? "live_probe",
     },
   };
 }
@@ -181,14 +166,14 @@ function admissionPolicy(value: Record<string, unknown> | null | undefined): Aut
   };
 }
 
-function unavailableQuota(runtime: string, _reason: string): AutonomousQuotaSnapshot {
+function unavailableQuota(runtime: string): AutonomousQuotaSnapshot {
   return {
     runtime,
-    credential_profile_id: "unavailable",
+    execution_host_id: "unavailable",
+    installation: "unavailable",
     available: false,
     utilization_pct: null,
     checked_at: null,
-    source: "live_probe",
   };
 }
 

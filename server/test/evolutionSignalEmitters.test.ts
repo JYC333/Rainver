@@ -161,38 +161,6 @@ describe("EvolutionSignalEmitter", () => {
     expect(db.calls[1]?.params.slice(1, 6)).toEqual(["space-1", targetType, refType, refId, ""]);
   });
 
-  it("exposes the future verification, supervisor, and conformance signal paths", async () => {
-    const db = new FakeDb();
-    const emitter = new EvolutionSignalEmitter(db);
-    await emitter.emitVerificationFailure({
-      spaceId: "space-1",
-      targetId: "target-1",
-      sourceId: "verification-1",
-      summary: "Acceptance check failed.",
-    });
-    await emitter.emitSupervisorOutcome({
-      spaceId: "space-1",
-      targetId: "target-1",
-      sourceId: "supervisor-1",
-      outcome: "retry_exhausted",
-      summary: "Retry budget exhausted.",
-    });
-    await emitter.emitConformanceViolation({
-      spaceId: "space-1",
-      targetId: "target-1",
-      sourceId: "conformance-1",
-      runtimeType: "codex_cli",
-      violation: "credential_leakage",
-      summary: "Credential-like text appeared in output.",
-    });
-    expect(db.calls).toHaveLength(3);
-    expect(db.calls.map((call) => call.params[4])).toEqual([
-      "verification_failed",
-      "supervisor_outcome",
-      "runtime_conformance_violation",
-    ]);
-  });
-
   it("maps both current rejection and future request-changes decisions", () => {
     expect(proposalSignalType("rejected")).toBe("proposal_rejected");
     expect(proposalSignalType("request_changes")).toBe("proposal_request_changes");

@@ -5,7 +5,7 @@ import {
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
 } from "../providers/proxy/lease.js";
-import { adapterProviderRequirement } from "./runtimeProviderBinding.js";
+import { adapterProviderRequirement } from "./adapterProviderRequirement.js";
 import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
 import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
 import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
@@ -13,7 +13,7 @@ import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProvider
 import type { HostLaunchProviderBinding } from "@rainver/protocol";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
-import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 
 /**
  * What the executing host is told. Deliberately runtime-agnostic: the daemon

@@ -32,6 +32,35 @@ export async function ensureRuntimeSubagentsDisabled(
   await writeFile(path, JSON.stringify(document, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
+/**
+ * The same configuration, as a file to send rather than a file to write.
+ *
+ * A conformance probe runs on the host that holds the copy, so the workspace
+ * this config belongs in is one only that host can reach. Rendering it here
+ * keeps the contract in one place — a runtime that declares
+ * `runtime_config` disablement without a materialization contract is refused
+ * either way — while letting the fixture travel with the request.
+ */
+export function renderRuntimeSubagentConfig(
+  spec: LocalCliRuntimeAdapterSpec,
+): { relative_path: string; contents: string } | null {
+  const config = spec.subagent_disable_config;
+  if (!config) {
+    if (spec.subagent_disable_mechanism === "runtime_config") {
+      throw new RuntimeSubagentConfigError(
+        `Runtime adapter '${spec.adapter_type}' declares runtime-configurable subagent disablement without a materialization contract.`,
+      );
+    }
+    return null;
+  }
+  const document: Record<string, unknown> = {};
+  setRequiredValue(document, config.deny_path, config.denied_value);
+  for (const required of config.required_values ?? []) {
+    setRequiredValue(document, required.path, required.value, required.value_mode);
+  }
+  return { relative_path: config.relative_path, contents: JSON.stringify(document, null, 2) };
+}
+
 export async function assertRuntimeSubagentsDisabled(
   spec: LocalCliRuntimeAdapterSpec,
   sandboxCwd: string | null,

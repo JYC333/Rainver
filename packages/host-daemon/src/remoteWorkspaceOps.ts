@@ -8,7 +8,7 @@ import { requireConfig, saveConfig } from "./config.js";
  * `host-workspace-frontend-registration-plan.md`). The control plane forwards
  * the owner's request over the WS; this module answers it the same way the
  * CLI does — the daemon stays the only thing that resolves or validates a
- * path (ADR 0016 §3).
+ * path (ADR 0016 §4).
  */
 
 export const LIST_DIRS_MAX_ENTRIES = 500;

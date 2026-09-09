@@ -69,10 +69,9 @@ describe("Room contracts", () => {
       backends: [{
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        credential_profile_id: "credential-user-2",
       }],
     });
-    expect(messageRequest.backends[0]?.credential_profile_id).toBe("credential-user-2");
+    expect(messageRequest.backends[0]?.runtime_profile_id).toBe("runtime-cli");
     expect(ContinueRoomAfterProposalRequestSchema.parse({
       proposal_id: "proposal-1",
     })).toEqual({ proposal_id: "proposal-1", backends: [] });

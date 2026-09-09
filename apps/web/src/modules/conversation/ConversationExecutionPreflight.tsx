@@ -275,7 +275,6 @@ export function ConversationExecutionPreflight({
       const runtime: ConversationRuntimeChoice = {
         agent_id: selectedProfile.agent_id,
         runtime_profile_id: selectedProfile.runtime_profile_id,
-        credential_profile_id: null,
         adapter_type: selectedProfile.adapter_type,
         runtime_installation: selectedProfile.runtime_installation!,
       }
@@ -284,7 +283,6 @@ export function ConversationExecutionPreflight({
         .map(choice => ({
           agent_id: choice.selected!.agent_id,
           runtime_profile_id: choice.selected!.runtime_profile_id,
-          credential_profile_id: null,
           adapter_type: choice.selected!.adapter_type,
           runtime_installation: choice.selected!.runtime_installation!,
         }))

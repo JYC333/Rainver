@@ -67,7 +67,7 @@ describe("server migration runner", () => {
     expect(tbl.rowCount).toBe(0);
 
     const rows = await status(db.pool, dir);
-    expect(rows).toEqual([{ version: "0001", name: "boom", applied: false }]);
+    expect(rows).toEqual([{ version: "0001", name: "boom", applied: false, maintenance: false }]);
   });
 
   it("refuses to silently re-apply an edited (checksum-mismatched) migration", async () => {

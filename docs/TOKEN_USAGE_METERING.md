@@ -87,8 +87,10 @@ funding-aware routing, deferred in
 [deferred-register.md](../.agent/tasks/deferred-register.md); this phase records
 the provenance without changing routing decisions.
 
-The current CLI history preview/commit flow supports managed Claude Code and
-Codex CLI credential profiles. Uploaded archives, server-path imports, scanner
+CLI history import from a server-side profile directory is retired with the
+profiles themselves (ADR 0016); past CLI work reaches the ledger through
+ambient session import from an execution host instead. Uploaded archives,
+server-path imports, scanner
 manifests, generic/manual event imports, and cross-instance bundle ingestion are
 reserved by protocol/schema contracts but do not have active product endpoints.
 Imported event types are therefore representable without making those future

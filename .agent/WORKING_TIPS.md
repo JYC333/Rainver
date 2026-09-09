@@ -28,10 +28,8 @@ folder.root_path is absolute → use as-is
 folder.root_path is relative → WORKSPACE_ROOT / folder.root_path
 folder.root_path is None     → WORKSPACE_ROOT / folder.id
 ```
-For execution (worktree sandbox), `PgRunSandboxManager.validateFolderRoot()`
-additionally enforces that the resolved root is under `WORKSPACE_ROOT` unless
-`folder.allow_external_root=true`. Absolute paths outside the managed root
-fail unless this flag is set.
+Server-managed Folder roots must stay under `WORKSPACE_ROOT`; attaching an
+existing external directory is available only on a paired trusted host.
 
 ---
 
@@ -70,7 +68,7 @@ a current or planned local CLI execution path.
 
 Model flags, permission bypass flags, invocation templates, and output parser
 selection are declared in `server/src/modules/runtimeAdapters/specs.ts`. CLI binary install
-and status use the server-controlled `/api/v1/runtime-tools` API; the retired
+and status use the host card and `/api/v1/hosts/:hostId/installations/*`; the retired
 `/api/v1/runtime-adapters` instance API must not be used.
 
 Managed CLI execution belongs to the server `runs` path, which prepares

@@ -6,6 +6,7 @@ import { assertSqlIdentifier, contentReadSql } from "../access/contentAccessSql.
 import { assertProjectWriterForMutation } from "../projects/access.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
 import { recordStageChange } from "./loopState.js";
+import { taskCompletionState } from "./completion.js";
 
 /**
  * What an Agent may do to a Project's work.
@@ -289,6 +290,90 @@ export async function advanceTaskStage(
     data: { via: "agent", run_id: context.runId },
   });
   return { task_id: task.id, stage: input.to_stage };
+}
+
+/**
+ * Say the work is finished.
+ *
+ * Without this an Agent could do everything a Task asked for and still not
+ * close it: `task.report` only records, `task.advance_stage` moves the Loop
+ * stage and not the flow, and the one action that wrote `status` could only
+ * write `waiting_for_review`. A person had to move every card by hand, which
+ * makes "the person is only involved at the points that are theirs" false.
+ *
+ * It reads the same completion state a manual close does, and splits it the
+ * only way that is defensible for a caller that cannot be asked:
+ *
+ * - **A declared output that does not exist refuses the close.** That is a
+ *   claim about a deliverable, and closing past it would make the Task say it
+ *   produced something it did not. The Agent is told which, and can act on it:
+ *   attach the file with `artifact.submit`, or `task.request_review`.
+ * - **A missing evaluation does not.** Most Tasks never get one — it comes
+ *   from an execution Run's review, and work done inside a turn has none — so
+ *   requiring it would make this action refuse almost every real close. It is
+ *   recorded as skipped instead, exactly as a person's override is, so the
+ *   record still says the Task closed early and what it went past.
+ *
+ * The authorization for closing at all is the origin gate: `task.complete` is
+ * origin-gated like `task.create`, so an Agent reaches it because a person
+ * asked in the turn, or because an unattended close was approved.
+ */
+export async function completeTask(
+  db: Queryable,
+  context: AgentActionContext,
+  input: { task_id: string; summary: string },
+): Promise<{ task_id: string; status: string; event_id: string }> {
+  return withQueryableTransaction(db, async (tx) => {
+    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
+    if (task.status === "done") throw new HttpError(409, "Task is already done");
+    if (task.status === "cancelled") throw new HttpError(409, "Task is cancelled and cannot be completed");
+    const outputs = await tx.query<{ required_outputs_json: unknown }>(
+      `SELECT required_outputs_json FROM tasks WHERE space_id = $1 AND id = $2`,
+      [context.spaceId, task.id],
+    );
+    const completion = await taskCompletionState(
+      tx,
+      context.spaceId,
+      task.id,
+      outputs.rows[0]?.required_outputs_json ?? null,
+    );
+    const missingOutputs = completion.missing.filter((reason) => reason.startsWith("required_output:"));
+    if (missingOutputs.length > 0) {
+      throw new HttpError(422, "This Task declared outputs that do not exist yet", {
+        code: "completion_requirements_unmet",
+        missing: completion.missing,
+        unacknowledged: missingOutputs,
+      });
+    }
+    const overridden = completion.missing;
+    await tx.query(
+      `UPDATE tasks SET status = 'done', updated_at = now() WHERE space_id = $1 AND id = $2`,
+      [context.spaceId, task.id],
+    );
+    const event = await appendProjectWorkEvent(tx, {
+      spaceId: context.spaceId,
+      projectId: task.project_id,
+      eventKind: "task.flow_changed",
+      subjectType: "task",
+      subjectId: task.id,
+      actorId: context.actorId,
+      correlationId: context.runId,
+      idempotencyKey: `task.flow_changed:done:${context.idempotencyKey}`,
+      data: { from: task.status, to: "done", via: "agent", summary: input.summary, overridden },
+    });
+    await appendProjectWorkEvent(tx, {
+      spaceId: context.spaceId,
+      projectId: task.project_id,
+      eventKind: "task.reported",
+      subjectType: "task",
+      subjectId: task.id,
+      actorId: context.actorId,
+      correlationId: context.runId,
+      idempotencyKey: `task.reported:done:${context.idempotencyKey}`,
+      data: { summary: input.summary, outcome: "done", via: "agent" },
+    });
+    return { task_id: task.id, status: "done", event_id: event.id };
+  });
 }
 
 /**

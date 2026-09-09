@@ -1,4 +1,4 @@
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
@@ -8,14 +8,15 @@ import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
 import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution.js";
-import type { VendorCliAdapterType } from "./vendorCliAdapter.js";
+import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
 import {
   acpSessionConfigFromRunOverride,
+  withStrictHostSelections,
   createCliConversationController,
   withAcpModelSelection,
 } from "./cliConversationProtocol.js";
 import { normalizeVendorEvents } from "./runtimeEventNormalization.js";
-import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
+import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRunCompletion } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
@@ -94,6 +95,41 @@ export interface RemoteHostCliAdapterInput {
   process_registry?: CliProcessRegistry;
   workspace?: LaunchWorkspace;
   workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  /**
+   * How many Runs this host may execute at once, or null for no cap. Only the
+   * built-in host has one; the caller knows which host this is, and looking it
+   * up here would be a database read on every dispatch to learn a constant.
+   */
+  max_concurrent_runs?: number | null;
+  /** Set only for a built-in-host Location; the daemon joins it under its own workspace root. */
+  workspace_relative_path?: string | null;
+}
+
+/**
+ * Which copy on the host this dispatch launches.
+ *
+ * The dispatch's own override first — Task dispatch pins a thread's copy that
+ * way — then the runtime profile's, which is where every other surface records
+ * it. Reading only the override meant a Room turn and a direct chat silently
+ * launched `own`: harmless on a paired machine, where `own` is the owner's
+ * logged-in CLI, and fatal on the built-in host, which has no vendor CLI on
+ * PATH at all. It also made the usage ledger and the quota cache disagree
+ * about which copy had run.
+ */
+export function dispatchInstallation(run: {
+  model_override_json?: unknown;
+  runtime_profile_snapshot_json?: unknown;
+}): string {
+  return runOverrideField(run.model_override_json, "installation")
+    ?? snapshotField(run.runtime_profile_snapshot_json, "runtime_installation")
+    ?? "own";
+}
+
+/** A field of the immutable runtime profile snapshot the router wrote for this Run. */
+function snapshotField(snapshot: unknown, key: string): string | null {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const value = (snapshot as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 /** A setting a dispatch asked for, as the admission stamped it on the Run. */
@@ -111,6 +147,43 @@ function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds:
     ? Math.trunc(contract.max_duration_seconds)
     : null;
   return Math.min(requested, maxSeconds, maxDuration ?? Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * The namespace and egress policy the control plane states for this Run.
+ *
+ * `sandbox_mode` is the workspace: a `read_only` Run gets a read-only
+ * workspace, everything else read-write.
+ *
+ * Egress is `default` unless this Run was granted package installs — the
+ * general web, git and the vendor the subscription belongs to, with package
+ * registries refused.
+ *
+ * `install` widens that and comes only from the dispatch
+ * (`model_override_json.egress_profile`), which the server composes and no
+ * request body reaches. A *standing* grant on the Agent runtime profile was
+ * the plan's other half and is deliberately not read: `runtime_config_json`
+ * is free-form and `canWriteRuntimeProfiles` is a read predicate for an
+ * ordinary Agent, so any member who can see the Agent could have widened what
+ * its Runs reach. Granting `install` through the product needs an
+ * authorization surface that does not exist yet — deferred register.
+ *
+ * Stated rather than omitted: an omitted policy falls closed on the daemon
+ * side, which is right for a dispatch that forgot.
+ */
+export function dispatchIsolation(run: {
+  required_sandbox_level?: string | null;
+  model_override_json?: unknown;
+}): HostLaunchIsolation {
+  return {
+    sandbox_mode: run.required_sandbox_level === "read_only" ? "read_only" : "read_write",
+    egress_profile: dispatchEgressProfile(run),
+  };
+}
+
+function dispatchEgressProfile(run: { model_override_json?: unknown }): HostLaunchIsolation["egress_profile"] {
+  const perRun = runOverrideField(run.model_override_json, "egress_profile");
+  return perRun === "none" || perRun === "install" || perRun === "default" ? perRun : "default";
 }
 
 export interface RemoteHostCliAdapterDeps {
@@ -315,6 +388,8 @@ async function runRemoteHostCliAdapter(
   // Read from the thread message rather than `runs.model_provider_id` — see
   // `remoteProviderBinding.ts` for why that column is not evidence.
   let providerBinding: RemoteProviderBinding | null = null;
+  /** The provider this run actually executed against; null means the copy's own login. */
+  let boundProviderId: string | null = null;
   // The frame that gives this run's CLI its own state root. A bound run's is
   // the binding above; an unbound one gets the same profile minus the lease,
   // so it reads its own login and its own vendor auto-memory rather than the
@@ -398,10 +473,11 @@ async function runRemoteHostCliAdapter(
       // Make the Run row say what this run actually executes against — the
       // router may have predicted a different provider at run start, and usage
       // attributes to the one the lease names, not the one the row does.
+      boundProviderId = bound && providerBinding ? bound.provider_id : null;
       await bindings.record(
         input.run.id,
-        bound && providerBinding
-          ? { provider_id: bound.provider_id, model: providerBinding.used_model }
+        boundProviderId && providerBinding
+          ? { provider_id: boundProviderId, model: providerBinding.used_model }
           : null,
         input.run.space_id,
       );
@@ -466,23 +542,34 @@ async function runRemoteHostCliAdapter(
     }]);
   }
 
+  // Named here because the result envelope reports it too, and both must be
+  // the same answer.
+  const installation = dispatchInstallation(input.run);
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
     registry,
     profileFrame,
-    runOverrideField(input.run.model_override_json, "installation") ?? "own",
+    installation,
     spec.adapter_type,
     workSurface?.frame ?? null,
-    input.workspace,
+    launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
     input.workspace_access ?? [],
+    dispatchIsolation(input.run),
+    input.max_concurrent_runs ?? null,
   );
   let stdoutText = "";
   // Provider binding is authoritative for a bound run. User-selected generic
   // ACP options travel independently in acp_session_config.
   const requestedModel = providerBinding?.used_model
     ?? runOverrideField(input.run.model_override_json, "model");
-  const requestedSessionConfig = acpSessionConfigFromRunOverride(input.run.model_override_json);
+  const requestedSessionConfig = withStrictHostSelections(
+    acpSessionConfigFromRunOverride(input.run.model_override_json),
+    // Strict only. `dispatchIsolation` above says how the daemon binds the
+    // workspace; this says what the runtime must not undo inside it. A paired
+    // machine keeps its owner's own settings (B62, ADR 0016 section 3).
+    await hostIsStrict(deps.config?.databaseUrl, hostId) ? spec.strict_session_config : undefined,
+  );
   const runtimeModel = providerBinding
     ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, requestedModel)
     : null;
@@ -631,6 +718,23 @@ async function runRemoteHostCliAdapter(
     metadata_json: {
       adapter_type: spec.adapter_type,
       external_session_id: measurement.external_session_id,
+      // Which copy on the host actually ran it. The usage ledger records it as
+      // the runtime's version, and the quota a Run carries back is folded into
+      // that copy's cache — both need to know which copy, and only the
+      // dispatch does.
+      runtime_installation: installation,
+      // What this Run reached through the host's egress proxy, and what it was
+      // refused. Carried on the envelope so orchestration can turn it into a
+      // Run event: "why did the install fail" has no other answer, since the
+      // refusal happened on the host and the CLI only saw a 403.
+      ...(result.egress?.length ? { egress: result.egress } : {}),
+      // The provider this run actually executed against, or null when it ran
+      // on the copy's own subscription login. Reported rather than read off
+      // the Run row, because this path *overwrites* that row mid-execution
+      // (`bindings.record` above): a host-default binding resolved here is
+      // invisible to any snapshot taken before dispatch, and a conversation
+      // Run that unbinds leaves a stale stamp behind. Metering keys on this.
+      bound_model_provider_id: providerBinding ? boundProviderId : null,
       subscription_quota: measurement.subscription_quota,
       // Which Skill text this run was given. The Skill changes what an agent
       // does the way a prompt does, so explaining the run later needs to name
@@ -665,6 +769,50 @@ async function runRemoteHostCliAdapter(
  * pattern) — the same "a poller right at the terminal transition must not
  * observe a truncated conversation" reasoning applies here too.
  */
+/**
+ * Whether this host is the instance's built-in strict one. Read from the row
+ * rather than threaded down from the orchestrator, which does not carry the
+ * host kind this far; it is a primary-key lookup on a Run that is already
+ * doing several.
+ */
+/**
+ * The workspace the launch frame carries.
+ *
+ * The relative path has to be merged into a Location workspace the snapshot
+ * already named, not merely used when there is no workspace at all. The
+ * built-in host's daemon never ran `workspace add`, so a Location id alone
+ * resolves to nothing there and the Run dies with "no local path registered";
+ * the path under the shared workspace root is the only thing that lets it
+ * resolve one (ADR 0016 section 4). A Conversation bound to a server Location
+ * always arrives with a snapshot workspace, which is exactly the case the
+ * previous `??` skipped — so this failed for every such Run and for none of
+ * the managed-workspace ones that had been tried.
+ */
+export { launchWorkspace as launchWorkspaceForTest };
+
+function launchWorkspace(
+  fromSnapshot: LaunchWorkspace | undefined,
+  workspaceLocationId: string | null,
+  relativePath: string | null,
+): LaunchWorkspace | undefined {
+  if (fromSnapshot?.kind === "location") {
+    return fromSnapshot.workspace_relative_path || !relativePath
+      ? fromSnapshot
+      : { ...fromSnapshot, workspace_relative_path: relativePath };
+  }
+  if (fromSnapshot) return fromSnapshot;
+  if (!workspaceLocationId || !relativePath) return undefined;
+  return { kind: "location", workspace_location_id: workspaceLocationId, workspace_relative_path: relativePath };
+}
+
+async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string): Promise<boolean> {
+  if (!databaseUrl) return false;
+  const result = await getDbPool(databaseUrl)
+    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId])
+    .catch(() => null);
+  return result?.rows[0]?.kind === "server";
+}
+
 async function remoteFailureWithEvent(
   input: RemoteHostCliAdapterInput,
   adapterType: string,
@@ -721,6 +869,15 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   private readonly workSurface: RunWorkSurfaceFrame | null = null,
   private readonly workspace?: LaunchWorkspace,
   private readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
+    /** The namespace policy a strict host applies; a trusted host ignores it. */
+    private readonly isolation: HostLaunchIsolation = { sandbox_mode: "read_write", egress_profile: "default" },
+    /**
+     * How many Runs this host executes at once, or null for no cap. Set for
+     * the built-in host, where the container's own limits and this count are
+     * the only levers bubblewrap leaves; a paired machine is its owner's to
+     * size.
+     */
+    private readonly maxConcurrentRuns: number | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -796,10 +953,12 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         work_surface: this.workSurface ?? undefined,
         workspace: this.workspace,
         workspace_access: this.workspaceAccess,
+        isolation: this.isolation,
       },
       onOutput,
       input.on_stderr_chunk,
       onLaunched,
+      this.maxConcurrentRuns,
     );
     if (controller) void launchedPromise!.then(() => controller.start(sendToController));
     input.process_registry?.registerRemote?.(
@@ -858,7 +1017,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
 }
 
 function toExecutionResult(
-  outcome: { exit_code: number; timed_out: boolean; error: string | null },
+  outcome: HostRunCompletion,
   controller?: CliStdioController,
 ): CliExecutionResult {
   const protocol = controller?.result() ?? null;
@@ -875,6 +1034,7 @@ function toExecutionResult(
     returncode,
     stdout: "",
     stderr: protocol?.error ?? outcome.error ?? "",
+    ...(outcome.egress?.length ? { egress: outcome.egress } : {}),
     timed_out: outcome.timed_out,
   };
 }

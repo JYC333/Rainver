@@ -62,10 +62,10 @@ describe("test hygiene", () => {
     // other. The list below is the existing debt; it must only shrink.
     expect(offenders((_, text) => /vi\.mock\("\.\.\/src\/db\/pool\.js"/.test(text), [
       "agentsCrudRoutes.test.ts", "automationsProjectDb.test.ts", "claimReviewLoopRoutes.test.ts",
-      "claimSourcesSourcePolicy.test.ts", "cliCredentialStatus.test.ts", "contextOpsRoutes.test.ts",
+      "claimSourcesSourcePolicy.test.ts", "contextOpsRoutes.test.ts",
       "evolutionRoutes.test.ts", "jobsSchedulers.test.ts", "knowledgeRetrievalEvalRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts", "knowledgeRetrievalRoutes.test.ts", "memoryMaintenanceRoutes.test.ts",
-      "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts", "runManagedApiAdapter.test.ts", "runtimeToolsRoutes.test.ts",
+      "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts", "runManagedApiAdapter.test.ts",
     ])).toEqual([]);
   });
 
@@ -126,7 +126,6 @@ describe("test hygiene", () => {
       "automationsProjectDb.test.ts",
       "claimReviewLoopRoutes.test.ts",
       "claimSourcesSourcePolicy.test.ts",
-      "cliCredentialStatus.test.ts",
       "contextOpsReviewCycle.test.ts",
       "contextOpsRoutes.test.ts",
       "evolutionRoutes.test.ts",
@@ -139,7 +138,6 @@ describe("test hygiene", () => {
       "publicationsRoutes.test.ts",
       "retrievalReranker.test.ts",
       "runManagedApiAdapter.test.ts",
-      "runtimeToolsRoutes.test.ts",
       "systemActionDispatcher.test.ts",
       "systemActionRegistry.test.ts",
     ])).toEqual([]);

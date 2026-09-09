@@ -8,7 +8,7 @@ import {
   assertProjectWriter,
   canWriteProject,
 } from "../projects/access.js";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { PgAgentRepository, type AgentCreateInput } from "../agents/repository.js";
@@ -34,14 +34,11 @@ export interface RoomIdentity {
 }
 
 export class RoomRosterService {
-  constructor(
-    private readonly config: ServerConfig,
-    private readonly pool: Pool,
-  ) {}
+  constructor(private readonly pool: Pool) {}
 
   static fromConfig(config: ServerConfig): RoomRosterService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
-    return new RoomRosterService(config, getDbPool(config.databaseUrl));
+    return new RoomRosterService(getDbPool(config.databaseUrl));
   }
 
   async listAgentCandidates(identity: RoomIdentity, roomId: string, input: {
@@ -214,7 +211,7 @@ export class RoomRosterService {
           member_ids: sharedMemberIds,
         });
       }
-      const agentRepository = new PgAgentRepository(this.pool, this.config);
+      const agentRepository = new PgAgentRepository(this.pool);
       const runtimeProfiles = input.execution
         ? []
         : await this.presetRuntimeProfiles(client, identity.spaceId, room.id);
@@ -223,7 +220,7 @@ export class RoomRosterService {
         throw new HttpError(409, "Room has no executable backend for preset Agents", {
           code: "conversation_backend_required",
           detail: "Configure an eligible API or CLI backend before adding a preset specialist.",
-          setup_targets: ["model_providers", "cli_credentials"],
+          setup_targets: ["model_providers", "execution_hosts"],
         });
       }
       const agentInput: AgentCreateInput = {
@@ -239,7 +236,6 @@ export class RoomRosterService {
         adapterType: input.execution?.adapter_type ?? primaryProfile!.adapter_type,
         defaultModelProviderId: input.execution ? null : primaryProfile!.model_provider_id,
         defaultModel: input.execution ? null : primaryProfile!.model_name,
-        runtimeToolVersion: input.execution ? null : primaryProfile!.runtime_tool_version,
         runtimeConfigJson: input.execution ? {} : primaryProfile!.runtime_config_json,
         runtimePolicyJson: input.execution
           ? { default_adapter_type: input.execution.adapter_type }
@@ -260,7 +256,6 @@ export class RoomRosterService {
           runtimeConfigJson: profile.runtime_config_json,
           runtimePolicyJson: profile.runtime_policy_json,
           isDefault: profile.is_default,
-          runtimeToolVersion: profile.runtime_tool_version,
         });
       }
       await roster.upsertSpecialistMember({
@@ -962,7 +957,6 @@ export class RoomRosterService {
     runtime_config_json: Record<string, unknown>;
     runtime_policy_json: Record<string, unknown>;
     is_default: boolean;
-    runtime_tool_version: string | null;
   }>> {
     const result = await client.query<{
       name: string;
@@ -990,14 +984,7 @@ export class RoomRosterService {
       [spaceId, roomId],
     );
     return result.rows
-      .filter((profile) => getRuntimeAdapterSpec(profile.adapter_type)?.implementation_status === "implemented")
-      .map((profile) => ({
-        ...profile,
-        runtime_tool_version: isLocalCliRuntimeAdapter(profile.adapter_type)
-          && typeof profile.runtime_config_json.runtime_tool_version === "string"
-          ? profile.runtime_config_json.runtime_tool_version
-          : null,
-      }));
+      .filter((profile) => getRuntimeAdapterSpec(profile.adapter_type)?.implementation_status === "implemented");
   }
 
   /**

@@ -79,7 +79,6 @@ runtime-agent:
     - .agent/architecture/EXECUTION_MODEL.md
     - .agent/architecture/RUNS_AND_OUTPUTS.md
     - .agent/modules/agents.md
-    - .agent/modules/sandbox.md
     - .agent/modules/runtime-adapters.md
     - .agent/decisions/0002-agent-model.md
     - .agent/decisions/0004-context-wrapper.md
@@ -105,7 +104,6 @@ runtime-context:
     - .agent/architecture/TESTING_STRATEGY.md
     - .agent/modules/runtime-context.md
     - .agent/modules/runtime-adapters.md
-    - .agent/modules/sandbox.md
     - .agent/BOUNDARIES.md
     - .agent/COMMANDS.md
   code_roots:
@@ -148,7 +146,6 @@ project-folder-artifact:
   docs:
     - .agent/architecture/ARTIFACTS.md
     - .agent/architecture/EXECUTION_MODEL.md
-    - .agent/modules/sandbox.md
     - .agent/modules/project-files.md
     - .agent/modules/runtime-context.md
     - .agent/modules/hosts.md
@@ -207,7 +204,6 @@ memory:
 agents:
   docs:
     - .agent/modules/agents.md
-    - .agent/modules/sandbox.md
     - .agent/decisions/0002-agent-model.md
     - .agent/decisions/0004-context-wrapper.md
     - .agent/decisions/0006-plugin-module-architecture.md
@@ -248,9 +244,13 @@ proposals:
     - server/src/modules/tasks
     - server/test/runMaterializationService.test.ts
 
+# Retained under its old name because callers know it: CLI execution isolation
+# is the host daemon's strict mode now, documented in modules/hosts.md.
 sandbox:
   docs:
-    - .agent/modules/sandbox.md
+    - .agent/modules/hosts.md
+    - .agent/decisions/0016-control-plane-execution-hosts.md
+    - .agent/BOUNDARIES.md
     - .agent/modules/runtime-context.md
     - .agent/decisions/0004-context-wrapper.md
   code_roots:
@@ -263,7 +263,6 @@ project-files:
   docs:
     - .agent/modules/project-files.md
     - .agent/modules/git-diff-review.md
-    - .agent/modules/sandbox.md
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/modules/projectFolders
@@ -419,7 +418,7 @@ credentials:
     - server/src/modules/runs
     - server/src/modules/projectFolders
 
-runtime_tools:
+runtime_adapters:
   docs:
     - .agent/modules/runtime-adapters.md
     - .agent/decisions/0007-multi-cli-mvp.md
@@ -427,8 +426,7 @@ runtime_tools:
   code_roots:
     - server/src/modules/runtimeAdapters/
     - server/src/modules/runs/
-    - server/src/modules/runtimeTools/
-    - apps/web/src/modules/runtime_tools/
+    - packages/host-daemon/src/
 
 deployment:
   docs:

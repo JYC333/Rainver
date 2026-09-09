@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -586,18 +587,49 @@ describe("runRetryPolicy", () => {
       expect(isRetryableRunErrorCode("invalid_request")).toBe(false);
     });
 
-    it("treats a remote run's timeout and stall the same as the server host's", () => {
-      // These two are the remote path's twins of cli_adapter_timeout and
-      // cli_stall_timeout. Only the local pair was listed, so an identical
-      // failure was retried automatically on the server host and sent straight
-      // to human review on a paired one.
-      expect(isRetryableRunErrorCode("cli_adapter_timeout")).toBe(true);
-      expect(isRetryableRunErrorCode("cli_stall_timeout")).toBe(true);
+    it("retries a host daemon's timeout and stall, and no longer knows the deleted server-host codes", () => {
+      // `cli_adapter_timeout` and `cli_stall_timeout` were the server-side CLI
+      // line's codes; ADR 0016 deleted the line and nothing emits them. These
+      // two are what a host daemon reports for the same failures.
+      expect(isRetryableRunErrorCode("cli_adapter_timeout")).toBe(false);
+      expect(isRetryableRunErrorCode("cli_stall_timeout")).toBe(false);
       expect(isRetryableRunErrorCode("runtime_timeout")).toBe(true);
       expect(isRetryableRunErrorCode("runtime_stall_timeout")).toBe(true);
       // A runtime that ran and exited non-zero reached a verdict; retrying it
       // repeats the same work for the same answer.
       expect(isRetryableRunErrorCode("runtime_nonzero_exit")).toBe(false);
     });
+  });
+});
+
+/**
+ * `run_events.event_type` is CHECK-constrained, and every writer goes through a
+ * best-effort append that swallows the rejection. So an event type added in
+ * code but not to the constraint does not fail loudly — it silently never
+ * exists. That is exactly what happened to `egress_refused`: the host enforced
+ * the refusal, logged it, and reported it on the completion frame, and the one
+ * thing that would have explained a 403 to the person was dropped at the last
+ * step for weeks.
+ */
+const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "runs.ts"), "utf8");
+const constraint = schema.slice(schema.indexOf('check("ck_run_events_event_type"'));
+
+/** Every event type the server writes, gathered from the code that writes them. */
+function writtenEventTypes(): string[] {
+  const source = ["orchestrationService.ts", "finalizationService.ts"]
+    .map((name) => readFileSync(join(import.meta.dirname, "..", "src", "modules", "runs", name), "utf8"))
+    .join("\n");
+  return [...new Set([...source.matchAll(/event_type:\s*"([a-z_]+)"/g)].map((match) => match[1]!))];
+}
+
+describe("every Run event the server writes is one the table allows", () => {
+  it("names egress_refused, the one this test was written for", () => {
+    expect(writtenEventTypes()).toContain("egress_refused");
+    expect(constraint).toContain("'egress_refused'");
+  });
+
+  it("leaves no written event type outside the constraint", () => {
+    const missing = writtenEventTypes().filter((type) => !constraint.includes(`'${type}'`));
+    expect(missing).toEqual([]);
   });
 });

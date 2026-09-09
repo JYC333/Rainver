@@ -1,6 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { loadConfig } from "../src/config.js";
 import {
   RunOrchestrationService,
@@ -19,10 +17,9 @@ import type {
   ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository.js";
 import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@rainver/protocol";
-import type { RuntimeToolResolverPort } from "../src/modules/runtimeTools/index.js";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
-import { LocalCliProcessRegistry, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
-import type { UsageObservation } from "../src/modules/usage/types.js";
+import { LocalCliProcessRegistry, type CliCommandExecutor, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
+import { NO_PROVIDER_BINDINGS, type RemoteHostCliAdapterDeps } from "../src/modules/runs/remoteHostCliAdapter.js";
 
 function config(withDatabase = false) {
   return loadConfig({
@@ -436,18 +433,6 @@ class FakeRepo implements RunExecutionRepositoryPort {
   }
 }
 
-class FakeTools implements RuntimeToolResolverPort {
-  async resolveForExecution(runtime: string) {
-    return {
-      runtime,
-      executable_path: process.execPath,
-      version: "test-version",
-      source: "npm" as const,
-      package_name: runtime === "claude_code" ? "@anthropic-ai/claude-code" : "@openai/codex",
-    };
-  }
-}
-
 class FakeRuntimeContextGateway {
   calls: unknown[] = [];
 
@@ -460,6 +445,68 @@ class FakeRuntimeContextGateway {
 
   async acknowledgeDelivery(): Promise<Record<string, never>> { return {}; }
   async finalizeInvocation(): Promise<Record<string, never>> { return {}; }
+}
+
+/**
+ * A CLI run's adapter seams, now that every CLI run is dispatched to a host
+ * daemon rather than spawned here.
+ *
+ * The tests that used this used to inject a credential broker and a runtime
+ * tool registry too — both server-host concerns the daemon path has no
+ * equivalent for: a copy's login lives with the copy, and the daemon launches
+ * the copy it installed. What is left is the one thing that still matters to
+ * these tests, the command's result, plus a built-in host to dispatch to.
+ */
+/**
+ * A Location on the instance's own host: the realistic shape for a CLI run
+ * against a Project Folder, and the one that gives its runtime profile a
+ * container to live in (B68).
+ */
+/**
+ * What a CLI conversation with no Project Folder actually carries: a managed
+ * workspace the daemon derives, named by Agent and Conversation. That pair is
+ * the container its runtime profile lives in (B68) — a run with neither a
+ * Location nor one of these has no container at all, and is refused.
+ */
+const MANAGED_CONVERSATION_WORKSPACE = {
+  workspace: {
+    kind: "managed" as const,
+    agent_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    container: { kind: "conversation" as const, conversation_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+  },
+};
+
+const onBuiltinHost = async () => ({ hostKind: "server" as const, hostId: "host-builtin", workspaceLocationId: "location-1" });
+
+function daemonCli(executor: CliCommandExecutor): {
+  builtinHostResolver: () => Promise<string>;
+  hostCli: RemoteHostCliAdapterDeps;
+} {
+  return {
+    builtinHostResolver: async () => "host-builtin",
+    hostCli: {
+      executor,
+      // No provider subsystem in a unit test of the run lifecycle; saying so
+      // is required rather than implied, because guessing "unbound" would run
+      // on the machine's own login while the control plane believed otherwise.
+      //
+      // The container is stated rather than resolved: `NO_PROVIDER_BINDINGS`
+      // refuses a run with neither a host thread nor a Location, which is the
+      // production rule and worth keeping strict — these tests are about the
+      // run lifecycle, so they say which container they run in instead of
+      // making the guard the subject.
+      bindings: {
+        ...NO_PROVIDER_BINDINGS,
+        async profileScope(runRecord: { agent_id: string | null }) {
+          return {
+            agent_id: runRecord.agent_id!,
+            container_kind: "conversation" as const,
+            container_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          };
+        },
+      },
+    },
+  };
 }
 
 function orchestration(
@@ -558,7 +605,7 @@ describe("RunOrchestrationService", () => {
     });
     const adapterCalls: string[] = [];
     const adapterRequests: Array<{ system_prompt?: string | null }> = [];
-    let snapshotInputs: { cliCredentialProfileId: string | null; policyDecisionRecordIds: string[] } | null = null;
+    let snapshotInputs: { runtimeInstallation: string | null; policyDecisionRecordIds: string[]; executesRemotely?: boolean } | null = null;
     let routedRequestedRuntimeProfileId: string | null | undefined;
     let routedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
     let snapshottedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
@@ -661,7 +708,7 @@ describe("RunOrchestrationService", () => {
       expect.stringContaining("event:adapter_invoked:running"),
     ]);
     expect(snapshotInputs).toEqual({
-      cliCredentialProfileId: null,
+      runtimeInstallation: null,
       policyDecisionRecordIds: ["decision-runtime.execute", "decision-runtime.use_credential"],
       // A server-host run's provider is decided here; only a remote run
       // resolves its own at launch, so the preflight must not treat this
@@ -1017,26 +1064,8 @@ describe("RunOrchestrationService", () => {
     const executorResults: RunAdapterResultEnvelope[] = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree",
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
           async runCommand(input) {
             await completeCodexProtocol(input.stdio_controller, "cli ok");
             return {
@@ -1046,9 +1075,7 @@ describe("RunOrchestrationService", () => {
               timed_out: false,
             };
           },
-        },
-        toolRegistry: new FakeTools(),
-      },
+        }),
     });
 
     await service.executeRun({
@@ -1096,34 +1123,14 @@ describe("RunOrchestrationService", () => {
     const runtimeContextGateway = new FakeRuntimeContextGateway();
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
       runtimeContextGateway: runtimeContextGateway as never,
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree",
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
           async runCommand() {
             repo.run = { ...repo.run!, status: "waiting_for_review" };
             return { returncode: 0, stdout: "paused", stderr: "", timed_out: false };
           },
-        },
-        toolRegistry: new FakeTools(),
-      },
+        }),
     });
 
     await expect(service.executeRun({
@@ -1139,7 +1146,7 @@ describe("RunOrchestrationService", () => {
     expect(repo.terminalUpdates).toEqual([]);
   });
 
-  it("validates declared CLI Exchange output before completing the Run", async () => {
+  it("stages no Run Exchange for a CLI run, even when the caller supplies a working directory", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       adapter_type: "codex_cli",
@@ -1147,66 +1154,41 @@ describe("RunOrchestrationService", () => {
       required_sandbox_level: "worktree",
       project_folder_id: "folder-1",
       contract_snapshot_json: {
-        required_outputs_json: [{
-          name: "report",
-          path: "report.json",
-          required: true,
-          json_schema: {
-            type: "object",
-            required: ["answer"],
-            properties: { answer: { type: "string" } },
-          },
-        }],
+        required_outputs_json: [{ name: "report", path: "report.json", required: true }],
       },
     });
+    const workspaceManager = new FakeWorkspaceManager();
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree",
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
+      workspaceManager,
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "done");
+          return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
         },
-        executor: {
-          async runCommand(input) {
-            const output = input.env.RAINVER_EXCHANGE_OUTPUT;
-            expect(output).toBeTruthy();
-            await mkdir(dirname(`${output}/report.json`), { recursive: true });
-            await writeFile(`${output}/report.json`, JSON.stringify({ answer: "ok" }));
-            await completeCodexProtocol(input.stdio_controller, "done");
-            return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
+      }),
     });
 
-    await expect(service.executeRun({
+    const result = await service.executeRun({
       run_id: "run-1",
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
+      // A path on *this* machine, which the run will never see. It used to
+      // reach `prepareRunExchange`, whose port throws for a daemon run — so a
+      // caller supplying one failed the whole run at preparation.
       sandbox_cwd: "/tmp",
-    })).resolves.toMatchObject({ status: "succeeded" });
-    expect(repo.terminalUpdates[0].output_json).toMatchObject({
-      output_manifest: [expect.objectContaining({ name: "report", status: "valid" })],
     });
+
+    expect(result).toMatchObject({ status: "succeeded" });
+    // Declared outputs still settle; they arrive as the daemon's own uploads
+    // (`recordOutputArtifacts`) rather than through a directory pair the server
+    // stages and reads back, which has no meaning on another machine.
+    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
-  it("prepares CLI sandbox and context natively", async () => {
+  it("prepares no server workspace for a CLI run, whatever its sandbox level", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       adapter_type: "codex_cli",
@@ -1214,102 +1196,32 @@ describe("RunOrchestrationService", () => {
       required_sandbox_level: "worktree",
       project_folder_id: "workspace-1",
     });
-    const runtimeContextGateway = new FakeRuntimeContextGateway();
     const workspaceManager = new FakeWorkspaceManager();
-    const executorCalls: Array<{ command: string[]; cwd: string | null }> = [];
-    const usageObservations: Array<Record<string, unknown>> = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      runtimeContextGateway: runtimeContextGateway as never,
       workspaceManager,
-      usageRecorder: async (observation) => {
-        usageObservations.push(observation as unknown as Record<string, unknown>);
-        throw new Error("usage ledger unavailable");
-      },
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree",
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
-          async runCommand(input) {
-            executorCalls.push({ command: input.command, cwd: input.cwd });
-            await completeCodexProtocol(input.stdio_controller, "cli ok");
-            return {
-              returncode: 0,
-              stdout: "cli ok",
-              stderr: "",
-              timed_out: false,
-            };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
-    });
-
-    await expect(
-      service.executeRun({
-        run_id: "run-1",
-        space_id: "space-1",
-        worker_id: "worker-1",
-        job_id: "11111111-1111-4111-8111-111111111111",
-        command_source: "job",
-      }),
-    ).resolves.toMatchObject({ status: "succeeded" });
-
-    expect(workspaceManager.calls).toEqual([
-      "prepare:run-1",
-      "cleanup:run-1:git_worktree:/tmp/rainver-prepared-run:/tmp/workspace-root",
-    ]);
-    expect(runtimeContextGateway.calls[0]).toMatchObject({
-      invocationId: "run-1",
-      adapterType: "codex_cli",
-      executionControlSnapshotId: "control-1",
-      identity: { spaceId: "space-1", userId: "user-1" },
-    });
-    expect(executorCalls[0]).toEqual({
-      command: [process.execPath],
-      cwd: "/tmp/rainver-prepared-run",
-    });
-    expect(repo.calls).toContain("event:sandbox_created:succeeded");
-    expect(repo.terminalUpdates[0]).toMatchObject({
-      status: "succeeded",
-      output_text: "cli ok",
-    });
-    expect(usageObservations).toEqual([
-      expect.objectContaining({
-        space_id: "space-1",
-        source_type: "local_run",
-        execution_channel: "local_cli",
-        adapter_type: "codex_cli",
-        run_id: "run-1",
-        external_session_id: "session-1",
-        usage_accuracy: "provider_reported",
-        idempotency_key: "usage-delivery-1:0",
-        usage_details: {
-          input: 12,
-          output: 3,
-          total: 20,
-          input_cache_creation: 0,
-          input_cache_read: 4,
-          output_reasoning: 1,
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "cli ok");
+          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false };
         },
       }),
-    ]);
+    });
+
+    await service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    });
+
+    // The server used to check out a worktree and stage a context directory for
+    // the CLI it was about to spawn. It spawns none: the workspace belongs to
+    // the daemon, and on the built-in host it is wrapped in a namespace the
+    // daemon builds.
+    expect(workspaceManager.calls).toEqual([]);
+    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
   it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level (ADR 0016 P2/P3)", async () => {
@@ -1324,25 +1236,16 @@ describe("RunOrchestrationService", () => {
     const hostKindCalls: Array<{ projectFolderId: string; spaceId: string }> = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
       workspaceManager,
       hostKindResolver: async ({ projectFolderId, spaceId }) => {
         hostKindCalls.push({ projectFolderId: projectFolderId ?? "", spaceId });
         return { hostKind: "remote", hostId: "host-1", workspaceLocationId: "location-1" };
       },
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            throw new Error("must not resolve a credential grant for a remote run (D1: no server-brokered credentials)");
-          },
-        },
-        executor: {
+      ...daemonCli({
           async runCommand() {
             throw new Error("must not spawn a process through the server-host executor for a remote run");
           },
-        },
-        toolRegistry: new FakeTools(),
-      },
+        }),
     });
 
     const result = await service.executeRun({
@@ -1383,7 +1286,6 @@ describe("RunOrchestrationService", () => {
     const workspaceManager = new FakeWorkspaceManager();
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
       workspaceManager,
       hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2", workspaceLocationId: "location-2" }),
     });
@@ -1427,7 +1329,6 @@ describe("RunOrchestrationService", () => {
     let observed: { executesRemotely?: boolean } | null = null;
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
       workspaceManager: new FakeWorkspaceManager(),
       hostKindResolver: async () => ({ hostKind: "remote", hostId: "host-2", workspaceLocationId: "location-2" }),
       executionControlSnapshotWriter: async (_run, inputs) => {
@@ -1941,73 +1842,48 @@ describe("RunOrchestrationService", () => {
     ]);
   });
 
-  it("upgrades every critical CLI run to one-shot Docker at the shared policy boundary", async () => {
+  it("still resolves a CLI run's sandbox level from risk, and provisions nothing for it", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       adapter_type: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "worktree",
       project_folder_id: "workspace-1",
-      contract_snapshot_json: {
-        risk_level: "critical",
-        source: { kind: "direct", id: null },
-      },
+      contract_snapshot_json: { risk_level: "critical", source: { kind: "direct", id: null } },
     });
     const workspaceManager = new FakeWorkspaceManager();
-    const executorModes: string[] = [];
-    const executorInputs: Array<{ read_only?: unknown }> = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager,
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun(
-            _runId,
-            _spaceId,
-            _runtime,
-            executorMode,
-          ) {
-            executorModes.push(executorMode);
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: executorMode,
-              readonly: true,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "cli ok");
+          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false };
         },
-        executor: {
-          async runCommand(input) {
-            executorInputs.push({ read_only: input.read_only });
-            await completeCodexProtocol(input.stdio_controller, "critical cli ok");
-            return { returncode: 0, stdout: "critical cli ok", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
+      }),
     });
 
-    await expect(service.executeRun({
+    await service.executeRun({
       run_id: "run-1",
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
-      risk_level: "low",
-    })).resolves.toMatchObject({ status: "succeeded" });
+    });
 
-    expect(repo.calls).toContain("sandbox_level:one_shot_docker");
-    expect(executorModes).toEqual(["worktree"]);
-    expect(executorInputs[0]?.read_only).toBeUndefined();
-    expect(workspaceManager.calls).toContain("prepare:run-1");
+    // Escalating to a level the server never prepares is what this used to do:
+    // `one_shot_docker` for a critical run, provisioned here. Isolation is the
+    // daemon's now, from the dispatch's `isolation` policy, so the level the
+    // run was created at stands and the server provisions nothing.
+    // The server provisions nothing for a daemon run — the workspace is the
+    // daemon's, and on the built-in host the namespace is built there.
+    expect(workspaceManager.calls).toEqual([]);
+    // But risk still decides the level, and the level still travels: skipping
+    // the resolution for daemon runs left every CLI run at the creation-time
+    // `none`, so a critical Folder-bound run got a read-write workspace with
+    // nothing recording that risk had stopped mattering.
+    expect(repo.run.required_sandbox_level).toBe("one_shot_docker");
+    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
   it("ignores caller-supplied executable path overrides", async () => {
@@ -2021,36 +1897,16 @@ describe("RunOrchestrationService", () => {
     const adapterConfigs: Array<Record<string, unknown>> = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
       runtimeContextGateway: new FakeRuntimeContextGateway() as never,
       workspaceManager: new FakeWorkspaceManager(),
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree" as const,
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-        },
-        executor: {
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
           async runCommand(input) {
             adapterConfigs.push({ command: input.command });
             await completeCodexProtocol(input.stdio_controller, "ok");
             return { returncode: 0, stdout: "ok", stderr: "", timed_out: false };
           },
-        },
-        toolRegistry: new FakeTools(),
-      },
+        }),
     });
 
     await expect(
@@ -2062,7 +1918,10 @@ describe("RunOrchestrationService", () => {
         adapter_config: { executable_path: "/tmp/attacker-binary" },
       }),
     ).resolves.toMatchObject({ status: "succeeded" });
-    expect(adapterConfigs[0].command).toEqual([process.execPath]);
+    // The argv is rendered from the adapter spec, and the daemon resolves the
+    // executable from the copy it installed — so a caller-supplied path is not
+    // merely ignored, there is no longer a place for it to take effect.
+    expect(adapterConfigs[0].command).toEqual(["codex-acp"]);
   });
 
   it("uses the run row adapter type as authoritative and fails closed for unknown adapters", async () => {
@@ -2114,14 +1973,15 @@ describe("RunOrchestrationService", () => {
     });
   });
 
-  it("records a successful conversation runtime session before publishing terminal status", async () => {
+  it("does not record a server-side conversation runtime session for a CLI run", async () => {
     const repo = new FakeRepo();
+    const recorded: unknown[] = [];
     repo.run = run({
+      runtime_profile_snapshot_json: MANAGED_CONVERSATION_WORKSPACE,
       adapter_type: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "none",
       session_id: "session-1",
-      system_prompt: "System",
       model_override_json: {
         execution_mode: "conversation_lightweight.v1",
         conversation_runtime: {
@@ -2130,58 +1990,39 @@ describe("RunOrchestrationService", () => {
           runtime_state_key: "33333333-3333-4333-8333-333333333333",
           runtime_session_id: null,
           context_fingerprint: "fingerprint-1",
-          replay_prompt: "Full replay",
         },
       },
     });
-    const runtimeContextGateway = new FakeRuntimeContextGateway();
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      runtimeContextGateway: runtimeContextGateway as never,
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree" as const,
-              readonly: false,
-              temp_home: null,
-              persistent_home: true,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
+      conversationRuntimeSessions: {
+        record: async (input: unknown) => { recorded.push(input); return { id: "session-record-1" }; },
+        invalidate: async () => false,
+      } as never,
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "chat ok");
+          return { returncode: 0, stdout: "chat ok", stderr: "", timed_out: false };
         },
-        executor: {
-          async runCommand(input) {
-            await completeCodexProtocol(input.stdio_controller, "ok");
-            return { returncode: 0, stdout: "ok", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
+      }),
     });
 
-    const result = await service.executeRun({
+    await service.executeRun({
       run_id: "run-1",
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
     });
-    expect(result).toEqual(expect.objectContaining({ status: "succeeded" }));
-    expect(runtimeContextGateway.calls[0]).toMatchObject({
-      invocationId: "run-1",
-      adapterType: "codex_cli",
-      executionControlSnapshotId: "control-1",
-    });
-    expect(repo.calls.indexOf("runtime:record"))
-      .toBeLessThan(repo.calls.indexOf("terminal:succeeded"));
+
+    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
+    // A CLI conversation's continuity is the vendor session inside the Agent's
+    // profile on the host, tracked by `host_threads.vendor_session_id` and
+    // written by the thread outcome hook. The server-side binding store held
+    // continuity for a CLI the server itself spawned, and there is no longer
+    // one — recording here as well would give a resumable conversation two
+    // authorities that drift.
+    expect(recorded).toEqual([]);
   });
 
   it("terminates the registered CLI process on cancel", async () => {
@@ -2303,82 +2144,40 @@ describe("RunOrchestrationService", () => {
   it("does not overwrite a concurrent cancel when the adapter finishes", async () => {
     const repo = new FakeRepo();
     repo.run = run({
+      runtime_profile_snapshot_json: MANAGED_CONVERSATION_WORKSPACE,
       adapter_type: "codex_cli",
       model_provider_id: null,
-      required_sandbox_level: "worktree",
-      project_folder_id: "workspace-1",
+      required_sandbox_level: "none",
     });
-    const usageObservations: UsageObservation[] = [];
-    const service: RunOrchestrationService = orchestration(repo, {
+    const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      runtimeToolVersionResolver: async () => "test-version",
-      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
-      workspaceManager: new FakeWorkspaceManager(),
-      usageRecorder: async (observation) => {
-        usageObservations.push(observation);
-      },
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree" as const,
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "late ok");
+          // The cancel lands while the adapter is still finishing: the run is
+          // already terminal by the time the result arrives.
+          await service.cancelRun({
+            run_id: "run-1",
+            space_id: "space-1",
+            requested_by_user_id: "user-1",
+            reason: "stop requested",
+          });
+          return { returncode: 0, stdout: "late ok", stderr: "", timed_out: false };
         },
-        executor: {
-          async runCommand(input) {
-            await completeCodexProtocol(input.stdio_controller, "late ok");
-            // A stop lands while the CLI is still running.
-            await service.cancelRun({
-              run_id: "run-1",
-              space_id: "space-1",
-              reason: "stop requested",
-            });
-            return { returncode: 0, stdout: "late ok", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
+      }),
     });
 
     const result = await service.executeRun({
       run_id: "run-1",
       space_id: "space-1",
       worker_id: "worker-1",
-      command_source: "http",
-      sandbox_cwd: "/tmp",
-      context_text: "context",
+      command_source: "job",
     });
 
-    expect(result).toMatchObject({
-      status: "cancelled",
-      error_code: "run_cancelled",
-    });
+    expect(result).toMatchObject({ status: "cancelled", error_code: "run_cancelled" });
     expect(repo.run?.status).toBe("cancelled");
     expect(repo.terminalUpdates.map((update) => update.status)).toEqual(["cancelled"]);
-    expect(usageObservations).toHaveLength(1);
-    expect(usageObservations[0]).toMatchObject({
-      run_id: "run-1",
-      usage_details: {
-        input: 12,
-        output: 3,
-        total: 20,
-        input_cache_creation: 0,
-        input_cache_read: 4,
-        output_reasoning: 1,
-      },
-    });
-    expect(repo.calls).toContain("unlock:run-1");
   });
 
   it("turns an explicit semantic rejection into a failed Run", async () => {
@@ -2523,59 +2322,49 @@ describe("RunOrchestrationService", () => {
     expect(materializationCalls).toBe(0);
   });
 
-  it("holds capped CLI retries when durable usage recording fails", async () => {
+  it("meters a subscription CLI run without letting a failing ledger hold it", async () => {
     const repo = new FakeRepo();
+    const usageObservations: unknown[] = [];
     repo.run = run({
+      runtime_profile_snapshot_json: MANAGED_CONVERSATION_WORKSPACE,
       adapter_type: "codex_cli",
       model_provider_id: null,
-      contract_snapshot_json: { max_cost: 1 },
+      required_sandbox_level: "none",
     });
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
-      usageRecorder: async () => {
+      usageRecorder: async (observation) => {
+        usageObservations.push(observation);
         throw new Error("usage ledger unavailable");
       },
-      runtimeToolVersionResolver: async () => "test-version",
-      runtimeContextGateway: new FakeRuntimeContextGateway() as never,
-      workspaceManager: new FakeWorkspaceManager(),
-      vendorCli: {
-        credentialBroker: {
-          async grantForRun() {
-            return {
-              granted: true,
-              profile_id: "11111111-1111-4111-8111-111111111111",
-              runtime: "codex_cli",
-              executor_mode: "worktree",
-              readonly: false,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "cli ok");
+          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false };
         },
-        executor: {
-          async runCommand(input) {
-            await completeCodexProtocol(input.stdio_controller, "done");
-            return { returncode: 0, stdout: "done", stderr: "", timed_out: false };
-          },
-        },
-        toolRegistry: new FakeTools(),
-      },
+      }),
     });
 
-    await expect(service.executeRun({
+    const result = await service.executeRun({
       run_id: "run-1",
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
-      sandbox_cwd: "/tmp",
-    })).resolves.toMatchObject({
-      status: "failed",
-      error_code: "usage_recording_failed",
     });
+
+    // A run on the copy's own subscription is metered nowhere else — the
+    // provider proxy sees nothing, because there is no provider. It used to be
+    // gated on a brokered credential profile id, which no run has had since
+    // credentials moved to the host, so every such run went unrecorded.
+    expect(usageObservations).toHaveLength(1);
+    expect(usageObservations[0]).toMatchObject({
+      execution_channel: "local_cli",
+      adapter_type: "codex_cli",
+      event_type: "llm.generation",
+    });
+    // Recording is best-effort: a ledger that throws must not fail the run.
+    expect(result).toMatchObject({ status: "succeeded" });
   });
 
   it("keeps delegated Room work nonterminal when finalization schedules a retry", async () => {

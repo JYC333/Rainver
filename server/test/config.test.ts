@@ -22,7 +22,6 @@ describe("loadConfig", () => {
     expect(c.notificationMaxPayloadBytes).toBe(65536);
     expect(c.backupDatabaseUrl).toBeNull();
     expect(c.rainverHome).toBe("/rainver");
-    expect(c.cliToolsRoot).toBe("/rainver/runtime-tools");
     expect(c.workspaceRoot).toBe("/rainver/workspaces");
     expect(c.artifactStorageRoot).toBe("/rainver/storage/artifacts");
     expect(c.deployerSocketPath).toBe("/rainver/run/deployer.sock");
@@ -56,7 +55,6 @@ describe("loadConfig", () => {
       SESSION_EXPIRE_DAYS: "7",
       SERVER_DEBUG: "true",
       RAINVER_HOME: "/tmp/rainver",
-      RUNTIME_TOOLS_ROOT: "/tmp/rainver/tools",
       WORKSPACE_ROOT: "/tmp/rainver/workspaces-root",
       ARTIFACT_STORAGE_ROOT: "/tmp/rainver/artifacts-root",
       DEPLOYER_SOCKET_PATH: "/tmp/rainver/run/deployer.sock",
@@ -83,7 +81,6 @@ describe("loadConfig", () => {
     expect(c.sessionExpireDays).toBe(7);
     expect(c.debug).toBe(true);
     expect(c.rainverHome).toBe("/tmp/rainver");
-    expect(c.cliToolsRoot).toBe("/tmp/rainver/tools");
     expect(c.workspaceRoot).toBe("/tmp/rainver/workspaces-root");
     expect(c.artifactStorageRoot).toBe("/tmp/rainver/artifacts-root");
     expect(c.deployerSocketPath).toBe("/tmp/rainver/run/deployer.sock");

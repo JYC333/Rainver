@@ -7,6 +7,8 @@ import type { DeploymentJob, DeploymentJobDetail, DeploymentStatus } from '../..
 
 vi.mock('../../api/client', () => ({
   deploymentApi: { status: vi.fn(), createJob: vi.fn(), job: vi.fn(), cancelJob: vi.fn() },
+  // The panel also lists what changed about the hosts' Agent runtimes.
+  hostsApi: { runtimeChanges: vi.fn().mockResolvedValue({ items: [] }) },
 }))
 
 const observations: DeploymentStatus['observations'] = {

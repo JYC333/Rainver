@@ -10,6 +10,7 @@ import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type 
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { HttpError, dbPool } from "../routeUtils/common.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
@@ -24,6 +25,7 @@ import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import { providerProxyLeases } from "../providers/proxy/lease.js";
 import { assertProjectWriter, assertProjectReadable } from "../projects/access.js";
 import { getDbPool } from "../../db/pool.js";
+import { hasSubscriptionQuota, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
@@ -72,16 +74,40 @@ function isRemoteDispatchEligible(adapterType: string): boolean {
 }
 
 /**
- * Space-scoped identity plus proof the caller owns this host. Ownership is the
- * write gate for a binding because a host only ever serves its owner (B63);
- * the Space is what a ModelProvider grant is scoped to.
+ * Space-scoped identity plus proof the caller may manage this host. For a
+ * paired host that is ownership, because a paired host only ever serves its
+ * owner (B63); the Space is what a ModelProvider grant is scoped to.
+ *
+ * The built-in host has no owner — it is the instance's own execution host,
+ * serving every Space — so *managing* it (installing a runtime, logging a copy
+ * in or out, choosing its default CLI) is instance-admin work rather than
+ * anyone's ownership. `allowBuiltin` says a route is one of those; a route
+ * that is meaningless for the built-in host, such as attaching an existing
+ * directory on the machine (plan decision 12) or pointing it at a provider
+ * proxy it reaches in-network, leaves it off and keeps answering 404.
  *
  * Returns null after having already answered the request.
  */
+/** `managed:<version>` → the version; anything else (including `own`) is not a managed copy. */
+function managedVersionOf(installation: string | null): string | null {
+  return installation?.startsWith("managed:") ? installation.slice("managed:".length) : null;
+}
+
+/** The managed version a host currently reports for one adapter, for the change record. */
+async function currentManagedVersion(pool: Pool, hostId: string, adapterType: string): Promise<string | null> {
+  const row = await pool.query<{ capabilities_json: unknown }>(
+    "SELECT capabilities_json FROM hosts WHERE id = $1",
+    [hostId],
+  );
+  const installed = hostInstallationIds(row.rows[0]?.capabilities_json, adapterType);
+  return installed.map(managedVersionOf).find((version): version is string => version !== null) ?? null;
+}
+
 async function resolveOwnedHost(
   context: ModuleContext,
   request: FastifyRequest,
   reply: FastifyReply,
+  options: { allowBuiltin?: boolean } = {},
 ): Promise<{ pool: Pool; hostId: string; spaceId: string; userId: string } | null> {
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
@@ -106,14 +132,25 @@ async function resolveOwnedHost(
     return null;
   }
   const pool = getDbPool(context.config.databaseUrl);
-  const owned = await pool.query(
-    `SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2 AND kind = 'remote' AND status <> 'revoked' LIMIT 1`,
-    [hostId, identity.userId],
+  const owned = await pool.query<{ kind: string }>(
+    `SELECT kind FROM hosts
+      WHERE id = $1 AND status <> 'revoked'
+        AND ((kind = 'remote' AND owner_user_id = $2) OR (kind = 'server' AND $3))
+      LIMIT 1`,
+    [hostId, identity.userId, options.allowBuiltin === true],
   );
   if (owned.rowCount === 0) {
     // Not 403: an unowned host id should not be distinguishable from a
     // nonexistent one, matching `revoke`'s own 404-on-not-yours behavior.
     await reply.code(404).send({ detail: "Host not found" });
+    return null;
+  }
+  // Deliberately after the row is known to exist and to be the built-in one:
+  // a non-admin asking about a paired host they do not own still gets 404, and
+  // only the built-in host — whose existence is not a secret, it is on every
+  // member's host list — answers 403.
+  if (owned.rows[0]?.kind === "server"
+    && !(await requireInstanceAdmin(context.config, identity, reply, "Managing the built-in host requires instance admin"))) {
     return null;
   }
   return { pool, hostId, spaceId: identity.spaceId, userId: identity.userId };
@@ -238,6 +275,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         provider_proxy_effective_url: host.kind === "remote"
           ? hostProviderProxyBaseUrl(host, context.config.providerProxyPort)
           : null,
+        // How many Runs the built-in host executes at once. bubblewrap has no
+        // cgroups, so this and the container's own `cpus`/`mem_limit` are the
+        // only levers there are, and both are sized per machine rather than
+        // per Run. A paired machine is the owner's to size.
+        max_concurrent_runs: host.kind === "server" ? context.config.builtinHostMaxConcurrentRuns : null,
       })),
     });
   });
@@ -319,7 +361,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // browser and workspace registration. Both are owner-only host actions the
   // daemon answers; the server forwards a request and never opens a path.
   app.post("/api/v1/hosts/:hostId/default-adapter", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const payload = body<{ adapter_type?: string | null }>(request);
     const adapterType = typeof payload.adapter_type === "string" && payload.adapter_type.trim()
@@ -386,7 +428,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // qualifies — a builtin CLI as much as a registry agent — and each managed
   // copy keeps its own login state apart from the machine's own install.
   app.post("/api/v1/hosts/:hostId/installations/:adapterType", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const adapterType = params(request).adapterType ?? "";
     if (!remoteInstallableAdapterTypes().includes(adapterType)) {
@@ -396,17 +438,71 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!probe?.distribution) {
       return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' has no distribution to install from` });
     }
+    const before = await currentManagedVersion(resolved.pool, resolved.hostId, adapterType);
     const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "install_tool", {
       adapter_type: adapterType,
       version: probe.version ?? "latest",
       distribution: probe.distribution,
       login: probe.login,
     });
-    return reply.code(result.ok ? 200 : 502).send({ host_id: resolved.hostId, adapter_type: adapterType, ...result });
+    if (result.ok) {
+      await recordHostRuntimeChange(resolved.pool, {
+        hostId: resolved.hostId,
+        adapterType,
+        action: before ? "upgrade" : "install",
+        fromVersion: before,
+        toVersion: managedVersionOf(result.installation),
+        actorUserId: resolved.userId,
+      });
+    }
+    // `detail` as well as `error`: the web client reads `detail`, and without
+    // it a real reason from the host — "Runs are still using claude_code; try
+    // again once they finish" — reached the person as "502 Bad Gateway".
+    return reply.code(result.ok ? 200 : 502)
+      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+  });
+
+  /**
+   * Undoes the last upgrade of a managed copy by promoting the version the
+   * host kept behind it — with its own login, so nobody logs in again.
+   */
+  app.post("/api/v1/hosts/:hostId/installations/:adapterType/rollback", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    const adapterType = params(request).adapterType ?? "";
+    const before = await currentManagedVersion(resolved.pool, resolved.hostId, adapterType);
+    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "rollback_tool", { adapter_type: adapterType });
+    if (result.ok) {
+      await recordHostRuntimeChange(resolved.pool, {
+        hostId: resolved.hostId,
+        adapterType,
+        action: "rollback",
+        fromVersion: before,
+        toVersion: managedVersionOf(result.installation),
+        actorUserId: resolved.userId,
+      });
+    }
+    // `detail` as well as `error`: the web client reads `detail`, and without
+    // it a real reason from the host — "Runs are still using claude_code; try
+    // again once they finish" — reached the person as "502 Bad Gateway".
+    return reply.code(result.ok ? 200 : 502)
+      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+  });
+
+  /** What has changed about the hosts this viewer can see, newest first; the Updates page reads it. */
+  app.get("/api/v1/hosts/runtime-changes", async (request, reply) => {
+    const requestId = resolveRequestId(request);
+    reply.header(REQUEST_ID_HEADER, requestId);
+    if (!context.config.databaseUrl) {
+      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
+    }
+    const identity = await introspectIdentity(context.config, request);
+    if (!identity.ok) return reply.code(identity.reason === "denied" ? identity.statusCode : 502).send({ detail: "Unauthorized" });
+    return reply.send({ items: await listHostRuntimeChanges(getDbPool(context.config.databaseUrl), identity.userId) });
   });
 
   app.delete("/api/v1/hosts/:hostId/installations/:adapterType/:installation", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const { adapterType, installation } = params(request);
     if (!adapterType || !installation?.startsWith("managed:")) {
@@ -416,7 +512,58 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       adapter_type: adapterType,
       version: installation.slice("managed:".length),
     });
-    return reply.code(result.ok ? 200 : 502).send({ host_id: resolved.hostId, adapter_type: adapterType, ...result });
+    if (result.ok) {
+      await recordHostRuntimeChange(resolved.pool, {
+        hostId: resolved.hostId,
+        adapterType,
+        action: "remove",
+        fromVersion: installation.slice("managed:".length),
+        toVersion: null,
+        actorUserId: resolved.userId,
+      });
+    }
+    // `detail` as well as `error`: the web client reads `detail`, and without
+    // it a real reason from the host — "Runs are still using claude_code; try
+    // again once they finish" — reached the person as "502 Bad Gateway".
+    return reply.code(result.ok ? 200 : 502)
+      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+  });
+
+  /**
+   * What each copy on this host has left of its subscription, from the cache.
+   *
+   * Reading is a cache read, never a probe: rendering a host card must not
+   * wait on a CLI launch, and a card someone leaves open must not keep asking
+   * the vendor.
+   */
+  app.get("/api/v1/hosts/:hostId/usage", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    return reply.send({ items: await readHostUsage(resolved.pool, resolved.hostId) });
+  });
+
+  /** Asks one copy now. Host owner only, like every other action on their machine. */
+  app.post("/api/v1/hosts/:hostId/installations/:adapterType/:installation/usage", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    const { adapterType, installation } = params(request);
+    if (!adapterType || !installation) {
+      return reply.code(400).send({ detail: "adapterType and installation are required" });
+    }
+    if (!hasSubscriptionQuota(adapterType)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' reports no subscription quota` });
+    }
+    // Checked against what the host reports, not taken on trust: an arbitrary
+    // string would spend a probe timeout to learn nothing and leave a row
+    // keyed by a copy that does not exist.
+    const host = await resolved.pool.query<{ capabilities_json: unknown }>(
+      "SELECT capabilities_json FROM hosts WHERE id = $1",
+      [resolved.hostId],
+    );
+    if (!hostInstallationIds(host.rows[0]?.capabilities_json, adapterType).includes(installation)) {
+      return reply.code(422).send({ detail: `Host does not report installation '${installation}' of '${adapterType}'` });
+    }
+    return reply.send(await refreshHostUsage(resolved.pool, resolved.hostId, adapterType, installation));
   });
 
   // An interactive login for one copy of a runtime on a host, as a terminal
@@ -424,7 +571,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // the person reads it here and types through the input route. Host owner
   // only — it is their machine and their account.
   app.get("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const { adapterType, installation } = params(request);
     if (!adapterType || !installation) return reply.code(400).send({ detail: "adapterType and installation are required" });
@@ -509,7 +656,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   app.post("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/input", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const { adapterType, installation } = params(request);
     const data = body<{ data?: unknown }>(request).data;
@@ -752,7 +899,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
     const payload = body<{ diff: string; truncated?: boolean }>(request);
     if (typeof payload.diff !== "string") return reply.code(422).send({ detail: "diff is required" });
-    const result = await hosts.recordDiffArtifact(run, host.owner_user_id!, {
+    const result = await hosts.recordDiffArtifact(run, host.owner_user_id ?? run.owner_user_id, {
       diff: payload.diff,
       truncated: payload.truncated === true,
     });
@@ -776,7 +923,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const files = Array.isArray(payload.files)
       ? payload.files.filter((f): f is { name: string; content: string } => typeof f?.name === "string" && typeof f?.content === "string")
       : [];
-    const result = await hosts.recordOutputArtifacts(run, host.owner_user_id!, files);
+    const result = await hosts.recordOutputArtifacts(run, host.owner_user_id ?? run.owner_user_id, files);
     return reply.code(201).send(result);
   });
 
@@ -894,6 +1041,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 exit_code: frame.exit_code,
                 timed_out: frame.timed_out,
                 error: frame.error,
+                egress: frame.egress,
               }, frame.launch_id);
               return;
             case "login_output":
@@ -922,6 +1070,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               const result = parseFolderReadResultFrame(frame)
                 ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
               sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, frame.request_id, result);
+              return;
+            }
+            case "usage_probe_result":
+              sharedHostConnectionRegistry.receiveUsageProbeResult(authenticatedHostId, frame.request_id, frame.quota);
+              return;
+            case "command_result": {
+              sharedHostConnectionRegistry.receiveCommandResult(authenticatedHostId, frame.request_id, {
+                exit_code: frame.exit_code,
+                stdout: frame.stdout,
+                stderr: frame.stderr,
+                timed_out: frame.timed_out,
+                error: frame.error,
+                // The workspace listing, when the request asked for one. Only
+                // the host can see it, and the file-scope conformance probe is
+                // entirely about what the runtime left there — dropping it here
+                // made that check fail for every runtime on every host.
+                ...(frame.entries ? { entries: frame.entries } : {}),
+              });
               return;
             }
             case "list_dirs_result":

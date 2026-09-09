@@ -57,7 +57,6 @@ export type RoutingMode = 'direct' | 'agent_coordination'
 export type ConversationBackendSelection = {
   agent_id: string
   runtime_profile_id: string
-  credential_profile_id: string | null
   session_config?: SessionConfigSelection[]
 }
 
@@ -482,7 +481,6 @@ export function ConversationSurface({
       const backend = supplied.get(agentId) ?? (fallback ? {
         agent_id: agentId,
         runtime_profile_id: fallback.runtime_profile_id,
-        credential_profile_id: 'credential_profile_id' in fallback ? fallback.credential_profile_id ?? null : null,
       } : null)
       if (!backend) return []
       const selected = sessionConfig[agentId] ?? []

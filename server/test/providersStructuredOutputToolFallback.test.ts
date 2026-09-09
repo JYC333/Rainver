@@ -67,7 +67,6 @@ function makeStore(targets: Record<string, InvocationTarget>): ProviderCommandSt
     async listConfiguredModels() {
       return [];
     },
-    recordCliCredentialUsage: unsupported,
     listPool: unsupported,
     addPoolCredential: unsupported,
     removePoolCredential: unsupported,

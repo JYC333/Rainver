@@ -126,7 +126,7 @@ describe("verification engine", () => {
           },
         },
       }),
-      sandbox_cwd: null,
+      execution_target: null,
       base_commit_sha: null,
       output_json: { answer: "verified" },
       materialization_items: [] as RunMaterializationItemSummary[],
@@ -148,7 +148,7 @@ describe("verification engine", () => {
           },
         },
       }),
-      sandbox_cwd: null,
+      execution_target: null,
       base_commit_sha: null,
       output_json: { other: true },
       materialization_items: [] as RunMaterializationItemSummary[],
@@ -158,12 +158,12 @@ describe("verification engine", () => {
     expect(summarizeVerificationResults(results).status).toBe("failed");
   });
 
-  it("gives validation commands a temporary HOME inside the sandbox", async () => {
+  it("sends a validation command to the host that holds the workspace, not to a path here", async () => {
     const db = new VerificationDb();
-    const calls: string[][] = [];
+    const calls: Array<{ command: string[]; target: unknown }> = [];
     const engine = new PgVerificationEngine(db, undefined, {
       async run(input) {
-        calls.push(input.command);
+        calls.push({ command: input.command, target: input.target });
         return { returncode: 0, stdout: "", stderr: "", timed_out: false };
       },
     });
@@ -171,57 +171,115 @@ describe("verification engine", () => {
       run: run({
         contract_snapshot_json: {
           acceptance_criteria_json: {
-            checks: [{
-              type: "command",
-              command: [
-                process.execPath,
-                "-e",
-                "process.exit(process.env.HOME.includes('.verification-home-') ? 0 : 1)",
-              ],
-            }],
+            checks: [{ type: "command", command: ["pnpm", "test"] }],
           },
         },
       }),
-      sandbox_cwd: process.cwd(),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
       base_commit_sha: null,
       output_json: {},
       materialization_items: [] as RunMaterializationItemSummary[],
     });
 
     expect(results[0]).toMatchObject({ verifier_type: "command", status: "passed" });
-    expect(calls).toContainEqual(expect.arrayContaining([process.execPath, "-e"]));
+    // The workspace is named, never resolved here: the engine used to hand the
+    // executor a server path, which is why verification only ever worked for a
+    // Run the server itself had provisioned.
+    expect(calls).toContainEqual({ command: ["pnpm", "test"], target: { host_id: "host-1", workspace_location_id: "loc-1" } });
+    // And nothing else. Changed-file detection asks the same host the same way
+    // when a verifier needs it — but a recipe that declares no git-backed
+    // verifier must not send `git diff` and `git status` to that host anyway,
+    // twice per Run, which on a paired machine is spawns on someone's laptop.
+    expect(calls.map((call) => call.command)).toEqual([["pnpm", "test"]]);
   });
 
-  it("short-circuits file_exists for a remote-host run instead of stat-ing a path that has no meaning on this machine (ADR 0016 P2)", async () => {
+  it("asks the host for changed files when a git-backed verifier declares it", async () => {
     const db = new VerificationDb();
-    const engine = new PgVerificationEngine(db);
-    const current = run({
-      contract_snapshot_json: {
-        required_outputs_json: ["file:report.json"],
+    const calls: string[][] = [];
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run(input) {
+        calls.push(input.command);
+        return { returncode: 0, stdout: "src/app.ts\n", stderr: "", timed_out: false };
       },
     });
-
-    const remote = await engine.verify({
-      run: current,
-      sandbox_cwd: "/this/path/does/not/exist/on/the/server",
-      base_commit_sha: null,
-      output_json: {},
-      materialization_items: [] as RunMaterializationItemSummary[],
-      host_kind: "remote",
-    });
-    expect(remote[0]).toMatchObject({ verifier_type: "file_exists", status: "error" });
-    expect(remote[0]?.summary).toMatch(/not available for a remote execution host/);
-
-    // Omitting host_kind (or "server") preserves today's behavior exactly —
-    // it still actually checks the filesystem, so a genuinely-missing file
-    // fails rather than reporting unavailable.
-    const server = await engine.verify({
-      run: current,
-      sandbox_cwd: "/this/path/does/not/exist/on/the/server",
-      base_commit_sha: null,
+    await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: { checks: [{ type: "file_changed", path: "*" }] },
+        },
+      }),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      base_commit_sha: "HEAD",
       output_json: {},
       materialization_items: [] as RunMaterializationItemSummary[],
     });
-    expect(server[0]).toMatchObject({ verifier_type: "file_exists", status: "failed" });
+    expect(calls).toContainEqual(["git", "diff", "--name-only", "HEAD"]);
+    expect(calls).toContainEqual(["git", "status", "--porcelain"]);
+  });
+
+  it("reports a command verifier unavailable when the run has no host workspace", async () => {
+    const db = new VerificationDb();
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run() {
+        throw new Error("must not be asked");
+      },
+    });
+    const results = await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: { checks: [{ type: "command", command: ["pnpm", "test"] }] },
+        },
+      }),
+      execution_target: null,
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+    expect(results[0]).toMatchObject({ verifier_type: "command", status: "error" });
+  });
+
+  it("asks the host whether a required file exists, on either host kind", async () => {
+    const db = new VerificationDb();
+    const calls: string[][] = [];
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run(input) {
+        calls.push(input.command);
+        // `test -e` says no.
+        return { returncode: 1, stdout: "", stderr: "", timed_out: false };
+      },
+    });
+    const results = await engine.verify({
+      run: run({ contract_snapshot_json: { required_outputs_json: ["file:report.json"] } }),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+
+    // It used to `stat` a server path, which meant a paired host's Run could
+    // not be checked at all and a Run on the built-in host will not have one
+    // either. One question, asked where the workspace actually is.
+    expect(calls).toContainEqual(["test", "-e", "report.json"]);
+    expect(results[0]).toMatchObject({ verifier_type: "file_exists", status: "failed" });
+  });
+
+  it("does not report a missing file when the host never answered", async () => {
+    const db = new VerificationDb();
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run() {
+        // An offline host, as `HostCommandVerificationExecutor` reports it.
+        return { returncode: 1, stdout: "", stderr: "host_offline", timed_out: false, failure_code: "sandbox_runner_unavailable" as const };
+      },
+    });
+    const results = await engine.verify({
+      run: run({ contract_snapshot_json: { required_outputs_json: ["file:report.json"] } }),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+    // A host that could not be reached learned nothing; calling that a missing
+    // file would turn an offline machine into a failing build.
+    expect(results[0]).toMatchObject({ verifier_type: "file_exists", status: "error" });
   });
 });

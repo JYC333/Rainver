@@ -87,7 +87,7 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
         </div>
         <ConversationBackendSetupCard
           mode="prepare"
-          setupTargets={['model_providers', 'cli_credentials']}
+          setupTargets={['model_providers', 'execution_hosts']}
         />
       </div>
     )

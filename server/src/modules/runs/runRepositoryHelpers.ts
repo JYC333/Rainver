@@ -42,12 +42,29 @@ export function validateRunCreateInput(input: RunCreateInput): void {
   assertOneOf(input.trigger_origin, ["manual", "automation", "autonomous", "job", "system"], "trigger_origin");
 }
 
+/**
+ * The floor a vendor CLI run starts from.
+ *
+ * A Folder-bound run baselines at `worktree` — "works in a working copy of the
+ * repository" — not `read_only`. `read_only` was right only while the server
+ * mounted the Folder read-only and provisioned a *separate* worktree for the
+ * run's writes, to be reviewed as a code patch. That provisioning is gone
+ * (ADR 0016): a run executes on a host daemon, against the registered Location,
+ * and the Location **is** the working copy. Undo is git (ADR 0016 section 11).
+ *
+ * Left as `read_only`, the levels came out inverted on the built-in host: a
+ * low-risk Folder-bound run could not write its own workspace, while a
+ * high-risk one could, because only `read_only` narrows the bind. A run that
+ * cannot write cannot do the work it was dispatched for, at any risk level.
+ * A caller that genuinely wants a read-only run still asks for one; this is
+ * the floor, not a ceiling.
+ */
 export function requiredSandboxLevelForRun(
   adapterType: string | null | undefined,
   projectFolderId: string | null | undefined,
 ): string {
   if (!isVendorCliAdapter(adapterType)) return "none";
-  return projectFolderId ? "read_only" : "ephemeral";
+  return projectFolderId ? "worktree" : "ephemeral";
 }
 
 /**

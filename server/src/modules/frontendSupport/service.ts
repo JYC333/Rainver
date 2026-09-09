@@ -538,11 +538,18 @@ export class PgFrontendSupportService {
   }
 
   private async runtimeStatus(spaceId: string): Promise<HomeSummaryOut["runtime_status"]> {
+    // What this Space can actually dispatch to. It used to read the retired
+    // `runtime_tool_bindings` table, which described server-installed CLIs;
+    // since ADR 0016 a runtime is configured by an Agent profile naming an
+    // execution host and a copy on it.
     const result = await this.db.query<{ adapter_type: string }>(
-      `SELECT DISTINCT runtime_adapter_type AS adapter_type
-         FROM runtime_tool_bindings
-        WHERE space_id = $1 AND enabled = true
-        ORDER BY runtime_adapter_type ASC`,
+      `SELECT DISTINCT profile.adapter_type
+         FROM agent_runtime_profiles profile
+         JOIN hosts host ON host.id = profile.execution_host_id
+        WHERE profile.space_id = $1
+          AND profile.enabled = true
+          AND host.status <> 'revoked'
+        ORDER BY profile.adapter_type ASC`,
       [spaceId],
     );
     const types = result.rows.map((row) => row.adapter_type);

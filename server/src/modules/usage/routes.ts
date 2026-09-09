@@ -4,7 +4,6 @@ import {
   boolQuery,
   HttpError,
   intQuery,
-  jsonBody,
   optionalString,
   query,
   resolveIdentity,
@@ -113,28 +112,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/usage/imports/cli-history/preview", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      return reply.send(await service().previewCliHistoryImport(identity, cliHistoryPreviewInput(body)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/usage/imports/cli-history/commit", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      return reply.send(await service().commitCliHistoryImport(identity, cliHistoryCommitInput(body)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
 }
 
 function usageQueryInput(q: Record<string, string | undefined>, fallbackLimit = 100): UsageQueryInput {
@@ -204,34 +181,4 @@ function assertQueryKeys(
 
 function granularity(value: string | undefined): "day" | "week" | "month" {
   return value === "week" || value === "month" ? value : "day";
-}
-
-function cliHistoryPreviewInput(body: Record<string, unknown>): {
-  runtime?: string | null;
-  sourceKind?: string | null;
-  credentialProfileId?: string | null;
-  targetSpaceId?: string | null;
-} {
-  return {
-    runtime: bodyString(body.runtime),
-    sourceKind: bodyString(body.source_kind),
-    credentialProfileId: bodyString(body.credential_profile_id),
-    targetSpaceId: bodyString(body.target_space_id),
-  };
-}
-
-function cliHistoryCommitInput(body: Record<string, unknown>): {
-  importBatchId?: string | null;
-  targetSpaceId?: string | null;
-  confirmation?: boolean;
-} {
-  return {
-    importBatchId: bodyString(body.import_batch_id),
-    targetSpaceId: bodyString(body.target_space_id),
-    confirmation: body.confirmation === true,
-  };
-}
-
-function bodyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

@@ -16,7 +16,7 @@
 | `packages/protocol/` | Shared TypeScript protocol package only. No handlers, persistence, routing, or authority. |
 | `ops/` | Compose files, env templates, and scripts. |
 | `deployer/` | Host deployment subsystem behind the deployer boundary. |
-| `sandbox/` | First-level sandbox subsystem. Runtime code uses documented interfaces rather than importing internals. |
+| `sandbox/` | The image for `sandbox-runner`, which is the instance's built-in execution host: the `rainver-host` daemon in strict mode. The Runner service and its private protocol that used to live here are deleted — CLI execution is the host daemon protocol, on every host. |
 
 Current server ownership is summarized in
 [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md).
@@ -65,9 +65,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `capabilities` | capability | `/capability-definitions*`, `/capability-packs*`, `/skill-sources*`, `/skill-packages*` | yes | Capability/open-skill control plane: canonical definitions, packs, imported skill packages, and runtime skill bindings. Does not execute native capabilities. |
 | `streaming` | infra | `/runs/{runId}/turn/stream` | empty | Agent turn SSE stream, as ordered parts. |
 | `notifications` | infra | `/server/notifications/webhooks/*` | empty | Notification webhook egress policy plus durable operational-alert pointers delivered through Activity Inbox. |
-| `runtimeTools` | infra | `/runtime-tools*` | empty | Controlled runtime CLI installer/status/catalog. |
-| `providers` | infra | `/providers*`, `/credentials/cli*`, `/internal/providers-credentials/*` | yes | Model providers, credential pools, provider invocation, and CLI credential broker/audit. There is no separate credentials route module. |
-| `runtime_tool_bindings` | infra | `/runtime-tool-bindings*` | empty | Runtime tool binding reads. |
+| `providers` | infra | `/providers*`, `/internal/providers-credentials/*` | yes | Model providers, credential pools, provider invocation, and managed-subscription OAuth. There is no separate credentials route module, and no CLI credential is brokered: a CLI's login lives with its copy on an execution host (ADR 0016). |
 | `runtimeHost` | infra | `/internal/runtime-host/execute` | empty | Internal runtime-host execution for server-owned model/runtime paths. |
 | `importedSessions` | product | `/workspace-locations/{id}/ambient-sessions*`, `/projects/{id}/imported-sessions*`, `/imported-sessions/*` | empty | Ambient CLI history from a paired execution host: enumeration and replay over ACP `session/list`/`session/load` (never a vendor session file), record-level reconciliation, per-Location consent, and extraction into a Project Brief draft plus a project-memory packet. Importing and deleting require the host's registered owner (ADR 0016); reading goes through the canonical content predicate, and a transcript requires `full` access. Writes nothing itself — extraction produces proposals only (ADR 0003). See [modules/imported-sessions.md](../modules/imported-sessions.md). |
 | `usage` | frontend-support | `/usage*` | yes | Token usage ledger and permission-filtered read models for managed API calls, provider-proxy calls, exact Run-attributed subscription CLI usage, and managed-profile CLI transcript recovery imports. Usage events are registered content resources with owner, visibility, disclosure level, source snapshot, and copied `selected_users` or `space_shared` disclosure grants. User aggregation filters events through the canonical content predicate before grouping; instance operations receive only de-identified totals. Protocol/schema values reserve future manual and cross-instance imports, but no product ingestion endpoint exposes them. Raw prompts, messages, request/response bodies, transcripts, and provider secrets are excluded. |
@@ -133,13 +131,13 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 
 | Package | Kind | Public facade | Main ownership / notes |
 |---|---|---|---|
-| `runtimeAdapters` | support-package / infra | yes | Runtime adapter specs/types only. Consumed by `agents`, `automations`, `runtimeTools`, and `runs`; not route-registered. |
+| `runtimeAdapters` | support-package / infra | yes | Runtime adapter specs/types only. Consumed by `agents`, `automations`, `hosts`, and `runs`; not route-registered. |
 | `runtimeContext` | support-package / kernel | yes | Owns the public `RuntimeContextGatewayPort` contract, executable invocation inventory, and versioned Work Context Setup API. The invocation gateway facade now binds live planning, persisted execution controls, Delivery/Snapshot creation, acknowledgement, Usage reconciliation, and finalization; managed/Chat/provider-task production callers are still being cut over. Other modules may import only the public facade, not its internal contract or inventory files. |
 | `routeUtils` | support-package / kernel | empty | Shared route helpers for DB pool access, identity resolution, pagination, parsing, and route error handling. |
 | `access` | support-package / kernel | empty | Shared resource visibility predicates, common SQL read predicates, and space role helpers. It does not replace PolicyGateway or domain-owned ACLs. |
 | `settings` | support-package / infra | yes | Generic scoped settings store for low-frequency instance, space, user, and space-user settings, including instance operations policy shared by system routes, backup, and access-log retention. Product modules own validation and DTOs; new code must not add feature-specific settings tables. |
 | `scheduler` | support-package / infra | yes | In-process periodic task registry, scheduler task state store, and background service startup composition. |
-| `projectFolders/sandbox`, `projectFolders/codePatch` | module-internal infra | yes via `projectFolders` | Worktree/sandbox preparation and code-patch collection/apply ports. Path validation (`validatePath`, forbidden paths, secret-like diff redaction) lives in `@rainver/folder-read`, shared with the host daemon. |
+| `projectFolders/sandbox`, `projectFolders/codePatch` | module-internal infra | yes via `projectFolders` | Worktree preparation and code-patch collection/apply ports for server-host Locations, behind B62's `assertServerHostLocation` guard. No longer on the CLI execution path — a CLI Run's working directory belongs to the daemon — but code-patch apply and rollback still touch disk here. Path validation (`validatePath`, forbidden paths, secret-like diff redaction) lives in `@rainver/folder-read`, shared with the host daemon. |
 
 `memory/consolidation/` is part of the registered `memory` module.
 

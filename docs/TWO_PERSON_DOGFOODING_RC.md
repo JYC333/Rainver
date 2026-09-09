@@ -199,12 +199,15 @@ restored to `.env.restored` for review by default. `backups/` and `sandboxes/` a
 
 - `model_api` — managed API runtime; credentials resolved through `ModelProvider`
   encrypted keys via `server/src/modules/providers/`.
-- `claude_code` / `codex_cli` — local CLI runtimes; credentials are profile-bound
-  through the CLI credential broker.
+- `claude_code` / `codex_cli` — CLI runtimes, and they run only on an execution
+  host: the built-in one inside `sandbox-runner` or a paired machine. Each copy
+  is logged in on its own host and uses that login; nothing is brokered from
+  the server (ADR 0016).
 
 No adapter may read `ANTHROPIC_API_KEY` from the environment directly. Managed API
-credentials must resolve through `server/src/modules/providers/`; CLI runtime
-credentials must resolve through the CLI CredentialBroker.
+credentials must resolve through `server/src/modules/providers/`. A CLI Agent
+that names no execution host is offered as no backend at all, because there is
+no server-side copy for it to fall back to.
 
 ### Deployment posture
 

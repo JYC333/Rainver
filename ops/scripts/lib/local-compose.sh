@@ -383,18 +383,17 @@ local_compose_generate_server_env() {
   fi
 
   local server_env="$MODE_ROOT/.server.env"
-  local runner_env="$MODE_ROOT/.runner.env"
   local deployer_env="$MODE_ROOT/.deployer.env"
   grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
     "$ENV_FILE" > "$server_env"
-  printf 'SANDBOX_RUNNER_TOKEN=%s\n' \
-    "$(local_compose_setting SERVER_INTERNAL_TOKEN)" > "$runner_env"
-  # The deployer pull loop authenticates to the server with the same internal
-  # token the sandbox runner uses (ADR 0020 §1). It never receives database,
+  # The deployer pull loop authenticates to the server with the internal token
+  # (ADR 0020 §1). The execution host is deliberately not given it: it holds a
+  # bearer token for its own Host row and nothing that unlocks an internal
+  # route. It never receives database,
   # provider, or session credentials.
   {
     printf 'SERVER_INTERNAL_TOKEN=%s\n' "$(local_compose_setting SERVER_INTERNAL_TOKEN)"
     printf 'DEPLOYER_SERVER_URL=%s\n' "http://server:8010"
   } > "$deployer_env"
-  chmod 600 "$server_env" "$runner_env" "$deployer_env"
+  chmod 600 "$server_env" "$deployer_env"
 }

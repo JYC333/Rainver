@@ -85,7 +85,7 @@ export interface SemanticRunFailure {
 
 export function semanticRunFailure(
   result: RunAdapterResultEnvelope,
-  verificationResults: readonly { status: string }[],
+  verificationResults: readonly { status: string; summary?: string | null; verifier_type?: string | null }[],
 ): SemanticRunFailure | null {
   if (!result.success) return null;
   const output = recordValue(result.output_json);
@@ -95,12 +95,20 @@ export function semanticRunFailure(
       error_message: "Agent reported that it could not complete the requested work.",
     };
   }
-  if (verificationResults.some(
+  const unmet = verificationResults.filter(
     (verification) => verification.status === "failed" || verification.status === "error",
-  )) {
+  );
+  if (unmet.length > 0) {
+    // Named, not summarised away. "Did not satisfy its deterministic
+    // acceptance checks" is true of a failing test, an unresolvable workspace
+    // and an offline machine alike, and the person reading it has to act on
+    // one of those. The check's own summary already carries what the host
+    // said; the only thing added here is which check, and how many.
+    const first = unmet[0]!;
+    const rest = unmet.length > 1 ? ` (${unmet.length} checks did not pass)` : "";
     return {
       error_code: "verification_failed",
-      error_message: "Run output did not satisfy its deterministic acceptance checks.",
+      error_message: `${first.summary || `${first.verifier_type} did not pass.`}${rest}`,
     };
   }
   return null;

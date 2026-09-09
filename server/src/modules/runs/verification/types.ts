@@ -1,4 +1,4 @@
-import type { RunMaterializationItemSummary } from "@rainver/protocol";
+import type { LaunchWorkspace, RunMaterializationItemSummary } from "@rainver/protocol";
 import type { RunRecord } from "../repository.js";
 
 export const VERIFICATION_ENGINE_VERSION = "verification_engine.v1" as const;
@@ -56,18 +56,30 @@ export interface ValidationRecipePlan {
   missing_recipe_refs?: string[];
 }
 
+/**
+ * Where a verifier's questions are asked: a workspace on an execution host,
+ * named the way every other host request names one — a Host id plus a Location
+ * or a managed container, never a path (B64).
+ *
+ * It replaces the `sandbox_cwd` this used to carry. That was a server path,
+ * which only ever existed while the server spawned CLIs itself; now that every
+ * CLI Run belongs to a daemon, there is no such path to hand a verifier, and
+ * the same target works on the built-in host and a paired one alike — which is
+ * what makes verification available on a paired host at all.
+ */
+export interface VerificationTarget {
+  host_id: string;
+  workspace_location_id?: string | null;
+  workspace?: LaunchWorkspace;
+}
+
 export interface VerificationInput {
   run: RunRecord;
-  sandbox_cwd: string | null;
+  execution_target: VerificationTarget | null;
   base_commit_sha: string | null;
   output_json: unknown;
   materialization_items: RunMaterializationItemSummary[];
-  /**
-   * ADR 0016 P2: the run's resolved `HostExecutionPort` kind. Omitted (or
-   * `"server"`) preserves today's behavior exactly; a future `"remote"` run
-   * short-circuits `file_exists` rather than `stat`-ing a path that has no
-   * meaning on this machine.
-   */
+  /** Which machine, for the record a verification result carries; it no longer decides how a verifier runs. */
   host_kind?: "server" | "remote";
 }
 

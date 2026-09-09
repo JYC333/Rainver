@@ -243,6 +243,24 @@ if [[ -n "$BK_SCHEMA_MIGRATION_VERSION" && -n "$BK_SCHEMA_MIGRATION_CHECKSUM" &&
     LATEST_MIGRATION_FILE="$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '[0-9]*_*.sql' | sort | tail -n 1)"
     if [[ "$(basename "$LATEST_MIGRATION_FILE")" != "$(basename "$BK_MIGRATION_FILE")" ]]; then
       echo "[restore] backup is at migration ${BK_SCHEMA_MIGRATION_VERSION}; this build continues to $(basename "$LATEST_MIGRATION_FILE"). start.sh will apply the remaining migrations."
+      # Any migration after the backup's own that is marked for an offline
+      # upgrade makes the ordinary start refuse; say so here rather than
+      # letting the operator meet it as a failure after the restore.
+      pending_maintenance=""
+      while IFS= read -r m; do
+        [[ "$(basename "$m")" > "$(basename "$BK_MIGRATION_FILE")" ]] || continue
+        # Same contract as `requiresMaintenance` in server/src/db/migrator.ts:
+        # a line of its own, trimmed, within the first 20 lines. A looser test
+        # here would either miss a marker under a header comment or fire on
+        # prose that merely names it.
+        if head -n 20 "$m" | grep -qx -- '[[:space:]]*-- rainver:maintenance[[:space:]]*'; then
+          pending_maintenance="$pending_maintenance $(basename "$m")"
+        fi
+      done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name '[0-9]*_*.sql' | sort)
+      if [[ -n "$pending_maintenance" ]]; then
+        echo "[restore] these require an offline maintenance upgrade (ADR 0016 section 10):${pending_maintenance}"
+        echo "[restore]   an ordinary start will refuse. Resume with: ops/scripts/start.sh --$MODE --maintenance"
+      fi
     fi
   fi
 fi

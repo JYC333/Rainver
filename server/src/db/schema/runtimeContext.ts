@@ -19,7 +19,7 @@ import { runs } from "./runs.js";
 import { policyDecisionRecords } from "./policy.js";
 import { spaces } from "./spaces.js";
 import { users } from "./auth.js";
-import { agentRuntimeProfiles, agents, cliCredentialProfiles } from "./agents.js";
+import { agentRuntimeProfiles, agents } from "./agents.js";
 import { modelProviders } from "./providers.js";
 import { projects, projectBriefVersions, projectInstructionVersions } from "./projects.js";
 
@@ -241,7 +241,6 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   userId: varchar("user_id", { length: 36 }).notNull(),
   agentId: varchar("agent_id", { length: 36 }).notNull(),
   runtimeProfileId: varchar("runtime_profile_id", { length: 36 }).notNull(),
-  credentialProfileId: varchar("credential_profile_id", { length: 36 }),
   adapterType: varchar("adapter_type", { length: 64 }).notNull(),
   providerId: varchar("provider_id", { length: 36 }),
   model: varchar({ length: 256 }),
@@ -273,7 +272,6 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "runtime_context_cli_bindings_user_id_fkey" }),
   foreignKey({ columns: [table.agentId, table.spaceId], foreignColumns: [agents.id, agents.spaceId], name: "runtime_context_cli_bindings_agent_scope_fkey" }),
   foreignKey({ columns: [table.runtimeProfileId, table.spaceId, table.agentId], foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId], name: "runtime_context_cli_bindings_runtime_scope_fkey" }),
-  foreignKey({ columns: [table.credentialProfileId, table.userId], foreignColumns: [cliCredentialProfiles.id, cliCredentialProfiles.ownerUserId], name: "runtime_context_cli_bindings_credential_owner_fkey" }),
   foreignKey({ columns: [table.providerId], foreignColumns: [modelProviders.id], name: "runtime_context_cli_bindings_provider_id_fkey" }),
   check("ck_runtime_context_cli_bindings_scope_kind", sql`scope_kind IN ('direct_session','room_recipient','root_task','workflow_execution')`),
   check("ck_runtime_context_cli_bindings_status", sql`status IN ('active','rotated')`),

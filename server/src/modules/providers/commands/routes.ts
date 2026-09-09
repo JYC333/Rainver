@@ -23,7 +23,6 @@ import {
   completeProviderText,
   listProviderModels,
 } from "../invocation/invocation.js";
-import { CliCredentialBroker } from "../cli/credentialBroker.js";
 import {
   enqueueRetrievalEmbeddingBackfill,
   resetRetrievalEmbeddingsForSpace,
@@ -168,7 +167,6 @@ export function registerProviderCommandRoutes(
   // owned by SchedulerRegistry (see modules/scheduler/backgroundServices.ts)
   // so that shutdown, failure alerting, and liveness cover it like every other
   // recurring job.
-  const broker = new CliCredentialBroker(config, app.log);
 
   app.get("/api/v1/providers/subscriptions/login/stream", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);
@@ -593,219 +591,6 @@ export function registerProviderCommandRoutes(
     }
   });
 
-  app.get("/api/v1/credentials/cli/profiles", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    const runtime = query(request).runtime;
-    const profiles = await broker.listProfiles(runtime, identity.spaceId, identity.userId);
-    return reply.send(await Promise.all(profiles.map((p) => broker.profileOut(p))));
-  });
-
-  app.get("/api/v1/credentials/cli/available", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    return reply.send(
-      await broker.availableProfiles(identity.spaceId, identity.userId, query(request).runtime),
-    );
-  });
-
-  app.post("/api/v1/credentials/cli/profiles", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{
-        runtime: string;
-        name: string;
-        readonly?: boolean;
-        notes?: string;
-        network_profile_id?: string | null;
-        is_default?: boolean;
-      }>("CliCredentialProfileCreateRequestSchema", jsonBody(request));
-      return reply
-        .code(201)
-        .send(await broker.createProfile(identity.spaceId, identity.userId, body));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.put("/api/v1/credentials/cli/profiles/:profileId/grants", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{
-        space_id: string;
-        enabled?: boolean;
-        is_default?: boolean;
-        network_profile_id?: string | null;
-      }>("CliCredentialSpaceGrantRequestSchema", jsonBody(request));
-      return reply.send(
-        await broker.grantCliProfileToSpace(
-          identity.spaceId,
-          identity.userId,
-          params(request).profileId ?? "",
-          body,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/credentials/cli/profiles/:profileId/grants/:spaceId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await broker.revokeCliProfileGrant(
-        identity.userId,
-        params(request).profileId ?? "",
-        params(request).spaceId ?? "",
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.get("/api/v1/credentials/cli/profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    const profileId = params(request).profileId ?? "";
-    const profile = await broker.getProfile(profileId, identity.spaceId, identity.userId);
-    if (!profile) return reply.code(404).send({ detail: `Profile '${profileId}' not found` });
-    return reply.send(await broker.profileOut(profile));
-  });
-
-  app.post("/api/v1/credentials/cli/profiles/:profileId/detect", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await broker.detectProfile(
-          params(request).profileId ?? "",
-          identity.spaceId,
-          identity.userId,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/credentials/cli/profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{ network_profile_id?: string | null }>(
-        "CliCredentialProfileUpdateRequestSchema",
-        jsonBody(request),
-      );
-      return reply.send(
-        await broker.updateProfileNetworkProfileId(
-          params(request).profileId ?? "",
-          body.network_profile_id ?? null,
-          identity.spaceId,
-          identity.userId,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.get("/api/v1/credentials/cli/methods", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    return reply.send(broker.listLoginMethods());
-  });
-
-  app.get("/api/v1/credentials/cli/login/stream", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    await broker.streamLogin(
-      query(request).runtime ?? "",
-      reply,
-      identity.spaceId,
-      identity.userId,
-      query(request).profile_id,
-    );
-    return reply;
-  });
-
-  app.post("/api/v1/credentials/cli/login/input", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{ input: string; profile_id?: string }>(
-        "CliLoginInputRequestSchema",
-        jsonBody(request),
-      );
-      if (!await broker.sendLoginInput(
-        query(request).runtime ?? "",
-        body.input,
-        identity.spaceId,
-        identity.userId,
-        body.profile_id,
-      )) {
-        return reply
-          .code(404)
-          .send({ detail: `No active login session for runtime '${query(request).runtime ?? ""}'` });
-      }
-      return reply.send({ status: "sent" });
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.get("/api/v1/credentials/cli/status", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    return reply.send(await broker.status(identity.spaceId, identity.userId));
-  });
-
-  app.get("/api/v1/credentials/cli/usage", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    return reply.send(await broker.cliUsage(identity.spaceId, identity.userId));
-  });
-
-  app.get("/api/v1/credentials/cli/usage/auto-refresh", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    return reply.send(await broker.cliUsageAutoRefreshSettings());
-  });
-
-  app.put("/api/v1/credentials/cli/usage/auto-refresh", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{ enabled: boolean }>(
-        "CliUsageAutoRefreshUpdateRequestSchema",
-        jsonBody(request),
-      );
-      return reply.send(await broker.setCliUsageAutoRefresh(body.enabled));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/credentials/cli/usage/refresh", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await broker.refreshCliQuota(
-          query(request).runtime ?? "",
-          identity.spaceId,
-          identity.userId,
-          query(request).profile_id,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
   app.post("/internal/providers-credentials/providers/complete-text", async (request, reply) => {
     if (!checkInternalToken(config, request)) return reply.code(401).send({ detail: "Unauthorized" });
     try {
@@ -853,14 +638,6 @@ export function registerProviderCommandRoutes(
       const body = await parseWith<
         | { kind: "model_provider_api_key"; space_id: string; provider_id: string }
         | { kind: "credential_api_key"; space_id: string; credential_id: string }
-        | {
-            kind: "cli_profile";
-            space_id: string;
-            runtime: string;
-            profile_id?: string | null;
-            require_existing?: boolean;
-            user_id: string;
-          }
       >("RuntimeCredentialResolveRequestSchema", jsonBody(request));
       if (body.kind === "model_provider_api_key") {
         return reply.send({
@@ -872,82 +649,17 @@ export function registerProviderCommandRoutes(
           ),
         });
       }
-      if (body.kind === "credential_api_key") {
-        return reply.send({
-          kind: "credential_api_key",
-          credential_id: body.credential_id,
-          api_key: await resolveProviderCommandStore(config).resolveCredentialApiKey(
-            body.space_id,
-            body.credential_id,
-          ),
-        });
-      }
-      const profile = await broker.resolveProfile(
-        body.runtime,
-        body.profile_id,
-        body.require_existing ?? true,
-        body.space_id,
-        body.user_id,
-      );
-      if (!profile) return reply.code(404).send({ detail: "Credential profile not found" });
       return reply.send({
-        kind: "cli_profile",
-        profile_id: profile.id,
-        runtime: profile.runtime,
-        source_path: profile.source_path,
-        target_path: profile.target_path,
-        readonly: profile.readonly,
+        kind: "credential_api_key",
+        credential_id: body.credential_id,
+        api_key: await resolveProviderCommandStore(config).resolveCredentialApiKey(
+          body.space_id,
+          body.credential_id,
+        ),
       });
     } catch (error) {
       return sendDomainError(reply, error);
     }
   });
 
-  app.post("/internal/providers-credentials/credentials/cli/grant", async (request, reply) => {
-    if (!checkInternalToken(config, request)) return reply.code(401).send({ detail: "Unauthorized" });
-    try {
-      const body = await parseWith<{
-        run_id: string;
-        space_id: string;
-        runtime: string;
-        executor_mode: "worktree" | "docker";
-        profile_id?: string | null;
-        user_id: string;
-      }>("CliCredentialGrantRequestSchema", jsonBody(request));
-      return reply.send(
-        await broker.grantForRun(
-          body.run_id,
-          body.space_id,
-          body.runtime,
-          body.executor_mode,
-          body.profile_id,
-          { user_id: body.user_id },
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/internal/providers-credentials/credentials/cli/audit", async (request, reply) => {
-    if (!checkInternalToken(config, request)) return reply.code(401).send({ detail: "Unauthorized" });
-    try {
-      const body = await parseWith<{
-        space_id: string;
-        run_id?: string | null;
-        runtime_adapter_type?: string | null;
-        credential_profile_id?: string | null;
-        trigger_origin?: string | null;
-        fallback_used?: boolean;
-        fallback_reason?: string | null;
-        broker_error?: boolean;
-        cleanup_status?: string;
-        action?: string;
-      }>("CliCredentialAuditRequestSchema", jsonBody(request));
-      const eventId = await resolveProviderCommandStore(config).recordCliCredentialUsage(body);
-      return reply.send({ status: "recorded", event_id: eventId });
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
 }

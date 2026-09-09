@@ -391,13 +391,9 @@ export class PgConversationExecutionContextRepository {
 
   async getBinding(spaceId: string, sessionId: string, agentId: string): Promise<{
     runtime_profile_id: string;
-    credential_profile_id: string | null;
   } | null> {
-    const result = await this.db.query<{
-      runtime_profile_id: string;
-      credential_profile_id: string | null;
-    }>(
-      `SELECT runtime_profile_id, credential_profile_id
+    const result = await this.db.query<{ runtime_profile_id: string }>(
+      `SELECT runtime_profile_id
          FROM session_conversation_backends
         WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
         LIMIT 1`,
@@ -409,14 +405,9 @@ export class PgConversationExecutionContextRepository {
   async listBindings(spaceId: string, sessionId: string): Promise<Array<{
     agent_id: string;
     runtime_profile_id: string;
-    credential_profile_id: string | null;
   }>> {
-    const result = await this.db.query<{
-      agent_id: string;
-      runtime_profile_id: string;
-      credential_profile_id: string | null;
-    }>(
-      `SELECT agent_id, runtime_profile_id, credential_profile_id
+    const result = await this.db.query<{ agent_id: string; runtime_profile_id: string }>(
+      `SELECT agent_id, runtime_profile_id
          FROM session_conversation_backends
         WHERE space_id = $1 AND session_id = $2
         ORDER BY created_at ASC, agent_id ASC`,
@@ -444,25 +435,23 @@ export class PgConversationExecutionContextRepository {
     userId: string;
     agentId: string;
     profileId: string;
-    credentialProfileId: string | null;
   }): Promise<void> {
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO session_conversation_backends (
          id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
-         credential_profile_id, model_name_snapshot, model_provider_id_snapshot,
+         model_name_snapshot, model_provider_id_snapshot,
          runtime_config_snapshot_json, runtime_policy_snapshot_json,
          runtime_state_key, created_at, updated_at
        ) SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar,
-                profile.id, $7::varchar, profile.model_name, profile.model_provider_id,
+                profile.id, profile.model_name, profile.model_provider_id,
                 profile.runtime_config_json, profile.runtime_policy_json,
-                $8::varchar, $9::timestamptz, $9::timestamptz
+                $7::varchar, $8::timestamptz, $8::timestamptz
            FROM agent_runtime_profiles profile
           WHERE profile.id = $6 AND profile.space_id = $2 AND profile.agent_id = $5
        ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
        DO UPDATE SET
          runtime_profile_id = EXCLUDED.runtime_profile_id,
-         credential_profile_id = EXCLUDED.credential_profile_id,
          model_name_snapshot = EXCLUDED.model_name_snapshot,
          model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
          runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
@@ -474,7 +463,7 @@ export class PgConversationExecutionContextRepository {
          runtime_session_updated_at = NULL,
          updated_at = EXCLUDED.updated_at`,
       [randomUUID(), input.spaceId, input.sessionId, input.userId, input.agentId,
-        input.profileId, input.credentialProfileId, randomUUID(), now],
+        input.profileId, randomUUID(), now],
     );
   }
 
@@ -563,8 +552,16 @@ export class PgConversationExecutionContextRepository {
   }
 }
 
+/**
+ * Whether this host is actually reachable right now.
+ *
+ * The built-in host is not exempt: its daemon runs in a container that can be
+ * stopped, and reporting it online regardless showed "Server" as a usable
+ * backend with nothing running behind it. What does not apply to it is
+ * *ownership* — it has no owner (ADR 0016 §3) — which is a different check.
+ */
 export function hostIsOnline(host: Pick<ExecutionHostRow, "kind" | "status" | "last_heartbeat_at">): boolean {
-  return host.kind === "server" || (host.status === "online" && !isStale(host.last_heartbeat_at));
+  return host.status === "online" && !isStale(host.last_heartbeat_at);
 }
 
 export function hostSummary(host: ExecutionHostRow, sessionId: string): ConversationExecutionHostSummary {

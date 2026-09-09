@@ -354,7 +354,7 @@ describe("runs repositories against real PostgreSQL", () => {
       adapter_type: "codex_cli",
       runtime_config_json: {
         adapter_type: "codex_cli",
-        runtime_tool_version: "1.2.3",
+        runtime_installation: "managed:1.2.3",
       },
       is_default: false,
     });

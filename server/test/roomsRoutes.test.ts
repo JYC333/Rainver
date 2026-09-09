@@ -177,7 +177,6 @@ describe("Room routes", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: "credential-user-2",
         }],
       },
     });
@@ -195,7 +194,6 @@ describe("Room routes", () => {
       input: {
         content: "Review this",
         backends: [{
-          credential_profile_id: "credential-user-2",
         }],
       },
     });
@@ -230,7 +228,6 @@ describe("Room routes", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: "credential-user-2",
         }],
       },
     });
@@ -245,7 +242,6 @@ describe("Room routes", () => {
         backends: [{
           agent_id: "agent-1",
           runtime_profile_id: "runtime-cli",
-          credential_profile_id: "credential-user-2",
         }],
       },
     });

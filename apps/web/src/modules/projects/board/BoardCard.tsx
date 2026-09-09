@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { Bot, CircleDot, User, GripVertical } from 'lucide-react'
 import { SpaceLink as Link } from '../../../core/spaceNav'
@@ -13,7 +14,12 @@ import { projectTaskHref } from '../taskHref'
  * completion breakdown live one click away in the Work tab — a card that tries
  * to show them stops being scannable, which is the only job it has.
  */
-export default function BoardCard({ card, projectId, canMove }: {
+/**
+ * Memoised against the Board's poll. `mergeBoard` keeps an unchanged card as
+ * the same object, so the default shallow compare is exactly right: a card
+ * re-renders when it actually changed and not when its neighbour did.
+ */
+const BoardCard = memo(function BoardCard({ card, projectId, canMove }: {
   card: ProjectBoardCard
   projectId: string
   /** Whether the viewer may move it. A viewer sees the card and drags nothing. */
@@ -32,17 +38,26 @@ export default function BoardCard({ card, projectId, canMove }: {
     <div
       ref={setNodeRef}
       style={style}
+      // The whole card is the drag surface: reaching for a four-pixel grip is
+      // not how a board is used. Only the pointer activator goes here, so the
+      // card does not become a focusable `button` with a link inside it — the
+      // grip below stays the keyboard target and keeps that structure honest.
+      // The sensor's 6px distance constraint is what lets a click through to
+      // the title link: a press that does not travel is still a click.
+      onPointerDown={canMove ? (listeners?.onPointerDown as React.PointerEventHandler<HTMLDivElement> | undefined) : undefined}
       className={[
         'rounded-lg border bg-card p-3 text-left shadow-sm transition-shadow',
+        canMove ? 'cursor-grab active:cursor-grabbing' : '',
         isDragging ? 'opacity-60 shadow-md' : 'hover:shadow',
         blocked ? 'border-destructive/60' : 'border-border',
       ].join(' ')}
       data-testid={`board-card-${card.id}`}
     >
       <div className="flex items-start gap-1.5">
-        {/* The drag handle is its own control, so the card is not a focusable
-            "button" with a link nested inside it, and a keyboard has a target:
-            focus it, Space to pick up, arrows to change lane, Space to drop. */}
+        {/* Kept for the keyboard, not for the pointer: focus it, Space to pick
+            up, arrows to change lane, Space to drop. It is also the only
+            element carrying the drag `attributes`, so the card itself stays a
+            plain container rather than a button wrapping a link. */}
         {canMove && (
           <button
             type="button"
@@ -99,4 +114,6 @@ export default function BoardCard({ card, projectId, canMove }: {
       </p>
     </div>
   )
-}
+})
+
+export default BoardCard

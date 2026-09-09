@@ -119,6 +119,15 @@ export function CreateProjectFolderDialog({
 
   const candidateOptions = candidates.map(candidate => ({ value: candidate.path, label: candidate.name }))
 
+  /** What the action is still waiting for, in the order the form asks for it. */
+  const blockedReason: string | null =
+    source === 'host' && !selectedHostId ? 'Choose a host.'
+      : source === 'host' && !hostPath ? 'Open the directory to register.'
+        : source === 'connect' && !selectedCandidatePath ? 'Select a directory.'
+          : source === 'clone' && !repoUrl.trim() ? 'Enter the repository URL.'
+            : !name.trim() ? 'Name this Folder.'
+              : null
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -189,10 +198,20 @@ export function CreateProjectFolderDialog({
             </div>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="items-center">
+          {/* A disabled button with no reason is why the host flow read as a
+              dead end: the directory was already chosen and nothing said what
+              was still missing. */}
+          {blockedReason && (
+            <p className="mr-auto text-xs text-muted-foreground" data-testid="folder-create-blocked">
+              {blockedReason}
+            </p>
+          )}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={submit} disabled={creating || !name.trim()}>
-            {creating ? 'Creating…' : 'Create Folder'}
+          <Button onClick={submit} disabled={creating || blockedReason !== null}>
+            {creating
+              ? (source === 'host' ? 'Connecting…' : 'Creating…')
+              : (source === 'host' ? 'Connect directory' : 'Create Folder')}
           </Button>
         </DialogFooter>
       </DialogContent>

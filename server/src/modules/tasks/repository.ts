@@ -15,6 +15,7 @@ import {
   type SpaceUserIdentity,
   type Queryable, dateIso } from "../routeUtils/common.js";
 import { PgRunRepository } from "../runs/repository.js";
+import { dispatchesToHostDaemon } from "../runs/runRemoteness.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot.js";
@@ -703,7 +704,12 @@ export class PgTaskRepository {
       if (target && (target.space_id !== identity.spaceId || target.project_folder_id !== task.project_folder_id || target.project_id !== task.project_id)) {
         throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");
       }
-      if (target?.execution_host_kind === "remote") {
+      // Which path executes this dispatch is the runtime's question, not the
+      // machine's: every CLI runtime runs on a host daemon now, the built-in
+      // host's as much as a paired machine's. A dispatch naming a CLI adapter
+      // therefore takes the host path whatever kind of host holds the Location,
+      // and everything else stays in-process here.
+      if (target && (target.execution_host_kind === "remote" || dispatchesToHostDaemon(optionalString(body.adapter_type)))) {
         return await this.prepareRemoteTaskRun(client, identity, task, target, body, {
           maxRuns,
           taskPolicy,
@@ -830,7 +836,14 @@ export class PgTaskRepository {
     // branch was selected. Keep this method focused on remote topology and
     // runtime validation.
     if (!task.project_id) throw new HttpError(409, "Remote dispatch requires a Task Project");
-    if (target.host_owner_user_id !== identity.userId) {
+    // Two safety models, not one rule with an exception (ADR 0016 §3). A paired
+    // host serves its own registered owner and nobody else, because its safety
+    // is the trust that owner already extends to their machine. The built-in
+    // host has no owner and serves every Space of the instance — what makes
+    // that safe is the per-Run namespace the daemon builds, and the
+    // authorization is the Project write access the admission above already
+    // checked.
+    if (target.host_owner_user_id !== null && target.host_owner_user_id !== identity.userId) {
       throw new HttpError(403, "This workspace's host does not belong to you");
     }
     if (!target.host_online) throw new HttpError(409, "Host is offline");

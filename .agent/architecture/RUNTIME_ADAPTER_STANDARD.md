@@ -15,15 +15,17 @@ output parser, catalog display, executor family, and conservative delegation/
 observability/trust claims. Where a runtime exposes a verified config control,
 the local CLI renderer must materialize and verify it before execution; the
 current Claude Code path denies the runtime-internal `Task` tool, while Codex
-remains unknown until conformance evidence exists.
+declares its subagent control `unknown` and is capped at `low` trust by that
+declaration alone.
 Runtime adapter database rows are not part of the current product schema. Runtime
 selection uses an Agent's selected/default `AgentRuntimeProfile`, which is
 snapshotted onto each run.
 
-`GenericCliRuntimeAdapter` executes all implemented local CLI specs through the
-same command rendering, credential, accepted-Delivery, scoped-Runner, output parser, and
-usage provider path. The application server never spawns these vendor
-processes. Native adapters are limited to `capability`.
+Every implemented local CLI executes through `HostDaemonExecutionAdapter`
+and the daemon transport. Non-CLI adapters remain in-process and retain Runtime
+Context Delivery. The daemon performs strict isolation on the built-in host
+and native execution on a trusted host; the application server never spawns a
+vendor process.
 
 **The tool surface is adapter-neutral.** When `run_input.v1` contains tool
 grants, the executing side puts the `rainver` command (`packages/agent-cli`)
@@ -37,24 +39,20 @@ needed. The surface is only a transport over
 immutable AgentVersion allowlists, policy, approval/proposal behavior,
 idempotency, domain executors, and audit remain server-owned.
 
-Use `/runtime-tools` for CLI binary installation/status, space runtime policy,
-and
-`RuntimeAdapterSpec` / `adapter_type` for runtime semantics. The old
-`/runtime-adapters` instance API is retired.
+Use `/api/v1/hosts/:hostId/installations/*` for installing, logging in,
+upgrading and rolling back a CLI copy, and `RuntimeAdapterSpec` /
+`adapter_type` for runtime semantics. The `/runtime-adapters` and
+`/runtime-tools` instance APIs are both retired.
 
-Runtime tool status is non-mutating: it checks the active allowlisted binary
-and installed versions under `$RAINVER_HOME/runtime-tools` without creating
-runs, sandboxes, events, credential grants, or model calls. Installing or
-activating tool versions requires the configured `INSTANCE_ADMIN_EMAIL` user.
-Space owners/admins choose enabled/default/allowed versions for their own
-space; agent versions store the resolved CLI tool version used by runs.
+What a host reports about a copy is non-mutating: its id, version, whether it
+is logged in, the accounts a multi-account CLI holds, and the version kept
+behind it. Reading it creates no run, sandbox, event or model call.
 
-Credential profile binding uses UUID profile ids from
-`cli_credential_profiles.id`. Permission bypass is policy controlled and denied
-before invocation unless both runtime config and runtime policy allow it under
+A runtime profile binds a copy by `execution_host_id` + `runtime_installation`;
+there is no credential profile to bind, because the copy's login lives on the
+host (ADR 0016 §7). Permission bypass is policy controlled and denied before
+invocation unless both runtime config and runtime policy allow it under
 worktree isolation.
-
-Credential profile readiness requires the selected source path to exist.
 
 Accepted Runtime Context Delivery is rendered directly at the adapter boundary;
 its context is not copied into vendor context files. Vendor-specific control
@@ -66,42 +64,28 @@ Subscription CLIs are explicit `local_cli` external-egress destinations in the
 immutable execution-control snapshot. Preflight and live Delivery authorization
 both require the Space external-egress switch and the exact adapter id.
 
-Every file-capable level, including the historical `one_shot_docker` risk
-value, is implemented through `SandboxRunnerCliCommandExecutor` and the
-dedicated `sandbox-runner` service. The server sends a typed runtime/tool/scope
-request with managed mount ids and an explicit egress profile; it cannot send
-an executable command, image, host path, shell string, or environment map.
-The Runner resolves the selected tool version, constructs an empty-root
-bubblewrap mount/PID namespace, and fails closed on request, mount, connection,
-or namespace failure. There is no application-server subprocess fallback.
-Interactive credential login uses the same Runner through its typed PTY mode.
-Subscription credentials receive a short-lived authenticated CONNECT lease
-whose host allowlist is fixed by the registered runtime; the CLI never receives
-direct access to the default Compose network.
+CLI dispatch carries workspace identity, installation, runtime profile and an
+explicit isolation policy over the daemon WebSocket. Strict namespaces enforce
+filesystem isolation and fail closed. Verification recipes use `command_run`
+with no network; the C3 conformance suite that shared this transport is retired
+(2026-09-09, see `modules/hosts.md`). The private Runner protocol and its
+application server client are removed. Only `none` confines a Run's network;
+`default` and `install` are policy and a record through the daemon's egress
+proxy.
 
 Usage providers are runtime-generic. Adapters without a real probe return
 unknown accuracy plus fallback run statistics. Live Claude Code quota uses the
-server-owned OAuth API; Codex quota RPC runs through the Sandbox Runner with a
-unique run home and workspace. Cached snapshots are scoped to the selected
-credential profile, and no quota refresh spawns a vendor CLI in the
-application-server namespace.
+server-owned OAuth API. Codex quota comes from an RPC only its own CLI speaks,
+so it is read on the execution host that holds the copy and the login; the
+server-side probe that ran it beside the application server is gone with the
+Runner, and the host-side one lands with the usage work. No quota refresh
+spawns a vendor CLI in the application-server namespace.
 
-Output parsers must describe real behavior. Claude Code uses stream JSON with
-partial messages enabled. Codex uses its app-server stdio protocol and OpenCode
-uses ACP over stdio; those protocol surfaces provide native assistant-text
-deltas instead of completion-only CLI envelopes. Supported lifecycle events
-are normalized incrementally; unknown vendor payload and text deltas are not
-promoted to persisted semantic events.
-
-For stateful CLI runs, the adapter consumes ordered Delivery phases: full
-bootstrap or acknowledged-cursor delta first, and the current user item last.
-Those phases are separate physical vendor turns; bootstrap responses are not
-published as the user-visible result. A durable binding execution lease spans
-Delivery preparation, vendor execution, acknowledgement, and session-id
-persistence so parallel Workflow nodes cannot mutate one vendor session.
-It may resume only the vendor session named by the scoped CLI binding. It does
-not fetch context, concatenate a route-authored replay prompt, advance cursors,
-or treat vendor archives as canonical state.
+All three implemented vendor adapters speak ACP over stdio. The server
+controller negotiates sessions and consumes semantic events; the daemon only
+relays bytes. Host-bound runs resume vendor sessions and receive a prompt plus
+work surface, without server-brokered Runtime Context Delivery. In-process
+runtimes continue to consume the Runtime Context Gateway.
 
 To add a new local CLI adapter: add its `RuntimeAdapterType` member, add it to
 `VendorCliAdapterType`, and add a validated `RuntimeAdapterSpec`. Membership

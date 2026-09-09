@@ -2,8 +2,8 @@
 
 Rainver owns agents, runs, Runtime Context Delivery, policy, credential gating,
 worktree governance, artifacts, proposals, audit records, and events. Vendor
-CLIs are runtime adapter types, but their binaries are installed as controlled
-runtime tools.
+CLIs are runtime adapter types, but their binaries are copies installed on an
+execution host.
 
 ## Canonical Standard
 
@@ -13,7 +13,7 @@ live in `server/src/modules/runtimeAdapters/specs.ts`. Specs define:
 - runtime kind and implementation status
 - runtime tool requirement, command argv template, and parser behavior
 - accepted Delivery rendering behavior
-- credential mode and credential profile runtime name
+- credential mode, and how a managed copy is logged in (`credentials.login`)
 - sandbox and Project Folder requirements
 - model override support
 - permission bypass capability and policy key
@@ -46,52 +46,53 @@ is retired. Do not reintroduce instance-level runtime adapter configuration.
 | `capability` | native | planned | none | none | none |
 | `model_api` | managed_api | implemented | `model_provider_api_key` or owner-bound `managed_subscription_oauth` | none | none |
 | `ts_agent_host` | managed_api | implemented / disabled by default | `model_provider_api_key` (`server_runtime_host`) | canonical host request | none |
-| `claude_code` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
-| `codex_cli` | local_cli | implemented | `cli_profile` | accepted Delivery | Sandbox Runner |
-| `opencode` | local_cli | implemented (low trust pending C3) | `cli_profile` | accepted Delivery + locked agent control | Sandbox Runner |
+| `claude_code` | local_cli | implemented | copy's own login on the host | rendered prompt + work surface | host daemon |
+| `codex_cli` | local_cli | implemented | copy's own login on the host | rendered prompt + work surface | host daemon |
+| `opencode` | local_cli | implemented (low trust by declaration) | copy's own login on the host | rendered prompt + work surface + locked agent control | host daemon |
 | `gemini_cli` | local_cli | planned | disabled | prompt/custom | worktree |
 | `custom` | custom | planned | disabled | custom | custom |
 
 Planned adapters may appear in code/catalog metadata but cannot be enabled or
-executed. Implemented local CLI adapters support `one_shot_docker` through the
-Docker executor. Critical runs fail closed if the configured image, daemon, or
-runtime-tool mount is unavailable; they never downgrade to worktree execution.
+executed. Every CLI Run now executes on a host daemon, so there is no
+server-side Docker executor: `supports_one_shot_docker` on a spec is a
+declaration the orchestrator still checks (a critical Run on an adapter that
+does not declare it fails with `docker_sandbox_not_supported`), but no
+execution path builds a container. See *Isolation Limits* for what the level
+actually changes. Runs fail closed if the named copy is not installed on the
+host; they never downgrade.
 
-Conformance is persisted per runtime tool version in
-`runtime_conformance_results`. The C3 evaluator requires all five MVP checks —
-file-scope obedience, subagent-attempt detection, cancellation reliability,
-structured-output compliance, and credential leakage — to be explicitly
-observed before recording `passed`. Missing or failed checks remain low trust;
-the router therefore cannot select OpenCode for non-low-risk work without a
-passed result.
+**Runtime conformance is retired (2026-09-09).** There was a C3 suite here: it
+asked a vendor CLI a handful of behavioural questions once — write only this
+file, do not print that secret, stop when told, do not delegate — and cached
+the verdict against `(adapter_type, runtime_version)`, which the router then
+required before any non-low-risk or file-shaped CLI work.
+
+It was narrowed first and then removed, because narrowing did not reach the
+problem. The behaviours it asked about are the *model's*, and the verdict
+carried no model, so a pass measured on one model spoke for every model that
+copy could select — and a copy offers several. One sample of a
+non-deterministic runtime is weak evidence for a permanent verdict, and a
+vendor ships a new version faster than a sweep can be repeated. Its strongest
+question — will the runtime write outside what it was given — became
+structural under ADR 0016: the daemon binds the workspace and nothing else.
+What was left either duplicated what using the runtime already proves (an
+output contract is exercised by every ACP turn) or tested instruction-following
+against a threat the credential channel already closes.
+
+What contains a CLI Run is the host's namespace, its egress profile and
+ADR 0008's credential channel. None of those vary by risk level, so risk now
+has no effect on CLI dispatch at all; that is recorded in the deferred register
+rather than implied by a check that no longer runs. A runtime's trust level is
+what its own spec declares — a runtime that cannot say it can stop its own
+delegation stays `low`.
 
 ## Product API Surface
 
-Runtime tool installation and status are server-owned:
-
-- `GET /api/v1/runtime-tools/catalog`
-- `GET /api/v1/runtime-tools`
-- `GET /api/v1/runtime-tools/{runtime}`
-- `GET /api/v1/runtime-tools/space-policy`
-- `GET /api/v1/runtime-tools/space-policy/{runtime}`
-- `PUT /api/v1/runtime-tools/space-policy/{runtime}`
-- `POST /api/v1/runtime-tools/{runtime}/install`
-- `POST /api/v1/runtime-tools/{runtime}/activate`
-
-Runtime tool installs are instance operations. `INSTANCE_ADMIN_EMAIL` identifies
-the single user allowed to install or activate CLI tool versions. Space
-owners/admins do not install binaries; they manage `space_runtime_tool_policies`
-for their space: enabled/disabled state, default version, and optional allowed
-version list. Runtime tool installs run npm from the server container. The
-compose server service passes proxy and npm network settings (`HTTP_PROXY`,
-`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NPM_CONFIG_REGISTRY`,
-`NPM_CONFIG_STRICT_SSL`, and `NPM_CONFIG_CAFILE`) into the container, and the
-server allowlists only network settings for the npm subprocess. Provider API
-keys and CLI credentials must not be passed through this path.
-
-CLI credential login and status are served by the server providers/credentials
-authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
-`/runtime-tools`.
+Installing a runtime, logging it in, reading its subscription and rolling it
+back are all **host** operations, under `/api/v1/hosts/:hostId/installations/*`
+and `/api/v1/hosts/:hostId/usage`. The host owner acts on a paired machine; the
+built-in host is instance-admin gated. The surface is documented in
+[hosts.md](hosts.md); the frontend is the Command Center's host card.
 
 ## Generic CLI Lifecycle
 
@@ -112,21 +113,21 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    and is implemented.
 3. Native adapters are planned; no native capability executor is active today.
 4. server local CLI runtime specs enter through
-   `server/src/modules/runs/vendorCliAdapter.ts`. Shared local CLI execution
+   `server/src/modules/runs/remoteHostCliAdapter.ts`. Shared local CLI execution
    details are split by responsibility: command rendering in
-   `cliCommandRendering.ts`, subprocess execution and process registration in
-   `localCliExecution.ts`, subprocess env allowlisting in `cliSubprocessEnv.ts`,
-   runtime provider binding in `runtimeProviderBinding.ts`, and Codex/OpenCode
-   config materialization in `codexProviderConfig.ts` and the subagent config
-   helper.
-5. For local CLI runtimes, `RunOrchestrationService` resolves the run's
-   effective tool version from immutable
-   `Run.runtime_profile_snapshot_json.runtime_config_json`, active-space
-   `space_runtime_tool_policies`, and installed instance tool versions.
-   Disabled, disallowed, or missing versions fail closed before credential
-   release. `RuntimeToolRegistry` then resolves that exact installed version
-   under `$RAINVER_HOME/runtime-tools/<runtime>/versions/<version>`.
-6. Credential profiles are granted through the server CLI credential broker.
+   `cliCommandRendering.ts`, the executor contracts and process registry in
+   `localCliExecution.ts`, the adapter requirement in
+   `adapterProviderRequirement.ts`, and Codex/OpenCode config materialization
+   in `codexProviderConfig.ts` and the subagent config helper. Spawning a CLI
+   and building its environment are the **daemon's** — the control plane holds
+   neither (`packages/host-daemon/src/execution.ts`,
+   `packages/host-daemon/src/providerBinding.ts`).
+5. For local CLI runtimes, the dispatch carries the host and the installation
+   from the immutable `Run.runtime_profile_snapshot_json`, and the **daemon**
+   resolves that copy on its own machine. Nothing on the server resolves a
+   binary path (B64). A host that does not report the named installation fails
+   the launch rather than substituting another copy.
+6. A CLI runtime uses the login held by its copy on the execution host that runs it; Rainver brokers none (ADR 0016).
    Claude Code may also receive a per-run Claude-compatible ModelProvider
    binding. When selected, the server resolves the provider's
    `claude_compatible_base_url` and model, creates a short-lived provider proxy
@@ -149,9 +150,10 @@ authority under `/api/v1/credentials/cli/*`. The frontend runtime page is
    API keys are resolved only inside the server proxy and are not released to
    CLI subprocess env. When a provider is selected, upstream proxy/direct
    routing is taken from the Provider's NetworkProfile. No provider selected
-   means no base URL override; the CLI uses its managed login state and the
-   CLI credential profile's default NetworkProfile, if one is configured.
-   OpenCode can use a CLI profile or a run-scoped ModelProvider binding. It runs
+   means no base URL override; the CLI uses the login its copy holds on the
+   execution host.
+   OpenCode can use its host copy's own login or a run-scoped ModelProvider
+   binding. It runs
    through the ACP stdio protocol with a sandbox `--cwd` and a run-scoped
    `opencode.json` that makes `rainver-locked` the primary default agent,
    sets subagent depth to zero, and denies Task and webfetch. Every worktree CLI
@@ -201,98 +203,37 @@ rewrite/rerank/synthesis and embedding calls do not recursively enter Runtime
 Context; each physical provider attempt instead persists a domain-owned
 provider-task control, Delivery, safe Snapshot, and Usage audit references.
 
-## Controlled CLI Tool Installation
+## Where a CLI copy lives
 
-Vendor CLIs are not installed into backend, server, or sandbox Docker
-images. They are instance runtime state under:
+A vendor CLI is installed on an **execution host** — the built-in host inside
+`sandbox-runner`, or a paired machine — and never on the server. There is no
+instance runtime-tool catalog, no `$RAINVER_HOME/runtime-tools` tree, and no
+per-Space version policy: those were retired with ADR 0016, along with the
+`/api/v1/runtime-tools/*` and `/api/v1/credentials/cli/*` surfaces.
 
-```
-$RAINVER_HOME/runtime-tools/
-  claude_code/
-    versions/<version>/
-      tool.json
-      node_modules/.bin/claude
-    active -> versions/<version>
-  codex_cli/
-    versions/<version>/
-      tool.json
-      node_modules/.bin/codex
-    active -> versions/<version>
-  opencode/
-    versions/<version>/
-      tool.json
-      node_modules/.bin/opencode
-    active -> versions/<version>
-```
+One current version per adapter per host, plus one kept behind it as the
+rollback target. Installing, upgrading, rolling back and removing all go
+through the host card and the daemon's `install_tool` / `rollback_tool` /
+`uninstall_tool` frames; each drains that copy's Runs first and refuses rather
+than killing one. See [hosts.md](hosts.md) for the frames, the drain, the
+quota probe and the change record.
 
-The server-owned `runtimeTools` module provides the controlled installer. The
-installer is restricted to the configured instance admin and accepts only
-code-allowlisted runtime/package mappings:
+## Which copy a Run uses
 
-| runtime | package | bin |
-|---|---|---|
-| `claude_code` | `@anthropic-ai/claude-code` | `claude` |
-| `codex_cli` | `@openai/codex` | `codex` |
-| `opencode` | `opencode-ai` | `opencode` |
+An Agent runtime profile names `execution_host_id` and `runtime_installation`
+(`own`, or `managed:<version>`), and that pair decides the copy. A CLI profile
+that names no execution host is not a runnable backend at all — there is no
+server-side copy to fall back to (BOUNDARIES B46), so it is filtered out of
+conversation backends and marked unavailable in routing.
 
-It invokes `npm` with argv (`shell=false`) and writes into
-`$RAINVER_HOME/runtime-tools`; npm cache is under
-`$RAINVER_HOME/cache/npm`. API callers cannot provide arbitrary package
-names or shell commands. The installer passes through only npm network
-configuration such as proxy, registry, strict-ssl, cafile, and fetch retry env
-vars; provider/API tokens are not inherited. Codex CLI and Claude Code validate
-their platform native optional packages (for example
-`@openai/codex-linux-x64` and `@anthropic-ai/claude-code-linux-x64`) and
-explicitly install the package spec declared by `optionalDependencies` when npm
-does not materialize it automatically. Claude Code also reruns its fixed
-postinstall script so the wrapper package places the native binary under
-`bin/claude.exe`. OpenCode installs its wrapper with postinstall disabled, then
-selects and copies only the libc-compatible package for the server container;
-this avoids the upstream postinstall probe choosing a musl package in a glibc
-container. CLI login resolves the instance active binary through
-`RuntimeToolRegistry`. Runtime execution resolves the version pinned on
-`AgentRuntimeProfile.runtime_config_json.runtime_tool_version`, after applying
-the active-space runtime policy. Neither path falls back to ambient PATH or
-image-global installs.
+## Credentials
 
-## Space Runtime Version Policy
+None are brokered. The copy on the host is logged in on that host and uses its
+own login; Rainver stores no CLI credential and resolves no path to one
+(BOUNDARIES B45, B64). A Run bound to a `ModelProvider` still reaches it
+through an expiring proxy lease, never through a key in the subprocess
+environment (ADR 0008). See [credentials.md](credentials.md).
 
-Installed CLI binaries are shared instance state; spaces do not own separate
-installs. Each space can set a policy row per CLI runtime:
-
-- `enabled=false` blocks that runtime in the space.
-- `default_version` is used when an agent does not request a version.
-- `allowed_versions_json` optionally constrains which installed versions can be
-  selected in that space. Empty means any installed version is allowed.
-
-Agent create/update resolves the effective CLI tool version and stores it on
-the default `AgentRuntimeProfile.runtime_config_json.runtime_tool_version`. Runs
-snapshot the selected profile at creation; HTTP workflow execution selects a
-runtime profile instead of overriding adapter config. If the pinned version is
-later uninstalled, disabled, or removed from the space allowlist, the run fails
-closed with `runtime_tool_version_unavailable` before credential resolution.
-
-## Credential Profile Binding
-
-CLI credential profile ids are UUIDs from `cli_credential_profiles.id`.
-They are user-owned and selected through the user × session conversation
-backend binding. The router snapshots the selected profile id into the Run at
-creation. Shared Agent runtime profiles contain no credential reference.
-
-CLI runs fail closed with `runtime_credential_profile_required` when a required
-profile is missing. No ambient HOME or inherited API-key fallback is allowed.
-`credential_id` remains reserved for DB/vault credentials and model-provider
-API keys.
-
-Credential audit rows record metadata only: adapter type, credential profile id,
-trigger origin, fallback flags/reason, and cleanup status. Raw tokens, HOME
-paths, and credential file content are never stored.
-
-OpenCode CLI login state is brokered from its documented
-`~/.local/share/opencode/auth.json` location into an isolated credential home;
-the host user's home and OpenCode session database are never used by the run.
-Provider-backed OpenCode runs also receive a clean private `HOME`, without a
-CLI login profile.
 
 ## CLI Conversation Runtime Sessions
 
@@ -319,7 +260,7 @@ binding, followed by the current item:
 Conversation runtime state lives only under
 `cache/conversation-runtime-homes/<state-key>` and
 `sandboxes/conversation-sessions/<state-key>/workspace`. It is server-owned,
-excluded from backup, and separate from the shared credential profile. A
+excluded from backup. A
 runtime/provider/model, credential, sandbox, delegated-instruction,
 tool/egress/governing-policy, or sensitivity-revocation change rotates the
 binding with a durable reason. Missing state rotates and reconstructs without
@@ -335,9 +276,9 @@ sources are reauthorized before reconstruction, and runtime, credential,
 provider/tool, AgentVersion, network, and external-egress generations are part
 of the hard-rotation fingerprint.
 
-CLI quota probe homes are unique per probe and removed in `finally`. Cached
-quota snapshots are partitioned by runtime and credential profile id so one
-user's subscription state cannot be returned for another profile.
+A subscription quota is read on the host that holds the login, and the cache is
+keyed by `(host, adapter, installation)` — one copy's subscription state can
+never be returned for another copy or another machine.
 
 ## Managed API Lifecycle
 
@@ -370,8 +311,7 @@ the research operation progress API. The synthesis instruction itself resolves
 from the central `project_research.synthesis` Prompt Library asset and the
 resolved version/hash are captured in the Run contract. System, transport, and
 schema failures remain ordinary failed Runs.
-Research never accepts CLI credential profiles, OpenCode, Claude Code, or Codex
-runtime values. Those runtimes remain available to generic Agent and Coding
+Research never accepts OpenCode, Claude Code, or Codex runtime values. Those runtimes remain available to generic Agent and Coding
 Agent flows and are not removed from the adapter registry.
 An instance-admin owner may select their managed Claude or OpenAI Codex
 subscription Provider for this in-process path. The ownership check is applied
@@ -423,33 +363,53 @@ Blocked requests fail before invocation with `permission_bypass_not_allowed`.
 
 ## Isolation Limits
 
-Low/medium-risk Folder-bound CLI runs use `read_only`: the real Project Folder
-is exposed by Sandbox Runner through a rootless bubblewrap mount namespace with
-an OS-enforced read-only view. The brokered HOME and Run Exchange output are the
-only persistent writable mounts. The namespace begins with an empty filesystem and exposes only
-system runtime trees, exact DNS/NSS/linker/CA configuration files (not the
-whole `/etc`), runtime tools, the current Folder view, the current
-brokered HOME, and Run Exchange input/output; other host paths, spaces,
-credential profiles, and runtime-state directories are not readable. Network remains shared for
-subscription access. Official
-Compose relaxes its seccomp profile solely because Docker's built-in profile
-blocks rootless namespace creation; it grants no capabilities or privileged
-mode. Namespace preflight failure is terminal and never downgrades to a normal
-subprocess.
+Low/medium-risk Folder-bound CLI runs use `read_only`: on the built-in host the
+daemon exposes the Location through a rootless bubblewrap mount namespace with
+an OS-enforced read-only view, built from the dispatch's `isolation` policy.
+The namespace begins with an empty filesystem and exposes only system runtime
+trees, exact DNS/NSS/linker/CA configuration files (not the whole `/etc`), the
+installed copy's own tree, the working directory, the Run's own HOME, and the
+explicit binds the daemon materialized for it; other host paths, Spaces, and
+other copies' runtime-state directories are not readable. Network reach follows
+the dispatch's `egress_profile`, but only `none` is containment (the namespace
+gets `--unshare-net`); `default` and `install` point the Run's proxy variables
+at the daemon's CONNECT proxy, which is policy and a record rather than a wall
+— see *Egress* in `modules/hosts.md`. Official Compose relaxes its seccomp profile
+solely because Docker's built-in profile blocks rootless namespace creation; it
+grants no capabilities or privileged mode. Namespace preflight failure is
+terminal and never downgrades to a normal subprocess.
 
-Worktree isolation protects repository state and proposal review flow for
-high-risk mutation. It does not provide OS, process, network, or resource
-isolation. Runtime Context Delivery is passed directly to the CLI adapter and
-is not written into vendor context files. Any vendor control file used to
-disable unsupported delegation is generated only in the private worktree, so
-real Project Folder files such as `CLAUDE.md`, `AGENTS.md`, or `prompt.md` are
-never mutated by runtime execution.
+**The sandbox level no longer narrows a Folder-bound Run at all.** Only
+`read_only` ever changed the bind, and a Folder-bound run's floor is `worktree`
+now, so every risk level reaches the daemon as `read_write`. That is deliberate
+and was a repair, not a relaxation: `read_only` made sense while the server
+mounted the Folder read-only and provisioned a *separate* worktree for the
+writes. With that gone, the levels came out inverted — a low-risk run could not
+write its own workspace while a high-risk one could, so the safer a run was the
+less it could do. A run that cannot write cannot do the work it was dispatched
+for.
 
-`one_shot_docker` is the critical-risk execution mode for implemented local CLI
-adapters. The executor uses a deny-by-default network namespace, read-only
-container root, dropped capabilities, no-new-privileges, bounded PID/CPU/memory
-resources, and at most one read-only credential mount. Networked provider proxy
-leases are rejected until an egress-enabled profile has its own policy review.
+What still contains a Run is the namespace and the egress profile, not the
+level. `worktree` and `one_shot_docker` remain resolved and recorded but have
+no daemon analogue: the daemon's workspace is the Location itself. So risk
+currently decides nothing about containment on the built-in host — stated here
+rather than left to be inferred from the level names, and tracked in the
+deferred register.
+
+The server-side worktree provisioning that used to serve high-risk CLI runs
+still exists in `runs/ephemeralSandbox.ts` and `projectFolders/sandbox.ts`, but
+**no CLI Run reaches it**: `worktree` and `one_shot_docker` are produced only
+for vendor CLI adapters, every vendor CLI adapter is `executor_family:
+"local_cli"`, and that is exactly the predicate routing a Run to the daemon
+port. `ServerHostExecutionAdapter` therefore only ever serves managed-API runs,
+which never ask for a worktree. Recorded in the deferred register rather than
+deleted here; nothing dispatches through it, so it is dead weight, not a risk.
+
+No server-brokered Runtime Context reaches a daemon CLI Run at all — the agent
+pulls what it needs through the `rainver` command (`runs/runRemoteness.ts`) —
+so real Project Folder files such as `CLAUDE.md`, `AGENTS.md`, or `prompt.md`
+are never mutated by runtime execution.
+
 
 ## Usage And Output Parsing
 
@@ -458,10 +418,10 @@ product. Run history and trace read models remain the source for execution
 evidence, while token accounting lives under `/usage`: managed provider calls
 and provider-proxy responses emit ledger events, subscription CLI runs emit
 Run-attributed `local_cli` events from their exact runtime envelopes, and
-managed CLI profiles can import transcript-derived lower bounds only as a
-recovery path. Claude's live `rate_limit_event` updates the selected profile's
-quota cache. CLI quota snapshots remain under `/credentials/cli/usage*` and
-are not token-accounting events.
+and a Run bound to a `ModelProvider` is metered at the proxy instead, so the
+same generation is never counted twice. Claude's live `rate_limit_event` is
+folded into that copy's entry in the host quota cache
+(`hosts/usageService.ts`). Quota snapshots are not token-accounting events.
 
 Claude Code uses its structured JSON stream; Codex uses app-server JSON-RPC;
 OpenCode uses ACP JSON-RPC. Their protocol controllers validate scoped
@@ -474,9 +434,11 @@ ledger.
 
 To add a new local CLI runtime, add a validated `RuntimeAdapterSpec` with
 invocation, context, credentials, sandbox, model, permission, usage, and output
-sections, then add a `RuntimeToolRegistry` allowlist entry for the installable
-tool package/bin. If existing parsers are sufficient, no hardcoded factory
-change is required.
+sections. Its `distribution` is what a host installs a managed copy from, and
+its `credentials.login` is how the daemon logs that copy in and recognises the
+result — the daemon holds no list of its own, so a spec entry is the whole
+change. If existing parsers are sufficient, no hardcoded factory change is
+required.
 
 To add a managed API adapter, add the spec and a concrete adapter class or
 runtime-host handler that maps to the stable runtime boundary. Use

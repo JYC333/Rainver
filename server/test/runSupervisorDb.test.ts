@@ -131,7 +131,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout", error_text: "no output" },
+      error_json: { error_code: "runtime_stall_timeout", error_text: "no output" },
       completed_at: new Date().toISOString(),
     });
     await finalizer.finalize(runId, SPACE);
@@ -170,7 +170,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout", error_text: "no output again" },
+      error_json: { error_code: "runtime_stall_timeout", error_text: "no output again" },
       completed_at: new Date().toISOString(),
     });
     await finalizer.finalize(runId, SPACE);
@@ -186,7 +186,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       [SPACE, runId],
     );
     expect(decisions.rows).toEqual([
-      { decision: "retry_same_route", reason_code: "cli_stall_timeout" },
+      { decision: "retry_same_route", reason_code: "runtime_stall_timeout" },
       { decision: "human_review", reason_code: "retry_attempt_cap_reached" },
     ]);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
@@ -619,7 +619,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout" },
+      error_json: { error_code: "runtime_stall_timeout" },
       completed_at: new Date().toISOString(),
     });
     await new PostRunFinalizationService(
@@ -676,7 +676,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout" },
+      error_json: { error_code: "runtime_stall_timeout" },
       completed_at: new Date().toISOString(),
     });
     await new PostRunFinalizationService(
@@ -763,7 +763,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout" },
+      error_json: { error_code: "runtime_stall_timeout" },
       completed_at: new Date().toISOString(),
     });
 
@@ -771,7 +771,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       updated_at: new Date().toISOString(),
-      reason_code: "cli_stall_timeout",
+      reason_code: "runtime_stall_timeout",
       attempt_number: 2,
     });
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
@@ -915,7 +915,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "cli_stall_timeout" },
+      error_json: { error_code: "runtime_stall_timeout" },
       completed_at: new Date().toISOString(),
     });
     await new PostRunFinalizationService(

@@ -9,7 +9,7 @@ let configDir: string;
 beforeEach(async () => {
   configDir = await mkdtemp(join(tmpdir(), "rainver-host-ws-"));
   process.env.RAINVER_HOST_CONFIG_DIR = configDir;
-  await saveConfig({ server_url: "http://127.0.0.1:1", host_id: "h", token: "t", workspaces: {} });
+  await saveConfig({ server_url: "http://127.0.0.1:1", host_id: "h", token: "t", trust: "trusted", workspaces: {} });
 });
 afterEach(async () => {
   delete process.env.RAINVER_HOST_CONFIG_DIR;

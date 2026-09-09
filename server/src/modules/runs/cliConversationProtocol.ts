@@ -39,6 +39,25 @@ export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfi
   });
 }
 
+/**
+ * Forces the selections a runtime's spec declares for a strict host, over
+ * whatever the caller asked for on the same option.
+ *
+ * The caller's choice loses on purpose: these exist because the built-in
+ * host's namespace is already the boundary, and a vendor sandbox left on
+ * inside it does not add a boundary — it takes the Run's own workspace away
+ * (ADR 0016 section 2). A member who picked "ask for approval" on a host with
+ * nobody to ask would get a Run that cannot write and cannot say why.
+ */
+export function withStrictHostSelections(
+  selections: AcpSessionConfigSelection[],
+  forced: ReadonlyArray<AcpSessionConfigSelection> | undefined,
+): AcpSessionConfigSelection[] {
+  if (!forced?.length) return selections;
+  const forcedIds = new Set(forced.map((selection) => selection.id));
+  return [...selections.filter((selection) => !forcedIds.has(selection.id)), ...forced];
+}
+
 export function withAcpModelSelection(
   selections: AcpSessionConfigSelection[],
   model: string | null,
@@ -56,7 +75,6 @@ export function createCliConversationController(input: {
   prompts?: string[];
   cwd: string;
   session_config?: AcpSessionConfigSelection[];
-  sandbox_mode?: "read-only" | "workspace-write";
   runtime_session_id?: string | null;
   before_next_prompt?: (sessionId: string) => Promise<void>;
   on_text_delta?: (delta: string) => void;
@@ -111,6 +129,14 @@ export class AcpController implements CliStdioController {
   private completed = false;
   private error: string | null = null;
   private resumeHandshakeFailed = false;
+  /**
+   * Whether a `session/prompt` was ever sent. The runtime writes the session's
+   * transcript when it answers one, so a session that died before this — on a
+   * config option, say — leaves nothing behind to resume. Reporting its id
+   * anyway is what made the *next* turn fail with an opaque "Internal error:
+   * no rollout found", one failure after the one that actually went wrong.
+   */
+  private prompted = false;
   /**
    * ACP Agent Auth is per process: an Agent whose copy is logged in on its
    * host (Cursor, after `agent login`) still answers the first session
@@ -393,6 +419,15 @@ export class AcpController implements CliStdioController {
       );
       return;
     }
+    // A notification we do not recognise is ignorable by definition: it
+    // carries no id, so nothing is waiting on an answer and skipping it leaves
+    // the protocol in the same state. Failing the turn on one instead made
+    // every vendor extension a broken conversation — `codex-acp` announces
+    // `_auth/status_update` right after `initialize`, and the underscore is
+    // ACP's own marker for an extension, so this will keep happening. An
+    // unknown *request* is different and is refused above, because the peer
+    // does wait for that one.
+    if (typeof message.method === "string") return;
     this.fail(`${this.label()} ACP returned an unsupported protocol message`, closeStdin);
   }
 
@@ -402,7 +437,8 @@ export class AcpController implements CliStdioController {
       error: this.error,
       ...(this.resumeHandshakeFailed ? { resume_handshake_failed: true } : {}),
       text: this.text,
-      external_session_id: this.sessionId,
+      // Only a session the runtime has something on disk for. See `prompted`.
+      external_session_id: this.prompted ? this.sessionId : null,
       usage: this.usage,
       model_usage: this.modelUsage,
       subscription_quota: this.subscriptionQuota,
@@ -428,8 +464,24 @@ export class AcpController implements CliStdioController {
     const selection = this.orderedConfig()[this.configIndex];
     if (!selection) return false;
     const option = this.advertisedConfigOptions.find((candidate) => candidate.id === selection.id);
-    if (!option || option.type !== selection.type || option.category !== selection.category) {
-      this.fail(`${this.label()} ACP did not advertise session option '${selection.id}'`, closeStdin);
+    // Which options exist depends on the ones already set: Codex advertises
+    // `fast-mode` at `session/new` and withdraws it once the model is one that
+    // does not offer it. `model` is set first on purpose — it decides what the
+    // rest even mean — so the withdrawn ones are exactly the ones this loop
+    // reaches afterwards. An option the session no longer has cannot be set to
+    // anything, including the value the composer was showing, so it is skipped
+    // rather than made fatal. A mismatched *shape* is a different thing and
+    // still fails: that is the runtime and the snapshot disagreeing about an
+    // option both still have.
+    if (!option) {
+      this.configIndex += 1;
+      return this.sendNextConfig(send, closeStdin);
+    }
+    if (option.type !== selection.type || option.category !== selection.category) {
+      this.fail(
+        `${this.label()} ACP advertised session option '${selection.id}' with a different shape`,
+        closeStdin,
+      );
       return true;
     }
     if (selection.type === "select" && !configChoiceValues(option).includes(selection.value as string)) {
@@ -478,6 +530,7 @@ export class AcpController implements CliStdioController {
   }
 
   private prompt(send: Send): void {
+    this.prompted = true;
     send({
       jsonrpc: "2.0",
       id: 4 + this.promptIndex,

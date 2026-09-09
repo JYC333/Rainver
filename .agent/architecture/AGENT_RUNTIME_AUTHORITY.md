@@ -34,17 +34,14 @@ environment. Fields it owns:
 
 - `adapter_type` — which runtime adapter executes the agent (model_api, claude_code, etc.)
 - `model_provider_id`, `model_name` — production override (wins over version defaults)
-- `runtime_config_json` — adapter-specific execution parameters (timeouts, sandbox config,
-  and an optional `credential_profile_id` default hint for non-conversation CLI runs)
+- `runtime_config_json` — adapter-specific execution parameters (timeouts, sandbox config)
 - `runtime_policy_json` — execution-time risk and rate limits (may tighten version ceiling)
 
-The profile does not own a dedicated credential column. A CLI conversation turn
-resolves its credential profile from the signed-in user's own selection on the
-session's conversation backend binding, never from a space-shared profile —
-see [CLI Surfaces](../decisions/0007-multi-cli-mvp.md) and the credential
-channel isolation ADR. Non-conversation CLI runs (Task/Plan/Workflow dispatch)
-fall back to the profile's `runtime_config_json.credential_profile_id` hint,
-then to the active-space default grant for that runtime.
+The profile owns no credential column, and nothing else does either. A CLI
+runs on the execution host the profile names (`execution_host_id` +
+`runtime_installation`) and uses the login held by that copy on that host —
+Rainver brokers none and stores none (ADR 0016 §7, BOUNDARIES B45). A CLI
+profile that names no host is not a runnable backend at all (B46).
 
 Profiles are mutable and may be changed without creating a new version. An agent
 may have multiple profiles (e.g. dev vs prod) controlled by `enabled` and
@@ -87,10 +84,11 @@ are deliberately not agent-tool visible, so the three configurable conditions
 can all hold and still yield no grant. See
 [SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md).
 
-OpenCode is a local CLI adapter with two credential paths: CLI login state, or
-an OpenAI-compatible ModelProvider. In provider mode, the CLI receives a
-run-scoped `opencode.json` containing the provider proxy URL and lease token;
-the upstream provider key remains inside the server/provider proxy boundary.
+OpenCode is a local CLI adapter with two credential paths: the login the copy
+holds on its execution host, or an OpenAI-compatible ModelProvider. In provider
+mode the CLI receives a run-scoped `opencode.json` containing the provider
+proxy URL and lease token; the upstream provider key remains inside the
+server/provider proxy boundary.
 
 ---
 

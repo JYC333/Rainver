@@ -27,7 +27,6 @@ describe("Conversation execution contracts", () => {
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "profile-1",
-        credential_profile_id: null,
         adapter_type: "claude_code",
         runtime_installation: "own",
       },
@@ -38,7 +37,6 @@ describe("Conversation execution contracts", () => {
       additional_runtimes: [{
         agent_id: "agent-2",
         runtime_profile_id: "profile-2",
-        credential_profile_id: null,
         adapter_type: "claude_code",
         runtime_installation: "own",
       }],
@@ -66,7 +64,6 @@ describe("Conversation execution contracts", () => {
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "profile-1",
-        credential_profile_id: null,
         adapter_type: "claude_code",
         runtime_installation: "own",
       },

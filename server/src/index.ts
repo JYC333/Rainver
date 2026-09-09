@@ -24,6 +24,7 @@ import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins.js";
 import { runBuiltInSeeds } from "./db/seeds.js";
 import { getDbPool } from "./db/pool.js";
 import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations.js";
+import { publishBuiltinHostCredential } from "./modules/hosts/builtinRegistration.js";
 
 async function main(): Promise<void> {
   let config;
@@ -100,6 +101,11 @@ async function main(): Promise<void> {
     const db = getDbPool(config.databaseUrl);
     await new PgWorkspaceLocationRepository(db).refreshServerLocations(config.workspaceRoot).catch((err) => {
       app.log.error(err, "[workspace-locations] server Location refresh failed");
+    });
+    // The instance's own execution host registers itself: the daemon inside
+    // `sandbox-runner` is waiting on this file and cannot come up without it.
+    await publishBuiltinHostCredential(db, config, (message) => app.log.info(message)).catch((err) => {
+      app.log.error(err, "[hosts] could not publish the built-in host credential");
     });
     void runBuiltInSeeds(db, {
       info: (msg) => app.log.info(msg),

@@ -6,7 +6,6 @@ import { enforce, type EnforceResult } from "../policy/service.js";
 import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import { visibleMessagePathSql } from "../sessions/messagePath.js";
 import {
   PgConversationBackendRepository,
@@ -19,7 +18,8 @@ import {
 } from "../sessions/conversationRuntimeSessionRepository.js";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
-import { isStale } from "../hosts/repository.js";
+import { hostIsOnline } from "../sessions/executionContextRepository.js";
+import { locationIsOnline } from "../sessions/executionContextService.js";
 import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
 import { renderAgentIdentityPrompt } from "./agentIdentityPrompt.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
@@ -93,7 +93,6 @@ export interface SendAgentGroupMessageInput {
   backends?: Array<{
     agent_id: string;
     runtime_profile_id: string;
-    credential_profile_id?: string | null;
     session_config?: RuntimeSessionConfigSelection[];
   }> | null;
   /**
@@ -1045,10 +1044,7 @@ export class AgentGroupRunService {
       if (!parentRun.session_id) {
         throw new HttpError(409, "Room delegation requires a Room conversation session");
       }
-      const backendRepository = new PgConversationBackendRepository(
-        repos.db,
-        new CliCredentialBroker(this.config),
-      );
+      const backendRepository = new PgConversationBackendRepository(repos.db);
       const executionContexts = new PgConversationExecutionContextRepository(repos.db);
       const executionContext = await executionContexts.getContext(input.space_id, parentRun.session_id);
       if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
@@ -1061,7 +1057,7 @@ export class AgentGroupRunService {
           && candidate.project_folder_id === attachment.project_folder_id);
         if (!location || location.execution_host_id !== executionContext.execution_host_id
           || location.execution_ready !== true
-          || !(location.host_kind === "server" || (location.host_status === "online" && !isStale(location.last_heartbeat_at)))) {
+          || !locationIsOnline(location)) {
           throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
         }
         delegatedWorkspaceAccess.push({
@@ -1484,14 +1480,22 @@ export async function prepareHostConversationDispatch(input: {
   if (hostKind === "remote" && target.host_owner_user_id !== input.userId) {
     throw new HttpError(403, `Room agent '${input.agentId}' can only be triggered by its host owner`);
   }
-  const hostOnline = hostKind === "server"
-    ? ("host_status" in target ? target.host_status === "online" : target.host_online)
-    : "host_online" in target
-      ? target.host_online
-      : target.host_status === "online" && !isStale(target.last_heartbeat_at);
+  // One predicate for both kinds. `server` used to skip the staleness term:
+  // `markOffline` only fires on a WebSocket close, so a control plane that
+  // restarted while `sandbox-runner` was down left `status = 'online'` standing
+  // against a heartbeat hours old, and the trigger passed on a host that was
+  // not there.
+  const hostOnline = "host_online" in target
+    ? target.host_online
+    : hostIsOnline({ kind: hostKind, status: target.host_status, last_heartbeat_at: target.last_heartbeat_at });
   const executionReady = "execution_ready" in target ? target.execution_ready : true;
-  const runtimeAvailable = hostKind === "server"
-    || hostInstallationIds(target.capabilities_json, input.backend.adapter_type).includes(input.backend.runtime_installation!);
+  // Checked for every host, the built-in one included. It used to be waved
+  // through for `server` because a server-host run spawned a CLI the server
+  // managed; the built-in host runs the copies its daemon installed and has no
+  // vendor CLI on PATH, so skipping the check here is what would let a Room
+  // turn dispatch to a runtime that is not there and fail at the spawn.
+  const runtimeAvailable = hostInstallationIds(target.capabilities_json, input.backend.adapter_type)
+    .includes(input.backend.runtime_installation!);
   if (!hostOnline || !executionReady || !runtimeAvailable) {
     throw new HttpError(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
   }
@@ -1590,10 +1594,7 @@ async function prepareRoomConversationBackends(input: {
       throw new HttpError(422, "backend agent_id must be a recipient of this Room message");
     }
   }
-  const repository = new PgConversationBackendRepository(
-    input.db,
-    new CliCredentialBroker(input.config),
-  );
+  const repository = new PgConversationBackendRepository(input.db);
   const replayContext = await listRoomReplayContext(
     input.db,
     input.identity.spaceId,
@@ -1630,7 +1631,7 @@ async function prepareRoomConversationBackends(input: {
       && candidate.project_folder_id === attachment.project_folder_id);
     if (!location || location.execution_host_id !== executionContext.execution_host_id
       || location.execution_ready !== true
-      || !(location.host_kind === "server" || (location.host_status === "online" && !isStale(location.last_heartbeat_at)))) {
+      || !locationIsOnline(location)) {
       throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
     }
     workspaceAccess.push({
@@ -1646,12 +1647,7 @@ async function prepareRoomConversationBackends(input: {
       user_id: input.identity.userId,
       session_id: input.sessionId,
       agent_id: agentId,
-      requested: requested
-          ? {
-            runtime_profile_id: requested.runtime_profile_id,
-            credential_profile_id: requested.credential_profile_id ?? null,
-          }
-        : null,
+      requested: requested ? { runtime_profile_id: requested.runtime_profile_id } : null,
     });
     const thread = await executionContexts.getConversationThread(
       input.identity.spaceId,
@@ -1819,7 +1815,6 @@ function roomRunModelOverride(
       schema_version: "conversation_backend.v1",
       runtime_profile_id: backend.runtime_profile_id,
       adapter_type: backend.adapter_type,
-      credential_profile_id: backend.credential_profile_id,
       model_name: backend.model_name,
       model_provider_id: backend.model_provider_id,
     },
@@ -1912,8 +1907,7 @@ function delegatedRoomModelOverride(
             schema_version: "conversation_backend.v1",
             runtime_profile_id: backend.runtime_profile_id,
             adapter_type: backend.adapter_type,
-            credential_profile_id: backend.credential_profile_id,
-            model_name: backend.model_name,
+                  model_name: backend.model_name,
             model_provider_id: backend.model_provider_id,
           },
         }
@@ -2186,7 +2180,6 @@ function roomRuntimeContextFingerprint(
     active_brief_version_id: revision?.active_brief_version_id ?? null,
     runtime_profile_id: backend.runtime_profile_id,
     adapter_type: backend.adapter_type,
-    credential_profile_id: backend.credential_profile_id,
     model_name: backend.model_name,
     model_provider_id: backend.model_provider_id,
     runtime_config_json: backend.runtime_config_json,

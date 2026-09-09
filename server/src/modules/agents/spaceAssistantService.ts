@@ -5,10 +5,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter, isVendorCliAdapter, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
-import { RuntimeToolRegistry } from "../runtimeTools/service.js";
-import { resolveRuntimeToolVersionForSpace } from "../runtimeTools/policies.js";
+import { isVendorCliAdapter, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { resolveAgentSystemPrompt } from "./promptRegistry.js";
 import { promptProvenanceOf } from "../prompts/provenance.js";
 import { providerSupportsChat } from "../providers/vendors.js";
@@ -52,8 +49,10 @@ does not create anything: call task.create once per Task and report the count
 you actually created, or the failure, in plain language. The same holds for the
 rest of the Project surface — task.report is how you say what you did and
 concluded, task.handoff is how you give a Task to someone else or release it,
-task.advance_stage is how you move a Task through its Loop, and
-task.request_review is how you stop and hand a decision back. Use
+task.advance_stage is how you move a Task through its Loop, task.complete is
+how you say the work is finished, and task.request_review is how you stop and
+hand a decision back. Reporting is not closing: a Task you finished but did not
+complete sits on the board as unfinished work. Use
 task.request_review when the next step turns on something only the person can
 decide; saying so in a reply leaves the Task sitting in progress with nobody
 told.`;
@@ -78,29 +77,26 @@ interface ManagedAssistantSeed {
   outputSchemaJson: Record<string, unknown>;
 }
 
-type ManagedCliAdapter = { adapterType: string; version: string };
-
 export interface ManagedAssistantPreparation {
   seed: ManagedAssistantSeed;
-  cliAdapters: ManagedCliAdapter[];
-  loggedInCliCredentials: Array<{ id: string; runtime: string }>;
-  /** The creator's online paired hosts with a logged-in CLI: a third eligible backend, provisioned as a managed-workspace profile. */
+  /**
+   * Every execution host this creator can reach that has a logged-in CLI: the
+   * built-in host and their own paired machines. Since ADR 0016 a CLI runs
+   * only on a host, so this is the whole CLI side of Assistant provisioning —
+   * there is no server-side copy to fall back to.
+   */
   hostBackends: Array<{ hostId: string; hostName: string; adapterType: string; installation: string }>;
 }
 
 /**
- * Return setup destinations that can actually change Room admission state.
- * A CLI credential is useful only when at least one supported CLI runtime can
- * be provisioned into the managed Assistant; otherwise linking to credential
- * management is a dead end and the caller should only advertise API setup.
+ * Where to send someone whose Space has no backend for its Assistant yet.
+ *
+ * Both destinations are real work: add a ModelProvider, or log a CLI in on an
+ * execution host. The second used to be a server-side credential profile and
+ * is now the Command Center's host card.
  */
-export function setupTargetsForMissingBackend(
-  preparation: Pick<ManagedAssistantPreparation, "cliAdapters">,
-): Array<"model_providers" | "cli_credentials"> {
-  return [
-    "model_providers",
-    ...(preparation.cliAdapters.length > 0 ? ["cli_credentials" as const] : []),
-  ];
+export function setupTargetsForMissingBackend(): Array<"model_providers" | "execution_hosts"> {
+  return ["model_providers", "execution_hosts"];
 }
 
 export class SpaceAssistantService {
@@ -118,23 +114,11 @@ export class SpaceAssistantService {
     config: ServerConfig,
     identity: { spaceId: string; userId: string },
   ): Promise<ManagedAssistantPreparation> {
-    const [seed, cliAdapters, availableCredentials, hostBackends] = await Promise.all([
+    const [seed, hostBackends] = await Promise.all([
       loadManagedAssistantSeed(config),
-      listProvisionableCliAdapters(pool, config, identity.spaceId),
-      new CliCredentialBroker(config).availableProfiles(identity.spaceId, identity.userId),
       listHostBackends(pool, identity.userId),
     ]);
-    const supportedRuntimes = new Set(cliAdapters.map(({ adapterType }) => adapterType));
-    return {
-      seed,
-      cliAdapters,
-      hostBackends,
-      loggedInCliCredentials: availableCredentials
-        .filter((profile) => profile.logged_in === true)
-        .filter((profile) => typeof profile.id === "string" && typeof profile.runtime === "string")
-        .filter((profile) => supportedRuntimes.has(profile.runtime as string))
-        .map((profile) => ({ id: profile.id as string, runtime: profile.runtime as string })),
-    };
+    return { seed, hostBackends };
   }
 
   /**
@@ -187,7 +171,6 @@ export class SpaceAssistantService {
     config: ServerConfig,
     spaceId: string,
   ): Promise<void> {
-    const cliAdapters = await listProvisionableCliAdapters(pool, config, spaceId);
     await withTransaction(pool, async (client) => {
       const space = await client.query<{ id: string }>(
         "SELECT id FROM spaces WHERE id = $1 FOR UPDATE",
@@ -208,8 +191,9 @@ export class SpaceAssistantService {
       );
       const service = new SpaceAssistantService(client, pool);
       for (const { id: agentId } of assistants.rows) {
-        await service.disableUnavailableCliProfiles(spaceId, agentId, cliAdapters);
-        await service.ensureCliProfiles(agentId, spaceId, cliAdapters);
+        // No CLI runtime is provisionable on the server any more, so every
+        // server-CLI profile a past release created is now unrunnable.
+        await service.disableUnavailableCliProfiles(spaceId, agentId);
       }
     });
   }
@@ -317,30 +301,18 @@ export class SpaceAssistantService {
       throw new HttpError(500, "Managed Space Assistant system prompt is not resolvable");
     }
 
-    const { seed, cliAdapters } = preparation;
+    const { seed } = preparation;
     const providers = await this.listEligibleProviderDefinitions(identity.spaceId);
     // Admission must be decided before creating the managed identity. A fresh
     // Space has no runtime profile to inspect yet, and creating a model_api
     // version without a provider would fail with a generic validation error
     // before the caller could receive actionable setup targets.
-    const eligibleProvider = await this.requireEligibleBackend(identity, preparation, providers);
-    const defaultProvider = eligibleProvider;
-    // A provisionable server CLI is only a usable default when this user has
-    // an eligible credential grant for it. Otherwise a paired Host must remain
-    // the explicit host-bound default; selecting the first installed server
-    // CLI here would make host-only provisioning depend on server runtime
-    // configuration that the user never granted.
-    const eligibleCliRuntime = await this.eligibleCliRuntime(identity, preparation, cliAdapters);
-    const defaultCli = eligibleCliRuntime
-      ? cliAdapters.find(({ adapterType }) => adapterType === eligibleCliRuntime) ?? null
-      : null;
-    // Admission has already established that at least one eligible provider,
-    // CLI credential, or paired-host backend exists, so the canonical adapter
-    // follows the provisioned backend candidates instead of manufacturing a
-    // placeholder.
-    const defaultHostBackend = !defaultProvider && !defaultCli ? preparation.hostBackends[0] ?? null : null;
-    const defaultAdapter = defaultProvider ? "model_api" : defaultCli?.adapterType ?? defaultHostBackend?.adapterType ?? "model_api";
-    const runtimeToolVersion = defaultAdapter === "model_api" ? null : defaultCli?.version ?? null;
+    const defaultProvider = await this.requireEligibleBackend(identity, preparation, providers);
+    // Admission has already established that at least one eligible provider or
+    // execution-host backend exists, so the canonical adapter follows the
+    // provisioned backend candidates instead of manufacturing a placeholder.
+    const defaultHostBackend = defaultProvider ? null : preparation.hostBackends[0] ?? null;
+    const defaultAdapter = defaultProvider ? "model_api" : defaultHostBackend?.adapterType ?? "model_api";
     const runtimePolicyJson = {
       ...seed.runtimePolicyJson,
       allowed_adapter_types: ["model_api", ...MANAGED_ASSISTANT_CLI_ADAPTERS],
@@ -350,7 +322,6 @@ export class SpaceAssistantService {
       risk_level: seed.runtimePolicyJson.risk_level ?? "low",
       max_run_time_seconds: seed.runtimePolicyJson.max_run_time_seconds ?? 120,
       adapter_type: defaultAdapter,
-      ...(runtimeToolVersion ? { runtime_tool_version: runtimeToolVersion } : {}),
     };
     const canonical = {
       systemPrompt: `${resolved.system.trim()}${ROOM_MANAGER_POLICY}`,
@@ -394,7 +365,7 @@ export class SpaceAssistantService {
         reconciled.id,
         reconciled.name,
       );
-      await this.ensureRuntimeProfiles(reconciled.id, identity, providers, cliAdapters, preparation.hostBackends, false);
+      await this.ensureRuntimeProfiles(reconciled.id, identity, providers, preparation.hostBackends, false);
       // The pointer names the Space's Assistant, which backs personal
       // preferences and `/home` chat. Repointing it at whichever Project a
       // Room happened to be created in would silently move the Space's chat.
@@ -419,11 +390,8 @@ export class SpaceAssistantService {
       defaultModelProviderId: canonical.modelProviderId,
       defaultModel: canonical.modelName,
       adapterType: defaultAdapter,
-      runtimeToolVersion,
       // A host-only Assistant must be born on the host profile it was
-      // admitted with. Naming only its CLI adapter makes the repository treat
-      // that adapter as a server runtime and ask the server runtime-tool
-      // registry for a version before the host-bound profile can be created.
+      // admitted with: a CLI adapter names no runnable copy on its own.
       ...(defaultHostBackend ? {
         executionHostId: defaultHostBackend.hostId,
         workspaceLocationId: null,
@@ -449,7 +417,7 @@ export class SpaceAssistantService {
       created.id,
       created.name,
     );
-    await this.ensureRuntimeProfiles(created.id, identity, providers, cliAdapters, preparation.hostBackends, true, defaultHostBackend !== null);
+    await this.ensureRuntimeProfiles(created.id, identity, providers, preparation.hostBackends, true, defaultHostBackend !== null);
     if (!projectId) {
       await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, created.id);
     }
@@ -488,14 +456,11 @@ export class SpaceAssistantService {
     agentId: string,
     identity: { spaceId: string; userId: string },
     providers: ProviderRow[],
-    cliAdapters: ManagedCliAdapter[],
     hostBackends: ManagedAssistantPreparation["hostBackends"] = [],
     initializeDefaults = false,
     makeHostDefault = false,
   ): Promise<void> {
-    await this.disableUnavailableCliProfiles(identity.spaceId, agentId, cliAdapters);
     await this.ensureModelApiProfiles(agentId, identity.spaceId, providers, initializeDefaults);
-    await this.ensureCliProfiles(agentId, identity.spaceId, cliAdapters);
     const orderedHostBackends = await this.prioritizeCurrentHostBackend(
       agentId,
       identity.spaceId,
@@ -592,39 +557,23 @@ export class SpaceAssistantService {
     }
   }
 
-  private async ensureCliProfiles(
-    agentId: string,
-    spaceId: string,
-    cliAdapters: ManagedCliAdapter[],
-  ): Promise<void> {
-    for (const { adapterType, version } of cliAdapters) {
-      const spec = getRuntimeAdapterSpec(adapterType);
-      if (!spec || !isLocalCliRuntimeAdapter(adapterType) || spec.implementation_status !== "implemented") continue;
-      await this.agents.ensureRuntimeProfileInTransaction(this.client, spaceId, agentId, {
-        name: spec.display_name,
-        adapterType,
-        runtimeConfigJson: { risk_level: "low", max_run_time_seconds: 120, runtime_tool_version: version },
-        runtimePolicyJson: { default_adapter_type: adapterType, allowed_adapter_types: [adapterType] },
-        isDefault: undefined,
-        runtimeToolVersion: version,
-      });
-    }
-  }
-
-  private async disableUnavailableCliProfiles(
-    spaceId: string,
-    agentId: string,
-    available: Array<{ adapterType: string; version: string }>,
-  ): Promise<void> {
-    const enabledAdapters = [...new Set(available.map(({ adapterType }) => adapterType))];
+  /**
+   * Retires a CLI runtime profile that names no execution host.
+   *
+   * Such a profile ran a copy the *server* had installed. There are none, so
+   * the profile can only fail at dispatch; disabling it lets the Assistant
+   * fall through to a profile that can actually run.
+   */
+  private async disableUnavailableCliProfiles(spaceId: string, agentId: string): Promise<void> {
     await this.client.query(
       `UPDATE agent_runtime_profiles
           SET enabled = false, updated_at = now()
         WHERE space_id = $1
           AND agent_id = $2
           AND adapter_type = ANY($3::text[])
-          AND NOT (adapter_type = ANY($4::text[]))`,
-      [spaceId, agentId, [...MANAGED_ASSISTANT_CLI_ADAPTERS], enabledAdapters],
+          AND execution_host_id IS NULL
+          AND enabled = true`,
+      [spaceId, agentId, [...MANAGED_ASSISTANT_CLI_ADAPTERS]],
     );
   }
 
@@ -673,51 +622,26 @@ export class SpaceAssistantService {
     const eligibleProvider = providers.find(({ id }) => eligibleProviderIds.has(id)) ?? null;
     if (eligibleProvider) return eligibleProvider;
 
-    if (await this.eligibleCliRuntime(identity, preparation, preparation.cliAdapters)) return null;
-    // A paired host with a logged-in CLI is the third eligible backend: the
-    // Assistant provisions with a host-bound managed-workspace profile, so a
-    // Space with no provider and no brokered credential still gets a working
-    // Room instead of a refusal.
+    // An execution host with a logged-in CLI is the other eligible backend:
+    // the Assistant provisions with a host-bound managed-workspace profile, so
+    // a Space with no provider still gets a working Room instead of a refusal.
     if (preparation.hostBackends.length > 0) return null;
     throw new HttpError(409, "No eligible conversation backend is available for this user", {
       code: "conversation_backend_required",
-      detail: "Configure an eligible Space API provider or grant a logged-in CLI credential before creating a Room.",
-      setup_targets: setupTargetsForMissingBackend(preparation),
+      detail: "Configure an eligible Space API provider, or log a CLI in on an execution host, before creating a Room.",
+      setup_targets: setupTargetsForMissingBackend(),
     });
   }
 
-  private async eligibleCliRuntime(
-    identity: { spaceId: string; userId: string },
-    preparation: ManagedAssistantPreparation,
-    cliAdapters: ManagedCliAdapter[],
-  ): Promise<string | null> {
-    const credentialIds = preparation.loggedInCliCredentials.map(({ id }) => id);
-    const cli = cliAdapters.map(({ adapterType }) => adapterType);
-    if (credentialIds.length === 0 || cli.length === 0) return null;
-    const credential = await this.client.query<{ runtime: string }>(
-      `SELECT credential_profile.runtime
-         FROM cli_credential_space_grants credential_grant
-         JOIN cli_credential_profiles credential_profile
-           ON credential_profile.id = credential_grant.profile_id
-          AND credential_profile.owner_user_id = credential_grant.owner_user_id
-          AND credential_profile.runtime = ANY($2::text[])
-        WHERE credential_grant.space_id = $1
-          AND credential_grant.enabled = true
-          AND credential_grant.owner_user_id = $3
-          AND credential_profile.id = ANY($4::varchar[])
-        ORDER BY credential_profile.runtime ASC, credential_profile.id ASC
-        LIMIT 1`,
-      [identity.spaceId, cli, identity.userId, credentialIds],
-    );
-    const runtime = credential.rows[0]?.runtime ?? null;
-    return runtime && cliAdapters.some(({ adapterType }) => adapterType === runtime) ? runtime : null;
-  }
 }
 
 /**
- * The creator's own online paired hosts, one entry per (host, adapter) with a
- * logged-in installation — preferred adapters first, mirroring the CLI
- * fallback ordering.
+ * Every online execution host this creator can dispatch to with a logged-in
+ * CLI, one entry per (host, adapter), preferred adapters first.
+ *
+ * The instance's built-in host is included alongside the creator's own paired
+ * machines: it has no owner and serves every Space (B63), and it is the only
+ * backend a member who has paired nothing at all can reach.
  */
 async function listHostBackends(
   db: Queryable,
@@ -726,7 +650,7 @@ async function listHostBackends(
   const hosts = await db.query<{ id: string; name: string; capabilities_json: unknown; last_heartbeat_at: string | null; default_adapter_type: string | null }>(
     `SELECT id, name, capabilities_json, last_heartbeat_at, default_adapter_type
        FROM hosts
-      WHERE owner_user_id = $1 AND kind = 'remote' AND status = 'online'
+      WHERE (owner_user_id = $1 OR kind = 'server') AND status = 'online'
       ORDER BY name ASC, id ASC`,
     [userId],
   );
@@ -745,29 +669,6 @@ async function listHostBackends(
     }
   }
   return backends;
-}
-
-async function listProvisionableCliAdapters(
-  db: Queryable,
-  config: ServerConfig,
-  spaceId: string,
-): Promise<ManagedCliAdapter[]> {
-  const rows: ManagedCliAdapter[] = [];
-  for (const adapterType of MANAGED_ASSISTANT_CLI_ADAPTERS) {
-    try {
-      const version = await resolveRuntimeToolVersionForSpace(
-        db,
-        new RuntimeToolRegistry(config),
-        spaceId,
-        adapterType,
-      );
-      rows.push({ adapterType, version });
-    } catch {
-      // Missing/disabled/uninstalled CLIs are simply unavailable candidates;
-      // the post-provisioning backend gate decides whether setup is required.
-    }
-  }
-  return rows;
 }
 
 async function listChatProviderDefinitions(

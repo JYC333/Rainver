@@ -199,11 +199,11 @@ function launch(
     },
     quota: {
       runtime: "codex_cli",
-      credential_profile_id: "credential-1",
+      execution_host_id: "host-1",
+      installation: "own",
       available: true,
       utilization_pct: 25,
       checked_at: options.quotaCheckedAt ?? beforeNow(5 * 60_000),
-      source: "live_probe",
     },
     runtimeProfileId: PROFILE,
     now: NOW,

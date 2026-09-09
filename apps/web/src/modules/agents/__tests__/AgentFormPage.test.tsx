@@ -9,7 +9,6 @@ const mockedApi = vi.hoisted(() => ({
   hostExecutionTargets: vi.fn(),
   listRuntimeAdapters: vi.fn(),
   providerList: vi.fn(),
-  spacePolicies: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({
@@ -18,7 +17,6 @@ vi.mock('../../../api/client', () => ({
   projectsApi: { list: mockedApi.listProjects, hostExecutionTargets: mockedApi.hostExecutionTargets },
   hostsApi: { executionTargets: mockedApi.hostExecutionTargets, listRuntimeAdapters: mockedApi.listRuntimeAdapters },
   providersApi: { list: mockedApi.providerList },
-  runtimeToolsApi: { spacePolicies: mockedApi.spacePolicies },
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -48,7 +46,6 @@ describe('AgentFormPage host binding', () => {
     })
     mockedApi.listRuntimeAdapters.mockResolvedValue({ items: [] })
     mockedApi.providerList.mockResolvedValue([])
-    mockedApi.spacePolicies.mockResolvedValue([])
     mockedApi.createAgent.mockResolvedValue({ id: 'agent-1' })
   })
 

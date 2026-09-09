@@ -100,7 +100,6 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
           execution_host_id: null,
           workspace_location_id: null,
           runtime_installation: null,
-          credential_profile_id: null,
           binding_id: "binding-1",
           runtime_state_key: "11111111-1111-4111-8111-111111111111",
           runtime_session_id: null,
@@ -177,8 +176,7 @@ describe("agents asynchronous chat-turn route", () => {
         async resolveBinding() {
           return {
             runtime_profile_id: "runtime-profile-1", adapter_type: "codex_cli",
-            execution_host_id: null, workspace_location_id: null, runtime_installation: "own",
-            credential_profile_id: null, binding_id: "binding-1",
+            execution_host_id: null, workspace_location_id: null, runtime_installation: "own", binding_id: "binding-1",
             runtime_state_key: "11111111-1111-4111-8111-111111111111",
             runtime_session_id: null, runtime_context_fingerprint: null,
             model_name: null, model_provider_id: null, runtime_config_json: {}, runtime_policy_json: {},
@@ -310,7 +308,6 @@ describe("agents asynchronous chat-turn route", () => {
       backend: {
         runtime_profile_id: "runtime-profile-1",
         adapter_type: "model_api",
-        credential_profile_id: null,
       },
     });
     expect(messages).toEqual([
@@ -343,7 +340,6 @@ describe("agents asynchronous chat-turn route", () => {
           return {
             runtime_profile_id: "runtime-profile-1",
             adapter_type: "claude_code",
-            credential_profile_id: null,
             binding_id: "binding-1",
             runtime_state_key: "11111111-1111-4111-8111-111111111111",
             runtime_session_id: null,
@@ -473,7 +469,6 @@ describe("agents asynchronous chat-turn route", () => {
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,
-              credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",
               runtime_session_id: null,
@@ -516,7 +511,6 @@ describe("agents asynchronous chat-turn route", () => {
         schema_version: "conversation_backend.v1",
         runtime_profile_id: "runtime-profile-1",
         adapter_type: "claude_code",
-        credential_profile_id: "credential-1",
       },
       execution_mode: "conversation_lightweight.v1",
       chat_turn: {
@@ -552,7 +546,6 @@ describe("agents asynchronous chat-turn route", () => {
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,
-              credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",
               runtime_session_id: "ses_existing-opaque",
@@ -612,7 +605,6 @@ describe("agents asynchronous chat-turn route", () => {
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,
-              credential_profile_id: "credential-1",
               binding_id: "binding-1",
               runtime_state_key: "11111111-1111-4111-8111-111111111111",
               runtime_session_id: "22222222-2222-4222-8222-222222222222",

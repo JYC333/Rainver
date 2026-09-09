@@ -418,7 +418,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       [instructionId, PROJECT, SPACE],
     );
     const snapshot = await new ExecutionControlSnapshotRepository(db.pool).createForRun(run, resolved, {
-      cliCredentialProfileId: "cli-profile-1",
+      runtimeInstallation: "managed:1.0.0",
       policyDecisionRecordIds: ["decision-runtime.execute"],
     });
     expect(snapshot).toMatchObject({
@@ -447,7 +447,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       },
       tool_grant_refs: [{ type: "tool_grant", id: "source.search" }],
       approval_refs: [{ type: "policy_approval", id: "policy_requires_approval_runtime_execute" }],
-      credential_channel_ref: { type: "cli_credential_profile", id: "cli-profile-1" },
+      credential_channel_ref: { type: "host_runtime_installation", id: "managed:1.0.0" },
       policy_decision_refs: [{ type: "policy_decision_record", id: "decision-runtime.execute" }],
       output_contract: {
         schema_ref: {

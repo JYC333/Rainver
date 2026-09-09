@@ -162,7 +162,7 @@ describe("compose server config", () => {
         "RUNTIME_TOOLS_ROOT",
         "DEFAULT_USER_ID",
         "REFLECTOR_MODE",
-        "MAX_CONCURRENT_DOCKER_RUNS",
+        "BUILTIN_HOST_MAX_CONCURRENT_RUNS",
         "WORKSPACE_ROOT",
         "SANDBOX_ROOT",
       ]) {
@@ -239,7 +239,7 @@ describe("compose server config", () => {
     expect(migrate).toContain('if [[ ! -d "$REPO_ROOT/server/src" ]]; then');
   });
 
-  it("keeps namespace privileges and the narrow token on the dedicated Runner", () => {
+  it("keeps namespace privileges, and no internal token, on the built-in execution host", () => {
     for (const mode of ["dev", "test", "prod"] as const) {
       const server = serverServiceBlock(mode);
       const runner = runnerServiceBlock(mode);
@@ -248,18 +248,39 @@ describe("compose server config", () => {
       expect(runner).toContain("no-new-privileges=true");
       expect(runner).toContain("cap_drop:");
       expect(runner).toContain("read_only: true");
-      expect(runner).toContain(".runner.env");
+      // No env file at all now. `.runner.env` existed to give the Runner
+      // `SANDBOX_RUNNER_TOKEN`, which is the control plane's internal token and
+      // unlocks the internal credential and execution routes from the network
+      // this container is on. With the Runner gone the token goes with it: the
+      // daemon holds a bearer token for its own Host row and nothing else.
+      expect(runner).not.toContain(".runner.env");
       expect(runner).not.toContain(".server.env");
+      expect(runner).not.toContain("SANDBOX_RUNNER_TOKEN");
       expect(runner).not.toContain(":/rainver");
       expect(runner).not.toContain("docker.sock");
       expect(runner).not.toContain("../../:/repo");
       expect(runner).not.toMatch(/\/cache:\/runner\//);
-      expect(runner).toContain("cache/runtime-homes:/runner/run-homes");
-      expect(runner).toContain("cache/conversation-runtime-homes:/runner/conversation-homes");
-      expect(runner).toContain("cache/login-homes:/runner/login-homes");
+      // The Runner's six authority roots went with it; what the daemon owns is
+      // the instance's workspace root plus its own config directory, and the
+      // credential the control plane publishes, which it only reads.
+      expect(runner).toContain("workspaces:/runner/workspaces");
+      expect(runner).toContain("cache/host-daemon:/runner/host");
+      expect(runner).toContain("cache/builtin-host:/runner/builtin-host:ro");
+      expect(runner).not.toContain("/runner/run-homes");
+      expect(runner).not.toContain("/runner/runtime-tools");
       expect(server).toContain("runner-control");
-      expect(runner).toContain("networks:\n      - runner-control");
+      expect(runner).toMatch(/networks:\n(?:\s*#.*\n)*\s*- runner-control\n/);
       expect(composeText(mode)).toContain("runner-control:\n    internal: true");
+      // The built-in execution host needs outbound Internet of its own — to
+      // download a managed copy of a runtime, complete a vendor login, reach a
+      // model provider. It gets a bridge nothing else joins, so the container
+      // still cannot see the database or a sibling service and nothing can dial
+      // in; `runner-control` stays internal beside it.
+      expect(runner).toContain("- host-egress");
+      expect(composeText(mode)).toContain("  host-egress:");
+      // Any service joining it, not just the server: the whole point of the
+      // bridge is that the built-in host is alone on it.
+      expect(composeText(mode).split("host-egress").length - 1).toBe(2);
     }
     expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))
       .toContain("bubblewrap");

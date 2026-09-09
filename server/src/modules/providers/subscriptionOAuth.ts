@@ -8,9 +8,7 @@ import {
   loadOrCreateModelProviderApiKeyMasterKey,
   type ModelProviderOAuthSecretV1,
 } from "./secretRefCrypto.js";
-import { probeClaudeOAuthQuotaWithAccessToken } from "./cli/claudeOAuthUsageProbe.js";
-import { parseCodexManagedUsageResponse } from "./cli/codexUsageProbe.js";
-import type { QuotaResult } from "./cli/usageProbe.js";
+import { parseCodexManagedUsageResponse, probeClaudeOAuthQuotaWithAccessToken, type QuotaResult } from "./subscriptionQuota.js";
 import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types.js";
 import { loadManagedOAuthFlow } from "./invocation/piAiChat.js";
 import { SpaceAssistantService } from "../agents/spaceAssistantService.js";

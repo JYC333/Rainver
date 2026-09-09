@@ -283,12 +283,6 @@ describe('Rooms page', () => {
         name: 'Codex subscription',
         adapter_type: 'codex_cli',
         model_name: null,
-        requires_cli_credential: true,
-        credential_profiles: [{
-          id: 'credential-user-1',
-          name: 'My Codex login',
-          is_default: true,
-        }],
       }],
       binding: null,
     })
@@ -297,7 +291,7 @@ describe('Rooms page', () => {
       summary: {
         session_id: 'session-1', state: 'initialized',
         host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
-        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'codex_cli', runtime_installation: 'codex' },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'codex_cli', runtime_installation: 'codex' },
         primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null }, attachments: [],
         dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
       },
@@ -1608,7 +1602,6 @@ describe('Rooms page', () => {
     vi.mocked(agentsApi.conversationBackends).mockResolvedValue({
       options: [{
         runtime_profile_id: 'runtime-cli', name: 'Codex', adapter_type: 'codex_cli', model_name: null,
-        requires_cli_credential: false, credential_profiles: [],
         session_config_options: [{
           id: 'model', name: 'Model', description: null, category: 'model', type: 'select',
           current_value: 'gpt-5', options: [
@@ -1620,7 +1613,7 @@ describe('Rooms page', () => {
           type: 'boolean', current_value: false,
         }],
       }],
-      binding: { runtime_profile_id: 'runtime-cli', adapter_type: 'codex_cli', credential_profile_id: null },
+      binding: { runtime_profile_id: 'runtime-cli', adapter_type: 'codex_cli' },
       session_config: [],
     })
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({
@@ -1637,7 +1630,7 @@ describe('Rooms page', () => {
 
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({
       backends: [{
-        agent_id: 'agent-1', runtime_profile_id: 'runtime-cli', credential_profile_id: null,
+        agent_id: 'agent-1', runtime_profile_id: 'runtime-cli',
         session_config: [
           { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
           { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
@@ -1651,7 +1644,6 @@ describe('Rooms page', () => {
     const openCodeCatalog = {
       options: [{
         runtime_profile_id: 'runtime-opencode', name: 'OpenCode', adapter_type: 'opencode', model_name: null,
-        requires_cli_credential: false, credential_profiles: [],
         session_config_options: [{
           id: 'model', name: 'Model', description: null, category: 'model', type: 'select' as const,
           current_value: 'openai/gpt-5', options: [{ value: 'openai/gpt-5', name: 'OpenCode GPT-5', description: null, group: 'OpenCode' }],
@@ -1663,13 +1655,12 @@ describe('Rooms page', () => {
     const codexCatalog = {
       options: [{
         runtime_profile_id: 'runtime-codex', name: 'Codex', adapter_type: 'codex_cli', model_name: null,
-        requires_cli_credential: false, credential_profiles: [],
         session_config_options: [{
           id: 'model', name: 'Model', description: null, category: 'model', type: 'select' as const,
           current_value: 'gpt-5.2-codex', options: [{ value: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', description: null, group: 'Codex' }],
         }],
       }],
-      binding: { runtime_profile_id: 'runtime-codex', adapter_type: 'codex_cli', credential_profile_id: null },
+      binding: { runtime_profile_id: 'runtime-codex', adapter_type: 'codex_cli' },
       session_config: [],
     }
     vi.mocked(agentsApi.conversationBackends).mockImplementation(async () => (
@@ -1679,7 +1670,7 @@ describe('Rooms page', () => {
       summary: initialized ? {
         session_id: 'session-1', state: 'initialized',
         host: { host_id: 'host-1', host_name: 'Laptop', host_kind: 'remote', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: '2026-09-04T10:00:00.000Z' },
-        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-codex', credential_profile_id: null, adapter_type: 'codex_cli', runtime_installation: 'own' },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-codex', adapter_type: 'codex_cli', runtime_installation: 'own' },
         primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null },
         attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
       } : {

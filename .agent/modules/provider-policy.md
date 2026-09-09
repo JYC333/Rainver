@@ -61,8 +61,10 @@ CLI overrides.
 
 Runtime adapters never read provider keys from ambient environment variables.
 Managed API runtimes resolve credentials through `server/src/modules/providers/`
-after the `runtime.use_credential` policy gate passes. CLI runtimes use the CLI
-CredentialBroker profile channel instead.
+after the `runtime.use_credential` policy gate passes. CLI runtimes resolve none
+here: their login is held by the copy on the execution host that runs them
+(ADR 0016). A CLI Run bound to a ModelProvider still reaches it through the
+expiring proxy lease, never through a key in its environment.
 
 `model_providers.provider_type` records vendor identity (`openai`,
 `openai_codex`, `anthropic`, `minimax`, `openrouter`, `deepseek`, `ollama`,
@@ -191,8 +193,9 @@ process environment.
    command store path; do not add ambient provider-key env vars.
 3. Choose the active grant's `network_profile_id` when the provider needs proxy
    routing; use direct routing for local or internal providers.
-4. Create or configure the runtime adapter to use the provider's SDK/CLI through
-   the provider resolver or CLI CredentialBroker, depending on adapter type.
+4. Create or configure the runtime adapter to reach the provider through the
+   provider resolver, or — for a CLI runtime — through the proxy lease its
+   daemon binding receives.
 5. Document the provider in this file's risk table.
 6. Note any license or terms-of-service constraint in `runtime-adapters.md`.
 

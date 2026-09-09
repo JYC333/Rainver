@@ -90,7 +90,8 @@ const HOST = {
 describe('HostAgents', () => {
   it("lists only the agents this host has a copy of, with log-in and remove, and adds a managed copy", async () => {
     const onChanged = vi.fn()
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={onChanged} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={onChanged} />)
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · 1 account')
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).not.toContain('opencode 1.18.11')
     expect(screen.getByTestId('host-agent-h1-acp_goose').textContent).toContain('managed · 1.2.3 · not logged in')
@@ -115,7 +116,8 @@ describe('HostAgents', () => {
   })
 
   it('logs a copy in through the terminal, relaying the PTY stream and typed input', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Log in managed:1.2.3 of goose on Laptop' }))
     const terminal = await screen.findByTestId('runtime-login-terminal')
     // The stream reaches the terminal as sent — escape codes included, for
@@ -131,7 +133,8 @@ describe('HostAgents', () => {
   })
 
   it('shows every authentication method advertised by an ACP agent that has no CLI login fallback', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Model source')
     expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Agent-managed · no Rainver override')
     expect(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
@@ -144,7 +147,8 @@ describe('HostAgents', () => {
   })
 
   it('shows a multi-account CLI by account count, adds one, and removes one through the vendor logout', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     const row = screen.getByTestId('host-agent-h1-opencode')
     // The count in the row, the names on hover, never a secret.
     expect(row.textContent).toContain('1 account')
@@ -165,7 +169,8 @@ describe('HostAgents', () => {
 
   it('offers Log out on a single-account copy that is logged in', async () => {
     const host = { ...HOST, capabilities_json: { runtimes: ['claude'], installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: true }] } } } as unknown as Host
-    render(<HostAgents host={host} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={host} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Log in own of Claude Code on Laptop' })).toHaveTextContent('Log in again')
     const before = loginStream.mock.calls.length
     await userEvent.click(screen.getByRole('button', { name: 'Log out own of Claude Code on Laptop' }))
@@ -174,7 +179,8 @@ describe('HostAgents', () => {
   })
 
   it('starts a fresh session when the same copy is logged in again while its last panel is still open', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     const button = screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })
     const before = loginStream.mock.calls.length
     await userEvent.click(button)
@@ -185,7 +191,8 @@ describe('HostAgents', () => {
   })
 
   it('offers one Log in, the managed CLI login, when the Agent needs its own CLI login before its Agent Auth', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={vi.fn()} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={vi.fn()} />)
     // The advertised Agent-Auth method is not a second button: the daemon and
     // every Run session authenticate with it unattended once the CLI is logged in.
     expect(screen.queryByRole('button', { name: /Cursor Login/ })).toBeNull()
@@ -202,7 +209,8 @@ describe('HostAgents', () => {
     }))
     const onChanged = vi.fn(async () => undefined)
     const hostWithoutOpenCode = { ...HOST, capabilities_json: { runtimes: [], installations: { acp_goose: HOST.capabilities_json!.installations!.acp_goose } } } as unknown as Host
-    render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false} onChanged={onChanged} />)
+    render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+          manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
     const claude = await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })
     const opencode = screen.getByRole('button', { name: 'Install OpenCode on Laptop' })
@@ -234,7 +242,7 @@ describe('HostAgents', () => {
       finishInstall = resolve
     }))
     const onChanged = vi.fn(async () => undefined)
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin onChanged={onChanged} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
     expect(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
     const search = await screen.findByLabelText('Search ACP registry')

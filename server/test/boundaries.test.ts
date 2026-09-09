@@ -18,8 +18,7 @@ const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "z
  * Packages allowed only from a specific file or directory. `pg` is the raw DB
  * driver (deliberately not an ORM) and must stay confined to the `src/db/`
  * data-access layer (pool, transaction helper, migration runner) so database
- * access cannot spread into feature modules without showing up here. `node-pty`
- * is the CLI login PTY host and must stay confined to the login engine. A value
+ * access cannot spread into feature modules without showing up here. A value
  * ending in `.ts` matches that exact file; a directory value matches any file
  * beneath it.
  */
@@ -27,7 +26,6 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   ["pg", join("src", "db")],
   ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
   ["@earendil-works/pi-agent-core", join("src", "modules", "runs", "piManagedAgentLoop.ts")],
-  ["node-pty", join("src", "modules", "providers", "cli", "loginEngine.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
   // ADR 0016: the only WebSocket endpoint in the server, the hosts
   // hello/heartbeat channel — confined here so a second module cannot grow

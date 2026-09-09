@@ -41,6 +41,26 @@ describe("dbMigrationOps", () => {
       expect(start).not.toContain("docker build");
     });
 
+    it("verifies the pre-migration dump by streaming it, never by a path inside the container", () => {
+      const migrate = readRepoFile("ops/scripts/db/migrate.sh");
+      const restore = readRepoFile("ops/scripts/db/restore.sh");
+      const saveSetup = readRepoFile("ops/scripts/db/save-dev-setup.sh");
+
+      // `pg_restore -l /dev/stdin` reopens the path and loses the pipe, so it
+      // reports "did not find magic string in file header" for an archive that
+      // is perfectly good — and the check aborts the upgrade on a backup that
+      // was never broken. All three callers read stdin as a stream instead.
+      for (const script of [migrate, restore, saveSetup]) {
+        expect(script).not.toContain("pg_restore -l /dev/stdin");
+        expect(script).not.toContain("pg_restore --list /dev/stdin");
+      }
+      expect(migrate).toContain('"${COMPOSE[@]}" exec -T postgres pg_restore -l >/dev/null 2>&1 < "$dump_path"');
+      // The host binary is optional — a machine that runs the stack in Docker
+      // has no client tools — so its absence must fall through to the
+      // container rather than count as a failed verification.
+      expect(migrate).toContain("command -v pg_restore");
+    });
+
     it("keeps the private dev setup outside the repo and imports it after migration", () => {
       const saveSetup = readRepoFile("ops/scripts/db/save-dev-setup.sh");
       const reset = readRepoFile("ops/scripts/db/reset-postgres.sh");

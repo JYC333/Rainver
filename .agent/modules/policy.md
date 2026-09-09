@@ -337,9 +337,15 @@ non-user-origin runs (automation, job, system), the actor is the run itself:
 `{run_id, trigger_origin}` for traceability. `run_id` and `resource_id` always
 refer to the run regardless of actor type.
 
-**runtime.use_credential**: `resource_space_id` is resolved from the actual `Credential` row by ID,
-not from `RuntimeAdapter.space_id`. If a `credential_id` exists but the `Credential` row is
-missing, execution fails closed with `credential_metadata_missing` before any secret is resolved.
+**runtime.use_credential**: narrowed twice by ADR 0016. It covers ModelProvider
+credentials only — the CLI credential profiles it was also written for are retired,
+and a CLI's login is never resolved by the control plane at all — and it is reached
+only when `hostKind === "server" && run.model_provider_id`
+(`runs/orchestrationService.ts`), so a ModelProvider-bound Run on a paired host never
+enters it. Both surviving callers pass their own Space as `resource_space_id`
+(`orchestrationService.ts`, `automations/service.ts`), so `decisionCore`'s cross-space
+deny compares a value to itself from here; it still bites for callers that name a
+different resource Space.
 
 **proposal.create coverage**: `proposal.create` gates user-created memory proposals
 and system-created code_patch proposals. The latter uses `force_record=True`;

@@ -9,7 +9,7 @@
  * them.
  *
  * It ships with this daemon rather than being installed onto `PATH`: the
- * daemon puts nothing into the machine's global tool space (ADR 0016 §6) and
+ * daemon puts nothing into the machine's global tool space (ADR 0016 §7) and
  * passes an absolute path as `RAINVER_CLI` instead. It carries no
  * authorization of its own — the run's token names the run, and the server
  * decides what that run may do.

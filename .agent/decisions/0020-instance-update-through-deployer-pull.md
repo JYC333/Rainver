@@ -109,6 +109,19 @@ replace — expand now, contract in a later release — which is stated as a rul
 B59. Recreating first would instead serve the new build against the old schema,
 and that window is not seconds but however long the migration takes.
 
+A release whose migration cannot satisfy that constraint is not installable
+from here. Such a migration is marked `-- rainver:maintenance`, and the `pull`
+stage refuses the job the moment the new image is on disk and its chain can be
+read — before anything has been drained or recreated — naming
+`./ops/scripts/start.sh --maintenance` instead (ADR 0016 §10). That
+command is an operator step on the host: it stops the applications, keeps
+PostgreSQL, dumps, migrates, and starts again, and on failure leaves the
+applications stopped with the dump kept. A UI-triggered offline upgrade would
+need an executor that survives stopping the server that requested it, and is
+deliberately not built here. The distinction is compatibility with the running
+version, not whether a database changes: an ordinary migration stays a UI
+update.
+
 ### 6. The deployer does not update itself
 
 The recreate stage names `server`, `frontend`, and `sandbox-runner`. The
@@ -167,6 +180,11 @@ contacts the registry.
 
 ## Revision history
 
+- 2026-09-08 — §5 gained the one release shape this path cannot install: a
+  migration marked `-- rainver:maintenance` removes something the running build
+  still reads, so the `pull` stage refuses the job and names the offline
+  maintenance command (ADR 0016 §10). The decision — the deployer pulls
+  and the server never gains Docker authority — is unchanged.
 - 2026-09-07 — a review of the shipped implementation added three things this
   document had left implicit and one it had stated too strongly. §2 now says a
   job is refused when no deployer is reporting, because a queued update pauses

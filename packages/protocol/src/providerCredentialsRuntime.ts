@@ -2,12 +2,12 @@
  * Provider and credential runtime contracts.
  *
  * These schemas describe the durable boundary between provider commands,
- * provider-key resolution, CLI credential brokering, and internal runtime
- * callers. The protocol package owns schemas and types only.
+ * provider-key resolution, and internal runtime callers. No CLI credential is
+ * brokered (ADR 0016). The protocol package owns schemas and types only.
  */
 
 import { z } from "zod";
-import { IdSchema, RunTriggerOriginSchema, SecretResponseGuards } from "./common.js";
+import { IdSchema, SecretResponseGuards } from "./common.js";
 
 export const ProviderCredentialsAuthoritySchema = z.enum(["server"]);
 
@@ -66,14 +66,6 @@ export const RuntimeCredentialResolveRequestSchema = z.discriminatedUnion("kind"
     space_id: IdSchema,
     credential_id: IdSchema,
   }),
-  z.object({
-    kind: z.literal("cli_profile"),
-    space_id: IdSchema.optional(),
-    runtime: z.string().min(1),
-    profile_id: z.string().nullish(),
-    require_existing: z.boolean().optional(),
-    user_id: IdSchema,
-  }),
 ]);
 
 export const RuntimeCredentialResolveResponseSchema = z.discriminatedUnion("kind", [
@@ -87,61 +79,7 @@ export const RuntimeCredentialResolveResponseSchema = z.discriminatedUnion("kind
     credential_id: IdSchema,
     api_key: z.string().min(1),
   }),
-  z.object({
-    kind: z.literal("cli_profile"),
-    profile_id: z.string(),
-    runtime: z.string(),
-    source_path: z.string(),
-    target_path: z.string(),
-    readonly: z.boolean(),
-  }),
 ]);
-
-export const CliCredentialGrantRequestSchema = z.object({
-  run_id: z.string().min(1),
-  space_id: IdSchema,
-  runtime: z.string().min(1),
-  risk_level: z.string().min(1),
-  executor_mode: z.enum(["worktree", "docker"]),
-  profile_id: z.string().nullish(),
-  user_id: IdSchema,
-});
-
-export const CliCredentialGrantResponseSchema = z
-  .object({
-    granted: z.boolean(),
-    profile_id: z.string().nullish(),
-    runtime: z.string(),
-    executor_mode: z.enum(["worktree", "docker"]),
-    readonly: z.boolean(),
-    temp_home: z.string().nullish(),
-    host_source_path: z.string().nullish(),
-    target_path: z.string().nullish(),
-    env: z.record(z.string()),
-    fallback_reason: z.string().nullish(),
-  })
-  .passthrough();
-
-export const CliCredentialAuditRequestSchema = z.object({
-  space_id: IdSchema,
-  run_id: z.string().nullish(),
-  runtime_adapter_type: z.string().nullish(),
-  credential_profile_id: z.string().nullish(),
-  trigger_origin: RunTriggerOriginSchema.nullish(),
-  fallback_used: z.boolean().optional(),
-  fallback_reason: z.string().nullish(),
-  broker_error: z.boolean().optional(),
-  cleanup_status: z.string().optional(),
-  action: z.string().optional(),
-});
-
-export const CliCredentialAuditResponseSchema = z
-  .object({
-    status: z.literal("recorded"),
-    event_id: IdSchema,
-    ...SecretResponseGuards,
-  })
-  .passthrough();
 
 export const ProviderResilienceFailureClassSchema = z.enum([
   "rate_limit",

@@ -212,21 +212,39 @@ then mutate what it cannot see.
 
 ## Execution Boundaries
 
-**B13** — Every file-capable runtime-adapter invocation (including credential
-PTY and quota probe paths) crosses the typed Sandbox Runner boundary. Runtime
-adapter callers may send runtime/tool/scope identifiers and managed mount ids,
-but never an executable command, shell string, image, host path, or ambient
-environment map. Deterministic Verification Engine checks use a separate typed
-`verification` launch: it carries the immutable recipe argv and one managed
-workspace id, with no shell, ambient environment, runtime-tool mount, provider
-channel, or network. The Runner constructs an empty-root namespace and fails
-closed on request, mount, connection, or namespace failure; there is no
-application-server subprocess fallback.
+**B13** — Every file-capable runtime-adapter invocation crosses the typed host
+daemon boundary. Callers may send runtime/adapter/workspace identifiers, an
+argv the control plane rendered from an adapter spec, and an isolation policy —
+never a host path, an image, or an ambient environment map, and the daemon
+resolves the executable from the copy it installed rather than from the frame.
+Deterministic Verification Engine checks use the
+separate `command_run` frame: it carries a server-defined command and one
+workspace identity, with no shell, no ambient environment, no provider channel
+and a minimal environment. Strict commands have no network; trusted commands
+retain native network access. The C3 conformance suite that also used this
+path is retired (2026-09-09): a one-shot behaviour probe of a vendor CLI,
+cached against a version key and blind to the model actually selected, was not
+evidence a dispatch gate could rest on, and what it stood in for — a Run that
+cannot reach past its workspace — ADR 0016 made structural.
+
+**A verification recipe is code, and it runs on the host that holds the
+workspace.** Its argv comes from a `ValidationRecipe` or a Task's acceptance
+criteria — both authored by Project writers — so dispatching a Task to a paired
+host runs a Project writer's command on the owner's machine. On the built-in
+host the per-Run namespace bounds it; on a paired host it runs natively, which
+is the same trust that host's owner already extends to Runs dispatched there.
+Say so where a recipe is authored; do not treat a recipe as inert data. A strict host constructs an empty-root namespace per request
+and fails closed on workspace, namespace or connection failure; the application
+server has no subprocess fallback and no vendor CLI of its own.
 
 **B14** — Runtime Context Delivery is the only model-visible context input for
-server-host managed Runs and CLI invocations. Remote trusted-host Runs use
-ADR 0016's prompt/tool delivery without server-brokered Runtime Context; this
-exception cannot be used by a server-host adapter. Adapters may render an accepted Delivery at
+a Run the server executes in-process. A Run handed to a host daemon — every
+CLI runtime, on the built-in host as much as a paired one — uses ADR 0016's
+prompt plus work-surface delivery without server-brokered Runtime Context, and
+pulls what else it needs through the `rainver` command. The distinction is the
+runtime, not the machine: a runtime with a subprocess can pull, and one the
+server calls itself has no process to pull with, so its context is assembled
+and pushed. An in-process adapter may not use the daemon exception. Adapters may render an accepted Delivery at
 their invocation boundary but must not fetch, reorder, rebudget, cache, or copy
 it into vendor context files. Vendor control files used solely to disable an
 unsupported runtime feature may exist only in the private execution sandbox;
@@ -300,23 +318,47 @@ implementation state and must not be extended as the target skill model.
 See [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md).
 
 **B62** — An instance is one control plane plus N execution hosts, modeled as
-Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder. The
-server host keeps the existing strict isolation model (bubblewrap, PathPolicy,
-mount containment) unchanged; a remote (personal) host runs in trusted-host
-mode — native process spawn, no sandbox, the machine's own login state (from
-B68, reached through the Agent's own runtime profile rather than the machine's
-`HOME`) unless
-the Run carries an explicit ModelProvider binding (ADR 0016's 2026-08-24
-amendment; see B67) — and
-is not held to the server host's isolation invariants. Host liveness and
-Location `execution_ready` are separate facts. Do not weaken the server host's
-isolation to make the two hosts look uniform, and do not claim remote
-execution carries the same isolation guarantees it does not have.
+Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder. There is
+**one** execution host implementation — the `rainver-host` daemon — running in
+one of two trust modes, chosen at registration and never per Run. **Strict**
+is the instance's built-in host, the daemon inside the `sandbox-runner`
+container: every Run is wrapped in a fresh rootless bubblewrap namespace built
+from an empty root and an explicit bind allowlist. The vendor CLI's own
+sandbox is *intended* to be relaxed inside it so there is exactly one boundary,
+but that half is **not implemented**: the daemon exports
+`RAINVER_STRICT_SANDBOX=1` and nothing consumes it (deferred register). A
+nested vendor sandbox does not fail — that was assumed, never tested, and is
+false; it stacks a read-only policy over the Run's own workspace instead
+(measured 2026-09-08, ADR 0016 §2). **Trusted** is a paired
+personal machine: native process spawn, no namespace, the machine's own login
+state (from B68, reached through the Agent's own runtime profile rather than
+the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
+(see B67). Host liveness and Location `execution_ready` are separate facts,
+for the built-in host as much as a paired one — it is a daemon connection, not
+an in-process boundary, and must not be reported permanently online. Do not
+weaken strict isolation to make the two modes look uniform, and do not claim
+trusted execution carries guarantees it does not have. The daemon protocol is
+the only execution path and there is no other: the sandbox line
+(`sandbox/runner.mjs`, `modules/sandboxRunner/`, the server-side vendor CLI
+adapter) is deleted. Do not add a second one — an in-process CLI spawn, a
+per-runtime tunnel, a container-per-Run — without a decision superseding this.
 
-**B63** — A host accepts Runs and serves live remote Folder reads only for its
-own registered owner. There is no multi-user host sharing. A dispatch or
-`folder_read` request to a host whose `owner_user_id` does not match the
-caller must be rejected before any job/read is sent.
+**B63** — Two safety models, one per trust mode (ADR 0016 §3). A **paired**
+host accepts Runs and serves live Folder reads only for its own registered
+owner: there is no multi-user sharing of someone's machine, and a dispatch or
+`folder_read` request whose caller is not that owner must be rejected before
+any job or read is sent. The **built-in** host has no owner and serves every
+Space of the instance: it accepts a Run from anyone with write access to the
+Run's Project, and what makes that safe is the per-Run namespace the daemon
+builds — not ownership. Do not extend owner-only to the built-in host (it has
+no owner to check), and do not extend Space-authorized dispatch to a paired
+one (its safety is not a namespace).
+
+Managing a host is a separate question with a separate answer: installing a
+runtime on the built-in host, logging a copy in or out, removing or upgrading
+one is instance-admin work, because there is one copy per instance and every
+Space spends it. Members see what is installed and whether it is logged in,
+because that is what says whether their Run can run there at all.
 
 **B64** — The control plane never resolves, mounts, or reads a filesystem
 path on a remote host. A remote WorkspaceLocation's `root_path` stays null;
@@ -347,27 +389,17 @@ how a CLI runtime picks a backend:
   (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, and a
   runtime's settings file that can itself export environment). Pointing the
   run at a control-plane-provided profile directory is part of the binding,
-  not an optional extra. On the server host the two config-file runtimes each
-  satisfy this by a different mechanism, and **neither mechanism travels**:
-  Codex's binding returns `CODEX_HOME` pointing inside the credential broker's
-  temp HOME (`writeCodexProviderConfig` refuses with
-  `codex_temp_home_required` without one, then materializes into it; that HOME
-  is run-scoped for a one-shot run and conversation-scoped and persistent for
-  a CLI conversation), while
-  OpenCode's returns `env: {}`
-  and writes `opencode.json` into the run's sandbox working directory
-  (refusing with `opencode_sandbox_required`), with its isolated `HOME`
-  supplied separately by the credential grant. Both targets — the broker's
-  temp HOME and the sandbox cwd — are server-side paths. So a binding's
-  profile isolation has to be re-established wherever the run actually
-  executes: forwarding either path to another machine satisfies nothing and
-  lands the run on that machine's ambient profile instead. Claude Code is the
-  third case and needs the most new work, not the least: its binding supplies
-  no profile pointer at all (`buildClaudeProviderBinding` returns env only),
-  so on the server host its isolation comes entirely from the credential
-  grant's `HOME` — and a remote host has no credential broker and no grant, so
-  a bound remote Claude Code run is given a control-plane-provided profile
-  directory the daemon materializes for it.
+  not an optional extra, and since ADR 0016 there is exactly one place that
+  happens: **the daemon, on the host that runs it**. Nothing on the control
+  plane materializes a profile any more — there is no broker temp HOME and no
+  server-side sandbox cwd to write into, because a CLI does not execute here.
+  The daemon creates a per-(Agent × container × adapter × provider) profile
+  directory (B68) and sets every state-root variable the runtime's login spec
+  names so the vendor's config resolves inside it, for both host kinds alike.
+  The rule that made this necessary is unchanged: forwarding a path the control
+  plane knows satisfies nothing, because the control plane knows no host path
+  (B64) — profile isolation is established where the run executes or not at
+  all.
 
 Two failures this prevents, both silent: a selected provider shadowed by
 machine state, so the Run's recorded `model_provider_id` is a lie; and a
@@ -386,12 +418,9 @@ key would bill an API account instead of the subscription the profile was just
 given. Per runtime, not one list for all, so a Task run on Claude Code keeps
 the `GOOGLE_*` variables its gcloud toolchain needs.
 
-Enforcement: on the server host the env allowlist
-(`server/src/modules/runs/cliSubprocessEnv.ts`) already implements the
-environment half — it builds from an empty object, so ambient `HOME` is not
-passed either, whether or not a CLI login profile supplied a run-private one.
-On a remote host the daemon's spawn env and
-profile-directory selection are the enforcement point, and they implement this:
+Enforcement is the daemon's, on every host, because every CLI run is a daemon
+run: its spawn environment and profile-directory selection are the point where
+this holds, and they implement it:
 for a bound run the daemon rebuilds the environment from an allowlist and
 points the runtime at a control-plane-provided profile. A run with no binding
 still inherits the machine's environment — minus only the vendor prefixes that
@@ -505,15 +534,34 @@ execution-engine data rather than a capability grouping.
 
 ## CLI Credential Boundaries
 
-**B45** — CLI credential profiles are owned by rainver. Sandboxes never receive the full server container HOME or the full `instance/secrets/` directory.
+**B45** — A vendor CLI's login belongs to the copy that holds it, on the
+execution host that runs it (ADR 0016 §7). Rainver stores no CLI credential,
+resolves no path to one, and mounts none into anything. A Run dispatched to a
+host names the host and the installation; whatever that copy is logged into is
+what it uses.
 
-**B46** — Every CLI credential grant or denial is audited in `cli_credential_events`. Manual and automation CLI runs require an explicit CredentialBroker profile. Runs with no profile configured fail before adapter invocation and record `credential_source="none"` with `fallback_reason="no_profile_configured"`.
+**B46** — A CLI runtime profile that names no execution host is not a runnable
+backend. There is no server-side copy of a vendor CLI to fall back to, so such
+a profile is filtered out of conversation backends and marked
+`credential_available: false` in routing rather than dispatched to a machine
+that would use its ambient login.
 
-**B47** — One-shot Docker sandboxes receive at most one credential profile dir, mounted read-only. The container has no ambient host HOME and the MVP rejects provider-proxy/network-profile grants because its network namespace is `none`.
+**B47** — What the control plane learns about a CLI's login is exactly: whether
+it exists, the account ids and kinds a multi-account CLI reports, and
+subscription percentages with reset times. Never the credential, its contents,
+or its path (B64). The host reads it, spends it against the vendor's own
+endpoint, and returns numbers.
 
-**B48** — Credential profiles are never written back from the sandbox automatically. If a CLI updates its login state during a run, only the profile's source directory is affected (via symlink for worktree, via writable volume for Docker). No automatic propagation to other profiles.
+**B48** — A managed copy's login state lives inside that copy's own directory,
+which is why an upgrade keeps the previous version's directory: a rollback
+promotes a copy that is still logged in, rather than asking someone to log in
+again. Removing a copy removes its login with it, and nothing propagates a
+login between copies or hosts.
 
-**B49** — The CredentialBroker never exposes raw secret values through the API. The credentials API returns path metadata only (source_path, exists, non_empty).
+**B49** — No API of Rainver's returns a runtime credential's value, and none
+returns a path to one. A managed subscription reports connection state and
+quota; a host's copy reports whether it is logged in, which accounts it holds,
+and what its subscription has left. Nothing else about either crosses an API.
 
 ## API Entrypoint Boundaries
 
@@ -560,7 +608,7 @@ completion pair.
 
 **B43** — The deployer's Unix socket accepts exactly `rebuild_rainver`, `restart_rainver`, and `health_check`; its pull loop accepts exactly `update` and `check_update`. None of these jobs accepts request arguments. The deployer never accepts arbitrary commands, request-to-environment overrides, self-evolution jobs, code-patch jobs, capability jobs, caller-selected script paths, image tags, or channel changes. A deployment job may be created only by the instance administrator through an authenticated admin route; that request is the per-instance human approval ADR 0017 §1 requires for deployment, and the job row with its stage events is the durable audit. No Proposal applier, Agent, automation, job, or scheduler path may create one. The deployer never writes the instance `.env`; channel selection and rollback are host operations.
 
-**B44** — The deployer container's Docker socket is host-equivalent authority. Its repository mount is `ops/`, read-only — the compose files and ops scripts the deployment steps read, and no writable checkout. The instance mode root is mounted at its host path so that client-side Compose reads and daemon-side volume sources name the same directory, and the container never edits the instance `.env`. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The update job recreates `server`, `frontend`, and `sandbox-runner` only; the deployer never recreates itself. The CLI sandbox executor is a separate run path with a fixed image, fixed resource policy, deny-by-default network, and allowlisted mounts; it is never routed through the deployer protocol.
+**B44** — The deployer container's Docker socket is host-equivalent authority. Its repository mount is `ops/`, read-only — the compose files and ops scripts the deployment steps read, and no writable checkout. The instance mode root is mounted at its host path so that client-side Compose reads and daemon-side volume sources name the same directory, and the container never edits the instance `.env`. Nothing on the evolution, `code_patch`, capability, agent-runtime, automation, job, or scheduler path may reach deployer input or invoke its scripts. The update job recreates `server`, `frontend`, and `sandbox-runner` only; the deployer never recreates itself. CLI execution is a separate run path entirely: the `rainver-host` daemon inside `sandbox-runner`, isolating each Run in its own bubblewrap namespace, reached over the host WebSocket. It is never routed through the deployer protocol and never given deployer input.
 
 **B44A** — An Rainver instance must never be directly exposed to the public internet. The current frontend has no production TLS termination, rate limiting, or general CSRF-token hardening. Any move toward internet exposure must first implement and review those controls and update the security boundary documentation.
 
@@ -587,6 +635,18 @@ migrations run while the build they replace is still serving (ADR 0020 §5 puts
 previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
+
+The exception is an **offline maintenance migration**, and it is marked as one:
+`-- rainver:maintenance` on a line of its own within the first 20 lines of the SQL file. Such a
+migration removes something the running release still reads, so `start.sh` and
+the deployer's UI update both refuse it and name
+`./ops/scripts/start.sh --maintenance`, which stops the applications, takes the
+dump, and applies it with nothing reading the old shape (ADR 0016 §10).
+The distinction is compatibility with the running version, not whether a
+database changes: an ordinary migration that adds a table stays installable
+from the UI. Reach for the marker only when expand-then-contract cannot be
+split across releases; a maintenance upgrade is downtime someone has to
+schedule.
 
 **B60** — Internal UUIDs remain valid storage and transport identifiers. Users
 never type them in normal product flows, but that is a UI requirement, not a

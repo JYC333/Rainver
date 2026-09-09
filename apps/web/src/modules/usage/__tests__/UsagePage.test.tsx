@@ -11,8 +11,7 @@ import type {
   UsageTotals,
 } from '@rainver/protocol'
 import UsagePage from '../UsagePage'
-import { credentialsApi, usageApi } from '../../../api/client'
-import type { CliCredentialProfileOut } from '../../../types/api'
+import { usageApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: {
@@ -43,11 +42,6 @@ vi.mock('../../../api/client', () => ({
     sessions: vi.fn(),
     budgetPreview: vi.fn(),
     events: vi.fn(),
-    previewCliHistory: vi.fn(),
-    commitCliHistory: vi.fn(),
-  },
-  credentialsApi: {
-    profiles: vi.fn(),
   },
 }))
 
@@ -212,21 +206,6 @@ const budgetPreview: UsageBudgetPreviewResponse = {
   }],
 }
 
-const profile: CliCredentialProfileOut = {
-  id: 'profile-1',
-  owner_user_id: 'user-1',
-  runtime: 'claude_code',
-  name: 'Team Claude',
-  source_path: '',
-  target_path: '',
-  readonly: false,
-  notes: '',
-  network_profile_id: null,
-  source_exists: true,
-  logged_in: true,
-  file_count: 3,
-}
-
 function setupMocks() {
   vi.mocked(usageApi.summary).mockImplementation(async (params = {}) => summary(params.group_by ?? 'provider'))
   vi.mocked(usageApi.timeseries).mockResolvedValue(timeseries)
@@ -235,64 +214,6 @@ function setupMocks() {
   vi.mocked(usageApi.sessions).mockResolvedValue(sessions)
   vi.mocked(usageApi.budgetPreview).mockResolvedValue(budgetPreview)
   vi.mocked(usageApi.events).mockResolvedValue(events)
-  vi.mocked(credentialsApi.profiles).mockResolvedValue([profile])
-  vi.mocked(usageApi.previewCliHistory).mockResolvedValue({
-    import_batch_id: 'batch-1',
-    status: 'previewed',
-    detected_runtime: 'claude_code',
-    source_kind: 'managed_profile',
-    source_fingerprint: 'fingerprint-1',
-    credential_profile_id: 'profile-1',
-    credential_profile_name: 'Team Claude',
-    target_space_id: 'space-1',
-    date_range: null,
-    totals: {
-      event_count: 2,
-      input_tokens: 100,
-      output_tokens: 50,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      total_tokens: 150,
-    },
-    model_breakdown: [],
-    token_totals_by_accuracy: {},
-    session_count: 1,
-    candidate_event_count: 2,
-    duplicate_count: 0,
-    existing_event_count: 0,
-    imported_event_count: 0,
-    unsupported_file_count: 0,
-    unreadable_file_count: 0,
-    privacy_notice: 'No prompt text is imported.',
-    confirmation_required: true,
-  })
-  vi.mocked(usageApi.commitCliHistory).mockResolvedValue({
-    import_batch_id: 'batch-1',
-    status: 'completed',
-    detected_runtime: 'claude_code',
-    source_kind: 'managed_profile',
-    target_space_id: 'space-1',
-    date_range: null,
-    totals: {
-      event_count: 2,
-      input_tokens: 100,
-      output_tokens: 50,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      total_tokens: 150,
-    },
-    model_breakdown: [],
-    token_totals_by_accuracy: {},
-    session_count: 1,
-    candidate_event_count: 2,
-    duplicate_count: 0,
-    existing_event_count: 0,
-    imported_event_count: 2,
-    unsupported_file_count: 0,
-    unreadable_file_count: 0,
-    privacy_notice: 'No prompt text is imported.',
-    confirmation_required: false,
-  })
 }
 
 describe('UsagePage', () => {
@@ -354,37 +275,4 @@ describe('UsagePage', () => {
     expect((await screen.findAllByText('Provider')).length).toBeGreaterThan(0)
   })
 
-  it('previews and commits managed CLI history imports', async () => {
-    render(<UsagePage />)
-
-    expect((await screen.findAllByText('OpenAI')).length).toBeGreaterThan(0)
-    await waitFor(() => {
-      expect(credentialsApi.profiles).toHaveBeenCalledWith('claude_code', 'space-1')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Profile' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Team Claude (logged in)' }))
-    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
-
-    await waitFor(() => {
-      expect(usageApi.previewCliHistory).toHaveBeenCalledWith(expect.objectContaining({
-        runtime: 'claude_code',
-        source_kind: 'managed_profile',
-        target_space_id: 'space-1',
-        credential_profile_id: 'profile-1',
-      }))
-    })
-    expect(await screen.findByTestId('usage-import-preview')).toHaveTextContent('previewed')
-
-    fireEvent.click(screen.getByRole('button', { name: /commit/i }))
-
-    await waitFor(() => {
-      expect(usageApi.commitCliHistory).toHaveBeenCalledWith({
-        import_batch_id: 'batch-1',
-        target_space_id: 'space-1',
-        confirmation: true,
-      })
-    })
-    expect(await screen.findByTestId('usage-import-preview')).toHaveTextContent('completed')
-  })
 })

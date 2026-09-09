@@ -1,5 +1,5 @@
 import { HttpError, type Queryable } from "../routeUtils/common.js";
-import { adapterProviderRequirement } from "../runs/runtimeProviderBinding.js";
+import { adapterProviderRequirement } from "../runs/adapterProviderRequirement.js";
 import { PgHostRuntimeProviderBindingRepository } from "./runtimeProviderBindingRepository.js";
 
 /**

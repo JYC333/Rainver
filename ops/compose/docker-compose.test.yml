@@ -40,7 +40,6 @@ services:
       - RAINVER_HOME=/rainver
       - RAINVER_ENV=test
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:-rainver_dev_password}@postgres:5432/${POSTGRES_DB:-rainver}}
-      - SANDBOX_RUNNER_HOST=sandbox-runner
       - SANDBOX_RUNNER_SERVER_HOST=server
     depends_on:
       postgres:
@@ -79,20 +78,24 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
       - /run:rw,noexec,nosuid,size=16m
-    env_file:
-      - path: ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/.runner.env
-        required: false
     volumes:
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/workspaces:/runner/workspaces
-      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/sandboxes:/runner/sandboxes
-      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/runtime-tools:/runner/runtime-tools:ro
-      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/runtime-homes:/runner/run-homes
-      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/conversation-runtime-homes:/runner/conversation-homes
-      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/login-homes:/runner/login-homes
-    environment:
-      - SANDBOX_RUNNER_PORT=8020
+      # The built-in execution host: the registration credential the server
+      # publishes (read-only — the control plane owns it), and everything the
+      # daemon itself owns (managed copies, Agent runtime profiles, managed
+      # workspaces, per-Run directories).
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/builtin-host:/runner/builtin-host:ro
+      - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/cache/host-daemon:/runner/host
     networks:
+      # `runner-control` is internal and has no gateway. The built-in execution
+      # host has to reach the outside world for the things a host does on its
+      # own behalf — download a managed copy of a runtime, complete a vendor
+      # login, reach a model provider — so it also joins a plain bridge network
+      # that nothing else is attached to. That is egress, not reachability: no
+      # other service is on it, so this container still cannot see the database
+      # or any sibling, and nothing can dial into it.
       - runner-control
+      - host-egress
     restart: unless-stopped
 
   frontend:
@@ -156,3 +159,6 @@ services:
 networks:
   runner-control:
     internal: true
+  # Outbound only, and only for the built-in execution host. Narrowing what a
+  # Run may reach through it is the daemon-owned egress proxy's job.
+  host-egress:

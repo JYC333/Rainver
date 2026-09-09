@@ -86,7 +86,6 @@ describe("agents CRUD routes", () => {
               provider_name: null,
               provider_type: null,
               model_name: null,
-              credential_profile_id: null,
               runtime_config_json: { adapter_type: "capability" },
               runtime_policy_json: { default_adapter_type: "capability" },
               enabled: true,
@@ -207,7 +206,6 @@ describe("agents CRUD routes", () => {
               provider_name: null,
               provider_type: null,
               model_name: null,
-              credential_profile_id: null,
               runtime_config_json: insertedRuntimeConfig,
               runtime_policy_json: { default_adapter_type: "capability" },
               enabled: true,
@@ -360,7 +358,6 @@ describe("agents CRUD routes", () => {
             provider_name: "OpenAI",
             provider_type: "openai",
             model_name: "gpt-5-mini",
-            credential_profile_id: null,
             runtime_config_json: { adapter_type: "model_api" },
             runtime_policy_json: { default_adapter_type: "model_api" },
             enabled: true,
@@ -449,7 +446,6 @@ describe("agents CRUD routes", () => {
               provider_name: null,
               provider_type: null,
               model_name: null,
-              credential_profile_id: null,
               runtime_config_json: { adapter_type: "claude_code" },
               runtime_policy_json: { default_adapter_type: "claude_code" },
               enabled: true,
@@ -548,7 +544,7 @@ describe("agents CRUD routes", () => {
 
     expect(res.statusCode).toBe(422);
     expect(res.json()).toMatchObject({
-      detail: expect.stringContaining("selected per user and conversation"),
+      detail: expect.stringContaining("brokers no CLI credential"),
     });
     expect(query).not.toHaveBeenCalled();
   });

@@ -36,7 +36,7 @@ describe("normalizeServerUrl", () => {
   });
 
   it("normalizes a stored server_url on load", async () => {
-    await saveConfig({ server_url: "https://rainver.example/", host_id: "host-1", token: "t", workspaces: {} });
+    await saveConfig({ server_url: "https://rainver.example/", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
     expect((await loadConfig())?.server_url).toBe("https://rainver.example");
   });
 });
@@ -61,6 +61,7 @@ describe("daemon config", () => {
       server_url: "http://localhost:4000",
       host_id: "host-1",
       token: "secret-token",
+      trust: "trusted",
       workspaces: { "folder-1": "/home/user/dev/mapping" },
     });
     const loaded = await loadConfig();
@@ -68,20 +69,21 @@ describe("daemon config", () => {
       server_url: "http://localhost:4000",
       host_id: "host-1",
       token: "secret-token",
+      trust: "trusted",
       workspaces: { "folder-1": "/home/user/dev/mapping" },
     });
     expect(await requireConfig()).toEqual(loaded);
   });
 
   it("writes the config file with owner-only permissions", async () => {
-    await saveConfig({ server_url: "http://localhost:4000", host_id: "host-1", token: "secret-token", workspaces: {} });
+    await saveConfig({ server_url: "http://localhost:4000", host_id: "host-1", token: "secret-token", trust: "trusted", workspaces: {} });
     const { stat } = await import("node:fs/promises");
     const info = await stat(configPath());
     expect(info.mode & 0o777).toBe(0o600);
   });
 
   it("removes only the registration config", async () => {
-    await saveConfig({ server_url: "http://localhost:4000", host_id: "host-1", token: "secret-token", workspaces: {} });
+    await saveConfig({ server_url: "http://localhost:4000", host_id: "host-1", token: "secret-token", trust: "trusted", workspaces: {} });
     await removeConfig();
     expect(await loadConfig()).toBeNull();
   });

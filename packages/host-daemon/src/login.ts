@@ -5,7 +5,7 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
-import { resolveAcpLaunch, substituteCwd } from "./execution.js";
+import { holdAdapter, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 
 /**
@@ -305,6 +305,9 @@ export function openLoginSession(
   delete env.ANTHROPIC_API_KEY;
   delete env.OPENAI_API_KEY;
   const child: ChildProcess = spawn(pty.command, pty.args, { env, cwd: resolved.home, stdio: ["pipe", "pipe", "pipe"] });
+  // Held until this session ends, so a replacement of this copy waits rather
+  // than deleting the directory the login is writing its credential into.
+  const releaseLogin = holdAdapter(frame.adapter_type);
   // A write that lands as the program exits fails asynchronously (EPIPE) on
   // stdin's own 'error' event; unhandled, that would take the daemon down.
   child.stdin?.on("error", () => { /* the exit that follows is the report */ });
@@ -313,6 +316,7 @@ export function openLoginSession(
   const finish = (code: number | null) => {
     if (exited) return;
     exited = true;
+    releaseLogin();
     sessions.delete(frame.session_id);
     send({
       type: "login_exit",

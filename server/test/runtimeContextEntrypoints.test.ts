@@ -12,11 +12,11 @@ const PROVIDER_INVOCATION_EXPORTS = new Set(
   [...providerInvocationSource.matchAll(/export\s+async\s+function\s+(completeProvider\w+)\b/g)]
     .map((match) => match[1]!),
 );
-const cliExecutorName = String.raw`(?:SandboxRunnerCliCommandExecutor)`;
-const agentInvocationExportName = String.raw`(?:executeManagedApiNoToolAdapter|executeVendorCliAdapter|executeRuntimeHost)`;
+const cliExecutorName = String.raw`(?:RemoteWsCliCommandExecutor)`;
+const agentInvocationExportName = String.raw`(?:executeManagedApiNoToolAdapter|executeRemoteHostCliAdapter|executeRuntimeHost)`;
 
 function importsCliTransportConsumer(source: string): boolean {
-  const cliModule = String.raw`[^"']*sandboxRunner/client`;
+  const cliModule = String.raw`[^"']*runs/remoteHostCliAdapter`;
   if (new RegExp(String.raw`import\s*\{[^}]*\b${cliExecutorName}\b[^}]*\}\s*from\s*["']${cliModule}["']`, "s").test(source)) {
     return true;
   }
@@ -170,11 +170,11 @@ function importsProviderInvocation(source: string): boolean {
 function importsAgentInvocation(source: string, relativeFile: string): boolean {
   const namedPatterns = [
     /import\s*\{[^}]*\bexecuteManagedApiNoToolAdapter\b[^}]*\}\s*from\s*["'][^"']*managedApiAdapter(?:\.js)?["']/s,
-    /import\s*\{[^}]*\bexecuteVendorCliAdapter\b[^}]*\}\s*from\s*["'][^"']*vendorCliAdapter(?:\.js)?["']/s,
+    /import\s*\{[^}]*\bexecuteRemoteHostCliAdapter\b[^}]*\}\s*from\s*["'][^"']*remoteHostCliAdapter(?:\.js)?["']/s,
     /import\s*\{[^}]*\bexecuteRuntimeHost\b[^}]*\}\s*from\s*["'][^"']*(?:runtimeHost(?:\/index)?|\.\/service)(?:\.js)?["']/s,
   ];
   if (namedPatterns.some((pattern) => pattern.test(source))) return true;
-  const modulePattern = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?)(?:\.js)?`;
+  const modulePattern = String.raw`[^"']*(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?)(?:\.js)?`;
   if (new RegExp(String.raw`import\s*\*\s*as\s+\w+\s*from\s*["']${modulePattern}["']`).test(source)) return true;
   if (new RegExp(String.raw`(?:import\s*\(|require\s*\()\s*["']${modulePattern}["']\s*\)`).test(source)) return true;
   if (relativeFile.startsWith("runtimeHost/")
@@ -187,14 +187,20 @@ function importsAgentInvocation(source: string, relativeFile: string): boolean {
 function agentInvocationCallsites(source: string, relativeFile: string): string[] {
   const localHelpers = new Map<string, string>();
   const namespaces = new Set<string>();
+  // The CLI invoker is scanned for like every other one. It is classified as a
+  // *renderer* rather than a Gateway invoker — a run handed to a daemon gets no
+  // server-brokered Runtime Context — but leaving it out of this list, as a
+  // first cut did, made the scanner return nothing for the entire CLI path, so
+  // an unregistered CLI callsite anywhere under `server/src/modules` would have
+  // passed the guard below unnoticed.
   const exportedHelpers = [
     "executeManagedApiNoToolAdapter",
-    "executeVendorCliAdapter",
+    "executeRemoteHostCliAdapter",
     "executeRuntimeHost",
   ];
   const helperPattern = exportedHelpers.join("|");
   const isAgentModule = (modulePath: string) =>
-    /(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?$/.test(modulePath);
+    /(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?$/.test(modulePath);
 
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
     if (!isAgentModule(match[2] ?? "")) continue;
@@ -235,7 +241,7 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
 }
 
 function reExportsAgentInvocation(source: string): boolean {
-  const agentModule = String.raw`[^"']*(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?`;
+  const agentModule = String.raw`[^"']*(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?`;
   if (new RegExp(
     String.raw`export\s*\{[^}]*\b${agentInvocationExportName}\b[^}]*\}\s*from\s*["']${agentModule}["']`,
     "s",
@@ -244,7 +250,7 @@ function reExportsAgentInvocation(source: string): boolean {
 
   const importedLocals = new Set<string>();
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
-    if (!new RegExp(`(?:managedApiAdapter|vendorCliAdapter|runtimeHost(?:/index)?|\\./service)(?:\\.js)?$`).test(match[2] ?? "")) continue;
+    if (!new RegExp(`(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:/index)?|\\./service)(?:\\.js)?$`).test(match[2] ?? "")) continue;
     for (const binding of (match[1] ?? "").split(",")) {
       const parsed = /^(\w+)(?:\s+as\s+(\w+))?$/.exec(binding.trim());
       if (parsed && new RegExp(`^${agentInvocationExportName}$`).test(parsed[1]!)) {
@@ -421,7 +427,7 @@ describe("Runtime Context invocation entrypoint inventory", () => {
     expect(discovered).toEqual([
       "runs/managedApiAdapter.ts#executeRuntimeHost:1",
       "runs/orchestrationService.ts#executeManagedApiNoToolAdapter:1",
-      "runs/orchestrationService.ts#executeVendorCliAdapter:1",
+      "runs/orchestrationService.ts#executeRemoteHostCliAdapter:1",
       "runtimeHost/routes.ts#executeRuntimeHost:1",
     ]);
   });
@@ -468,12 +474,12 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   });
 
   it("detects local CLI consumers across supported import syntax", () => {
-    expect(importsCliTransportConsumer('import { SandboxRunnerCliCommandExecutor as Executor } from "../sandboxRunner/client";')).toBe(true);
-    expect(importsCliTransportConsumer('import * as cli from "../sandboxRunner/client";')).toBe(true);
-    expect(importsCliTransportConsumer('const cli = await import("../sandboxRunner/client");')).toBe(true);
-    expect(importsCliTransportConsumer('const cli = require("../sandboxRunner/client");')).toBe(true);
+    expect(importsCliTransportConsumer('import { RemoteWsCliCommandExecutor as Executor } from "../runs/remoteHostCliAdapter";')).toBe(true);
+    expect(importsCliTransportConsumer('import * as cli from "../runs/remoteHostCliAdapter";')).toBe(true);
+    expect(importsCliTransportConsumer('const cli = await import("../runs/remoteHostCliAdapter");')).toBe(true);
+    expect(importsCliTransportConsumer('const cli = require("../runs/remoteHostCliAdapter");')).toBe(true);
     expect(cliRunCommandCallsites(
-      'import { SandboxRunnerCliCommandExecutor } from "../sandboxRunner/client"; await executor.runCommand({});',
+      'import { RemoteWsCliCommandExecutor } from "../runs/remoteHostCliAdapter"; await executor.runCommand({});',
       "newAdapter.ts",
     ))
       .toEqual(["newAdapter.ts#runCommand:1"]);
@@ -481,13 +487,17 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   });
 
   it("registers every concrete Agent delivery renderer", () => {
-    const rendererDefinition = /export\s+async\s+function\s+execute(?:ManagedApiNoTool|VendorCli)Adapter\b/;
+    // `VendorCli` is gone: the CLI renderer is the daemon adapter now.
+    const rendererDefinition = /export\s+async\s+function\s+execute(?:ManagedApiNoTool|RemoteHostCli)Adapter\b/;
     const discovered = tsFiles(modulesRoot)
       .filter((file) => rendererDefinition.test(readFileSync(file, "utf8")))
       .map((file) => relative(modulesRoot, file))
       .sort();
+    // Definitions only. An `entry()` names the file that *defines* a renderer
+    // (`entrypoint === source`); an `invocationCall()` names a call site, and
+    // orchestration calls the CLI renderer without defining one.
     const registered = [...new Set(RUNTIME_INVOCATION_INVENTORY
-      .filter((item) => item.classification === "agent_task_renderer")
+      .filter((item) => item.classification === "agent_task_renderer" && item.entrypoint === item.source)
       .map((item) => item.source))]
       .sort();
     expect(registered).toEqual(discovered);

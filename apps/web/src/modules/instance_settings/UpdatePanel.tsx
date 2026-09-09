@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CircleAlert, Download, Loader2, RefreshCw, Rocket, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { deploymentApi } from '../../api/client'
+import { deploymentApi, hostsApi } from '../../api/client'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
@@ -9,6 +9,7 @@ import { usePeriodicRefresh } from '../../hooks/usePeriodicRefresh'
 import { errMsg } from '../../lib/utils'
 import type {
   DeploymentJob,
+  HostRuntimeChange,
   DeploymentJobDetail,
   DeploymentJobEvent,
   DeploymentStage,
@@ -328,6 +329,51 @@ export function UpdatePanel() {
           )}
         </section>
       )}
+
+      <RuntimeChangeLog />
     </Card>
+  )
+}
+
+/**
+ * What has changed about the runtimes the execution hosts run.
+ *
+ * Beside instance updates because it is the same question asked of a different
+ * moving part: an Agent's copy is upgraded independently of the images, and
+ * "since when has this Agent been on this version" has nowhere else to be
+ * answered. A record only — the host card is where changes are made.
+ */
+function RuntimeChangeLog() {
+  const [changes, setChanges] = useState<HostRuntimeChange[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    hostsApi.runtimeChanges()
+      .then(result => { if (!cancelled) setChanges(result.items) })
+      // An unavailable log must not take the update controls with it.
+      .catch(() => { if (!cancelled) setChanges([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  if (!changes || changes.length === 0) return null
+  return (
+    <section className="mt-4 border-t border-border pt-3">
+      <h3 className="text-sm font-medium">Agent runtimes</h3>
+      <ul className="mt-2 divide-y divide-border">
+        {changes.map(change => (
+          <li key={change.id} className="flex items-center justify-between gap-3 py-1 text-xs">
+            <span>
+              <span className="font-medium">{change.adapter_type}</span>
+              {' on '}{change.host_name}
+              {' — '}{change.action}
+              {change.from_version && change.to_version
+                ? ` ${change.from_version} → ${change.to_version}`
+                : change.to_version ? ` ${change.to_version}` : change.from_version ? ` ${change.from_version}` : ''}
+            </span>
+            <span className="text-muted-foreground">{new Date(change.created_at).toLocaleString()}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

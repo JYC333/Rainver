@@ -201,7 +201,6 @@ Load only the module docs relevant to your task.
 | Proposal / approval system | [modules/proposals.md](modules/proposals.md) |
 | Capability lifecycle | [modules/capability.md](modules/capability.md) |
 | Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
-| Sandbox execution | [modules/sandbox.md](modules/sandbox.md) |
 | Execution hosts (control plane + host daemon), pairing, workspace registration | [modules/hosts.md](modules/hosts.md) |
 | Imported CLI sessions and thread references | [modules/imported-sessions.md](modules/imported-sessions.md) |
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
@@ -307,7 +306,7 @@ Read cross-cutting policies when triggered even if the selected bundle omits the
 | Host daemon / pairing / host transport | `host-daemon`; add `imported-cli-history` for imports or `project-folder-artifact` for folder access |
 | Runtime / agent / run change | `runtime-agent` bundle: `EXECUTION_MODEL.md`, `RUNS_AND_OUTPUTS.md`, `agents.md`, `BOUNDARIES.md` |
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
-| Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `sandbox.md`, `project-files.md` |
+| Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `hosts.md`, `project-files.md` |
 | Dogfooding / product slice | `tasks/deferred-register.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
 | Picking up planned work | `plans/backlog.md` + `tasks/deferred-register.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |

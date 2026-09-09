@@ -11,7 +11,6 @@ import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { UserAvatar } from '../../components/UserAvatar'
 import { cn, errMsg } from '../../lib/utils'
-import { SpaceRuntimePolicyPanel } from '../runtime_tools/SpaceRuntimePolicyPanel'
 import { CustomSourceSpacePolicyPanel } from './CustomSourceSpacePolicyPanel'
 import { ObjectSchemaPanel } from './ObjectSchemaPanel'
 import { promptLibraryPath } from '../prompts/paths'
@@ -208,7 +207,6 @@ export default function SpaceSettingsPage() {
             </div>
           </Card>
 
-          <SpaceRuntimePolicyPanel />
 
           <CustomSourceSpacePolicyPanel />
 

@@ -44,8 +44,11 @@ describe('ProjectConversationBackendCard', () => {
     renderCard()
     expect(await screen.findByText('Review conversation runtime before the first message.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /configure an api provider/i })).toHaveAttribute('href', '/spaces/space-1/providers')
-    expect(screen.getByRole('link', { name: /grant a server cli credential/i })).toHaveAttribute('href', '/cli-profiles')
-    expect(screen.getByRole('link', { name: /pair or sign in on a host cli/i }))
+    // The other destination is the Command Center: a CLI is logged in on an
+    // execution host (ADR 0016), and Rainver brokers no server credential, so
+    // there is no second place to send someone.
+    expect(screen.queryByRole('link', { name: /server cli credential/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /log a cli in on an execution host/i }))
       .toHaveAttribute('href', '/spaces/space-1/command-center')
   })
 

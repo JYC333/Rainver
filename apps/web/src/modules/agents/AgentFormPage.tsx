@@ -3,13 +3,13 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ChevronDown, ChevronRight, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentTemplatesApi, agentsApi, projectsApi, providersApi, runtimeToolsApi, type ModelProviderOut } from '../../api/client'
+import { agentTemplatesApi, agentsApi, hostsApi, projectsApi, providersApi, type ModelProviderOut } from '../../api/client'
 import type {
   AgentTemplateOut,
   AgentTemplateVersionOut,
   CreateAgentFromTemplateBody,
+  HostRuntimeAdapterOption,
   Project,
-  SpaceRuntimeToolPolicyOut,
 } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import ProviderSelector from '../providers/ProviderSelector'
@@ -50,36 +50,6 @@ function Toggle({ checked, onChange, label, note }: { checked: boolean; onChange
   )
 }
 
-function RuntimeVersionSelector({
-  runtime,
-  policies,
-  value,
-  onChange,
-}: {
-  runtime: string
-  policies: SpaceRuntimeToolPolicyOut[]
-  value: string
-  onChange: (value: string) => void
-}) {
-  const policy = policies.find(item => item.runtime === runtime)
-  if (!policy) return null
-  const versions = policy.installed_versions.filter(version => version.installed)
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">CLI runtime version</label>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-      >
-        <option value="">Space default ({policy.default_version ?? 'none'})</option>
-        {versions.map(version => (
-          <option key={version.version} value={version.version}>{version.version}</option>
-        ))}
-      </select>
-    </div>
-  )
-}
 
 function scheduleFromConfig(config: Record<string, unknown> | null | undefined) {
   const cronStr = typeof config?.cron === 'string' ? config.cron : ''
@@ -141,8 +111,7 @@ export default function AgentFormPage() {
   const [modelSelection, setModelSelection] = useState<{ provider_id: string; model: string } | null>(null)
   const [defaultProvider, setDefaultProvider] = useState<ModelProviderOut | null>(null)
   const [runtime, setRuntime] = useState<string>(() => hostSelectionFromQuery(searchParams)?.adapter_type ?? 'model_api')
-  const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
-  const [runtimeToolVersion, setRuntimeToolVersion] = useState<string>('')
+  const [cliAdapters, setCliAdapters] = useState<HostRuntimeAdapterOption[]>([])
   const [scheduleMode, setScheduleMode] = useState<'manual' | 'daily' | 'cron'>('manual')
   const [dailyHour, setDailyHour] = useState('08')
   const [cron, setCron] = useState('0 8 * * *')
@@ -159,11 +128,11 @@ export default function AgentFormPage() {
 
   useEffect(() => {
     Promise.all([
-      runtimeToolsApi.spacePolicies().catch(() => [] as SpaceRuntimeToolPolicyOut[]),
+      hostsApi.listRuntimeAdapters().then(result => result.items).catch(() => [] as HostRuntimeAdapterOption[]),
       providersApi.list().catch(() => [] as ModelProviderOut[]),
     ])
-      .then(([policies, providers]) => {
-        setRuntimePolicies(policies)
+      .then(([adapters, providers]) => {
+        setCliAdapters(adapters)
         const provider = providers.find(p => p.is_default && p.enabled) ?? null
         setDefaultProvider(provider)
         if (provider?.default_model) {
@@ -171,7 +140,7 @@ export default function AgentFormPage() {
         }
       })
       .catch(() => {
-        setRuntimePolicies([])
+        setCliAdapters([])
         setDefaultProvider(null)
       })
   }, [])
@@ -221,28 +190,19 @@ export default function AgentFormPage() {
       .finally(() => setLoading(false))
   }, [templateId])
 
-  const enabledRuntimeSet = new Set(
-    runtimePolicies
-      .filter(policy =>
-        policy.policy_id &&
-        policy.enabled &&
-        policy.installed_versions.some(version => version.installed),
-      )
-      .map(policy => policy.runtime),
-  )
-  const cliRuntimes = runtimePolicies.filter(policy => enabledRuntimeSet.has(policy.runtime))
+  // The catalog of CLI runtimes, which is now a property of the instance's
+  // adapter specs rather than of what the server has installed: a CLI runs on
+  // an execution host, and which copy runs is chosen with the host.
   const runtimeOptions = useMemo(() => {
     const options = [
       { value: 'model_api', label: 'API — call a model provider (no tools)' },
-      ...cliRuntimes.map(c => ({ value: c.runtime, label: `${c.runtime} (tools, filesystem)` })),
+      ...cliAdapters.map(adapter => ({ value: adapter.adapter_type, label: `${adapter.display_name} (tools, filesystem)` })),
     ]
     if (!options.some(option => option.value === runtime)) {
-      // The current runtime may come from a template's default or from a host
-      // adapter choice; the server's own installed-CLI list knows neither.
       options.push({ value: runtime, label: templateId ? `${runtime} (template default)` : `${runtime} (host runtime)` })
     }
     return options
-  }, [cliRuntimes, runtime, templateId])
+  }, [cliAdapters, runtime, templateId])
 
   const isCli = runtime !== 'model_api'
   const isClaudeCli = runtime === 'claude_code'
@@ -290,7 +250,6 @@ export default function AgentFormPage() {
     try {
       const runtimeConfig = {
         adapter_type: runtime,
-        ...(isCli && runtimeToolVersion ? { runtime_tool_version: runtimeToolVersion } : {}),
       }
       const runtimeConfigWithTools = mergeRetrievalToolDomains(runtimeConfig, retrievalToolDomains)
       const common = {
@@ -334,19 +293,15 @@ export default function AgentFormPage() {
   function handleRuntimeChange(next: string) {
     setRuntime(next)
     setHostExecution(null)
-    const policy = runtimePolicies.find(p => p.runtime === next)
-    setRuntimeToolVersion(policy?.default_version ?? '')
   }
 
   function handleHostExecutionChange(next: HostExecutionSelection | null) {
     setHostExecution(next)
     if (next) {
       setRuntime(next.adapter_type)
-      setRuntimeToolVersion('')
       setModelSelection(null)
     } else if (hostExecution) {
       setRuntime('model_api')
-      setRuntimeToolVersion('')
     }
   }
 
@@ -442,14 +397,6 @@ export default function AgentFormPage() {
               projectId={selectedProjectId}
               value={hostExecution}
               onChange={handleHostExecutionChange}
-            />
-          )}
-          {isCli && (
-            <RuntimeVersionSelector
-              runtime={runtime}
-              policies={runtimePolicies}
-              value={runtimeToolVersion}
-              onChange={setRuntimeToolVersion}
             />
           )}
           {showProviderSelector && (

@@ -82,7 +82,7 @@ surface: `GET /internal/runs/:runId/tools`, `GET
 with the `rainver` command (`packages/agent-cli`), which the executing side
 puts in front of it — the host daemon on a paired machine, the server for a
 sandboxed Run — as an absolute path in `RAINVER_CLI`, never on `PATH`
-(ADR 0016 §6). The command is a pass-through (`list`, `describe`, `call`):
+(ADR 0016 §7). The command is a pass-through (`list`, `describe`, `call`):
 action names and input schemas come from the server at run time, so a new
 System Action needs nothing added to it.
 
@@ -135,7 +135,7 @@ only in where the files land: the daemon writes them into the Run's own
 directory under its config root and removes them with the Run
 (`packages/host-daemon/src/execution.ts`); the server writes them into the
 Run's isolated HOME, which the sandbox runner mounts at `/home/sandbox`
-(`runs/sandboxWorkSurface.ts`). Neither writes into the workspace — on the
+(`runs/runWorkSurface.ts`). Neither writes into the workspace — on the
 server host a staged directory there would be collected as an untracked change
 in the Run's own code patch, and on a paired machine the workspace is the
 user's checkout.

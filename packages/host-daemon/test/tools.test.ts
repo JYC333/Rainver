@@ -83,7 +83,11 @@ describe("managed installations", () => {
       { adapter_type: "acp_goose", runtime: null, login: LOGIN },
       { adapter_type: "acp_other", runtime: null, login: null },
     ]);
-    expect(capabilities.installations).toEqual({ acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", logged_in: true, options: null }] });
+    // `rollback_version: null` because this is the first version installed:
+    // there is nothing behind it to undo an upgrade to (ADR 0016 §9).
+    expect(capabilities.installations).toEqual({
+      acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", logged_in: true, options: null, rollback_version: null }],
+    });
     // A managed copy is not a PATH binary; it exists only under its adapter.
     expect(capabilities.runtimes).not.toContain("acp_goose");
     expect(capabilities.installations.acp_other).toBeUndefined();

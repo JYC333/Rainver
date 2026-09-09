@@ -36,7 +36,6 @@ import { ConversationExecutionPreflight } from '../conversation/ConversationExec
 
 type BackendSelection = {
   runtime_profile_id: string
-  credential_profile_id: string | null
 }
 const LIST_PAGE_SIZE = 100
 
@@ -847,22 +846,9 @@ async function loadAllPages<T>(
 }
 
 function selectedBackend(catalog: ConversationBackendCatalog): BackendSelection | null {
-  if (catalog.binding) {
-    return {
-      runtime_profile_id: catalog.binding.runtime_profile_id,
-      credential_profile_id: catalog.binding.credential_profile_id ?? null,
-    }
-  }
+  if (catalog.binding) return { runtime_profile_id: catalog.binding.runtime_profile_id }
   const option = catalog.options.find(candidate => candidate.usable !== false) ?? catalog.options[0]
-  if (!option) return null
-  return {
-    runtime_profile_id: option.runtime_profile_id,
-    credential_profile_id: option.requires_cli_credential
-      ? option.credential_profiles.find(profile => profile.is_default)?.id
-        ?? option.credential_profiles[0]?.id
-        ?? null
-      : null,
-  }
+  return option ? { runtime_profile_id: option.runtime_profile_id } : null
 }
 
 function backendChoices(catalog: ConversationBackendCatalog | undefined) {
@@ -874,40 +860,18 @@ function backendChoices(catalog: ConversationBackendCatalog | undefined) {
     const reasonSuffix = option.usable === false && option.reason
       ? ` — ${option.reason}`
       : ''
-    const disabled = option.usable === false
-    if (!option.requires_cli_credential) {
-      const selection = {
-        runtime_profile_id: option.runtime_profile_id,
-        credential_profile_id: null,
-      }
-      return [{
-        value: backendSelectionValue(selection),
-        label: `${option.model_name ? `${option.name} · ${option.model_name}` : option.name}${statusSuffix}${reasonSuffix}`,
-        disabled,
-      }]
-    }
-    return option.credential_profiles.map(profile => {
-      const selection = {
-        runtime_profile_id: option.runtime_profile_id,
-        credential_profile_id: profile.id,
-      }
-      return {
-        value: backendSelectionValue(selection),
-        label: `${option.name} · ${profile.name}${statusSuffix}${reasonSuffix}`,
-        disabled,
-      }
-    })
+    return [{
+      value: backendSelectionValue({ runtime_profile_id: option.runtime_profile_id }),
+      label: `${option.model_name ? `${option.name} · ${option.model_name}` : option.name}${statusSuffix}${reasonSuffix}`,
+      disabled: option.usable === false,
+    }]
   })
 }
 
 function backendSelectionValue(selection: BackendSelection): string {
-  return `${selection.runtime_profile_id}|${selection.credential_profile_id ?? ''}`
+  return selection.runtime_profile_id
 }
 
 function parseBackendSelection(value: string): BackendSelection {
-  const [runtime_profile_id = '', credential = ''] = value.split('|', 2)
-  return {
-    runtime_profile_id,
-    credential_profile_id: credential || null,
-  }
+  return { runtime_profile_id: value }
 }

@@ -18,7 +18,7 @@ ENV PNPM_HOME=/pnpm \
     PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 RUN corepack enable
 
-# Build toolchain for native modules (node-pty hosts the CLI login PTY).
+# Build toolchain for native modules in the dependency tree.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git python3 make g++ \
     && rm -rf /var/lib/apt/lists/*

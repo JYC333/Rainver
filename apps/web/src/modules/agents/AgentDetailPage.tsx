@@ -3,8 +3,8 @@ import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, hostsApi, runtimeToolsApi } from '../../api/client'
-import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeAdapterOption, Run, Proposal, SpaceRuntimeToolPolicyOut } from '../../types/api'
+import { agentsApi, hostsApi } from '../../api/client'
+import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeAdapterOption, Run, Proposal } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
@@ -428,37 +428,6 @@ function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: 
 
 // ── Model (editable) ──────────────────────────────────────────────────────────
 
-function RuntimeVersionSelector({
-  runtime,
-  policies,
-  value,
-  onChange,
-}: {
-  runtime: string
-  policies: SpaceRuntimeToolPolicyOut[]
-  value: string
-  onChange: (value: string) => void
-}) {
-  const policy = policies.find(item => item.runtime === runtime)
-  if (!policy) return null
-  const versions = policy.installed_versions.filter(version => version.installed)
-  return (
-    <div className="space-y-1.5">
-      <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">CLI runtime version</label>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-      >
-        <option value="">Space default ({policy.default_version ?? 'none'})</option>
-        {versions.map(version => (
-          <option key={version.version} value={version.version}>{version.version}</option>
-        ))}
-      </select>
-    </div>
-  )
-}
-
 function ModelTab({
   agentId,
   version,
@@ -526,14 +495,9 @@ function ModelTab({
     }
     return options
   }, [cliAdapters, adapterType])
-  const isCli = adapterType !== 'model_api'
   const supportsProviderSelection = adapterType === 'model_api' || (adapter !== null && adapter.provider_binding !== false)
   const requireClaudeCompatible = adapter?.provider_api === 'claude_compatible'
   const requireOpenAiCompatible = adapter?.provider_api === 'openai_compatible'
-  const [runtimePolicies, setRuntimePolicies] = useState<SpaceRuntimeToolPolicyOut[]>([])
-  const [runtimeToolVersion, setRuntimeToolVersion] = useState(
-    typeof runtimeConfig.runtime_tool_version === 'string' ? runtimeConfig.runtime_tool_version : '',
-  )
   const [retrievalToolDomains, setRetrievalToolDomains] = useState<RetrievalToolDomainState>(() =>
     readRetrievalToolDomains(runtimeConfig),
   )
@@ -560,23 +524,8 @@ function ModelTab({
     )
     setEnabled(selectedProfile?.enabled ?? true)
     setIsDefault(selectedProfile?.is_default ?? profiles.length === 0)
-    setRuntimeToolVersion(
-      typeof cfg.runtime_tool_version === 'string' ? cfg.runtime_tool_version : '',
-    )
     setRetrievalToolDomains(readRetrievalToolDomains(cfg))
   }, [selectedProfile?.id, version.id])
-
-  useEffect(() => {
-    if (!isCli) {
-      setRuntimePolicies([])
-      return
-    }
-    runtimeToolsApi.spacePolicies()
-      .then(setRuntimePolicies)
-      .catch(() => {
-        setRuntimePolicies([])
-      })
-  }, [adapterType, isCli])
 
   function changeProviderSelection(next: { provider_id: string; model: string } | null) {
     setProviderSelection(next)
@@ -588,10 +537,13 @@ function ModelTab({
     setSaving(true)
     try {
       const selectedModel = providerSelection?.model || model.trim()
+      // Neither key is written any more: a CLI Agent names an execution host
+      // and a copy on it, so a server credential profile and a server-installed
+      // version have nothing to select. Removed here as well as omitted so a
+      // profile authored by an older release stops carrying them forward.
       let nextRuntimeConfig: Record<string, unknown> = { ...runtimeConfig, adapter_type: adapterType }
       delete nextRuntimeConfig.credential_profile_id
-      if (isCli && runtimeToolVersion) nextRuntimeConfig.runtime_tool_version = runtimeToolVersion
-      else delete nextRuntimeConfig.runtime_tool_version
+      delete nextRuntimeConfig.runtime_tool_version
       nextRuntimeConfig = mergeRetrievalToolDomains(nextRuntimeConfig, retrievalToolDomains)
       const body = {
         name: name.trim() || 'Default',
@@ -618,7 +570,6 @@ function ModelTab({
     setProviderSelection(null)
     setEnabled(true)
     setIsDefault(profiles.length === 0)
-    setRuntimeToolVersion('')
     setRetrievalToolDomains({ memory: false, project_public_summary: false, source: false })
   }
 
@@ -683,14 +634,6 @@ function ModelTab({
           requireClaudeCompatible={requireClaudeCompatible}
           requireOpenAiCompatible={requireOpenAiCompatible}
           emptyLabel={adapter ? `${adapter.display_name} default` : 'Agent/space default provider'}
-        />
-      )}
-      {isCli && (
-        <RuntimeVersionSelector
-          runtime={adapterType}
-          policies={runtimePolicies}
-          value={runtimeToolVersion}
-          onChange={setRuntimeToolVersion}
         />
       )}
       <div className="space-y-1.5">

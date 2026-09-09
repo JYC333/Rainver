@@ -18,7 +18,7 @@
 │     artifact review, diff approval UI               │
 ├─────────────────────────────────────────────────────┤
 │  10. Runtime Adapter / Sandbox Layer                 │
-│     RuntimeAdapterSpec, GenericCliRuntimeAdapter     │
+│     RuntimeAdapterSpec, the host daemon CLI adapter     │
 │     typed Delivery, worktree/sandbox governance     │
 │     server/src/modules/runtimeContext + runs         │
 ├─────────────────────────────────────────────────────┤
@@ -80,14 +80,15 @@
 - **Run is the central execution object** — every agent invocation creates a Run; Run produces Activities, Artifacts, and Proposals; Session is conversation-level, Run is execution-level
 - **Proposal gate** — memory and code changes require explicit proposal approval before durable mutation
 - **Runtime-agnostic core** — Agent is a product-level actor; Runtime Adapter (capability, model_api, claude_code, codex_cli, opencode, ...) is a replaceable execution backend; Model Provider (Anthropic, OpenAI, MiniMax, an OpenAI-compatible endpoint, ...) is the underlying LLM, its vendor identity and capabilities recorded in the server's vendor registry. These three are distinct. Tool-using / filesystem Claude work goes through the `claude_code` CLI RuntimeAdapterSpec. Per ADR 0008 the governing invariant is **credential channel isolation** — an Anthropic API key must never enter a Claude Code CLI subprocess env; server-owned encrypted Provider task and `model_api` channels resolve the key in process (never via ambient CLI env) and pass it to the managed chat adapter as a parameter, and may serve any provider including Anthropic. Agent-facing model calls require Runtime Context Delivery rather than a public Provider Chat bypass.
-- **Sandbox enforcement** — file-access local CLI runtimes (`claude_code`, `codex_cli`) always run sandboxed (never `none`/`dry_run`). The working-directory scope is resolved from Project Folder binding + risk: no Folder bound → `ephemeral` (a system-provisioned throwaway run-scope dir, server-owned); Folder bound → `risk_level=high` → `worktree` (detached git worktree, diff → `code_patch` proposal). The agent never works directly in the real Project Folder. See `modules/sandbox.md`.
+- **Execution isolation** — every CLI Run uses a host daemon: strict bubblewrap isolation on the built-in host, native execution on a paired trusted host. The daemon resolves a Location or managed workspace and can modify it directly; diffs are uploaded for review. The server does not provision a CLI worktree or subprocess fallback. See `modules/hosts.md`.
 - **Runtime Context Gateway** — the sole typed acquisition, model-aware planning,
   ordered Delivery, live reauthorization, safe Invocation Snapshot, and
-  continuity boundary for managed and CLI invocations
+  continuity boundary for in-process invocations. Host CLI invocations receive
+  their prompt and work surface and retain vendor-session continuity
 - **Invocation Snapshot** — immutable safe record of one actual Delivery attempt;
   stores refs, hashes, budget and acknowledgement metadata, never raw context
-- **Run Exchange** — runtime-neutral typed input/output manifests for declared
-  file outputs; it is not a context transport
+- **Run outputs** — host daemons upload diffs and declared output files; the
+  server materializes artifacts and applies the canonical proposal rules
 - **MemoryProvider** — abstract interface for memory backends; `LocalMemoryProvider` is the only enabled provider in MVP
 - **Module registry** — `server/src/gateway/routeRegistry.ts` (backend) and `apps/web/src/modules/registry.ts` (frontend) are the single sources of truth for which features are active; see [ADR 0006](decisions/0006-plugin-module-architecture.md)
 - **Client-server protocol** — REST (current) + WebSocket events + SSE streaming (planned)

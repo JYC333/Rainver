@@ -38,7 +38,6 @@ vi.mock('../../../api/client', () => ({
   },
   spaceEgressApi: { updateNotifications: vi.fn() },
 }))
-vi.mock('../../runtime_tools/SpaceRuntimePolicyPanel', () => ({ SpaceRuntimePolicyPanel: () => null }))
 vi.mock('../CustomSourceSpacePolicyPanel', () => ({ CustomSourceSpacePolicyPanel: () => null }))
 vi.mock('../ObjectSchemaPanel', () => ({ ObjectSchemaPanel: () => null }))
 

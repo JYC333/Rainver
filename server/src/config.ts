@@ -37,14 +37,9 @@ export interface ServerConfig {
   notificationMaxPayloadBytes: number;
   /** PostgreSQL connection string for server-owned reads/commands. */
   databaseUrl: string | null;
-  /** Instance root used for provider key material and CLI credential profiles. */
+  /** Instance root used for provider key material and instance-owned state. */
   rainverHome: string;
-  /** Instance-owned runtime CLI installation root. */
-  cliToolsRoot: string;
-  /** Dedicated scoped Sandbox Runner endpoint. File-capable CLIs fail closed when unavailable. */
-  sandboxRunnerHost: string;
-  sandboxRunnerPort: number;
-  /** Compose-network hostname advertised to isolated Runner namespaces. */
+  /** This server's own in-network hostname, as the built-in execution host and the provider proxy reach it. */
   sandboxRunnerServerHost: string;
   /**
    * Fixed listen port for the provider proxy. `0` keeps the historical
@@ -52,6 +47,8 @@ export interface ServerConfig {
    * a paired execution host needs a published, therefore fixed, port.
    */
   providerProxyPort: number;
+  /** Runs the built-in execution host executes at once; see `BUILTIN_HOST_MAX_CONCURRENT_RUNS`. */
+  builtinHostMaxConcurrentRuns: number;
   /**
    * Base URL a *remote* execution host should use to reach the provider proxy,
    * when that differs from the in-network one. Unset means remote runs cannot
@@ -156,10 +153,8 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_NOTIFICATION_MAX_PAYLOAD_BYTES",
   "SERVER_DATABASE_URL",
   "RAINVER_HOME",
-  "RUNTIME_TOOLS_ROOT",
-  "SANDBOX_RUNNER_HOST",
-  "SANDBOX_RUNNER_PORT",
   "SANDBOX_RUNNER_SERVER_HOST",
+  "BUILTIN_HOST_MAX_CONCURRENT_RUNS",
   "WORKSPACE_ROOT",
   "SANDBOX_ROOT",
   "ARTIFACT_STORAGE_ROOT",
@@ -434,20 +429,6 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   const rawDatabaseUrl = env.SERVER_DATABASE_URL?.trim();
   const databaseUrl = rawDatabaseUrl ? validateDatabaseUrl(rawDatabaseUrl) : null;
   const rainverHome = resolve(env.RAINVER_HOME?.trim() || "/rainver");
-  const cliToolsRoot = resolve(
-    env.RUNTIME_TOOLS_ROOT?.trim() || resolve(rainverHome, "runtime-tools"),
-  );
-  const sandboxRunnerHost = env.SANDBOX_RUNNER_HOST?.trim() || "sandbox-runner";
-  if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerHost)) {
-    throw new ConfigError("SANDBOX_RUNNER_HOST must be a hostname", "invalid_sandbox_runner_host");
-  }
-  const sandboxRunnerPort = parseBoundedInt(
-    env.SANDBOX_RUNNER_PORT,
-    8020,
-    "SANDBOX_RUNNER_PORT",
-    1,
-    65_535,
-  );
   const sandboxRunnerServerHost = env.SANDBOX_RUNNER_SERVER_HOST?.trim() || "server";
   if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerServerHost)) {
     throw new ConfigError("SANDBOX_RUNNER_SERVER_HOST must be a hostname", "invalid_sandbox_runner_server_host");
@@ -458,6 +439,17 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     "PROVIDER_PROXY_PORT",
     0,
     65_535,
+  );
+  // The built-in execution host's capacity. bubblewrap has no cgroups, so the
+  // only levers are this cap and the `sandbox-runner` container's own
+  // `cpus`/`mem_limit`; both are sized per machine, not per Run. Replaces the
+  // never-implemented `MAX_CONCURRENT_DOCKER_RUNS`, whose default it keeps.
+  const builtinHostMaxConcurrentRuns = parseBoundedInt(
+    env.BUILTIN_HOST_MAX_CONCURRENT_RUNS,
+    3,
+    "BUILTIN_HOST_MAX_CONCURRENT_RUNS",
+    1,
+    64,
   );
   const rawProviderProxyExternalBaseUrl = env.PROVIDER_PROXY_EXTERNAL_BASE_URL?.trim();
   const providerProxyExternalBaseUrl = rawProviderProxyExternalBaseUrl
@@ -698,11 +690,9 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     notificationMaxPayloadBytes,
     databaseUrl,
     rainverHome,
-    cliToolsRoot,
-    sandboxRunnerHost,
-    sandboxRunnerPort,
     sandboxRunnerServerHost,
     providerProxyPort,
+    builtinHostMaxConcurrentRuns,
     providerProxyExternalBaseUrl,
     workspaceRoot,
     sandboxRoot,
@@ -773,7 +763,6 @@ export function describeConfig(config: ServerConfig): string {
     `notificationWebhookAllowlistCount=${config.notificationWebhookAllowlist.length}`,
     `notificationMaxPayloadBytes=${config.notificationMaxPayloadBytes}`,
     `rainverHome=${config.rainverHome}`,
-    `cliToolsRoot=${config.cliToolsRoot}`,
     `workspaceRoot=${config.workspaceRoot}`,
     `sandboxRoot=${config.sandboxRoot}`,
     `artifactStorageRoot=${config.artifactStorageRoot}`,

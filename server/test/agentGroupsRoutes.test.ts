@@ -357,7 +357,6 @@ describe("agent group routes", () => {
           project_folder_id: "workspace-2",
           project_id: "project-2",
           model_provider_id: "provider-2",
-          credential_profile_id: "credential-1",
         },
       },
     );

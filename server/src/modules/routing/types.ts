@@ -55,7 +55,6 @@ export interface RouteCandidate {
   runtime_installation?: string | null;
   model_provider_id: string | null;
   model_name: string | null;
-  credential_profile_id: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
   enabled: boolean;
@@ -85,8 +84,6 @@ export interface RouteCandidate {
   supports_dry_run: boolean;
   baseline_trust_level: RouteTrustLevel;
   effective_trust_level: RouteTrustLevel;
-  conformance_status?: "passed" | "failed" | "partial" | null;
-  conformance_suite_version?: string | null;
   subagent_disable_mechanism: "not_applicable" | "runtime_config" | "unsupported" | "unknown";
   estimated_cost_usd: number | null;
   estimated_latency_ms: number | null;

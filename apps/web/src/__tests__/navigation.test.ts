@@ -101,7 +101,7 @@ describe('spacePath / stripSpacePrefix', () => {
     expect(spacePath('team-1', '/home')).toBe('/home')
     expect(spacePath('team-1', '/settings')).toBe('/settings')
     expect(spacePath('team-1', '/instance-settings')).toBe('/instance-settings')
-    expect(spacePath('team-1', '/cli-profiles')).toBe('/cli-profiles')
+    expect(spacePath('team-1', '/instance-settings')).toBe('/instance-settings')
     expect(spacePath('team-1', '/evolution')).toBe('/evolution')
     expect(spacePath('team-1', '/spaces/other/today')).toBe('/spaces/other/today')
     expect(spacePath(null, '/proposals')).toBe('/proposals')

@@ -26,8 +26,6 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
   provider_type: string | null;
   provider_credential_type: string | null;
   model_name: string | null;
-  credential_profile_id: string | null;
-  credential_profile_owner_id: string | null;
   provider_is_default: boolean | null;
   enabled: boolean;
   is_default: boolean;
@@ -37,8 +35,6 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
   estimated_cost_usd: number | string | null;
   estimated_latency_ms: number | string | null;
   historical_verification_pass_rate: number | string | null;
-  conformance_status: "passed" | "failed" | "partial" | null;
-  conformance_suite_version: string | null;
 }
 
 interface ConversationBindingSnapshot extends ProviderEligibilityRow {
@@ -47,15 +43,6 @@ interface ConversationBindingSnapshot extends ProviderEligibilityRow {
   model_provider_id: string | null;
   runtime_config_json: unknown;
   runtime_policy_json: unknown;
-  conformance_status: "passed" | "failed" | "partial" | null;
-  conformance_suite_version: string | null;
-}
-
-interface CliCredentialAvailability {
-  availableProfiles(
-    spaceId: string,
-    userId: string,
-  ): Promise<Record<string, unknown>[]>;
 }
 
 export class RouteSelectionError extends Error {
@@ -69,19 +56,16 @@ export class PgRouteDecisionRepository {
   constructor(
     private readonly db: Queryable,
     private readonly selector = new DeterministicRouteSelector(),
-    private readonly cliCredentials: CliCredentialAvailability | null = null,
   ) {}
 
   async routeRun(run: RunRecord): Promise<RunRecord> {
     if (run.run_type === "system" || run.run_type === "validation") return run;
     const hints = routeHintsForRun(run);
     const requiredCapabilities = await runtimeRequiredCapabilities(run.capabilities_json);
-    const requestedCredentialProfileId = conversationCredentialProfileId(run.model_override_json);
     const rawCandidates = await this.listCandidates(
       run.space_id,
       run.agent_id,
       run.owner_user_id ?? null,
-      requestedCredentialProfileId,
     );
     const override = record(run.model_override_json);
     const workspaceAccess = workspaceAccessFromOverride(override.workspace_access);
@@ -131,8 +115,6 @@ export class PgRouteDecisionRepository {
                   binding.model_provider_id_snapshot AS model_provider_id,
                   binding.runtime_config_snapshot_json AS runtime_config_json,
                   binding.runtime_policy_snapshot_json AS runtime_policy_json,
-                  conformance.status AS conformance_status,
-                  conformance.suite_version AS conformance_suite_version,
                   provider.provider_type,
                   provider.enabled AS provider_enabled,
                   provider_grant.enabled AS provider_grant_enabled,
@@ -154,9 +136,6 @@ export class PgRouteDecisionRepository {
               AND thread.agent_id = binding.agent_id
               AND thread.container_kind = 'conversation'
               AND thread.status IN ('active', 'session_reset')
-             LEFT JOIN runtime_conformance_results conformance
-               ON conformance.runtime_adapter_type = thread.adapter_type
-              AND conformance.runtime_version = COALESCE(binding.runtime_config_snapshot_json->>'runtime_tool_version', '')
             WHERE binding.space_id = $1
               AND binding.session_id = $2
               AND binding.agent_id = $3
@@ -253,8 +232,6 @@ export class PgRouteDecisionRepository {
             model_provider_id: item.candidate.model_provider_id,
             baseline_trust_level: item.candidate.baseline_trust_level,
             effective_trust_level: item.candidate.effective_trust_level,
-            conformance_status: item.candidate.conformance_status ?? null,
-            conformance_suite_version: item.candidate.conformance_suite_version ?? null,
             score: item.score,
             score_trace: item.score_trace,
           }))),
@@ -264,8 +241,6 @@ export class PgRouteDecisionRepository {
               ...item,
               baseline_trust_level: candidate?.baseline_trust_level ?? null,
               effective_trust_level: candidate?.effective_trust_level ?? null,
-              conformance_status: candidate?.conformance_status ?? null,
-              conformance_suite_version: candidate?.conformance_suite_version ?? null,
             };
           })),
           JSON.stringify(decision.fallback_chain),
@@ -345,13 +320,14 @@ export class PgRouteDecisionRepository {
           workspace_location_id: selectedWorkspaceLocationId,
           workspace_mode: selectedWorkspaceMode,
           runtime_installation: selectedRuntimeInstallation,
-          credential_profile_id: selected.credential_profile_id,
-          runtime_config_json: {
-            ...selected.runtime_config_json,
-            ...(selected.credential_profile_id
-              ? { credential_profile_id: selected.credential_profile_id }
-              : {}),
-          },
+          // Also inside the adapter config, because that is what a Run's
+          // `adapter_config` is built from — the execution-control snapshot,
+          // the CLI continuity fingerprint and the usage record all read the
+          // copy from there. The retired `credential_profile_id` was merged
+          // in exactly here, and nothing replaced the merge when it went.
+          runtime_config_json: selectedRuntimeInstallation
+            ? { ...selected.runtime_config_json, runtime_installation: selectedRuntimeInstallation }
+            : selected.runtime_config_json,
           runtime_policy_json: selected.runtime_policy_json,
           ...(override.workspace ? { workspace: override.workspace } : {}),
           ...(workspaceAccess !== null ? { workspace_access: workspaceAccess } : {}),
@@ -423,7 +399,6 @@ export class PgRouteDecisionRepository {
              arp.id AS runtime_profile_id, arp.name AS profile_name,
               arp.adapter_type, arp.model_provider_id, arp.model_name,
               arp.execution_host_id, arp.workspace_location_id, arp.workspace_mode, arp.runtime_installation,
-              cp.id AS credential_profile_id, cp.owner_user_id AS credential_profile_owner_id,
               mp.provider_type,
               mp.enabled AS provider_enabled,
               mpg.enabled AS provider_grant_enabled,
@@ -444,9 +419,7 @@ export class PgRouteDecisionRepository {
                 ELSE '[]'::jsonb
               END AS capabilities_json,
               history.estimated_cost_usd,
-              history.estimated_latency_ms, history.historical_verification_pass_rate,
-              conformance.status AS conformance_status,
-              conformance.suite_version AS conformance_suite_version
+              history.estimated_latency_ms, history.historical_verification_pass_rate
          FROM agent_runtime_profiles arp
          JOIN agents a
            ON a.id = arp.agent_id AND a.space_id = arp.space_id
@@ -460,66 +433,15 @@ export class PgRouteDecisionRepository {
           AND mpg.space_id = arp.space_id
          LEFT JOIN credentials provider_credential
            ON provider_credential.id = mp.credential_id
-         LEFT JOIN LATERAL (
-           SELECT profile.id, profile.owner_user_id
-             FROM cli_credential_space_grants grant_row
-             JOIN cli_credential_profiles profile
-               ON profile.id = grant_row.profile_id
-              AND profile.owner_user_id = grant_row.owner_user_id
-            WHERE grant_row.space_id = $1
-              AND grant_row.owner_user_id = $3
-              AND grant_row.enabled = true
-              AND profile.owner_user_id = $3
-              AND profile.runtime = arp.adapter_type
-              AND ($4::text IS NULL OR profile.id = $4)
-            ORDER BY (profile.id = $4) DESC,
-                     grant_row.is_default DESC,
-                     profile.created_at ASC,
-                     profile.id ASC
-            LIMIT 1
-         ) cp ON true
          LEFT JOIN history ON history.adapter_type = arp.adapter_type
-         LEFT JOIN runtime_conformance_results conformance
-           ON conformance.runtime_adapter_type = arp.adapter_type
-          AND conformance.runtime_version = COALESCE(arp.runtime_config_json->>'runtime_tool_version', '')
         WHERE arp.space_id = $1 AND arp.agent_id = $2
         ORDER BY CASE WHEN a.agent_kind = 'system_assistant'
                       THEN COALESCE(mpg.is_default, false)
                       ELSE false END DESC,
                  arp.is_default DESC, arp.created_at ASC, arp.id ASC`,
-      [spaceId, agentId, ownerUserId, requestedCredentialProfileId],
+      [spaceId, agentId],
     );
-    const hasCliCandidates = result.rows.some((row) =>
-      isLocalCliRuntimeAdapter(row.adapter_type) && !isHostBoundRuntime(row));
-    let loggedInCredentialIds: Set<string> | null = null;
-    if (hasCliCandidates) {
-      if (!ownerUserId || !this.cliCredentials) {
-        throw new RouteSelectionError(
-          "route_cli_eligibility_unavailable",
-          "CLI routing requires the Run owner's live credential eligibility",
-        );
-      }
-      const available = await this.cliCredentials.availableProfiles(spaceId, ownerUserId);
-      loggedInCredentialIds = new Set(
-        available
-          .filter((profile) => profile.logged_in === true)
-          .map((profile) => profile.id)
-          .filter((id): id is string => typeof id === "string"),
-      );
-    }
-    const candidates = result.rows.map((row) =>
-      candidateFromRow(
-        row,
-        ownerUserId,
-        isHostBoundRuntime(row) ||
-          !isLocalCliRuntimeAdapter(row.adapter_type) ||
-          Boolean(row.credential_profile_id && loggedInCredentialIds?.has(row.credential_profile_id)),
-      ));
-    return requestedCredentialProfileId
-      ? candidates.filter(
-          (candidate) => candidate.credential_profile_id === requestedCredentialProfileId,
-        )
-      : candidates;
+    return result.rows.map((row) => candidateFromRow(row, ownerUserId));
   }
 
   async getDecision(spaceId: string, runId: string) {
@@ -619,7 +541,6 @@ export function routeHintsForRun(
 function candidateFromRow(
   row: RuntimeCandidateRow,
   userId: string | null,
-  cliCredentialLoggedIn = true,
 ): RouteCandidate {
   const spec = getRuntimeAdapterSpec(row.adapter_type);
   const hostBound = isHostBoundRuntime(row);
@@ -630,17 +551,15 @@ function candidateFromRow(
   const isDefault = row.agent_kind === "system_assistant"
     ? effectiveProviderDefault(row.provider_is_default, row.is_default)
     : row.is_default;
+  // A host-bound profile carries its own login on the host; a CLI profile
+  // that names no host has nowhere to run at all (ADR 0016), and everything
+  // else needs an eligible ModelProvider.
   const credentialAvailable = hostBound
     ? true
     : spec?.credentials.credential_mode === "none"
     ? true
     : isLocalCliRuntimeAdapter(row.adapter_type)
-      ? spec?.credentials.credential_mode === "cli_profile_or_model_provider"
-        ? Boolean(
-            (cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id) ||
-            providerAvailable,
-          )
-        : Boolean(cliCredentialLoggedIn && row.credential_profile_id && row.credential_profile_owner_id)
+      ? false
       : providerAvailable;
   return {
     runtime_profile_id: row.runtime_profile_id,
@@ -653,7 +572,6 @@ function candidateFromRow(
     runtime_installation: row.runtime_installation,
     model_provider_id: row.model_provider_id,
     model_name: row.model_name,
-    credential_profile_id: row.credential_profile_id,
     runtime_config_json: runtimeConfig,
     runtime_policy_json: runtimePolicy,
     enabled: row.enabled && spec?.implementation_status === "implemented",
@@ -669,9 +587,7 @@ function candidateFromRow(
     supports_live: runtimeConfig.supports_live !== false,
     supports_dry_run: runtimeConfig.supports_dry_run !== false,
     baseline_trust_level: trustLevel(spec?.baseline_trust_level),
-    effective_trust_level: effectiveTrustLevel(spec, row.conformance_status),
-    conformance_status: row.conformance_status,
-    conformance_suite_version: row.conformance_suite_version,
+    effective_trust_level: effectiveTrustLevel(spec),
     subagent_disable_mechanism: spec?.subagent_disable_mechanism ?? "unknown",
     estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
     estimated_latency_ms: numberOrNull(row.estimated_latency_ms),
@@ -702,21 +618,11 @@ function applyConversationSnapshot(
     tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
     supports_live: runtimeConfig.supports_live !== false,
     supports_dry_run: runtimeConfig.supports_dry_run !== false,
-    effective_trust_level: effectiveTrustLevel(spec, snapshot.conformance_status),
-    conformance_status: snapshot.conformance_status,
-    conformance_suite_version: snapshot.conformance_suite_version,
+    effective_trust_level: effectiveTrustLevel(spec),
   };
 }
 
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
-function conversationCredentialProfileId(value: unknown): string | null {
-  const backend = record(record(value).conversation_backend);
-  const credentialProfileId = backend.credential_profile_id;
-  return typeof credentialProfileId === "string" && credentialProfileId.trim()
-    ? credentialProfileId
-    : null;
-}
-
 function workspaceAccessFromOverride(
   value: unknown,
 ): Array<{ workspace_location_id: string; access_mode: "read" | "write" }> | null {
@@ -772,14 +678,19 @@ function routeSandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "
   return sandboxLevel(value);
 }
 function trustLevel(value: unknown): "low" | "medium" | "high" { return value === "medium" || value === "high" ? value : "low"; }
+/**
+ * A CLI's trust is what its own spec declares, capped by what it can control.
+ *
+ * It used to be raised to `medium` by a passing conformance suite. With the
+ * suite gone the declaration is the whole answer: a runtime that cannot say it
+ * can stop its own delegation stays `low`, which is what its
+ * `subagent_disable_mechanism` was always asserting on its own.
+ */
 function effectiveTrustLevel(
   spec: ReturnType<typeof getRuntimeAdapterSpec>,
-  conformanceStatus: RuntimeCandidateRow["conformance_status"],
 ): "low" | "medium" | "high" {
   const baseline = trustLevel(spec?.baseline_trust_level);
   if (!spec || !isLocalCliRuntimeAdapter(spec.adapter_type)) return baseline;
-  return conformanceStatus === "passed" && spec.subagent_disable_mechanism === "runtime_config"
-    ? "medium"
-    : "low";
+  return spec.subagent_disable_mechanism === "runtime_config" ? "medium" : "low";
 }
 function riskLevel(value: unknown): "low" | "medium" | "high" | "critical" { return value === "medium" || value === "high" || value === "critical" ? value : "low"; }

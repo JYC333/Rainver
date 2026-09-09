@@ -91,6 +91,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.report",
   "task.handoff",
   "task.advance_stage",
+  "task.complete",
   "task.request_review",
   // A plan with structure, not only flat Tasks. Proposal-gated, so it widens
   // nothing that skips approval; without it "make me a plan" could only
@@ -132,6 +133,7 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.report",
   "task.handoff",
   "task.advance_stage",
+  "task.complete",
   "task.request_review",
   "inquiry.list_threads",
   "research.list_operations",

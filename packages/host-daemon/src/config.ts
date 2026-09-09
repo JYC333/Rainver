@@ -9,14 +9,58 @@ import { dirname, join } from "node:path";
  * path is ever written down — the control plane never sees it (ADR 0016 B64,
  * D3: `display_path` sent to the server is informational only).
  */
+/**
+ * How much of this machine a Run is allowed to see.
+ *
+ * `trusted` is a paired personal machine: native spawn, no namespace, the
+ * trust the owner already extends to their own laptop (ADR 0016 §2).
+ * `strict` is the built-in host inside `sandbox-runner`: the same daemon,
+ * serving every Space of the instance, with each Run wrapped in its own
+ * bubblewrap namespace — which is what makes a shared, multi-user execution
+ * host safe at all. The mode is chosen by how this daemon registered, never
+ * per Run, and is written into this file with the credential it registered
+ * with; a config that predates the field is a paired host.
+ */
+export type HostTrustMode = "trusted" | "strict";
+
 export interface DaemonConfig {
   server_url: string;
   host_id: string;
   token: string;
+  trust: HostTrustMode;
   workspaces: Record<string, string>;
 }
 
 const CONFIG_DIR_ENV = "RAINVER_HOST_CONFIG_DIR";
+
+/**
+ * Where the control plane leaves this instance's built-in-host credential.
+ *
+ * The server writes it into a mount both containers share; the daemon reads
+ * it and adopts it. There is no pairing code for the built-in host — it is not
+ * a machine someone pairs, it is the instance's own execution host, and it
+ * must come up on a fresh instance without anyone typing anything.
+ */
+const BUILTIN_CREDENTIAL_ENV = "RAINVER_BUILTIN_HOST_CREDENTIAL";
+
+/**
+ * The instance's own workspace root, as this container mounts it.
+ *
+ * Only the built-in host has one: its Locations are created by the control
+ * plane under a root both containers share, so a launch can name one by a path
+ * relative to it. A paired machine has no such root — its Locations are
+ * directories its owner registered, and their paths live only in this file.
+ */
+export function workspacesRoot(): string | null {
+  const configured = process.env.RAINVER_HOST_WORKSPACES_ROOT?.trim();
+  return configured ? configured : null;
+}
+
+/** Set only inside the `sandbox-runner` container; absent on a paired machine. */
+export function builtinCredentialPath(): string | null {
+  const configured = process.env[BUILTIN_CREDENTIAL_ENV]?.trim();
+  return configured ? configured : null;
+}
 
 /**
  * The control-plane base URL as every API and WebSocket path is appended to
@@ -62,6 +106,9 @@ export async function loadConfig(): Promise<DaemonConfig | null> {
       server_url: normalizeServerUrl(parsed.server_url),
       host_id: parsed.host_id,
       token: parsed.token,
+      // A config written before strict mode existed is a paired machine —
+      // the only thing this daemon could have been then.
+      trust: parsed.trust === "strict" ? "strict" : "trusted",
       workspaces: parsed.workspaces ?? {},
     };
   } catch (error) {

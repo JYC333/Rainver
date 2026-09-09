@@ -5,14 +5,12 @@ import { seedSpaceDefaults } from "../src/modules/spaces/spaceSeeds.js";
 
 describe("spaceAssistantService", () => {
   describe("managed Assistant backend setup targets", () => {
-    it("does not advertise CLI credentials when no CLI runtime can be provisioned", () => {
-      expect(setupTargetsForMissingBackend({ cliAdapters: [] })).toEqual(["model_providers"]);
-    });
-
-    it("advertises CLI credentials when a supported runtime is provisionable", () => {
-      expect(setupTargetsForMissingBackend({
-        cliAdapters: [{ adapterType: "codex_cli", version: "1.0.0" }],
-      })).toEqual(["model_providers", "cli_credentials"]);
+    // Both destinations are always real work now: a Space with no backend can
+    // either add a ModelProvider or log a CLI in on an execution host. The
+    // second used to be conditional on the server having a CLI installed,
+    // which is no longer a thing that can be true (ADR 0016).
+    it("names both places a missing backend can be configured", () => {
+      expect(setupTargetsForMissingBackend()).toEqual(["model_providers", "execution_hosts"]);
     });
   });
 });

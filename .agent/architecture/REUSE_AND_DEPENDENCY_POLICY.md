@@ -189,7 +189,7 @@ what is installed.
 | Route registration | `ServerModule` + route registry | `server/src/gateway/routeRegistry.ts` |
 | Route helpers (pool access, identity, pagination, parsing, errors) | `routeUtils` support package | `server/src/modules/routeUtils/` |
 | Request/response validation and shared DTOs | `zod` | `packages/protocol/src/`, module schemas |
-| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**; the dependency-free `sandbox/runner.mjs` is the one hand-written mapping and is pinned by `server/test/sandboxRunnerClient.test.ts` | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
+| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**. There is no exception left: the dependency-free Runner that held the one hand-written mapping is deleted, and every host speaks this wire | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
 | Migration artifacts | `drizzle-kit` generate appended to the committed chain | `server/migrations/`, `pnpm run schema:generate -- --name <name>` |
@@ -213,7 +213,6 @@ what is installed.
 | XML parsing | `fast-xml-parser` | `server/src/modules/sources/` |
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |
 | YAML | `yaml` | catalog/manifest readers |
-| PTY | `node-pty` — confined to the CLI login engine | `server/src/modules/providers/cli/loginEngine.ts` |
 | Date/time | **no library by design** — native `Date`/`Intl`, `timestamptz` in Postgres, timezone-aware helpers in the owning module. Exception: cron next-run computation, which needs real calendar/DST arithmetic and uses `cron-parser` (see the row above) — everything else (storing, comparing, formatting an instant) stays native. | `server/src/modules/automations/schedule.ts` |
 
 ### Runtime / execution-host mechanisms

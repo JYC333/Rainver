@@ -1,7 +1,6 @@
 import {
 	index,
 	unique,
-	uniqueIndex,
 	check,
 	foreignKey,
 	pgTable,
@@ -14,7 +13,7 @@ import {
 	type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agents, cliCredentialProfiles } from "./agents.js";
+import { agents } from "./agents.js";
 import { users } from "./auth.js";
 import { modelProviders } from "./providers.js";
 import { projects } from "./projects.js";
@@ -219,37 +218,4 @@ export const tokenUsageEvents = pgTable("token_usage_events", {
 	check("ck_token_usage_events_source_resource", sql`(source_resource_type IS NULL) = (source_resource_id IS NULL)`),
 	check("ck_token_usage_events_private_owner", sql`visibility <> 'private' OR owner_user_id IS NOT NULL`),
 	check("ck_token_usage_events_nonnegative_counts", sql`input_tokens >= 0 AND output_tokens >= 0 AND cache_creation_input_tokens >= 0 AND cache_creation_1h_input_tokens >= 0 AND cache_creation_1h_input_tokens <= cache_creation_input_tokens AND cache_read_input_tokens >= 0 AND reasoning_tokens >= 0 AND request_count >= 0 AND (total_tokens IS NULL OR total_tokens >= 0)`),
-]);
-
-export const cliUsageImportCursors = pgTable("cli_usage_import_cursors", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	instanceId: varchar("instance_id", { length: 36 }).notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	userId: varchar("user_id", { length: 36 }),
-	runtime: varchar({ length: 64 }).notNull(),
-	credentialProfileId: varchar("credential_profile_id", { length: 36 }),
-	sourceFingerprint: varchar("source_fingerprint", { length: 256 }).notNull(),
-	cursorJson: jsonb("cursor_json").default({}).notNull(),
-	lastScannedAt: timestamp("last_scanned_at", { withTimezone: true, mode: "string" }).notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	uniqueIndex("uq_cli_usage_import_cursors_scope").using("btree", table.instanceId.asc().nullsLast(), table.spaceId.asc().nullsLast(), sql`COALESCE(user_id, '__none__'::character varying)`, table.runtime.asc().nullsLast(), sql`COALESCE(credential_profile_id, '__none__'::character varying)`, table.sourceFingerprint.asc().nullsLast()),
-	index("ix_cli_usage_import_cursors_space_runtime").using("btree", table.spaceId.asc().nullsLast(), table.runtime.asc().nullsLast()),
-	index("ix_cli_usage_import_cursors_credential_profile").using("btree", table.credentialProfileId.asc().nullsLast()),
-	foreignKey({
-		columns: [table.spaceId],
-		foreignColumns: [spaces.id],
-		name: "cli_usage_import_cursors_space_id_fkey",
-	}).onDelete("cascade"),
-	foreignKey({
-		columns: [table.userId],
-		foreignColumns: [users.id],
-		name: "cli_usage_import_cursors_user_id_fkey",
-	}).onDelete("set null"),
-	foreignKey({
-		columns: [table.credentialProfileId],
-		foreignColumns: [cliCredentialProfiles.id],
-		name: "cli_usage_import_cursors_credential_profile_id_fkey",
-	}).onDelete("set null"),
 ]);

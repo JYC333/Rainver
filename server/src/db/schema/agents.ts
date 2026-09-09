@@ -2,9 +2,8 @@ import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, 
 import { sql } from "drizzle-orm";
 import { activityRecords } from "./activity.js";
 import { users } from "./auth.js";
-import { runs } from "./runs.js";
 import { spaces } from "./spaces.js";
-import { modelProviders, networkProfiles } from "./providers.js";
+import { modelProviders } from "./providers.js";
 import { proposals } from "./proposals.js";
 import { projects } from "./projects.js";
 import { hosts } from "./hosts.js";
@@ -238,100 +237,4 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 		AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL)
 		AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)
 	`),
-]);
-
-export const cliCredentialProfiles = pgTable("cli_credential_profiles", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
-	runtime: varchar({ length: 64 }).notNull(),
-	name: varchar({ length: 128 }).notNull(),
-	sourcePath: text("source_path").notNull(),
-	targetPath: text("target_path").notNull(),
-	readonly: boolean().notNull(),
-	notes: text().notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_cli_credential_profiles_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
-	index("ix_cli_credential_profiles_runtime").using("btree", table.runtime.asc().nullsLast()),
-	foreignKey({
-		columns: [table.ownerUserId],
-		foreignColumns: [users.id],
-		name: "cli_credential_profiles_owner_user_id_fkey"
-	}).onDelete("cascade"),
-	unique("uq_cli_credential_profiles_id_owner").on(table.id, table.ownerUserId),
-	unique("uq_cli_credential_profiles_owner_runtime_name").on(table.name, table.ownerUserId, table.runtime),
-]);
-
-export const cliCredentialEvents = pgTable("cli_credential_events", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	runId: varchar("run_id", { length: 36 }),
-	runtimeAdapterType: varchar("runtime_adapter_type", { length: 64 }),
-	credentialProfileId: varchar("credential_profile_id", { length: 128 }),
-	credentialSource: varchar("credential_source", { length: 32 }).notNull(),
-	triggerOrigin: varchar("trigger_origin", { length: 64 }),
-	fallbackUsed: boolean("fallback_used").notNull(),
-	fallbackReason: varchar("fallback_reason", { length: 128 }),
-	brokerError: boolean("broker_error").notNull(),
-	cleanupStatus: varchar("cleanup_status", { length: 32 }).notNull(),
-	action: varchar({ length: 64 }).notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_cli_credential_events_run_id").using("btree", table.runId.asc().nullsLast()),
-	index("ix_cli_credential_events_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	foreignKey({
-			columns: [table.runId],
-			foreignColumns: [runs.id],
-			name: "cli_credential_events_run_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "cli_credential_events_space_id_fkey"
-		}),
-	check("ck_cli_credential_events_credential_source", sql`(credential_source)::text = ANY (ARRAY[('profile'::character varying)::text, ('container_default'::character varying)::text, ('none'::character varying)::text])`),
-]);
-
-export const cliCredentialSpaceGrants = pgTable("cli_credential_space_grants", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	profileId: varchar("profile_id", { length: 36 }).notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
-	grantedByUserId: varchar("granted_by_user_id", { length: 36 }),
-	enabled: boolean().notNull(),
-	isDefault: boolean("is_default").notNull(),
-	networkProfileId: varchar("network_profile_id", { length: 36 }),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_cli_credential_space_grants_network_profile_id").using("btree", table.networkProfileId.asc().nullsLast()),
-	index("ix_cli_credential_space_grants_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
-	index("ix_cli_credential_space_grants_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	foreignKey({
-			columns: [table.grantedByUserId],
-			foreignColumns: [users.id],
-			name: "cli_credential_space_grants_granted_by_user_id_fkey"
-		}).onDelete("set null"),
-	foreignKey({
-			columns: [table.networkProfileId],
-			foreignColumns: [networkProfiles.id],
-			name: "cli_credential_space_grants_network_profile_id_fkey"
-		}).onDelete("set null"),
-	foreignKey({
-			columns: [table.ownerUserId],
-			foreignColumns: [users.id],
-			name: "cli_credential_space_grants_owner_user_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.profileId],
-			foreignColumns: [cliCredentialProfiles.id],
-			name: "cli_credential_space_grants_profile_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "cli_credential_space_grants_space_id_fkey"
-		}).onDelete("cascade"),
-	unique("uq_cli_credential_space_grants_profile_space").on(table.profileId, table.spaceId),
 ]);

@@ -12,7 +12,7 @@ import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 export interface ExecutionControlSnapshotInputs {
-  cliCredentialProfileId?: string | null;
+  runtimeInstallation?: string | null;
   policyDecisionRecordIds?: readonly string[];
   /** A remote run's provider is resolved at execution, not predicted here. */
   executesRemotely?: boolean;
@@ -171,10 +171,13 @@ export class ExecutionControlSnapshotRepository {
             allowed_provider_ids: [],
             },
       tool_grant_refs: refsFromRecords(permissionSnapshot.tool_grants, "tool_grant", "action_id"),
+      // A provider-backed run names the channel its key came from. A CLI run
+      // on a host names the copy whose own login it used; Rainver holds no
+      // credential for it to reference (ADR 0016 §7).
       credential_channel_ref: providerId
         ? { type: "provider_credential_channel", id: providerId }
-        : inputs.cliCredentialProfileId
-          ? { type: "cli_credential_profile", id: inputs.cliCredentialProfileId }
+        : inputs.runtimeInstallation
+          ? { type: "host_runtime_installation", id: inputs.runtimeInstallation }
           : null,
       sandbox_profile_ref: run.required_sandbox_level
         ? { type: "sandbox_profile", id: run.required_sandbox_level }

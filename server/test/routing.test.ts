@@ -10,7 +10,6 @@ function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
     adapter_type: "model_api",
     model_provider_id: "provider-1",
     model_name: "model-1",
-    credential_profile_id: null,
     runtime_config_json: {},
     runtime_policy_json: {},
     enabled: true,
@@ -138,7 +137,6 @@ describe("deterministic route selector", () => {
           minimum_sandbox_level: "worktree",
           supports_workspace: true,
           effective_trust_level: "low",
-          conformance_status: "passed",
         }),
       ]);
       expect(result.selected?.candidate.runtime_profile_id).toBe("managed");
@@ -162,7 +160,6 @@ describe("deterministic route selector", () => {
           minimum_sandbox_level: "worktree",
           supports_workspace: true,
           effective_trust_level: "low",
-          conformance_status: "passed",
         }),
       ]);
       expect(result.selected?.candidate.runtime_profile_id).toBe("open");
@@ -192,40 +189,10 @@ describe("deterministic route selector", () => {
         requires_file_access: true,
         minimum_sandbox_level: "worktree",
         supports_workspace: true,
-        conformance_status: "passed",
       }),
     ]);
     expect(result.selected?.candidate.runtime_profile_id).toBe("future");
     expect(result.rejected).toEqual([]);
-  });
-
-  it("requires conformance evidence from any file-access CLI on file work, not only OpenCode", () => {
-    // The name-based form asked this of OpenCode alone, so a Claude Code or
-    // Codex profile could take low-risk file work with no C3 evidence at all
-    // (the risk-based conformance filter above only covers non-low risk).
-    const result = new DeterministicRouteSelector().select({
-      required_sandbox_level: "none",
-      execution_mode: "live",
-      risk_level: "low",
-      workspace_available: true,
-      hints: mergeRouteHints([{ source: "contract", value: { execution_shape: "agentic_files" } }]),
-    }, [
-      candidate({
-        runtime_profile_id: "claude",
-        adapter_type: "claude_code", requires_file_access: true,
-        minimum_sandbox_level: "worktree",
-        supports_workspace: true,
-        effective_trust_level: "low",
-        conformance_status: null,
-      }),
-    ]);
-    expect(result.selected).toBeNull();
-    expect(result.rejected).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        runtime_profile_id: "claude",
-        reasons: expect.arrayContaining(["runtime_conformance_required_for_execution_shape"]),
-      }),
-    ]));
   });
 
   it("rejects every no-file-access adapter from file work, not only Managed API", () => {
@@ -246,7 +213,7 @@ describe("deterministic route selector", () => {
     }
   });
 
-  it("rejects nonconformant OpenCode and tool-free fallback for file work", () => {
+  it("rejects a tool-free, file-less adapter from file work, and now admits the CLI", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",
@@ -263,18 +230,17 @@ describe("deterministic route selector", () => {
         minimum_sandbox_level: "worktree",
         supports_workspace: true,
         effective_trust_level: "low",
-        conformance_status: "partial",
       }),
     ]);
-    expect(result.selected).toBeNull();
+    // The CLI is selected now. It used to be rejected for having no passing
+    // conformance suite, which was the gate removed on 2026-09-09: a one-shot
+    // behaviour probe, cached against a version key and blind to the model,
+    // was not evidence to refuse work on.
+    expect(result.selected?.candidate.runtime_profile_id).toBe("open");
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({
         runtime_profile_id: "managed",
         reasons: expect.arrayContaining(["required_tool_missing", "execution_shape_incompatible"]),
-      }),
-      expect.objectContaining({
-        runtime_profile_id: "open",
-        reasons: expect.arrayContaining(["runtime_conformance_required_for_execution_shape"]),
       }),
     ]));
   });
@@ -353,41 +319,6 @@ describe("deterministic route selector", () => {
     ]));
   });
 
-  it("requires conformance evidence before any local CLI can serve non-low-risk work", () => {
-    const result = new DeterministicRouteSelector().select({
-      required_sandbox_level: "worktree",
-      execution_mode: "live",
-      risk_level: "medium",
-      workspace_available: true,
-    }, [candidate({
-      adapter_type: "opencode", requires_file_access: true,
-      minimum_sandbox_level: "worktree",
-      supports_workspace: true,
-      baseline_trust_level: "low",
-      effective_trust_level: "low",
-      subagent_disable_mechanism: "runtime_config",
-      conformance_status: null,
-    })]);
-    expect(result.selected).toBeNull();
-    expect(result.rejected[0]?.reasons).toContain("runtime_conformance_required");
-
-    const passed = new DeterministicRouteSelector().select({
-      required_sandbox_level: "worktree",
-      execution_mode: "live",
-      risk_level: "medium",
-      workspace_available: true,
-    }, [candidate({
-      adapter_type: "opencode", requires_file_access: true,
-      minimum_sandbox_level: "worktree",
-      supports_workspace: true,
-      baseline_trust_level: "low",
-      effective_trust_level: "medium",
-      subagent_disable_mechanism: "runtime_config",
-      conformance_status: "passed",
-    })]);
-    expect(passed.selected?.candidate.adapter_type).toBe("opencode");
-  });
-
   it("allows a low/medium-risk file-access CLI without a persistent workspace", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
@@ -417,7 +348,6 @@ describe("deterministic route selector", () => {
       supports_workspace: true,
       baseline_trust_level: "high",
       effective_trust_level: "high",
-      conformance_status: "passed",
     })]);
     expect(result.selected).toBeNull();
     expect(result.rejected[0]?.reasons).toContain("workspace_or_file_access_unavailable");

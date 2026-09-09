@@ -18,12 +18,13 @@ export interface AutonomousAdmissionPolicy {
 
 export interface AutonomousQuotaSnapshot {
   runtime: string;
-  credential_profile_id: string;
+  /** The host and copy the number was read from, or "unavailable" when it could not be. */
+  execution_host_id: string;
+  installation: string;
   available: boolean;
   /** Consumed capacity, expressed as 0..100. */
   utilization_pct: number | null;
   checked_at: string | null;
-  source: "live_probe" | "run_piggyback";
 }
 
 export interface AutonomousAdmissionTrace {

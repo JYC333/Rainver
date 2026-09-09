@@ -1,6 +1,6 @@
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { agentRuntimeProfiles, agents, cliCredentialProfiles } from "./agents.js";
+import { agentRuntimeProfiles, agents } from "./agents.js";
 import { users } from "./auth.js";
 import { spaces } from "./spaces.js";
 import { projectFolders } from "./projectFolders.js";
@@ -97,7 +97,6 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	boundByUserId: varchar("bound_by_user_id", { length: 36 }).notNull(),
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
 	runtimeProfileId: varchar("runtime_profile_id", { length: 36 }).notNull(),
-	credentialProfileId: varchar("credential_profile_id", { length: 36 }),
 	modelNameSnapshot: varchar("model_name_snapshot", { length: 255 }),
 	modelProviderIdSnapshot: varchar("model_provider_id_snapshot", { length: 36 }),
 	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
@@ -112,7 +111,6 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_session_conversation_backends_space_id").on(table.spaceId),
 	index("ix_session_conversation_backends_runtime_profile_id").on(table.runtimeProfileId),
-	index("ix_session_conversation_backends_credential_profile_id").on(table.credentialProfileId),
 	unique("uq_session_conversation_backends_session_agent").on(table.sessionId, table.agentId),
 	unique("uq_session_conversation_backends_runtime_state_key").on(table.runtimeStateKey),
 	foreignKey({
@@ -135,11 +133,6 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 		foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId],
 		name: "session_conversation_backends_runtime_scope_fkey",
 	}).onDelete("cascade"),
-	foreignKey({
-		columns: [table.credentialProfileId, table.boundByUserId],
-		foreignColumns: [cliCredentialProfiles.id, cliCredentialProfiles.ownerUserId],
-		name: "session_conversation_backends_credential_owner_fkey",
-	}),
 ]);
 
 export const messages = pgTable("messages", {

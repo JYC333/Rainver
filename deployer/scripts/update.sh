@@ -43,6 +43,30 @@ case "$STAGE" in
     pull)
         echo "[update] pulling ${UPDATED_SERVICES[*]}..."
         "${COMPOSE[@]}" pull "${UPDATED_SERVICES[@]}"
+        # Asked here rather than at `migrate`, because this is the last moment
+        # nothing has moved: the new image is on disk and its migration chain
+        # can be read, but no Run has been drained and no service recreated.
+        # A migration marked maintenance removes something the *running*
+        # release still reads, so a UI update cannot apply it (ADR 0016 §10); the operator runs the offline command instead.
+        echo "[update] checking for a migration that needs an offline upgrade..."
+        pending="$("${COMPOSE[@]}" run --rm -T --no-deps \
+            -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
+            server node dist/db/migrateCli.js maintenance-pending)" && status=0 || status=$?
+        if [[ "${status:-0}" -eq 10 ]]; then
+            echo "[update] this release cannot be installed from the UI:" >&2
+            echo "$pending" | sed 's/^/[update]   /' >&2
+            echo "[update] it removes something the running version still reads." >&2
+            echo "[update] run on the server: ./ops/scripts/start.sh --$MODE --maintenance" >&2
+            exit 1
+        elif [[ "${status:-0}" -ne 0 ]]; then
+            # Same rule as migrate.sh: a gate that could not be asked is not
+            # clearance. Refusing here — before anything has been drained or
+            # recreated — is what makes this the cheapest place to stop.
+            echo "[update] could not determine whether this release needs an offline upgrade" >&2
+            echo "[update] (migration runner exited ${status:-0}); stopping before anything moves." >&2
+            echo "$pending" | sed 's/^/[update]   /' >&2
+            exit 1
+        fi
         ;;
     migrate)
         # migrate.sh takes the required pre-migration dump and refuses to

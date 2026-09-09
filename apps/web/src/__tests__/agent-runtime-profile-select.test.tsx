@@ -28,9 +28,6 @@ vi.mock('../api/client', () => ({
     list: vi.fn(async () => ({ items: [] })),
     listRuntimeAdapters: listRuntimeAdaptersMock,
   },
-  runtimeToolsApi: {
-    spacePolicies: vi.fn(async () => []),
-  },
   providersApi: {
     list: vi.fn(async () => []),
   },

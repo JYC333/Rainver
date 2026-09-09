@@ -58,7 +58,7 @@ Current ownership aliases to avoid migration-drift mistakes:
 
 - `catalog` owns catalog-backed `/capabilities*` and `/server/catalog*` surfaces;
   there is no standalone `capabilities` route module.
-- `providers` owns provider credentials and the `/credentials/cli*` broker/audit
+- `providers` owns provider credentials and managed-subscription OAuth; no CLI credential is brokered (ADR 0016)
   surfaces; there is no standalone `credentials` route module.
 - `frontendSupport` owns `/home/summary` and `/me/{summary,timeline,pending}`;
   there are no standalone `home` or `me` route modules.
@@ -70,7 +70,7 @@ The exact active route-module list is intentionally not duplicated here.
 of truth, and [`MODULES.md`](MODULES.md) records the current human-readable
 module inventory and route ownership.
 `runtimeAdapters` is a first-class code-only domain consumed by `runs`,
-`runtimeHost`, and `runtimeTools`.
+`runtimeHost`, and `hosts`.
 
 ## Deferred Boundaries
 

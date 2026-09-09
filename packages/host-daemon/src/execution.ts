@@ -1,10 +1,13 @@
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostLaunchFrame, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { configDir, requireConfig } from "./config.js";
+import { fileURLToPath } from "node:url";
+import { configDir, requireConfig, workspacesRoot } from "./config.js";
+import { buildStrictNamespaceCommand, type StrictBind } from "./strictNamespace.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
@@ -12,12 +15,40 @@ import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, material
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
+import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
 
 export interface LaunchWorkspace {
   kind: "location" | "managed";
   workspace_location_id?: string;
+  /** Set only for a built-in-host Location; see the wire contract for why that is the one case. */
+  workspace_relative_path?: string;
   agent_id?: string;
   container?: ManagedWorkspaceContainer;
+}
+
+/**
+ * A Location's directory on this machine.
+ *
+ * A registered path from this daemon's own config first: that is how a paired
+ * host resolves every Location, and it is the only place such a path is ever
+ * written down. Failing that, a path the control plane named relative to the
+ * instance workspace root — which exists only on the built-in host, whose
+ * Locations the control plane created there and which never runs
+ * `workspace add`. Refused if it escapes that root; the daemon does not take a
+ * path from a frame, it takes a name and resolves it.
+ */
+export function resolveLocationCwd(
+  workspaces: Record<string, string>,
+  locationId: string | undefined,
+  relativePath: string | undefined,
+  root: string | null,
+): string | null {
+  const registered = locationId ? workspaces[locationId] : undefined;
+  if (registered) return registered;
+  if (!relativePath || !root) return null;
+  const target = resolve(root, relativePath);
+  if (target !== resolve(root) && !target.startsWith(resolve(root) + sep)) return null;
+  return target;
 }
 
 /**
@@ -41,8 +72,36 @@ interface ActiveRun {
   launchId: string;
   /** What the control plane wrote where a value only this machine knows belongs. */
   placeholders: Record<string, string>;
+  /** Which runtime this run is executing, so an upgrade of that copy can drain it. */
+  adapterType: string | null;
   timedOut: boolean;
+  /** Whether something asked this run to stop, as opposed to it stopping on its own. */
+  terminationRequested: boolean;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * What a `complete` frame says went wrong, when anything did.
+ *
+ * A strict run reports on fd 3 the moment its namespace is built, so a run
+ * that never reported is a namespace that never came up — and saying so is
+ * the only way to tell that apart from a runtime that exited immediately,
+ * which produces the same exit code. But a run killed before that chunk was
+ * read never reported either, and blaming its namespace would be a plain
+ * misattribution: a cancel and a timeout are both something that happened
+ * *to* a working run.
+ */
+export function launchFailureMessage(input: {
+  namespaceReady: boolean;
+  timedOut: boolean;
+  terminationRequested: boolean;
+  exitCode: number;
+  stderrTail: string;
+}): string | null {
+  if (!input.namespaceReady && !input.timedOut && !input.terminationRequested) {
+    return `This run's isolation namespace failed to start.${input.stderrTail ? ` ${input.stderrTail}` : ""}`;
+  }
+  return input.exitCode !== 0 && !input.timedOut ? (input.stderrTail || null) : null;
 }
 
 /**
@@ -172,11 +231,117 @@ export function hasInFlightRuns(): boolean {
   return activeRuns.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0;
 }
 
+/**
+ * Adapters whose copy is being replaced right now.
+ *
+ * Draining is only half of it: a drain that reports "quiet" and then spends a
+ * minute downloading is a window in which a new dispatch starts against the
+ * copy about to be deleted. So the replacement holds this for its whole
+ * duration and every launch of that adapter is refused while it does — a
+ * refusal the control plane can retry, rather than a binary pulled out from
+ * under a running session.
+ */
+const replacingAdapters = new Set<string>();
+
+/** Whether a launch of this adapter must be refused because its copy is being replaced. */
+export function adapterIsBeingReplaced(adapterType: string | null | undefined): boolean {
+  return typeof adapterType === "string" && replacingAdapters.has(adapterType);
+}
+
+/**
+ * Work that runs a copy without being a Run: a verification recipe, a C3
+ * probe, a usage probe, an open login terminal.
+ *
+ * They are in neither run registry, so a drain that only counted Runs reported
+ * "quiet" and then deleted the directory one of them was executing from. The
+ * closed door alone is not enough either — it only orders *replacement before
+ * work*, and this is the other order. Counted per adapter because that is what
+ * a replacement holds.
+ */
+const adapterHolders = new Map<string, number>();
+
+/**
+ * Marks one copy as in use until the returned function is called, so a
+ * replacement waits for it. Used directly by work with no single call to wrap
+ * — an open login terminal, which ends on its own child's exit.
+ */
+export function holdAdapter(adapterType: string): () => void {
+  adapterHolders.set(adapterType, (adapterHolders.get(adapterType) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (adapterHolders.get(adapterType) ?? 1) - 1;
+    if (remaining > 0) adapterHolders.set(adapterType, remaining);
+    else adapterHolders.delete(adapterType);
+  };
+}
+
+/**
+ * Marks one copy as in use for the duration of `work`, so a replacement waits
+ * for it. Returns `work`'s result; the count is released even if it throws.
+ */
+export async function holdingAdapter<T>(adapterType: string | null | undefined, work: () => Promise<T>): Promise<T> {
+  if (typeof adapterType !== "string") return work();
+  const release = holdAdapter(adapterType);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Holds one adapter closed, drains its Runs, and runs `replace` with nothing
+ * able to start against it.
+ *
+ * Nothing is killed: a drain that does not converge abandons the replacement,
+ * which loses an upgrade rather than someone's work. `launchingRuns` counts as
+ * busy across all adapters — a dispatch whose child is not registered yet is a
+ * Run about to use some copy, and which one is not known until it is.
+ * Work that is not a Run — verification recipes, usage probes,
+ * an open login terminal — registers through `holdingAdapter`, so it is drained
+ * for as well as refused afterwards.
+ */
+export async function withAdapterDrained<T>(
+  adapterType: string,
+  timeoutMs: number,
+  replace: () => Promise<T>,
+): Promise<T> {
+  if (replacingAdapters.has(adapterType)) {
+    throw new Error(`Another change to ${adapterType} is already in progress on this host`);
+  }
+  replacingAdapters.add(adapterType);
+  try {
+    const deadline = Date.now() + timeoutMs;
+    const busy = () => launchingRuns.size > 0
+      || (adapterHolders.get(adapterType) ?? 0) > 0
+      || [...activeRuns.values()].some((run) => run.adapterType === adapterType);
+    while (busy()) {
+      if (Date.now() >= deadline) {
+        throw new Error(`Runs are still using ${adapterType}; try again once they finish`);
+      }
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 500);
+        timer.unref?.();
+      });
+    }
+    return await replace();
+  } finally {
+    replacingAdapters.delete(adapterType);
+  }
+}
+
 /** A revoked host must stop every trusted-host process, including its process group, immediately. */
 export function stopAllRunsForRevocation(log: (line: string) => void = () => {}): void {
   registrationRevoked = true;
   for (const [runId, active] of activeRuns) {
     log(`run ${runId}: terminating because this host was revoked`);
+    // Like every other deliberate stop: without it, a strict run killed here
+    // before its namespace reported would be blamed on the namespace. Not
+    // reachable today — a strict daemon re-adopts its credential instead of
+    // being revoked — which is exactly why it should be right before it is.
+    active.terminationRequested = true;
     terminateWithEscalation(active.child, true, log);
   }
 }
@@ -208,8 +373,21 @@ function runOutputsDir(runId: string): string {
  * the run — including a work surface carrying its tool token.
  */
 function runDir(runId: string): string {
+  // The Runner this replaces resolved every mount id below a managed root and
+  // refused one that escaped it. The daemon addresses paths directly, so the
+  // equivalent guard is here: a run id is one path segment, and `join` would
+  // otherwise turn `../..` into a real parent directory that `resolve()` then
+  // considers perfectly normal — and in strict mode that directory becomes a
+  // read-write bind carrying this daemon's own registration.
+  if (!RUN_ID_SEGMENT.test(runId)) throw new Error(`run id is not a usable directory name: ${runId}`);
   return join(configDir(), "runs", runId);
 }
+
+/** Same shape `sandbox/runner.mjs` validated its run and scope ids against. */
+const RUN_ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+
+/** Exported for the containment test; not part of this package's public API. */
+export const runDirForTests = runDir;
 
 /**
  * Writes the run's work surface and returns the environment it contributes.
@@ -218,7 +396,7 @@ function runDir(runId: string): string {
  * on this machine, and the command ships with this daemon so the two versions
  * cannot disagree. It is passed by absolute path rather than installed onto
  * `PATH` — the daemon puts nothing into the machine's global tool space
- * (ADR 0016 §6).
+ * (ADR 0016 §7).
  */
 async function materializeWorkSurface(
   surface: WorkSurfaceFrame,
@@ -246,7 +424,7 @@ async function materializeWorkSurface(
  * `$RAINVER_CLI list` fail with `EACCES` on any host running the daemon from a
  * checkout, and fail on Windows regardless. A generated launcher settles both:
  * it runs under the same Node that runs this daemon, needs nothing on `PATH`
- * (ADR 0016 §6), and is removed with the run.
+ * (ADR 0016 §7), and is removed with the run.
  */
 async function writeCliLauncher(root: string): Promise<string> {
   const cli = rainverCliPath();
@@ -361,6 +539,212 @@ function loginHomeFor(adapterType: string, installation: string): string | null 
 }
 
 /**
+ * What a strict namespace applies when the dispatch stated no policy.
+ *
+ * Fail-closed on both axes: a read-only workspace and no network at all. The
+ * Runner this replaces refused a launch whose egress profile did not match the
+ * channels it actually carried, so a request that named no channel could not
+ * obtain a network; the daemon has no typed channels to cross-check against,
+ * so the equivalent is to give an unpolicied Run nothing. A Run that needs
+ * either says so, and a control plane that forgets to says nothing — which
+ * must fail visibly rather than quietly hand a shared host the container's
+ * network.
+ */
+const DEFAULT_STRICT_ISOLATION = { sandbox_mode: "read_only", egress_profile: "none" } as const;
+
+/**
+ * The host's egress proxy, once per daemon.
+ *
+ * Held here rather than passed down every call: it is a listening socket the
+ * whole daemon shares, and a Run's launch needs only the environment that
+ * points at it. Absent on a paired host — a trusted machine's Runs use the
+ * machine's own network, which is the trust its owner already extends (ADR
+ * 0016 §2).
+ */
+let egressProxy: EgressProxyHandle | null = null;
+/** This daemon's own control plane, which no Run should ever reach through the proxy. */
+let controlPlaneUrl: string | null = null;
+
+export function setEgressProxy(handle: EgressProxyHandle | null, serverUrl: string | null = null): void {
+  egressProxy = handle;
+  controlPlaneUrl = serverUrl;
+}
+
+/** What a Run reached, and what it was refused; empty when this host runs no proxy. */
+export function runEgressLog(runId: string) {
+  return egressProxy?.log(runId) ?? [];
+}
+
+/**
+ * Registers this Run's egress policy and returns the environment that points
+ * it at the proxy.
+ *
+ * `none` gets nothing: its namespace is unshared, so there is no proxy to
+ * reach and no policy to register. A host with no proxy — every paired
+ * machine — also gets nothing, and the Run uses the machine's own network.
+ */
+function grantRunEgress(
+  runId: string,
+  profile: EgressProfile,
+  /**
+   * Everything the control plane is handing this Run that could name one of
+   * its own addresses: the environment, and the config files a provider
+   * binding writes — which is where two of the three CLI adapters receive
+   * their lease URL.
+   */
+  sources: readonly string[],
+): Record<string, string> {
+  if (!egressProxy || profile === "none") return {};
+  const grant = egressProxy.grant(runId, profile);
+  const bypass = proxyBypassHosts([...sources, ...(controlPlaneUrl ? [controlPlaneUrl] : [])]);
+  return egressProxyEnv(egressProxy.address, grant.token, bypass);
+}
+
+/**
+ * The directory tree this daemon and everything it launches live in.
+ *
+ * A strict namespace starts from an empty root, so the ACP adapter this daemon
+ * spawns through `node` — and the `rainver` command it points a Run at — have
+ * to be bound in explicitly. Resolving the *install* root rather than this
+ * package's own directory is what makes it work under pnpm: the adapter and
+ * `@rainver/agent-cli` are siblings under the same `node_modules`, not files
+ * inside this package.
+ */
+export function daemonRuntimeRoot(moduleUrl: string = import.meta.url): string {
+  const dir = dirname(fileURLToPath(moduleUrl));
+  const segments = dir.split(sep);
+  // `.../<install root>/node_modules/@rainver/host-daemon/dist` → the install
+  // root. The *first* `node_modules`, because a nested one is inside it.
+  const index = segments.indexOf("node_modules");
+  if (index > 0) return segments.slice(0, index).join(sep) || sep;
+  // Otherwise this daemon runs from a directory layout — the container puts it
+  // at `/app/packages/host-daemon/dist` with dependency trees at both
+  // `/app/packages/host-daemon/node_modules` and `/app/node_modules`. The
+  // highest ancestor that has one is the root that contains them all; stopping
+  // at the package's own parent would leave the ACP adapter and the `rainver`
+  // command outside the namespace.
+  let root = resolve(dir, "..");
+  for (let candidate = root; candidate !== dirname(candidate); candidate = dirname(candidate)) {
+    if (existsSync(join(candidate, "node_modules"))) root = candidate;
+  }
+  return root;
+}
+
+/**
+ * Everything besides the workspace and HOME that a strict Run must be able to
+ * see. Anything absent from this list is absent from the namespace.
+ */
+export function strictBindsForRun(input: {
+  runDir: string;
+  profileDir: string | null;
+  loginHome: string | null;
+  toolTree: string | null;
+  runtimeRoot: string;
+}): StrictBind[] {
+  const binds: StrictBind[] = [
+    // Its outputs, its work surface, and the `rainver` launcher written there.
+    { path: input.runDir, access: "read_write" },
+    // The adapter this daemon spawns and the CLI it hands the Run.
+    { path: input.runtimeRoot, access: "read_only" },
+  ];
+  // The Agent's own sessions and vendor memory (B68) — read-write, because
+  // that is where this runtime keeps the conversation the next turn resumes.
+  if (input.profileDir) binds.push({ path: input.profileDir, access: "read_write" });
+  // The profile links the credential file out of the login home, and a symlink
+  // whose target is outside the namespace resolves to nothing inside it.
+  //
+  // Read-only, and it stays read-only even though a runtime may want to
+  // refresh its own token through that link: on a shared host this is the
+  // instance's single subscription login, and a Run that could rewrite it
+  // could point every other member's Runs at an account of its own choosing.
+  // A refresh that fails surfaces as the runtime's login prompt, which an
+  // instance admin answers through the host card — outside any namespace.
+  if (input.loginHome) binds.push({ path: input.loginHome, access: "read_only" });
+  // A managed copy's `home/` sits inside its tree, so the tree covers it.
+  if (input.toolTree) binds.push({ path: input.toolTree, access: "read_only" });
+  return binds;
+}
+
+/**
+ * Everything a strict launch decides, as one value.
+ *
+ * Extracted rather than written inline in `launchRun` because this is where a
+ * shared host's isolation is actually determined — which environment the agent
+ * process receives, which HOME it writes into, and what is bound — and none of
+ * that is reachable by a test that has to spawn `bwrap` to observe it.
+ */
+export interface StrictLaunch {
+  command: string;
+  args: string[];
+  home: string;
+  env: Record<string, string>;
+}
+
+export function planStrictLaunch(input: {
+  runId: string;
+  runDir: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  /** What the daemon itself built for this Run: its output dir, binding, work surface. */
+  derivedEnv: Record<string, string>;
+  /** This container's own environment; never passed through as-is. */
+  ambient: NodeJS.ProcessEnv;
+  isolation: HostLaunchIsolation | undefined;
+  /** Where this Run's egress is pointed, when its profile has any. */
+  egress: Record<string, string>;
+  profileDir: string | null;
+  loginHome: string | null;
+  toolTree: string | null;
+  runtimeRoot: string;
+}): StrictLaunch {
+  // **The container contributes nothing.** A trusted host keeps the machine's
+  // environment because it is the owner's machine; a strict host is not
+  // anyone's machine, and its environment is the instance's. Compose no longer
+  // hands this container the control plane's internal token — `.runner.env`
+  // and `SANDBOX_RUNNER_TOKEN` went with the Runner — so this filter is not
+  // what stops that token reaching a Run. It stops the next variable to land
+  // in the container's environment from doing so: this namespace shares the
+  // instance's network, every Space's Runs pass through it, and none of them
+  // has any claim on what the instance configured itself with. The Runner this
+  // replaces `--setenv`-ed a hand-written allowlist and nothing else; this is
+  // the same rule, reusing the allowlist the bound-run path already applies
+  // for B67.
+  const home = join(input.runDir, "home");
+  const env: Record<string, string> = {
+    ...filterAmbientEnv(input.ambient),
+    // Before `derivedEnv`, so a provider binding's own proxy variables — which
+    // point at the provider proxy for one upstream — win over the general
+    // egress proxy rather than being overwritten by it.
+    ...input.egress,
+    ...input.derivedEnv,
+    // Last, and per Run. A managed copy's launch env points HOME at that
+    // copy's shared login home, and an unbound run would otherwise inherit
+    // the container's — one directory that every Run of every Space writes
+    // its vendor history and scratch files into, read-write. The runtime
+    // reaches its own state through the profile's state-root variables, which
+    // is what B68 keys by Agent × container in the first place.
+    HOME: home,
+  };
+  const { command, args } = buildStrictNamespaceCommand({
+    command: input.command,
+    args: input.args,
+    cwd: input.cwd,
+    home,
+    binds: strictBindsForRun({
+      runDir: input.runDir,
+      profileDir: input.profileDir,
+      loginHome: input.loginHome,
+      toolTree: input.toolTree,
+      runtimeRoot: input.runtimeRoot,
+    }),
+    isolation: input.isolation ?? DEFAULT_STRICT_ISOLATION,
+    env,
+  });
+  return { command, args, home, env };
+}
+
+/**
  * Spawns the rendered command, streams stdout back as `output` frames, and
  * on exit uploads the workspace diff and output-directory contents before
  * sending `complete`. `send` is the frame sink for whichever connection is
@@ -375,6 +759,20 @@ export async function handleLaunch(
 ): Promise<void> {
   if (registrationRevoked) {
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
+    return;
+  }
+  // Refused rather than raced: this copy is being replaced, and starting
+  // against a directory that is about to be renamed away is the failure the
+  // drain exists to prevent (ADR 0016 §9).
+  if (adapterIsBeingReplaced(frame.adapter_type)) {
+    send({
+      type: "complete",
+      run_id: frame.run_id,
+      launch_id: frame.launch_id,
+      exit_code: 1,
+      timed_out: false,
+      error: `${frame.adapter_type} is being upgraded on this host; retry in a moment.`,
+    });
     return;
   }
   launchingRuns.add(frame.run_id);
@@ -399,10 +797,12 @@ async function launchRun(
       }
       cwd = await ensureManagedWorkspace(frame.workspace.agent_id, frame.workspace.container);
     } else {
-      const workspaceId = frame.workspace?.workspace_location_id
-        ?? frame.workspace_location_id
-        ?? "";
-      cwd = config.workspaces[workspaceId];
+      cwd = resolveLocationCwd(
+        config.workspaces,
+        frame.workspace?.workspace_location_id ?? frame.workspace_location_id,
+        frame.workspace?.workspace_relative_path,
+        workspacesRoot(),
+      ) ?? undefined;
     }
   } catch (error) {
     send({
@@ -491,6 +891,10 @@ async function launchRun(
   let baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};
+  // Kept out of the binding block so the strict namespace below can bind them:
+  // a profile that is not in the namespace is a runtime with no login.
+  let profileDir: string | null = null;
+  let loginHome: string | null = null;
   if (frame.work_surface) {
     try {
       workSurfaceEnv = await materializeWorkSurface(frame.work_surface, frame.run_id);
@@ -520,13 +924,12 @@ async function launchRun(
       // go.
       const relocatesState = Object.keys(binding.profile_env).length > 0
         || binding.files.length > 0 || binding.login_link !== null;
+      if (relocatesState) {
+        profileDir = providerProfileDir(binding.profile_key);
+        loginHome = loginHomeFor(adapterType, frame.installation ?? OWN_INSTALLATION);
+      }
       bindingEnv = relocatesState
-        ? await materializeProviderBinding(
-          binding,
-          providerProfileDir(binding.profile_key),
-          loginHomeFor(adapterType, frame.installation ?? OWN_INSTALLATION),
-          log,
-        )
+        ? await materializeProviderBinding(binding, profileDir!, loginHome, log)
         : {};
       if (binding.credential_source === "provider_lease") {
         baseEnv = filterAmbientEnv(process.env);
@@ -561,16 +964,86 @@ async function launchRun(
     return;
   }
 
-  const child: ChildProcess = spawn(command, spawnArgs, {
+  // The work surface is applied after the binding for the same reason the
+  // binding is applied after the ambient environment: it is control-plane
+  // authority, and this machine does not get to override which Rainver a run
+  // reports to.
+  const derivedEnv: Record<string, string> = { RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv };
+
+  let spawnCommand = command;
+  let spawnCommandArgs = spawnArgs;
+  let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
+  const strict = config.trust === "strict";
+  // fd 3 carries the namespace's readiness handshake; a trusted host has no
+  // fourth stream and keeps the three it always had.
+  let stdio: Array<"pipe"> = ["pipe", "pipe", "pipe"];
+  let namespaceReady = !strict;
+  if (strict) {
+    try {
+      const tool = frame.installation && frame.installation !== OWN_INSTALLATION
+        ? readToolManifestSync(frame.adapter_type ?? rawCommand, frame.installation)
+        : null;
+      const plan = planStrictLaunch({
+        runId: frame.run_id,
+        runDir: runDir(frame.run_id),
+        command,
+        args: spawnArgs,
+        cwd,
+        derivedEnv,
+        ambient: process.env,
+        isolation: frame.isolation,
+        egress: grantRunEgress(frame.run_id, frame.isolation?.egress_profile ?? "none", [
+          ...Object.values(derivedEnv),
+          ...(frame.provider_binding?.files ?? []).map((file) => file.contents),
+        ]),
+        profileDir,
+        loginHome,
+        toolTree: tool ? dirname(tool.home) : null,
+        runtimeRoot: daemonRuntimeRoot(),
+      });
+      await mkdir(plan.home, { recursive: true, mode: 0o700 });
+      spawnCommand = plan.command;
+      spawnCommandArgs = plan.args;
+      // Every variable the run needs is already a `--setenv` inside the
+      // namespace; what is left is only what `bwrap` itself needs to run.
+      spawnEnv = { PATH: "/usr/local/bin:/usr/bin:/bin" };
+      stdio = ["pipe", "pipe", "pipe", "pipe"];
+    } catch (error) {
+      // The grant was registered while building the plan; a Run that never
+      // starts still has to give it back, or the daemon accumulates one entry
+      // per failed launch for its whole lifetime.
+      egressProxy?.revoke(frame.run_id);
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        launch_id: frame.launch_id,
+        exit_code: 1,
+        timed_out: false,
+        error: `Could not build this run's isolation namespace: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+  }
+
+  const child: ChildProcess = spawn(spawnCommand, spawnCommandArgs, {
     cwd,
-    // The work surface is applied after the binding for the same reason the
-    // binding is applied after the ambient environment: it is control-plane
-    // authority, and this machine does not get to override which Rainver a run
-    // reports to.
-    env: { ...baseEnv, RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv },
-    stdio: ["pipe", "pipe", "pipe"],
+    env: spawnEnv,
+    stdio,
     detached: true,
   });
+  if (strict) {
+    // "The namespace could not be built" and "the runtime exited immediately"
+    // are the same exit code; this handshake is what tells them apart, and it
+    // is the reason the run is started through `sh -c` at all.
+    (child.stdio[3] as NodeJS.ReadableStream | null)?.once("data", (value: Buffer) => {
+      namespaceReady = value.toString("utf8").startsWith("ready");
+      // The Runner killed a child that answered anything else, and so does
+      // this: whatever is on the other side of that fd is not the launch
+      // handshake, and letting it run to completion would report a namespace
+      // failure about a process that ran.
+      if (!namespaceReady) terminateWithEscalation(child, true, log);
+    });
+  }
   const active: ActiveRun = {
     child,
     cwd,
@@ -579,7 +1052,9 @@ async function launchRun(
       [REMOTE_CWD_PLACEHOLDER]: cwd,
       ...(workSurfaceEnv.RAINVER_SKILL_PATH ? { [WORK_SKILL_PATH_PLACEHOLDER]: workSurfaceEnv.RAINVER_SKILL_PATH } : {}),
     },
+    adapterType: frame.adapter_type ?? null,
     timedOut: false,
+    terminationRequested: false,
     timeoutTimer: null,
   };
   // A retry of the same run id may arrive while the previous attempt's child
@@ -600,6 +1075,9 @@ async function launchRun(
     send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk: chunk.toString("utf8") });
   });
   let stderrTail = "";
+  child.on("error", (error) => {
+    stderrTail = error.message.slice(-4000);
+  });
   child.stderr?.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8");
     stderrTail = (stderrTail + text).slice(-4000);
@@ -612,6 +1090,7 @@ async function launchRun(
   if (frame.timeout_seconds && frame.timeout_seconds > 0) {
     active.timeoutTimer = setTimeout(() => {
       active.timedOut = true;
+      active.terminationRequested = true;
       terminateWithEscalation(child, false, log);
     }, frame.timeout_seconds * 1000);
     active.timeoutTimer.unref?.();
@@ -656,6 +1135,18 @@ async function launchRun(
         });
       }
       finishingRuns.delete(frame.run_id);
+      // Read before revoking, and revoked here rather than on the child's exit:
+      // a connection opened just before the process ended is still this Run's.
+      // Not revoked at all when a newer attempt owns the id — the same
+      // condition the run directory uses above. This close handler runs after
+      // seconds of diff capture and upload, by which time a supervisor retry
+      // may already hold the grant, and revoking then would 407 every request
+      // the live attempt makes.
+      const egress = runEgressLog(frame.run_id);
+      // A superseded attempt keeps the grant (the live one holds it now) but
+      // still gives up its entries, or the retry would report them again.
+      if (superseded) egressProxy?.clearLog(frame.run_id);
+      else egressProxy?.revoke(frame.run_id);
 
       send({
         type: "complete",
@@ -663,7 +1154,14 @@ async function launchRun(
         launch_id: frame.launch_id,
         exit_code: code ?? 1,
         timed_out: active.timedOut,
-        error: code !== 0 && !active.timedOut ? (stderrTail || null) : null,
+        ...(egress.length > 0 ? { egress } : {}),
+        error: launchFailureMessage({
+          namespaceReady,
+          timedOut: active.timedOut,
+          terminationRequested: active.terminationRequested,
+          exitCode: code ?? 1,
+          stderrTail,
+        }),
       });
     })();
   });
@@ -672,6 +1170,7 @@ async function launchRun(
 export function handleTerminate(frame: TerminateFrame, log: (line: string) => void = () => {}): void {
   const active = activeRuns.get(frame.run_id);
   if (!active) return;
+  active.terminationRequested = true;
   terminateWithEscalation(active.child, frame.force === true, log);
 }
 

@@ -153,7 +153,6 @@ describe("memory + sessions contracts", () => {
         backend: {
           runtime_profile_id: "runtime-profile-1",
           adapter_type: "model_api",
-          credential_profile_id: null,
         },
       }).status,
     ).toBe("queued");
@@ -164,20 +163,13 @@ describe("memory + sessions contracts", () => {
           name: "Subscription",
           adapter_type: "claude_code",
           model_name: null,
-          requires_cli_credential: true,
-          credential_profiles: [{
-            id: "credential-1",
-            name: "Personal",
-            is_default: true,
-          }],
         }],
         binding: {
           runtime_profile_id: "runtime-profile-1",
           adapter_type: "claude_code",
-          credential_profile_id: "credential-1",
         },
-      }).binding?.credential_profile_id,
-    ).toBe("credential-1");
+      }).binding?.runtime_profile_id,
+    ).toBe("runtime-profile-1");
     expect(
       ChatTurnCompletionSchema.parse({
         schema_version: "chat_turn_completion.v1",

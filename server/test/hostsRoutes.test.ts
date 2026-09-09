@@ -619,6 +619,15 @@ describe("hosts routes", () => {
       installations: {
         claude_code: [{
           id: "own", version: "2.1.0", logged_in: true,
+          // The version this copy could be rolled back to, carried through
+          // normalization — the host card's rollback button reads it, and a
+          // field dropped here is a field the product never sees. Null for the
+          // machine's own copy, which the daemon never upgrades.
+          rollback_version: null,
+          // Whether this runtime has a subscription to read at all, stated by
+          // the control plane so the host card does not keep a second copy of
+          // that list in step.
+          reports_subscription_quota: true,
           options: {
             config_options: [{
               id: "model", name: "Model", description: null, category: "model", type: "select",

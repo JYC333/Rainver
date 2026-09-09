@@ -276,15 +276,19 @@ describe("run orchestration contract", () => {
     expect(RunExecutionKnownErrorCodeSchema.parse("duplicate_execution")).toBe(
       "duplicate_execution",
     );
+    // A code that used to be known and no longer is. The known list is
+    // descriptive, so the DTO still round-trips it — persisted rows keep
+    // whatever they were written with — but it is no longer in the enum.
+    expect(RunExecutionKnownErrorCodeSchema.safeParse("missing_runtime_credential").success).toBe(false);
     const result = RunJobResultSchema.parse({
       run_id: "run-1",
       status: "failed",
-      error_code: "missing_runtime_credential",
-      error_text: "Credential profile is required",
+      error_code: "runtime_stall_timeout",
+      error_text: "No output for the stall budget",
       metadata_json: { retryable: false },
     });
 
-    expect(result.error_code).toBe("missing_runtime_credential");
+    expect(result.error_code).toBe("runtime_stall_timeout");
     expect(
       RunJobResultSchema.safeParse({
         ...result,

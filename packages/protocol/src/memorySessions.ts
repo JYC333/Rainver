@@ -215,10 +215,7 @@ export const ChatTurnRequestSchema = z
     session_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
     restore_workspace: z.boolean().default(false),
-    backend: z.object({
-      runtime_profile_id: IdSchema,
-      credential_profile_id: IdSchema.nullish(),
-    }).strict().optional(),
+    backend: z.object({ runtime_profile_id: IdSchema }).strict().optional(),
     session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   })
   .strict();
@@ -227,7 +224,6 @@ export type ChatTurnRequest = z.infer<typeof ChatTurnRequestSchema>;
 export const ConversationBackendBindingSchema = z.object({
   runtime_profile_id: IdSchema,
   adapter_type: z.string().trim().min(1),
-  credential_profile_id: IdSchema.nullish(),
 }).strict();
 export type ConversationBackendBinding = z.infer<
   typeof ConversationBackendBindingSchema
@@ -238,7 +234,6 @@ export const ConversationBackendOptionSchema = z.object({
   name: z.string().trim().min(1),
   adapter_type: z.string().trim().min(1),
   model_name: z.string().nullish(),
-  requires_cli_credential: z.boolean(),
   usable: z.boolean().optional(),
   reason: z.string().nullish().optional(),
   host_bound: z.boolean().optional(),
@@ -248,11 +243,6 @@ export const ConversationBackendOptionSchema = z.object({
   host_online: z.boolean().nullish().optional(),
   host_owner_is_me: z.boolean().nullish().optional(),
   session_config_options: z.array(RuntimeSessionConfigOptionSchema).optional(),
-  credential_profiles: z.array(z.object({
-    id: IdSchema,
-    name: z.string().trim().min(1),
-    is_default: z.boolean(),
-  }).strict()),
 }).strict();
 export type ConversationBackendOption = z.infer<
   typeof ConversationBackendOptionSchema

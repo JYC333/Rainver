@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, type ToolLoginSpec, type ToolManifest } from "./tools.js";
+import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest } from "./tools.js";
 import type { RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
 import { homedir } from "node:os";
 import { terminalAuthAvailable } from "./terminalAuth.js";
@@ -30,6 +30,8 @@ export interface RuntimeInstallation {
   options: RuntimeOptions | null;
   /** The accounts a multi-account CLI holds; absent for single-account runtimes. */
   accounts?: RuntimeAccount[];
+  /** The version this copy can be rolled back to; null when there is none. */
+  rollback_version?: string | null;
 }
 
 /** What the server says to look for, per adapter (`hello_ack.runtime_probes`). */
@@ -224,6 +226,7 @@ export async function detectCapabilities(
         });
       }
     }
+    const rollbackTarget = rollbackTargetFor(lookup.adapter_type);
     for (const manifest of managed.get(lookup.adapter_type) ?? []) {
       const id = managedInstallationId(manifest.version);
       const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null;
@@ -234,6 +237,10 @@ export async function detectCapabilities(
         logged_in: loginState(manifest.home, manifest.login, asked),
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
         ...(managedAccounts ? { accounts: managedAccounts } : {}),
+        // Only the current copy offers a rollback; the target itself is not one.
+        rollback_version: rollbackTarget && rollbackTarget.version !== manifest.version
+          ? rollbackTarget.version
+          : null,
       });
     }
     if (found.length > 0) installations[lookup.adapter_type] = found;

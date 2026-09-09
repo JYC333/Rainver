@@ -9,7 +9,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema } from "./common.js";
+import { IdSchema, ISODateTimeSchema } from "./common.js";
 
 export const RuntimeOptionChoiceSchema = z.object({
   value: z.string(),
@@ -133,6 +133,20 @@ export const RuntimeInstallationSchema = z.object({
   options: RuntimeOptionsSchema.nullable(),
   /** Present only for a CLI whose login spec declares an accounts format; the list may be empty. */
   accounts: z.array(RuntimeAccountSchema).optional(),
+  /**
+   * The version this copy can be rolled back to, kept on the host with its own
+   * login so undoing an upgrade asks nobody to log in again. Null when this is
+   * the first version installed, or when the copy is the machine's own.
+   */
+  rollback_version: z.string().nullable().optional(),
+  /**
+   * Whether this runtime has a subscription quota that can be read at all.
+   * Stated by the control plane rather than re-derived from an adapter list
+   * the web would have to keep in step: OpenCode bills through whichever
+   * provider it is pointed at, and a registry agent's limits are its own
+   * product's.
+   */
+  reports_subscription_quota: z.boolean().optional(),
 });
 export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 
@@ -183,7 +197,25 @@ export const ManagedWorkspaceContainerSchema = z.discriminatedUnion("kind", [
 export type ManagedWorkspaceContainer = z.infer<typeof ManagedWorkspaceContainerSchema>;
 
 export const LaunchWorkspaceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("location"), workspace_location_id: IdSchema }),
+  z.object({
+    kind: z.literal("location"),
+    workspace_location_id: IdSchema,
+    /**
+     * Where this Location sits under the instance's own workspace root, for
+     * the built-in host only.
+     *
+     * A paired host maps a Location id to a path from its own registration —
+     * the control plane never learns that path (B64) — but the built-in host
+     * has no registration step and never runs `workspace add`: its Locations
+     * are created *by* the control plane, under the root both containers
+     * mount. ADR 0016 §4 says `root_path` is populated exactly for those, so
+     * this is the one case where the server legitimately knows where a
+     * workspace is. It is a path relative to that root, never absolute, and
+     * the daemon joins it under its own mount with containment — the same
+     * shape as a work surface's `relative_path`.
+     */
+    workspace_relative_path: z.string().min(1).optional(),
+  }),
   z.object({
     kind: z.literal("managed"),
     agent_id: IdSchema,
@@ -208,3 +240,40 @@ export const ManagedWorkspaceHeartbeatSchema = z.discriminatedUnion("container_k
   }).strict(),
 ]);
 export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeatSchema>;
+
+/**
+ * What one copy has left of its subscription, as the host reported it.
+ *
+ * `available: false` with an `error` is a real answer — "not logged in",
+ * "expired", "the vendor did not respond" — and worth showing as the reason
+ * rather than as a blank.
+ */
+export const HostRuntimeUsageSchema = z.object({
+  host_id: IdSchema,
+  adapter_type: z.string().min(1),
+  installation: z.string().min(1),
+  quota: z.object({
+    available: z.boolean(),
+    session_pct: z.number().nullable(),
+    session_resets: z.string().nullable(),
+    week_pct: z.number().nullable(),
+    week_resets: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+  checked_at: ISODateTimeSchema,
+});
+export type HostRuntimeUsage = z.infer<typeof HostRuntimeUsageSchema>;
+
+/** One recorded change to a host's runtimes, as the Updates page lists them. */
+export const HostRuntimeChangeSchema = z.object({
+  id: IdSchema,
+  host_id: IdSchema,
+  host_name: z.string(),
+  adapter_type: z.string().min(1),
+  action: z.enum(["install", "upgrade", "rollback", "remove"]),
+  from_version: z.string().nullable(),
+  to_version: z.string().nullable(),
+  actor_user_id: IdSchema.nullable(),
+  created_at: ISODateTimeSchema,
+});
+export type HostRuntimeChange = z.infer<typeof HostRuntimeChangeSchema>;

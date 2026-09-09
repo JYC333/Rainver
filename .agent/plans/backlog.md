@@ -100,26 +100,21 @@ without closing the matching item.
 
 ## 5. Runtime Conformance
 
-### C3.1 — Conformance second wave
+### C3.1 — Conformance second wave: dropped
 
-The probe runner implements four checks — file-scope obedience, subagent-attempt
-detection, cancellation reliability, and structured-output compliance. The trust
-and profiling wave below is entirely unimplemented, and
-`runtime_conformance_results` is empty because no CLI runtime has ever been
-installed on this instance.
+The first wave is gone, so there is no second one. The C3 suite was retired on
+2026-09-09: it certified a vendor CLI's behaviour once and cached the verdict
+against a version key, blind to the model actually selected, and gated dispatch
+on it. Its strongest question — will a runtime write outside what it was given
+— is answered structurally by ADR 0016's namespace, and the rest were single
+samples of a non-deterministic system, or duplicated what using the runtime
+already proves.
 
-- [ ] Add forbidden-tool detection.
-- [ ] Add premature-completion detection.
-- [ ] Add validation-compliance checks.
-- [ ] Add artifact-production checks.
-- [ ] Add timeout-behavior checks.
-- [ ] Add cost/latency profiling.
-- [ ] Feed the results into routing trust decisions without weakening the current
-  fail-closed behavior.
-
-Prerequisite: a CLI runtime must exist in the sandbox image before any probe —
-existing or new — can produce an observation. Check the running instance for
-whether one is installed; see also the CLI gate in
+Everything this wave proposed (validation compliance, artifact production,
+timeout behaviour, cost/latency profiling, feeding trust decisions) shares that
+premise. If the question comes back, the shape to reach for is observation of
+real Runs rather than a synthetic probe taken once, and asset-centric
+protection rather than run grading — see the risk-level item in
 [../tasks/deferred-register.md](../tasks/deferred-register.md).
 
 ### C3.2 — Routing cannot express a provider or model requirement

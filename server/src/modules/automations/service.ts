@@ -13,7 +13,7 @@ import { enforce } from "../policy/index.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { computeDecision } from "../policy/gateway.js";
 import { PgRunRepository } from "../runs/repository.js";
-import { BUILTIN_RUNTIME_ADAPTER_SPECS, type RuntimeAdapterType } from "../runtimeAdapters/index.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { resolveEvolvableAssetVersion } from "../evolution/assetResolutionService.js";
 import { WorkflowExecutionService } from "./workflowExecutionService.js";
 import { computeNextRunAt, InvalidScheduleError } from "./schedule.js";
@@ -1187,7 +1187,7 @@ function normalizeRiskLevel(value: unknown): string {
 
 function runtimeAdapterSpec(adapterType: string | null) {
   if (!adapterType) return null;
-  return BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType] ?? null;
+  return getRuntimeAdapterSpec(adapterType);
 }
 
 function requiredSandboxFor(

@@ -61,7 +61,6 @@ import {
   ProviderCommandForbiddenError,
   ProviderCommandNotFoundError,
   ProviderCommandValidationError,
-  type CliCredentialAuditInput,
   type InvocationTarget,
   type ModelProviderCreateInput,
   type ModelProviderUpdateInput,
@@ -80,7 +79,6 @@ export {
   ProviderCommandForbiddenError,
   ProviderCommandNotFoundError,
   ProviderCommandValidationError,
-  type CliCredentialAuditInput,
   type InvocationTarget,
   type ModelProviderCreateInput,
   type ModelProviderUpdateInput,
@@ -998,34 +996,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const configured = configuredModelsFromRow(row);
     if (configured.length > 0) return configured;
     return row.default_model ? [row.default_model] : [];
-  }
-
-  async recordCliCredentialUsage(input: CliCredentialAuditInput): Promise<string> {
-    const eventId = randomUUID();
-    const credentialSource = input.credential_profile_id ? "profile" : "none";
-    await this.pool.query(
-      `INSERT INTO cli_credential_events
-        (id, space_id, run_id, runtime_adapter_type,
-         credential_profile_id, credential_source, trigger_origin, fallback_used,
-         fallback_reason, broker_error, cleanup_status, action, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [
-        eventId,
-        input.space_id,
-        input.run_id ?? null,
-        input.runtime_adapter_type ?? null,
-        input.credential_profile_id ?? null,
-        credentialSource,
-        input.trigger_origin ?? null,
-        Boolean(input.fallback_used),
-        input.fallback_reason ?? null,
-        Boolean(input.broker_error),
-        input.cleanup_status ?? "not_needed",
-        input.action ?? "grant",
-        new Date(),
-      ],
-    );
-    return eventId;
   }
 
   // -------------------------------------------------------------------------

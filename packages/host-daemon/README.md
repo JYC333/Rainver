@@ -13,6 +13,13 @@ other CLI you intend to use on the host. Rainver checks the host's captured
 adapter pack is downloaded, checksum-verified, and enabled automatically
 before that runtime is reported as available.
 
+This same daemon is also the instance's own built-in execution host, running
+inside Rainver's `sandbox-runner` container in **strict** mode: it registers
+itself from a credential the control plane publishes rather than a pairing
+code, and wraps every Run in its own bubblewrap namespace. Nothing below
+applies to it — it is deployed with the instance, not installed on a machine.
+See the [Hosts guide](../../.agent/modules/hosts.md).
+
 ## Install and pair
 
 Install the CLI on the Linux host:

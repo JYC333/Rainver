@@ -102,7 +102,7 @@ A CLI Run is reachable from a Task or automation dispatch, a direct
 conversation, or a Room. On the server host, all three prepare context through
 the Runtime Context Gateway ([ADR 0014](0014-unified-runtime-context-engine.md)).
 The HOME, credential-profile, and Gateway continuity mechanisms below describe
-server-host execution; remote trusted hosts use ADR 0016 sections 2 and 4,
+server-host execution; remote trusted hosts use ADR 0016 sections 2 and 5,
 with host-owned login/session state and no server-brokered Runtime Context.
 
 - **Conversation.** The backend is chosen per user per session and resolves

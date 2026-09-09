@@ -108,6 +108,10 @@ describe("what a runtime says it can be set to", () => {
     // Every ask starts an agent process; the answer changes only when the CLI
     // is reconfigured or upgraded.
     __clearRuntimeOptionsCache();
+    // Keep this cache assertion independent of the real host's managed tools.
+    // Other capability/install tests may run in parallel and add a managed
+    // copy while the two heartbeats below are in flight.
+    const lookup: RuntimeLookup[] = [{ adapter_type: "capability_cache_test", runtime: "git", login: null }];
     let asks = 0;
     const ask = async () => {
       asks += 1;
@@ -115,11 +119,11 @@ describe("what a runtime says it can be set to", () => {
         config_options: [],
       };
     };
-    const first = await detectCapabilities(ask, VENDORS);
+    const first = await detectCapabilities(ask, lookup);
     const asksAfterFirst = asks;
-    await detectCapabilities(ask, VENDORS);
+    await detectCapabilities(ask, lookup);
     expect(asks).toBe(asksAfterFirst);
-    expect(asksAfterFirst).toBeLessThanOrEqual(Object.values(first.installations).flat().length);
+    expect(asksAfterFirst).toBe(Object.values(first.installations).flat().length);
   }, 15_000);
 
   it("reports generic ACP authentication state and refreshes it after login", async () => {

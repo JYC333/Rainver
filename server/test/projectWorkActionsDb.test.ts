@@ -17,6 +17,7 @@ import {
   handoffTask,
   linkTaskEntities,
   reportOnTask,
+  completeTask,
   requestTaskReview,
 } from "../src/modules/projectWork/taskActions.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
@@ -161,6 +162,7 @@ describe("origin gate", () => {
   const gated = [
     "task.create",
     "task.stage.advance",
+    "task.complete",
     "inquiry.thread.create",
     "inquiry.iteration.record",
     "inquiry.advice.adopt",
@@ -200,8 +202,8 @@ describe("origin gate", () => {
 });
 
 describe("registry wiring", () => {
-  it("registers all five on the Room conversation surface", () => {
-    for (const id of ["task.create", "task.report", "task.handoff", "task.advance_stage", "task.request_review"]) {
+  it("registers the whole Project write surface on the Room conversation surface", () => {
+    for (const id of ["task.create", "task.report", "task.handoff", "task.advance_stage", "task.complete", "task.request_review"]) {
       expect(ROOM_CONVERSATION_TOOL_ALLOWANCE, id).toContain(id);
     }
   });
@@ -322,6 +324,62 @@ describe("task.advance_stage", () => {
       kind: "task.stage_changed",
       data: expect.objectContaining({ via: "agent", to_stage: "verify" }),
     });
+  });
+});
+
+describe("task.complete", () => {
+  it("closes the Task and records the close as the Agent", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+
+    const result = await completeTask(db.pool!, await agentContext(), {
+      task_id: task, summary: "created the file the Task asked for",
+    });
+
+    expect(result.status).toBe("done");
+    const row = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.status).toBe("done");
+    const kinds = (await events(task)).map((event) => event.kind);
+    expect(kinds).toContain("task.flow_changed");
+    expect(kinds).toContain("task.reported");
+  });
+
+  it("refuses a Task that is already closed rather than writing the move twice", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task, PROJECT, "done");
+    await expect(completeTask(db.pool!, await agentContext(), { task_id: task, summary: "again" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("refuses to close past a declared output that does not exist", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+    // Closing here would make the Task say it produced a file it did not.
+    await db.pool!.query(
+      `UPDATE tasks SET required_outputs_json = $2::jsonb WHERE id = $1`,
+      [task, JSON.stringify([{ path: "report.md", artifact_type: "document" }])],
+    );
+
+    await expect(completeTask(db.pool!, await agentContext(), { task_id: task, summary: "done anyway" }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    const row = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.status).not.toBe("done");
+  });
+
+  it("closes without an evaluation but records that it went past one", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+    // Most Tasks never get an evaluation — it comes from an execution Run's
+    // review — so refusing on it would refuse almost every real close. It is
+    // named in the record instead.
+    await completeTask(db.pool!, await agentContext(), { task_id: task, summary: "did the work" });
+
+    const flow = (await events(task)).find((event) => event.kind === "task.flow_changed");
+    expect(flow?.data).toMatchObject({ to: "done", overridden: ["evaluation"] });
   });
 });
 

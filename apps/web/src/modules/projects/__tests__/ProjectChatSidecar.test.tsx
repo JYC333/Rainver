@@ -106,7 +106,7 @@ beforeEach(() => {
     summary: {
       session_id: 'conv-2', state: 'initialized',
       host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
-      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', credential_profile_id: null, adapter_type: 'claude', runtime_installation: 'claude' },
+      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude', runtime_installation: 'claude' },
       primary: { kind: 'managed', managed_workspace_id: 'conv-2', display_path: null }, attachments: [],
       dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
     },

@@ -1,10 +1,11 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, RefreshCw } from 'lucide-react'
 import type { ModelProviderOut } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
 import type {
   Host,
+  HostRuntimeUsage,
   HostRuntimeAdapterOption,
   HostRuntimeProviderBinding,
   RuntimeAuthMethod,
@@ -34,6 +35,32 @@ function versionLabel(version: string | null): string {
   return numeric?.replace(/^v/, '') ?? version
 }
 
+/**
+ * A subscription's remaining share, short enough to sit inline: "62% · 18%"
+ * is session then week. Percentages are of the window *used*, so higher is
+ * closer to empty — the badge turns warning past 90 so a run about to be
+ * refused is visible before it is attempted.
+ */
+function usageLabel(usage: HostRuntimeUsage | undefined): { text: string; spent: boolean; title: string } | null {
+  if (!usage) return null
+  const { quota } = usage
+  // A copy that could not be read is not a copy that is fine: `warning` says
+  // so at a glance, with the host's own reason on hover.
+  if (!quota.available) return { text: 'usage unavailable', spent: true, title: quota.error ?? 'This host has not reported a reading yet.' }
+  const parts = [
+    quota.session_pct === null ? null : `session ${quota.session_pct}%`,
+    quota.week_pct === null ? null : `week ${quota.week_pct}%`,
+  ].filter((part): part is string => part !== null)
+  if (parts.length === 0) return null
+  const highest = Math.max(quota.session_pct ?? 0, quota.week_pct ?? 0)
+  const resets = [quota.session_resets, quota.week_resets].filter((line): line is string => Boolean(line))
+  return {
+    text: parts.join(' · '),
+    spent: highest >= 90,
+    title: [...resets, `Checked ${new Date(usage.checked_at).toLocaleString()}`].join('\n'),
+  }
+}
+
 function authMethodLabel(method: RuntimeAuthMethod, loggedIn: boolean | null): string {
   return loggedIn ? `${method.name} again` : method.name
 }
@@ -54,9 +81,15 @@ export default function HostAgentRow({
   binding,
   installBusy,
   providerBusy,
+  manageable,
+  providerBindingSupported,
+  usage,
+  usageBusy,
   onInstall,
   onUninstall,
   onLogin,
+  onRefreshUsage,
+  onRollback,
   onChooseProvider,
 }: {
   host: Host
@@ -66,12 +99,27 @@ export default function HostAgentRow({
   binding: HostRuntimeProviderBinding | null
   installBusy: ReadonlySet<string>
   providerBusy: boolean
+  /**
+   * Whether this viewer may change what is installed here. False for a member
+   * looking at the built-in host: installing a runtime, logging a copy in or
+   * out, and choosing its model source are instance-admin work, while which
+   * copies exist and whether they are logged in is what everyone needs to see
+   * to know whether their Run can run at all.
+   */
+  manageable: boolean
+  /** Whether this host has a host×adapter model source at all; false for the built-in host, whose Runs are not provider-bound. */
+  providerBindingSupported: boolean
+  /** The cached subscription quota per installation id; absent for a runtime that has none to report. */
+  usage: ReadonlyMap<string, HostRuntimeUsage>
+  usageBusy: ReadonlySet<string>
   onInstall: () => void
   onUninstall: (entry: RuntimeInstallation) => void
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
+  onRefreshUsage: (installation: string) => void
+  onRollback: () => void
   onChooseProvider: (providerId: string) => void
 }) {
-  const providerBindingAvailable = agentAcceptsProviderBinding(adapter)
+  const providerBindingAvailable = providerBindingSupported && agentAcceptsProviderBinding(adapter)
   const providerOptions = providerBindingAvailable ? eligibleProviders(providers, adapter) : []
   const staleBinding = binding && !providerOptions.some(provider => provider.id === binding.model_provider_id)
 
@@ -96,6 +144,7 @@ export default function HostAgentRow({
             ? accounts.length === 0 ? 'no accounts' : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
             : null
           const canLogout = entry.logged_in === true || (multiAccount && accounts.length > 0)
+          const quota = usageLabel(usage.get(entry.id))
           const badge = (
             <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
               {entry.id === 'own' ? 'own' : 'managed'} · {versionLabel(entry.version)}
@@ -119,7 +168,21 @@ export default function HostAgentRow({
                   </Tooltip>
                 </TooltipProvider>
               ) : badge}
-              {authMethods.length === 0 && !entry.options?.cli_login_available && entry.logged_in !== null && (
+              {quota && (
+                <Badge variant={quota.spent ? 'warning' : 'outline'} title={quota.title}>{quota.text}</Badge>
+              )}
+              {manageable && entry.reports_subscription_quota && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Refresh usage for ${entry.id} of ${adapter.display_name} on ${host.name}`}
+                  disabled={host.status !== 'online' || usageBusy.has(entry.id)}
+                  onClick={() => onRefreshUsage(entry.id)}
+                >
+                  {usageBusy.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                </Button>
+              )}
+              {manageable && authMethods.length === 0 && !entry.options?.cli_login_available && entry.logged_in !== null && (
                 <Button
                   size="sm"
                   variant={multiAccount ? 'outline' : entry.logged_in ? 'ghost' : 'outline'}
@@ -130,7 +193,7 @@ export default function HostAgentRow({
                   {multiAccount ? 'Add account' : entry.logged_in ? 'Log in again' : 'Log in'}
                 </Button>
               )}
-              {authMethods.map(method => (
+              {(manageable ? authMethods : []).map(method => (
                 <Button
                   key={method.id}
                   size="sm"
@@ -143,7 +206,7 @@ export default function HostAgentRow({
                   {authMethodLabel(method, entry.logged_in)}
                 </Button>
               ))}
-              {entry.options?.cli_login_available && (
+              {manageable && entry.options?.cli_login_available && (
                 <Button
                   size="sm"
                   variant={entry.logged_in ? 'ghost' : 'outline'}
@@ -154,7 +217,7 @@ export default function HostAgentRow({
                   {entry.logged_in ? 'Log in again' : 'Log in'}
                 </Button>
               )}
-              {canLogout && (
+              {manageable && canLogout && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -165,7 +228,23 @@ export default function HostAgentRow({
                   {multiAccount ? 'Remove account' : 'Log out'}
                 </Button>
               )}
-              {entry.id !== 'own' && (
+              {manageable && entry.rollback_version && (
+                // The previous copy is still on the host with its own login,
+                // so undoing an upgrade asks nobody to log in again.
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Roll ${adapter.display_name} on ${host.name} back to ${entry.rollback_version}`}
+                  title={`Roll back to ${entry.rollback_version}`}
+                  disabled={host.status !== 'online' || installBusy.has(`${adapter.adapter_type}:rollback`)}
+                  onClick={onRollback}
+                >
+                  {installBusy.has(`${adapter.adapter_type}:rollback`)
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : `Roll back to ${entry.rollback_version}`}
+                </Button>
+              )}
+              {manageable && entry.id !== 'own' && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -178,7 +257,7 @@ export default function HostAgentRow({
               )}
           </span>
         })}
-        {!copies.some(entry => entry.id !== 'own') && (
+        {manageable && !copies.some(entry => entry.id !== 'own') && (
           <Button
             size="sm"
             variant="ghost"
@@ -212,6 +291,14 @@ export default function HostAgentRow({
               ]}
             />
           </div>
+        ) : !providerBindingSupported ? (
+          // A different reason from the one below, and saying the wrong one
+          // would send an admin looking for a setting that does not exist:
+          // this host's Runs use the copy's own login, whatever the Agent
+          // would otherwise support.
+          <span className="flex h-7 items-center whitespace-nowrap text-muted-foreground">
+            {ambientLabel(copies)}
+          </span>
         ) : (
           <span
             className="flex h-7 items-center whitespace-nowrap text-muted-foreground"

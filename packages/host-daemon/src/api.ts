@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { detectCapabilities, type AskRuntimeOptions } from "./capabilities.js";
 import { ambientSessionCounts } from "./ambientCounts.js";
 import { probeAcpOptions } from "./acpProbe.js";
-import { resolveAcpLaunch, substituteCwd } from "./execution.js";
+import { adapterIsBeingReplaced, holdingAdapter, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
@@ -60,6 +60,10 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
   return async (lookup, installation) => {
     const probe = probes.find((candidate) => candidate.adapter_type === lookup.adapter_type);
     if (!probe) return null;
+    // A heartbeat probe launches the copy, so it must not run against a
+    // directory being renamed away. Returning null leaves the previous answer
+    // in the cache rather than caching a failure for this copy.
+    if (adapterIsBeingReplaced(lookup.adapter_type)) return null;
     const key = `${lookup.adapter_type}@${installation}`;
     const failed = (reason: string) => {
       if (reportedProbeFailures.get(key) === reason) return;
@@ -70,7 +74,12 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.adapter_type);
-      const options = await probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed);
+      // Held for the probe's duration, so a replacement waits for it rather
+      // than deleting the tree it is executing from.
+      const options = await holdingAdapter(
+        lookup.adapter_type,
+        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed),
+      );
       if (options !== null && reportedProbeFailures.delete(key)) log?.(`${key}: login methods and options read successfully`);
       return options;
     } catch (error) {

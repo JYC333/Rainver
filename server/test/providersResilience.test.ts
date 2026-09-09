@@ -96,7 +96,6 @@ function makeStore(
     async listConfiguredModels() {
       return [];
     },
-    recordCliCredentialUsage: unsupported,
     listPool: unsupported,
     addPoolCredential: unsupported,
     removePoolCredential: unsupported,

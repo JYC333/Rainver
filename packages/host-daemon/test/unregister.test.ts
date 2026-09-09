@@ -5,6 +5,7 @@ import { unregisterHost } from "../src/commands/unregister.js";
 const config = {
   server_url: "https://rainver.example.com",
   host_id: "host-1",
+  trust: "trusted" as const,
   token: "secret-token",
   workspaces: { "location-1": "/work/project" },
 };

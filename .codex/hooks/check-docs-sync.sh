@@ -47,7 +47,7 @@ case "$file_path" in
     *server/src/db/*|*server/migrations/*)
         relevant_docs="architecture/DATABASE_AND_TRANSACTIONS.md, architecture/SERVER_FOUNDATION.md"
         ;;
-    *server/src/modules/runs/*|*server/src/modules/runtimeHost/*|*server/src/modules/runtimeAdapters/*|*server/src/modules/runtimeTools/*|*server/src/modules/runtimeToolBindings/*|*server/src/modules/sandboxRunner/*)
+    *server/src/modules/runs/*|*server/src/modules/runtimeHost/*|*server/src/modules/runtimeAdapters/*)
         relevant_docs="architecture/EXECUTION_MODEL.md, architecture/RUNS_AND_OUTPUTS.md, architecture/RUNTIME_ADAPTER_STANDARD.md, modules/runtime-adapters.md, modules/agents.md, architecture/MODULES.md"
         ;;
     *server/src/modules/runtimeContext/*)
@@ -63,7 +63,7 @@ case "$file_path" in
         relevant_docs="architecture/SECURITY_AND_ACCESS_BOUNDARIES.md, architecture/POLICY_ENFORCEMENT_INVENTORY.md, architecture/MEMORY_MODEL.md, BOUNDARIES.md"
         ;;
     *server/src/modules/projectFolders/*|*server/src/modules/artifacts/*|*server/src/modules/projects/*)
-        relevant_docs="architecture/ARTIFACTS.md, architecture/EXECUTION_MODEL.md, architecture/PROJECTS.md, modules/sandbox.md, modules/project-files.md, architecture/MODULES.md"
+        relevant_docs="architecture/ARTIFACTS.md, architecture/EXECUTION_MODEL.md, architecture/PROJECTS.md, modules/hosts.md, modules/project-files.md, architecture/MODULES.md"
         ;;
     *server/src/modules/knowledge/*|*server/src/modules/ontology/*|*server/src/modules/sources/*|*server/src/modules/sourceAnnotation/*)
         relevant_docs="modules/knowledge-base.md, modules/sources.md, architecture/CLAIM_FACT_ATOM_MODEL.md, architecture/SOURCE_EVIDENCE_FOUNDATION.md, architecture/MODULES.md"

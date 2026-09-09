@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ArrowUp, Folder, Loader2 } from 'lucide-react'
+import { ArrowUp, Check, Folder, Loader2 } from 'lucide-react'
 import { hostsApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -97,7 +97,20 @@ export default function HostDirectoryBrowser({
         )}
       </div>
       {truncated && <p className="text-[11px] text-muted-foreground">Showing the first 500 directories.</p>}
-      <p className="text-[11px] text-muted-foreground">The open directory is the one that will be registered.</p>
+      {/* The open directory *is* the choice — every row navigates into one, and
+          nothing here confirms. Said passively in a footnote, that read as "keep
+          going": people drilled to the bottom of a tree looking for the button.
+          It is stated as a settled selection now, in the words the action uses. */}
+      <div
+        className="flex items-start gap-1.5 rounded-sm bg-accent/40 px-1.5 py-1"
+        data-testid="host-directory-selection"
+      >
+        <Check className="mt-0.5 size-3 shrink-0 text-primary" />
+        <p className="min-w-0 text-[11px] leading-snug">
+          <span className="text-muted-foreground">Will register this directory: </span>
+          <span className="break-all font-mono text-foreground">{value ?? '/'}</span>
+        </p>
+      </div>
     </div>
   )
 }

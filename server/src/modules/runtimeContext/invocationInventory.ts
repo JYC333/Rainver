@@ -73,10 +73,15 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("runtimeHost/service.ts", "completeProviderMessages", 1, "agent_task_gateway", "runtimeHost", "runtime_context_gateway"),
   entry("runs/managedApiAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
   invocationCall("runs/managedApiAdapter.ts", "executeRuntimeHost", 1, "agent_task_renderer", "runs", "delivery_renderer"),
-  entry("runs/vendorCliAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer", "runs/vendorCliAdapter.ts#runCommand:1"),
-  entry("runtimeConformance/probeRunner.ts", "bounded_cli_task", "runtimeConformance", "provider_task", "runtimeConformance/probeRunner.ts#runCommand:1"),
+  // The CLI renderer is the remote-host adapter now: every `local_cli` run is
+  // dispatched to a host daemon, and the server spawns no vendor CLI of its own.
+  entry("runs/remoteHostCliAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
+  // A renderer, not a Gateway invoker: a run handed to a host daemon gets no
+  // server-brokered Runtime Context and pulls through its own work surface.
+  invocationCall("runs/orchestrationService.ts", "executeRemoteHostCliAdapter", 1, "agent_task_renderer", "runs", "delivery_renderer"),
+  // The conformance probe asks the host that holds the copy rather than
+  // spawning locally; its command site is the server-owned duplex executor.
   invocationCall("runs/orchestrationService.ts", "executeManagedApiNoToolAdapter", 1, "agent_task_gateway", "runs", "runtime_context_gateway"),
-  invocationCall("runs/orchestrationService.ts", "executeVendorCliAdapter", 1, "agent_task_gateway", "runs", "runtime_context_gateway"),
   entry("providers/invocation/invocation.ts", "provider_transport", "providers", "provider_task"),
   entry("providers/proxy/server.ts", "provider_transport", "providers", "delivery_renderer"),
 ] as const satisfies readonly RuntimeInvocationEntry[];

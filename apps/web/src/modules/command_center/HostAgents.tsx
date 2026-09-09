@@ -6,7 +6,7 @@ import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostRuntimeAdapterOption, RuntimeInstallation } from '../../types/api'
+import type { Host, HostRuntimeAdapterOption, HostRuntimeUsage, RuntimeInstallation } from '../../types/api'
 import HostAgentRow, { agentAcceptsProviderBinding, type HostAgentLoginTarget } from './HostAgentRow'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 import { useHostProviderBindings } from './useHostProviderBindings'
@@ -17,6 +17,21 @@ export const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
 
 export function installationsOn(host: Host, adapter: HostRuntimeAdapterOption): RuntimeInstallation[] {
   return host.capabilities_json?.installations?.[adapter.adapter_type] ?? []
+}
+
+/** The quota rows for one adapter, re-keyed by installation id for the row. */
+function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, adapterType: string): ReadonlyMap<string, HostRuntimeUsage> {
+  const prefix = `${adapterType}:`
+  return new Map(
+    [...usage.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, item]) => [key.slice(prefix.length), item] as const),
+  )
+}
+
+function usageBusyFor(busy: ReadonlySet<string>, adapterType: string): ReadonlySet<string> {
+  const prefix = `${adapterType}:`
+  return new Set([...busy].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)))
 }
 
 /**
@@ -31,12 +46,20 @@ export default function HostAgents({
   adapters,
   providers,
   isInstanceAdmin,
+  manageable,
   onChanged,
 }: {
   host: Host
   adapters: HostRuntimeAdapterOption[]
   providers: ModelProviderOut[]
   isInstanceAdmin: boolean
+  /**
+   * Whether this viewer may change what is installed on this host. A paired
+   * host is its owner's, so this is true wherever the card is shown at all;
+   * the built-in host has no owner and is managed by instance admins, so a
+   * member sees its copies and their login state without the controls.
+   */
+  manageable: boolean
   onChanged: () => Promise<void> | void
 }) {
   // One key per in-flight action, not one slot: two installs started back to
@@ -71,10 +94,51 @@ export default function HostAgents({
   const [registryError, setRegistryError] = useState<string | null>(null)
   const [registryQuery, setRegistryQuery] = useState('')
   const [installedRegistryIds, setInstalledRegistryIds] = useState<Set<string>>(() => new Set())
+  // Subscription quota per `<adapter_type>:<installation>`, read from the
+  // server's cache. Never probed on render: the numbers live on the host and
+  // reading them costs a network call or a CLI launch there.
+  const [usage, setUsage] = useState<ReadonlyMap<string, HostRuntimeUsage>>(() => new Map())
+  const [usageBusy, setUsageBusy] = useState<ReadonlySet<string>>(() => new Set())
   const online = host.status === 'online'
 
+  useEffect(() => {
+    let cancelled = false
+    void hostsApi.usage(host.id)
+      .then(result => {
+        if (cancelled) return
+        setUsage(new Map(result.items.map(item => [`${item.adapter_type}:${item.installation}`, item])))
+      })
+      // A missing quota panel is not worth a toast: the copies, their logins
+      // and every control on this card work without it.
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [host.id])
+
+  async function refreshUsage(adapterType: string, installation: string) {
+    const key = `${adapterType}:${installation}`
+    setUsageBusy(previous => new Set(previous).add(key))
+    try {
+      const item = await hostsApi.refreshUsage(host.id, adapterType, installation)
+      setUsage(previous => new Map(previous).set(key, item))
+      if (!item.quota.available && item.quota.error) toast.message(item.quota.error)
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setUsageBusy(previous => {
+        const next = new Set(previous)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
   const present = useMemo(() => adapters.filter(adapter => installationsOn(host, adapter).length > 0), [adapters, host])
-  const providerBindingsEnabled = present.some(agentAcceptsProviderBinding)
+  // Only a paired host has a host×adapter model source. The built-in host's
+  // Runs are not provider-bound, and `/hosts/:id/runtime-provider-bindings`
+  // answers 404 for it — asking anyway put a "Host not found" toast in front of
+  // every member the moment an admin installed a bindable copy on it.
+  const providerBindingsSupported = host.kind === 'remote'
+  const providerBindingsEnabled = providerBindingsSupported && present.some(agentAcceptsProviderBinding)
   const providerBindings = useHostProviderBindings(host.id, providerBindingsEnabled)
   const builtinAdaptersByRegistryId = useMemo(
     () => new Map(adapters.flatMap(adapter => adapter.registry_id ? [[adapter.registry_id, adapter] as const] : [])),
@@ -189,13 +253,23 @@ export default function HostAgents({
       if (!result.ok) throw new Error(result.error ?? 'uninstall failed')
     })
 
+  const rollback = (adapter: HostRuntimeAdapterOption) =>
+    withBusy(`${adapter.adapter_type}:rollback`, async () => {
+      const result = await hostsApi.rollbackRuntime(host.id, adapter.adapter_type)
+      // The daemon drains the copy's Runs first and refuses rather than
+      // killing one, so "still in use" is an ordinary answer, not a fault.
+      if (!result.ok) throw new Error(result.error ?? 'rollback failed')
+    })
+
   return (
     <div className="w-full border-t pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium">Agents</p>
-        <Button size="sm" variant={adding ? 'ghost' : 'outline'} disabled={!online} onClick={toggleAdding}>
-          {adding ? 'Close' : 'Add agent…'}
-        </Button>
+        {manageable && (
+          <Button size="sm" variant={adding ? 'ghost' : 'outline'} disabled={!online} onClick={toggleAdding}>
+            {adding ? 'Close' : 'Add agent…'}
+          </Button>
+        )}
       </div>
       {present.length === 0 && !adding && (
         <p className="text-xs text-muted-foreground">No agent on this host yet.</p>
@@ -211,12 +285,18 @@ export default function HostAgents({
             binding={providerBindings.bindings.find(binding => binding.adapter_type === adapter.adapter_type) ?? null}
             installBusy={busy}
             providerBusy={providerBindings.loading || providerBindings.busyAdapter === adapter.adapter_type}
+            manageable={manageable}
+            providerBindingSupported={providerBindingsSupported}
+            usage={usageFor(usage, adapter.adapter_type)}
+            usageBusy={usageBusyFor(usageBusy, adapter.adapter_type)}
             onInstall={() => { void install(adapter) }}
             onUninstall={entry => { void uninstall(adapter, entry) }}
+            onRollback={() => { void rollback(adapter) }}
             onLogin={(installation, target) => {
               clearLoginCloseTimer()
               setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, adapterType: adapter.adapter_type, installation, target }))
             }}
+            onRefreshUsage={installation => { void refreshUsage(adapter.adapter_type, installation) }}
             onChooseProvider={providerId => { void providerBindings.choose(adapter.adapter_type, providerId) }}
           />
         ))}

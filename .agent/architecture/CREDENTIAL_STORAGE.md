@@ -1,13 +1,19 @@
 # Credential Storage
 
-The system stores secrets in **four distinct channels**. Do not conflate them.
+The system stores secrets in **three distinct channels**, and deliberately does
+not store a fourth. Do not conflate them.
 
 | Channel | What | Where stored | Doc |
 |---|---|---|---|
 | **ModelProvider API key** | API keys for in-process LLM calls (OpenAI, Anthropic, …) | AES-256-GCM ciphertext in a DB `Credential` row | this doc |
 | **Managed subscription OAuth** | Instance-admin Claude Pro/Max and OpenAI Codex subscription credentials for in-process calls | AES-256-GCM OAuth envelope in a DB `Credential` row | this doc |
-| **CLI login state** | Claude Code / Codex CLI login profiles for sandboxed runs | files under `instance/secrets/cli-credentials/…`, brokered per run | [modules/credentials.md](../modules/credentials.md) |
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
+
+A vendor CLI's login is the one Rainver does **not** hold. Since ADR 0016 a CLI
+runs only on an execution host, and its login lives inside that copy's own
+`HOME` on that host — never copied here, never brokered per run, never on a
+path the control plane knows (BOUNDARIES B64). `instance/secrets/cli-credentials/`
+is retired and unread; see [modules/credentials.md](../modules/credentials.md).
 
 This doc covers the **ModelProvider API key** and **managed subscription OAuth**
 channels used by the `model_api` runtime adapter and bounded server-owned
@@ -49,14 +55,13 @@ provider fallback chain (`fallback_provider_ids`) remain provider-level
 configuration in `model_providers.config_json`. Default provider selection and
 NetworkProfile routing are active-space grant fields.
 
-CLI login state is a distinct credential class: it is **never pooled or rotated**, and
-the pool tables never reference it. A user × session conversation backend
-binding selects the user's enabled active-space CLI grant; shared Agent
-profiles never hold a user credential id. At execution, the broker creates a
-clean run-private `HOME` and copies only the runtime's credential file. It does
-not share CLI sessions, transcripts, databases, or general configuration.
-Quota probe homes are unique and short-lived, and their cache is keyed by both
-runtime and credential profile id.
+CLI login state is not in these tables at all, and there is no broker: as the
+header says, it lives with the copy on the host that runs it. Nothing here
+pools it, rotates it, references it from a pool table, or copies it into a
+run-private `HOME`. Subscription quota is read **on the host**, by the daemon,
+against that copy's own login (`packages/host-daemon/src/usageProbe.ts`); what
+reaches the control plane is a percentage and a reset time, cached per host ×
+adapter × installation in `host_runtime_usage` — never a credential.
 
 Managed subscription OAuth is also never pooled or rotated. Only the configured
 instance admin may connect, refresh quota, or disconnect it. The resulting

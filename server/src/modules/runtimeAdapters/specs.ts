@@ -38,9 +38,9 @@ export type RuntimeDistribution =
   | { kind: "binary"; platforms: Record<string, RuntimeBinaryTarget> };
 
 /**
- * How a runtime is logged into, and how a login is recognised. Shared by the
- * server-host login engine and the daemon's login terminal, so the knowledge
- * lives once. `command` is the vendor CLI as it is named on PATH (an `own`
+ * How a runtime is logged into, and how a login is recognised. The adapter
+ * spec is the only source; the daemon's login terminal applies it and adds
+ * nothing. `command` is the vendor CLI as it is named on PATH (an `own`
  * installation); `managed_command` addresses the same CLI inside a managed
  * tree, with `{tree}` the install directory, `{node}` this daemon's node,
  * `{platform}` the registry platform key (`linux-x86_64`), and
@@ -140,6 +140,21 @@ export interface RuntimeAdapterSpec {
     supports_one_shot_docker: boolean;
     requires_workspace_for_execution: boolean;
   };
+  /**
+   * ACP session options to force when this runtime executes on a **strict**
+   * host, where the daemon's bubblewrap namespace is already the boundary
+   * (ADR 0016 section 2). A vendor sandbox nested there does not fail — it
+   * stacks its own policy over the Run's own workspace, so a Run runs and
+   * silently cannot write. Only strict: on a paired machine the owner's
+   * approval settings are theirs, and overriding them would be exactly the
+   * relaxation B62 forbids.
+   */
+  strict_session_config?: ReadonlyArray<{
+    id: string;
+    type: "select" | "boolean";
+    value: string | boolean;
+    category: string | null;
+  }>;
   model: {
     model_provider_mode: "none" | "optional" | "required";
     supports_model_override: boolean;
@@ -445,6 +460,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       supports_oauth_login_state: true,
     },
     sandbox: worktreeCli,
+    // Codex's `mode` defaults to `agent`, which keeps its own sandbox and
+    // approval gate. Inside the strict namespace that gate has nothing left to
+    // protect and its policy makes the Run's own workspace read-only, so the
+    // one boundary is ours. Verified on the built-in host 2026-09-08.
+    strict_session_config: [{ id: "mode", type: "select", value: "agent-full-access", category: "mode" }],
     model: {
       model_provider_mode: "none",
       supports_model_override: false,

@@ -21,11 +21,11 @@ const policy: AutonomousAdmissionPolicy = {
 };
 const freshQuota: AutonomousQuotaSnapshot = {
   runtime: "codex_cli",
-  credential_profile_id: "profile-1",
+  execution_host_id: "host-1",
+  installation: "own",
   available: true,
   utilization_pct: 25,
   checked_at: "2026-07-26T11:55:00.000Z",
-  source: "live_probe",
 };
 
 const sharedPostgres = inject("sharedPostgres");

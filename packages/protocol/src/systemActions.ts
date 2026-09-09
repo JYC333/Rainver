@@ -254,6 +254,11 @@ const proposalInputs:Record<string,z.ZodType>={
     to_stage: z.enum(["frame", "plan", "act", "verify", "conclude"]),
     reason: z.string().trim().min(1).max(500),
   }).strict(),
+  "task.complete": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
+    summary: z.string().trim().min(1).max(2_000)
+      .describe("What was done, in the words the person will read on the closed Task."),
+  }).strict(),
   "task.request_review": z.object({
     task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     reason: z.string().trim().min(1).max(2_000),
@@ -434,6 +439,12 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.advance_stage", "Move a Task's Loop stage", "projectWork", "ProjectWorkTaskActions.advanceStage", "task.stage.advance", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  // Closing is a commitment, so it is origin-gated like `task.create` and
+  // `task.advance_stage` rather than ungated like the append-only three: a
+  // person asking in the turn authorizes it, an autonomous wake-up must be
+  // seen. It cannot skip the completion contract the manual close enforces,
+  // and unlike a person it cannot override one.
+  agentAction("task.complete", "Say a Task's work is finished", "projectWork", "ProjectWorkTaskActions.complete", "task.complete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Append-only like `task.report`, and ungated at any origin for the same
   // reason: it says what a file is, and a Task closes on the file existing

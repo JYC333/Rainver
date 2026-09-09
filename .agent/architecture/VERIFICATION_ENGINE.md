@@ -34,19 +34,31 @@ credentials, and file contents are not persisted.
 The current engine supports:
 
 - `command`, `test`, `lint`, `typecheck`: argv commands from an enabled
-  `ValidationRecipe` or Project Folder Execution Config, sent through the typed
-  Sandbox Runner `verification` launch and executed without a shell in the one
-  managed workspace mount, with bounded timeout, empty-root namespace, private
-  HOME, the Runner image's Node toolchain path, no network or ambient server
-  environment, and a 64 KiB combined stdout/stderr ceiling;
-- `file_exists`, `file_changed`, `diff_scope`, `no_forbidden_change`: safe
-  sandbox and git-scope checks;
+  `ValidationRecipe` or Project Folder Execution Config, sent to the execution
+  host that holds the Run's workspace as a `command_run` frame and executed
+  without a shell, with bounded timeout/output and a minimal environment.
+  Overflow is an error, never successful partial evidence. On the built-in
+  host the daemon wraps them in a bubblewrap namespace with no network; on a
+  paired host they run natively with that machine's network access,
+  which is what makes verification available there at all — it was
+  server-host-only for as long as the executor spoke to a Runner beside the
+  server;
+A recipe's argv is executed on that host, so a recipe is code rather than data
+(B13): on the built-in host inside the Run's namespace, on a paired host
+natively under its owner's trust. The engine refuses shell metacharacters, but
+that bounds nothing for a `spawn` without a shell — what bounds it is who may
+author a recipe, which is Project write access.
+
+- `file_exists`, `file_changed`, `diff_scope`, `no_forbidden_change`: asked of
+  the host the same way — `test -e` and `git diff`/`git status` through that
+  one channel, rather than `stat` and git against a server path that a Run on
+  another machine never had;
 - `artifact_exists`, `artifact_schema`, `output_schema`: materialization and
   bounded JSON-schema checks;
 - `proposal_created`: proposal materialization evidence.
 
 Code-patch collection records structural validation metadata. The engine then
-asks the same no-egress Runner to inspect git diff/status, then checks that a
+asks the same host to inspect git diff/status, then checks that a
 collected patch changed files and did not touch Project Folder
 Execution Config-forbidden paths. A patch proposal is never marked as validated merely
 because git text collection succeeded.

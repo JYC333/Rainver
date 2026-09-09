@@ -8,11 +8,6 @@ import {
   PgUsageRepository,
   type UsageQueryFilters,
 } from "./repository.js";
-import {
-  CliHistoryImportService,
-  type CliHistoryImportCommitInput,
-  type CliHistoryImportPreviewInput,
-} from "./cliHistoryImport.js";
 import type { UsageAttribution, UsageObservation } from "./types.js";
 
 export interface UsageIdentity {
@@ -47,13 +42,12 @@ export class UsageService {
   constructor(
     private readonly repository: PgUsageRepository,
     private readonly db: Queryable,
-    private readonly config?: ServerConfig,
   ) {}
 
   static fromConfig(config: ServerConfig): UsageService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
     const pool = getDbPool(config.databaseUrl);
-    return new UsageService(new PgUsageRepository(pool), pool, config);
+    return new UsageService(new PgUsageRepository(pool), pool);
   }
 
   async record(input: UsageObservation): Promise<Record<string, unknown>> {
@@ -72,20 +66,6 @@ export class UsageService {
     const instanceId = await this.repository.getOrCreateInstanceId();
     const event = normalizeUsageObservation(input, instanceId, attribution);
     return eventToOut(await this.repository.appendEvent(event));
-  }
-
-  async previewCliHistoryImport(
-    identity: UsageIdentity,
-    input: CliHistoryImportPreviewInput,
-  ): Promise<Record<string, unknown>> {
-    return this.cliHistoryImports().preview(identity, input);
-  }
-
-  async commitCliHistoryImport(
-    identity: UsageIdentity,
-    input: CliHistoryImportCommitInput,
-  ): Promise<Record<string, unknown>> {
-    return this.cliHistoryImports().commit(identity, input);
   }
 
   async budgetPreview(
@@ -116,11 +96,6 @@ export class UsageService {
       totals: result.totals,
       items: result.items,
     };
-  }
-
-  private cliHistoryImports(): CliHistoryImportService {
-    if (!this.config) throw new HttpError(502, "Server config is required");
-    return new CliHistoryImportService(this.config, this.repository);
   }
 
   async timeseries(identity: UsageIdentity, input: UsageQueryInput): Promise<Record<string, unknown>> {

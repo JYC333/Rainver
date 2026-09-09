@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { DndContext, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { laneKeyboardCoordinates } from './laneKeyboardCoordinates'
+import { applyCardMove, mergeBoard } from './mergeBoard'
 import { toast } from 'sonner'
 import { agentsApi, projectsApi, tasksApi } from '../../../api/client'
 import TaskCreateForm from '../../tasks/TaskCreateForm'
@@ -60,7 +61,10 @@ export default function ProjectBoardPage() {
     try {
       const next = await projectsApi.getBoard(projectId)
       if (showingRef.current !== projectId) return
-      setBoard(next)
+      // Folded in rather than replaced: a read where nothing moved returns the
+      // very same object and sets no state, and a read where one card moved
+      // keeps every other card's identity so only its lane re-renders.
+      setBoard(current => mergeBoard(current, next))
     } catch (error) {
       // A background refresh that fails keeps what is drawn rather than
       // toasting every five seconds while the server is away.
@@ -95,11 +99,18 @@ export default function ProjectBoardPage() {
     toStatus: string,
     acknowledged?: string[],
   ) => {
+    // Drawn where it was dropped before the request goes out, and put back if
+    // the server refuses. Re-reading through the loading path instead replaced
+    // the whole Board with a skeleton on every drag.
+    setBoard(current => (current ? applyCardMove(current, card.id, toStatus) : current))
     try {
       await moveCardStatus(card.id, toStatus, acknowledged)
       setBlockedClose(null)
-      await load()
+      // Quiet: the optimistic move is already drawn, and `mergeBoard` touches
+      // only what the server decided differently.
+      await load(true)
     } catch (error) {
+      setBoard(current => (current ? applyCardMove(current, card.id, card.column_key) : current))
       const missing = blockedCompletion(error)
       if (missing) {
         setBlockedClose({ card, missing })
@@ -132,7 +143,9 @@ export default function ProjectBoardPage() {
     await tasksApi.create({ ...body, project_id: projectId, status: 'ready' })
     toast.success('Task created')
     setCreating(false)
-    await load()
+    // Quiet for the same reason a move is: the new card arrives in its lane
+    // without the rest of the Board blinking through a skeleton.
+    await load(true)
   }, [projectId, load])
 
   if (loading) return <div className="p-6 space-y-3"><Skeleton className="h-8 w-64" /><Skeleton className="h-64 w-full" /></div>
@@ -227,7 +240,13 @@ export default function ProjectBoardPage() {
   )
 }
 
-function BoardColumnLane({ statusKey, label, wipLimit, cards, projectId, canMove }: {
+/**
+ * Memoised on purpose: `cards` is a fresh array on every read, so without a
+ * comparator every lane would re-render whenever any lane changed. The cards
+ * themselves keep their identity through `mergeBoard`, which is what makes
+ * an element-wise check meaningful here.
+ */
+const BoardColumnLane = memo(function BoardColumnLane({ statusKey, label, wipLimit, cards, projectId, canMove }: {
   statusKey: string
   label: string
   wipLimit: number | null
@@ -259,4 +278,14 @@ function BoardColumnLane({ statusKey, label, wipLimit, cards, projectId, canMove
       </div>
     </div>
   )
-}
+}, (before, after) =>
+  before.statusKey === after.statusKey
+  && before.label === after.label
+  && before.wipLimit === after.wipLimit
+  && before.projectId === after.projectId
+  && before.canMove === after.canMove
+  && before.cards.length === after.cards.length
+  // Identity, not value: `mergeBoard` keeps an unchanged card as the same
+  // object, so this says "the same cards in the same order" without walking
+  // their contents.
+  && before.cards.every((card, index) => card === after.cards[index]))

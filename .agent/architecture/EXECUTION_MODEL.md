@@ -407,9 +407,9 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   executor family and runtime capability/trust claims;
   `RunOrchestrationService` dispatches through that family map rather than
   enumerating adapter names.
-- **Controlled CLI tools:** `runtimeTools` installs vendor CLI versions under
-  `$RAINVER_HOME/runtime-tools`; only the `INSTANCE_ADMIN_EMAIL` user may
-  install/activate instance tool versions.
+- **CLI copies:** installed on an execution host, never on the server. The
+  host card installs, logs in, upgrades and rolls back a managed copy; the
+  built-in host is instance-admin gated, a paired machine is its owner's.
 - **Run authority:** server `runs` owns run execution, stop,
   top-level run read/status/trace, post-run evaluation/finalization, the
   internal `POST /internal/runs/execute` port, server execution locks, and
@@ -418,54 +418,36 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   compatibility alias). Runtime Context Gateway delivery, Project Folder
   sandbox preparation, artifact/proposal materialization, and finalization are
   native server.
-- **Generic local CLI execution:** server `runs/vendorCliAdapter.ts`
-  renders commands, grants CLI credential profiles through the server broker,
-  prepares the server sandbox/worktree, sends the typed launch request to the
-  dedicated Sandbox Runner, parses streamed output, and materializes produced
-  artifacts/proposals. Runtime Context arrives only as ordered protocol
-  messages; vendor instruction files are not a context transport.
-  OpenCode may instead use a ModelProvider: the server writes a run-scoped
-  OpenAI-compatible provider entry to the sandbox `opencode.json` and routes
-  requests through the expiring provider proxy lease; provider API keys are
-  not ambient subprocess environment variables.
-- **Sandbox execution status:** read-only, ephemeral, worktree, and critical
-  local-CLI runs all execute in the dedicated `sandbox-runner` service. The
-  Runner accepts managed mount ids and typed egress/credential/tool channels,
-  resolves one selected runtime-tool version, and starts a fresh empty-root
-  bubblewrap mount/PID namespace. Only workspace/Delivery/tool/runtime-home/
-  Exchange targets are mounted. Runner and namespace failure are fail-closed;
-  the application server has no local, Docker-CLI, or bubblewrap fallback.
-  `one_shot_docker` remains the immutable routing/risk value for critical Runs,
-  not a process-launch implementation.
-  `RunOrchestrationService.enforceRuntimePolicy` derives this upgrade from the
-  immutable run contract's `risk_level`, so manual, plan, task, and automation
-  entry points share the same critical-risk boundary.
-- Run detail reads expose the immutable contract, verification results,
-  attempt/supervisor history, route decision, and finalization history as
-  separate panels. Saving a successful verified run as a workflow is a
-  server-authoritative preview → save flow; the server decides whether the
-  save is a draft or a proposal based on the run's recorded evidence and risk.
-- **Space runtime policy:** space owners/admins manage
-  `space_runtime_tool_policies`. Agent versions store the resolved
-  `runtime_tool_version`, and runs fail closed before credential resolution if
-  that version is unavailable, disabled, or disallowed for the active space.
-- **HostExecutionPort (ADR 0016; P1 topology):**
-  `RunOrchestrationService.prepareRuntimeContext` resolves a `HostExecutionPort`
-  once per run — server-host runs and folder-less runs always resolve to
-  `ServerHostExecutionAdapter`, a verbatim wrapper around the existing
-  `RunSandboxManagerPort`/`RunCodePatchCollectorPort`/`RunExchangePort`
-  instances (zero behavior change from before this port existed). A run bound
-  to a Project Folder resolves its explicit active server `workspace_location` and
-  rejects a remote Location before entering server filesystem code. A remote
-  Task Run is admitted through the merged task-run control-plane path and is
-  dispatched by `RemoteHostExecutionAdapter` over the daemon protocol; the
-  daemon reports Location readiness and uploads diff/output artifacts rather
-  than becoming a second orchestration authority.
-  `file_exists` verification (`server/src/modules/runs/verification/engine.ts`)
-  takes the resolved Location kind and short-circuits for a non-`server` run
-  instead of `stat`-ing a path with no meaning on that machine. Runs persist
-  `workspace_location_id` and `trust_mode`; the shared terminal projector
-  advances the linked Task for both server and remote execution.
+- **CLI execution:** `runs/remoteHostCliAdapter.ts` renders the runtime's ACP
+  argv and prompt, resolves its host-owned installation and Agent profile,
+  sends the daemon launch, and consumes ACP events. Every CLI runtime follows
+  this path on both host kinds. Login state is the managed copy's own, held on
+  the host; nothing is brokered per Run and no CLI Runtime Context Delivery is
+  assembled. A selected ModelProvider is reached through
+  an expiring proxy lease; its API key never enters the subprocess environment.
+- **Isolation:** the built-in host's daemon runs inside `sandbox-runner` and
+  builds a bubblewrap namespace for each Run. A paired trusted host executes
+  natively. The daemon resolves all physical workspace/profile paths. There
+  is no application-server CLI subprocess fallback or server-prepared CLI
+  worktree/Run Exchange. Diffs and output files are uploaded as artifacts;
+  execution can modify the selected workspace before review.
+- **Version selection:** dispatch selects an installation the daemon reports.
+  One current version per adapter per host, with one kept behind it as the
+  rollback target; there is no instance catalog and no per-Space policy.
+- **HostExecutionPort:** `HostDaemonExecutionAdapter` represents every CLI
+  dispatch, with its actual host kind and Location or managed-container
+  identity. Non-CLI runtimes retain the in-process `ServerHostExecutionAdapter`
+  and Runtime Context Gateway. Folder-less CLI Runs require a managed
+  container; they do not fall back to an application-server temporary directory.
+- **Verification:** `command_run` executes the server's recipe on the host
+  holding that workspace; file-existence and Git checks use the same channel.
+  Strict commands have no network and a minimal namespace; trusted commands
+  execute natively with a minimal environment. Failure or incomplete output
+  yields unavailable/error evidence. Terminal Task projection is shared.
+- **C3:** admin probes on the built-in host use the same duplex ACP transport,
+  in disposable workspaces and profiles. Bounded recursive file inspection and
+  observed termination accompany completion; no real-runtime pass is inferred
+  from a declaration or a unit-test fixture.
 
 Do not add new adapters to the agents module — it contains Agent/AgentVersion CRUD only.
 
@@ -531,9 +513,9 @@ Policy gates run in this order inside server run orchestration:
 1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and `adapter.execute()`. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `adapter_type`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
 
 2. **`runtime.use_credential`** — called after adapter type resolution but
-   **before** any ModelProvider key fetch or CLI profile release. The resource
-   is the selected ModelProvider or CLI credential profile in the run's active
-   space. Active-space grant resolution happens before secret/profile material
+   **before** a server-owned ModelProvider key fetch. The resource is the
+   selected ModelProvider in the Run's active Space; host-copy login is not
+   a server-brokered CLI profile grant. Active-space grant resolution happens before secret material
    is loaded; missing or disabled grants fail closed. Cross-space credential →
    hard DENY (CRITICAL). Automation origin → REQUIRE_APPROVAL. Same-space
    manual/api/delegation → ALLOW. DENY → `error_code=policy_denied_runtime_use_credential`.
@@ -562,12 +544,13 @@ None of these gates may be bypassed. No secret material is resolved before `runt
 
 ## Runtime Credential Resolver
 
-`server/src/modules/providers` and the server credential broker are the
-canonical runtime credential resolver.
+`server/src/modules/providers` resolves server-owned ModelProvider and managed
+subscription credentials. Host daemons link CLI copy login state into isolated
+Agent profiles; the old CLI broker remains only pending its API retirement.
 
 - Resolves credentials through active-space grants: ModelProvider API keys from
-  encrypted user-owned `Credential` rows, CLI login state from user-owned
-  filesystem profiles.
+  encrypted user-owned `Credential` rows. Host CLI login is resolved on the
+  host holding the installation, not through those grants.
 - Runtime adapters must not read `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from
   the ambient environment.
 - Raw credential values are never stored in RunStep fields, artifact content, or logs.

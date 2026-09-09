@@ -31,7 +31,6 @@ export type ConversationExecutionSelection = z.infer<typeof ConversationExecutio
 export const ConversationRuntimeSelectionSchema = z.object({
   agent_id: IdSchema,
   runtime_profile_id: IdSchema,
-  credential_profile_id: IdSchema.nullable(),
   adapter_type: z.string().trim().min(1).max(64),
   runtime_installation: z.string().trim().min(1).max(128),
 }).strict();

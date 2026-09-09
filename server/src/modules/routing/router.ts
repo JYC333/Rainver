@@ -93,23 +93,22 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   const requiredTools = unique([...(request.required_tools ?? []), ...hints.required_tools]);
   if (!candidate.enabled) reasons.push("candidate_disabled");
   if (!candidate.credential_available) reasons.push("credential_unavailable");
-  const localCli = isLocalCliRuntimeAdapter(candidate.adapter_type);
   const shape = hints.execution_shape;
-  if (candidate.conformance_status === "failed" && localCli) {
-    reasons.push("runtime_conformance_failed");
-  }
-  if (localCli && request.risk_level !== "low" && candidate.conformance_status !== "passed") {
-    reasons.push("runtime_conformance_required");
-  }
   // File and code shapes are admitted on what the adapter declares, never on
-  // its name. A runtime without file access has no working directory to act in,
-  // and one that has it must carry conformance evidence before doing so.
+  // its name: a runtime without file access has no working directory to act in.
+  //
+  // Risk no longer narrows a CLI candidate here. The conformance gate that used
+  // to — refusing anything above low risk, and any file-shaped work, without a
+  // passed suite — was removed on 2026-09-09 with the suite itself: a one-shot
+  // behaviour probe of a non-deterministic runtime, cached against a version
+  // key and blind to the model actually selected, was not evidence a gate could
+  // rest on. What contains a CLI Run is the host's namespace, its egress
+  // profile and ADR 0008's credential channel, none of which vary by risk. That
+  // this leaves risk with no teeth for CLI dispatch is stated in the deferred
+  // register rather than implied by a check that no longer exists.
   const fileShape = shape === "agentic_files" || shape === "code_execution";
   if (fileShape && !candidate.requires_file_access) {
     reasons.push("execution_shape_incompatible");
-  }
-  if (fileShape && candidate.requires_file_access && candidate.conformance_status !== "passed") {
-    reasons.push("runtime_conformance_required_for_execution_shape");
   }
   if (request.excluded_runtime_profile_ids?.includes(candidate.runtime_profile_id)) {
     reasons.push("runtime_profile_excluded_for_retry");
@@ -191,11 +190,6 @@ function executionShapeScore(
   if (
     (shape === "conversational" || shape === "structured_generation") &&
     candidate.adapter_type === "model_api"
-  ) return 30;
-  if (
-    (shape === "agentic_files" || shape === "code_execution") &&
-    candidate.adapter_type === "opencode" &&
-    candidate.conformance_status === "passed"
   ) return 30;
   return 0;
 }

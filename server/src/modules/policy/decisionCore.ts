@@ -859,6 +859,9 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
 const ORIGIN_GATED_PROJECT_WRITES = new Set([
   "task.create",
   "task.stage.advance",
+  // Closing is a claim about the work, not a report of it. Reporting stays
+  // ungated so an unattended Agent can still say what it did.
+  "task.complete",
   "proposal.decide",
   "inquiry.thread.create",
   "inquiry.iteration.record",

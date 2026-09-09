@@ -62,10 +62,6 @@ import type {
   ClaimCandidatePacketCreateResponse,
   ClaimContradictionScanRequestInput,
   ClaimContradictionScanResponse,
-  CliCredentialAvailableProfileOut,
-  CliCredentialProfileOut,
-  CliUsageAutoRefreshSettings,
-  CliUsageEntry,
   ContentAccessLogList,
   ContentAccessPolicy,
   ContentAccessUpdate,
@@ -95,8 +91,6 @@ import type {
   RoomAgentCandidatesResponse,
   RoomAgentMutationResponse,
   RoomAgentPresetRequest,
-  CredentialLoginMethod,
-  CredentialStatus,
   CrossSpaceEgressDisclosure,
   CrossSpaceFusedStoreResponse,
   CrossSpaceResolveResponse,
@@ -157,6 +151,8 @@ import type {
   Host,
   HostPairingCode,
   HostRuntimeAdapterOption,
+  HostRuntimeChange,
+  HostRuntimeUsage,
   HostRuntimeProviderBinding,
   HostExecutionTargetsResponse,
   WorkspaceLocation,
@@ -186,7 +182,6 @@ import type {
   KnowledgeSourceSummary,
   KnowledgeSummary,
   KnowledgeUpdateProposalBody,
-  LoginEvent,
   MaterializedResearchStrategy,
   Memory,
   MemoryMaintenanceJob,
@@ -344,10 +339,6 @@ import type {
   RunLogicalIO,
   RunStatusOut,
   RunSupervisorDecision,
-  RuntimeToolDefinition,
-  RuntimeToolInstallResult,
-  RuntimeToolLatest,
-  RuntimeToolStatus,
   RunVerificationResult,
   SendAgentRunGroupMessageRequest,
   SendAgentRunGroupMessageResponse,
@@ -411,7 +402,6 @@ import type {
   SpaceOversightMode,
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
-  SpaceRuntimeToolPolicyOut,
   SpaceSnapshotDefaults,
   SpaceWithMembership,
   SummaryRunOut,
@@ -434,9 +424,6 @@ import type {
   GraphProjectionViewMode,
   UsageAccuracy,
   UsageBudgetPreviewResponse,
-  UsageCliHistoryCommitRequest,
-  UsageCliHistoryImportResponse,
-  UsageCliHistoryPreviewRequest,
   UsageDimensionsResponse,
   UsageEventsResponse,
   UsageExecutionChannel,
@@ -1863,10 +1850,7 @@ export const agentsApi = {
       session_id?: string
       project_id?: string
       restore_workspace?: boolean
-      backend?: Pick<
-        ConversationBackendBinding,
-        'runtime_profile_id' | 'credential_profile_id'
-      >
+      backend?: Pick<ConversationBackendBinding, 'runtime_profile_id'>
       session_config?: NonNullable<ChatTurnRequest['session_config']>
     },
     options: {
@@ -2012,6 +1996,17 @@ export const hostsApi = {
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}`),
   uninstallRuntime: (hostId: string, adapterType: string, installation: string) =>
     del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}`),
+  /** Undoes the last upgrade of a managed copy, promoting the version the host kept behind it. */
+  rollbackRuntime: (hostId: string, adapterType: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/rollback`),
+  /** What has changed about every host's runtimes, newest first. */
+  runtimeChanges: () => get<{ items: HostRuntimeChange[] }>('/hosts/runtime-changes'),
+  /** The cached subscription quota for each copy on a host; a read, never a probe. */
+  usage: (hostId: string) => get<{ items: HostRuntimeUsage[] }>(`/hosts/${encodeURIComponent(hostId)}/usage`),
+  /** Asks one copy now, on the host that holds its login. */
+  refreshUsage: (hostId: string, adapterType: string, installation: string) =>
+    post<HostRuntimeUsage>(
+      `/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/usage`),
   /**
    * The login terminal for one copy of a runtime on a host: the daemon runs
    * the copy's login command on a PTY and this relays it, frame by frame,
@@ -2200,10 +2195,6 @@ export const usageApi = {
     get<UsageBudgetPreviewResponse>(`/usage/budget-preview${usageQuery(params)}`),
   operationalTotals: (params: Pick<UsageApiQuery, 'from' | 'to'> = {}) =>
     get<UsageOperationalTotalsResponse>(`/usage/operations/totals${usageQuery(params)}`),
-  previewCliHistory: (body: UsageCliHistoryPreviewRequest) =>
-    post<UsageCliHistoryImportResponse>('/usage/imports/cli-history/preview', body),
-  commitCliHistory: (body: UsageCliHistoryCommitRequest) =>
-    post<UsageCliHistoryImportResponse>('/usage/imports/cli-history/commit', body),
 }
 
 // ── ACP registry agents ───────────────────────────────────────────────────
@@ -2257,121 +2248,6 @@ export interface RuntimeInstallResult {
   ok: boolean
   error: string | null
   installation: string | null
-}
-
-export const runtimeToolsApi = {
-  catalog: () => get<RuntimeToolDefinition[]>('/runtime-tools/catalog'),
-  list: () => get<RuntimeToolStatus[]>('/runtime-tools'),
-  get: (runtime: string) => get<RuntimeToolStatus>(`/runtime-tools/${encodeURIComponent(runtime)}`),
-  latest: (runtime: string) => get<RuntimeToolLatest>(`/runtime-tools/${encodeURIComponent(runtime)}/latest`),
-  spacePolicies: () => get<SpaceRuntimeToolPolicyOut[]>('/runtime-tools/space-policy'),
-  spacePolicy: (runtime: string) =>
-    get<SpaceRuntimeToolPolicyOut>(`/runtime-tools/space-policy/${encodeURIComponent(runtime)}`),
-  updateSpacePolicy: (runtime: string, data: { enabled?: boolean; default_version?: string | null; allowed_versions?: string[] }) =>
-    put<SpaceRuntimeToolPolicyOut>(`/runtime-tools/space-policy/${encodeURIComponent(runtime)}`, data),
-  install: (runtime: string, data: { version?: string | null; activate?: boolean; force?: boolean } = {}) =>
-    post<RuntimeToolInstallResult>(`/runtime-tools/${encodeURIComponent(runtime)}/install`, data),
-  activate: (runtime: string, version: string) =>
-    post<RuntimeToolStatus>(`/runtime-tools/${encodeURIComponent(runtime)}/activate`, { version }),
-}
-
-// ── Credentials / Login ───────────────────────────────────────────────────
-export const credentialsApi = {
-  profiles: (runtime?: string, spaceId?: string | null) =>
-    get<CliCredentialProfileOut[]>(
-      '/credentials/cli/profiles' + (runtime ? `?runtime=${encodeURIComponent(runtime)}` : ''),
-      spaceId ? { spaceId } : undefined,
-    ),
-  available: (runtime?: string, spaceId?: string | null) =>
-    get<CliCredentialAvailableProfileOut[]>(
-      '/credentials/cli/available' + (runtime ? `?runtime=${encodeURIComponent(runtime)}` : ''),
-      spaceId ? { spaceId } : undefined,
-    ),
-  createProfile: (body: {
-    runtime: string
-    name: string
-    readonly?: boolean
-    notes?: string
-    network_profile_id?: string | null
-    is_default?: boolean
-  }, spaceId?: string | null) => post<CliCredentialProfileOut>(
-    '/credentials/cli/profiles',
-    body,
-    spaceId ? { spaceId } : undefined,
-  ),
-  grantProfile: (profileId: string, body: {
-    space_id: string
-    enabled?: boolean
-    is_default?: boolean
-    network_profile_id?: string | null
-  }, spaceId?: string | null) => put(
-    `/credentials/cli/profiles/${encodeURIComponent(profileId)}/grants`,
-    body,
-    spaceId ? { spaceId } : undefined,
-  ),
-  updateProfile: (profileId: string, body: { network_profile_id?: string | null }, spaceId?: string | null) =>
-    patch<CliCredentialProfileOut>(
-      `/credentials/cli/profiles/${encodeURIComponent(profileId)}`,
-      body,
-      spaceId ? { spaceId } : undefined,
-    ),
-  methods: (spaceId?: string | null) =>
-    get<CredentialLoginMethod[]>('/credentials/cli/methods', spaceId ? { spaceId } : undefined),
-  status: (spaceId?: string | null) =>
-    get<CredentialStatus[]>('/credentials/cli/status', spaceId ? { spaceId } : undefined),
-  usage: (spaceId?: string | null) =>
-    get<CliUsageEntry[]>('/credentials/cli/usage', spaceId ? { spaceId } : undefined),
-  usageAutoRefresh: (spaceId?: string | null) =>
-    get<CliUsageAutoRefreshSettings>('/credentials/cli/usage/auto-refresh', spaceId ? { spaceId } : undefined),
-  setUsageAutoRefresh: (enabled: boolean, spaceId?: string | null) =>
-    put<CliUsageAutoRefreshSettings>(
-      '/credentials/cli/usage/auto-refresh',
-      { enabled },
-      spaceId ? { spaceId } : undefined,
-    ),
-  refreshUsage: (runtime: string, profileId?: string | null, spaceId?: string | null) =>
-    post<CliUsageEntry>(
-      `/credentials/cli/usage/refresh?runtime=${encodeURIComponent(runtime)}${profileId ? `&profile_id=${encodeURIComponent(profileId)}` : ''}`,
-      {},
-      spaceId ? { spaceId } : undefined,
-    ),
-
-  sendLoginInput: (runtime: string, input: string, profileId?: string | null, spaceId?: string | null) =>
-    post<{ status: string }>(
-      `/credentials/cli/login/input?runtime=${encodeURIComponent(runtime)}`,
-      profileId ? { input, profile_id: profileId } : { input },
-      spaceId ? { spaceId } : undefined,
-    ),
-
-  async *loginStream(runtime: string, profileId?: string | null, spaceId?: string | null): AsyncGenerator<LoginEvent> {
-    const profileParam = profileId ? `&profile_id=${encodeURIComponent(profileId)}` : ''
-    const url = `${BASE}/credentials/cli/login/stream?runtime=${encodeURIComponent(runtime)}${profileParam}`
-    const headers: Record<string, string> = {}
-    if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-    headers['X-Rainver-Space-Id'] = spaceId ?? _spaceId
-
-    const r = await fetch(url, { headers })
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-    if (!r.body) throw new Error('No response body')
-
-    const reader = r.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const parts = buf.split('\n\n')
-      buf = parts.pop() ?? ''
-      for (const block of parts) {
-        const line = block.trim()
-        if (line.startsWith('data: ')) {
-          try { yield JSON.parse(line.slice(6)) as LoginEvent } catch { /* skip malformed */ }
-        }
-      }
-    }
-  },
 }
 
 export const networkProfilesApi = {

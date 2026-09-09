@@ -8,8 +8,17 @@ import {
   type RuntimeProbe,
 } from "@rainver/protocol";
 import { helloInfo } from "../api.js";
-import { configDir, loadConfig, removeConfig } from "../config.js";
+import { builtinCredentialPath, configDir, loadConfig, removeConfig } from "../config.js";
+import { adoptBuiltinCredential } from "../builtinRegistration.js";
+import { runHostCommand } from "../commandRun.js";
+import { probeUsage } from "../usageProbe.js";
+import { startEgressProxy } from "../egressProxy.js";
+
 import {
+  adapterIsBeingReplaced,
+  holdingAdapter,
+  withAdapterDrained,
+  setEgressProxy,
   handleLaunch,
   handleStdin,
   handleStdinClose,
@@ -22,7 +31,7 @@ import {
   type LaunchWorkspace,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
-import { OWN_INSTALLATION, installTool, managedInstallationId, uninstallTool } from "../tools.js";
+import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
 import { loginSession, openLoginSession } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
@@ -31,11 +40,22 @@ import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWo
 import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
+/**
+ * How long an upgrade waits for the copy's Runs to finish before giving up.
+ *
+ * A Run has its own timeout well under this, so a drain that has not converged
+ * in five minutes means something is stuck rather than busy — and the answer
+ * is to abandon the upgrade, not to kill the Run.
+ */
+const TOOL_DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
+
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const UPDATE_RESTART_POLL_MS = 30_000;
+/** How often the built-in host looks for a credential the control plane has not published yet. */
+const BUILTIN_CREDENTIAL_POLL_MS = 3_000;
 // The installed unit uses Restart=on-failure: update is an intentional
 // restart, while a revoked/unregistered daemon returns zero and stays down.
 const UPDATE_RESTART_EXIT_CODE = 75;
@@ -90,7 +110,13 @@ export function toLaunchFrame(frame: HostServerFrameOf<"launch">): LaunchFrame {
 
 function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]): LaunchWorkspace | undefined {
   if (!workspace) return undefined;
-  if (workspace.kind === "location") return { kind: "location", workspace_location_id: workspace.workspace_location_id };
+  if (workspace.kind === "location") {
+    return {
+      kind: "location",
+      workspace_location_id: workspace.workspace_location_id,
+      ...(workspace.workspace_relative_path ? { workspace_relative_path: workspace.workspace_relative_path } : {}),
+    };
+  }
   return {
     kind: "managed",
     agent_id: workspace.agent_id,
@@ -105,7 +131,7 @@ function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]):
  *
  * The argv comes from the server's own runtime probes, cached from
  * `hello_ack`, never from anything in the frame: which binary implements an
- * adapter is the server's knowledge (ADR 0016 §5), and a frame that could
+ * adapter is the server's knowledge (ADR 0016 §6), and a frame that could
  * name its own command would make this daemon spawn whatever it was told to.
  * The workspace's real path is resolved here and never sent (ADR 0016 D3).
  */
@@ -144,10 +170,30 @@ export function toAmbientImportRequest(
  */
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
-  const config = await loadConfig();
+  // The built-in host has no pairing step: the control plane publishes its
+  // credential into the mount both containers share and this adopts it. A
+  // paired machine short-circuits here (`not_builtin`) and keeps the
+  // registered-or-exit behaviour below.
+  const builtin = builtinCredentialPath() !== null;
+  if (builtin) {
+    while ((await adoptBuiltinCredential(log)) === "unavailable") {
+      // The container can start before the server has written the file. Waiting
+      // is the whole recovery: exiting would need a manual restart to come up.
+      log(`waiting for the control plane to publish the built-in host credential (${builtinCredentialPath()})`);
+      await sleep(BUILTIN_CREDENTIAL_POLL_MS);
+    }
+  }
+  let config = await loadConfig();
   if (!config) {
     log("not registered; exiting without reconnecting");
     return;
+  }
+  // Strict mode only. A trusted host is its owner's machine and its Runs use
+  // the machine's own network — the trust its owner already extends (ADR 0016
+  // §2). A strict host is not anyone's machine, so its Runs are pointed at a
+  // proxy that says what they may reach and records what they did.
+  if (config.trust === "strict") {
+    setEgressProxy(await startEgressProxy(log), config.server_url);
   }
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
   // A run outlives a single WebSocket connection (§5 — "an interrupted
@@ -164,17 +210,31 @@ export async function runService(options: { log?: (line: string) => void } = {})
         process.exit(UPDATE_RESTART_EXIT_CODE);
       }
       if (result === "revoked") {
-        stopAllRunsForRevocation(log);
-        await disableInstalledService().catch((error) => {
-          log(`could not disable the revoked service: ${error instanceof Error ? error.message : String(error)}`);
-        });
-        await removeConfig();
-        log("registration revoked by the control plane; removed local credentials and stopped reconnecting");
-        return;
+        // The built-in host cannot be revoked (the control plane refuses), so
+        // this can only be a token the server rotated after losing its
+        // published copy. Re-adopt and reconnect: disabling the service here
+        // would take the instance's own execution host down permanently, and
+        // there is no operator with a pairing code to bring it back.
+        if (builtin) {
+          log("the control plane rejected this built-in host's token; re-reading the published credential");
+        } else {
+          stopAllRunsForRevocation(log);
+          await disableInstalledService().catch((error) => {
+            log(`could not disable the revoked service: ${error instanceof Error ? error.message : String(error)}`);
+          });
+          await removeConfig();
+          log("registration revoked by the control plane; removed local credentials and stopped reconnecting");
+          return;
+        }
+      } else {
+        reconnectDelay = RECONNECT_BASE_DELAY_MS;
       }
-      reconnectDelay = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
       log(`connection lost: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (builtin) {
+      await adoptBuiltinCredential(log);
+      config = (await loadConfig()) ?? config;
     }
     log(`reconnecting in ${Math.round(reconnectDelay / 1000)}s`);
     await sleep(reconnectDelay);
@@ -386,6 +446,95 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           })();
           return;
         }
+        case "command_run": {
+          // Fire-and-forget like every other request frame: a verification
+          // recipe can run for minutes, and the socket must keep carrying
+          // heartbeats and Run frames while it does.
+          void (async () => {
+            const result = await runHostCommand(
+              {
+                request_id: frame.request_id,
+                workspace: toLaunchWorkspace(frame.workspace),
+                ...(frame.workspace_location_id ? { workspace_location_id: frame.workspace_location_id } : {}),
+                ...(frame.run_id ? { run_id: frame.run_id } : {}),
+                ...(frame.scratch_workspace ? { scratch_workspace: true } : {}),
+                ...(frame.adapter_type ? { adapter_type: frame.adapter_type } : {}),
+                ...(frame.installation ? { installation: frame.installation } : {}),
+                ...(frame.stdin !== undefined ? { stdin: frame.stdin } : {}),
+                command: frame.command,
+                timeout_seconds: frame.timeout_seconds,
+                ...(frame.isolation ? { isolation: frame.isolation } : {}),
+              },
+              log,
+            );
+            sink.send({ type: "command_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "usage_probe": {
+          // Fire-and-forget: reading a quota means a network round trip or a
+          // short-lived subprocess, and neither may hold up Run frames.
+          void (async () => {
+            // Every other request handler contains its own failure; without
+            // this a synchronous throw inside `probeUsage` becomes an
+            // unhandled rejection and takes the daemon — and every in-flight
+            // Run's `complete` frame — with it.
+            try {
+              // A probe launches the copy, so it takes the same closed door a
+              // Run does — otherwise it reads a directory a replacement is
+              // deleting, or two concurrent Codex app-servers rewrite one
+              // `auth.json` between them.
+              if (adapterIsBeingReplaced(frame.adapter_type)) {
+                throw new Error(`${frame.adapter_type} is being upgraded on this host; retry in a moment.`);
+              }
+              const quota = await holdingAdapter(frame.adapter_type, () => probeUsage({
+                adapter_type: frame.adapter_type,
+                installation: frame.installation,
+                login: frame.login,
+                timeout_seconds: frame.timeout_seconds,
+              }));
+              sink.send({ type: "usage_probe_result", request_id: frame.request_id, quota });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              log(`usage_probe failed: ${message}`);
+              sink.send({
+                type: "usage_probe_result",
+                request_id: frame.request_id,
+                quota: { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: message },
+              });
+            }
+          })();
+          return;
+        }
+        case "rollback_tool": {
+          void (async () => {
+            try {
+              // Held closed for the whole promotion, same as an upgrade:
+              // promoting the previous copy deletes the directory a live
+              // session would be running out of.
+              const promoted = await withAdapterDrained(
+                frame.adapter_type,
+                TOOL_DRAIN_TIMEOUT_MS,
+                () => rollbackTool(frame.adapter_type),
+              );
+              if (!promoted) throw new Error(`No previous version of ${frame.adapter_type} is kept on this host`);
+              log(`rolled ${frame.adapter_type} back to ${promoted.version}`);
+              sendHeartbeat();
+              sink.send({
+                type: "tool_result",
+                request_id: frame.request_id,
+                ok: true,
+                error: null,
+                installation: managedInstallationId(promoted.version),
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              log(`rollback_tool failed: ${message}`);
+              sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: message, installation: null });
+            }
+          })();
+          return;
+        }
         case "install_tool":
         case "uninstall_tool": {
           const fail = (error: unknown) => {
@@ -394,17 +543,25 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: message, installation: null });
           };
           const action = frame.type === "install_tool"
-            ? (async () => {
+            ? withAdapterDrained(frame.adapter_type, TOOL_DRAIN_TIMEOUT_MS, async () => {
+                // Held closed across the download too, not merely drained
+                // before it: swapping the binary under a live ACP session is
+                // how an upgrade breaks a Run someone is watching (ADR 0016 §9),
+                // and a materialize takes long enough for a new dispatch to
+                // arrive. A drain that does not converge aborts the upgrade
+                // rather than killing the Run.
                 log(`install ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
                 const manifest = await installTool(frame, log);
                 log(`installed ${frame.adapter_type} ${managedInstallationId(frame.version)} → ${manifest.command}`);
                 return managedInstallationId(frame.version);
-              })()
-            : (async () => {
+              })
+            // Removal takes the same door: it deletes a directory a Run could
+            // be running out of, exactly like a replacement.
+            : withAdapterDrained(frame.adapter_type, TOOL_DRAIN_TIMEOUT_MS, async () => {
                 if (!(await uninstallTool(frame))) throw new Error(`${frame.adapter_type} ${managedInstallationId(frame.version)} is not installed`);
                 log(`removed ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
                 return managedInstallationId(frame.version);
-              })();
+              });
           void action.then((installation) => {
             // Report the new capability now rather than on the next interval.
             sendHeartbeat();
@@ -414,6 +571,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         }
         case "login_open": {
           try {
+            // A managed copy's login state lives inside its tool directory, so
+            // a rollback or removal mid-login deletes the very tree the
+            // terminal is writing into. Refused rather than raced, like a
+            // launch.
+            if (adapterIsBeingReplaced(frame.adapter_type)) {
+              throw new Error(`${frame.adapter_type} is being upgraded on this host; retry in a moment.`);
+            }
             openLoginSession(frame, (payload) => {
               sink.send(payload);
               // A finished login changes what this host reports.

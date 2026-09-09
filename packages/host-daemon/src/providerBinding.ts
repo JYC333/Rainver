@@ -15,16 +15,18 @@ export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
  * An allowlist, not a denylist, because B67 states the rule that way round:
  * backend selection comes only from what the control plane injects, so the
  * question is what a runtime legitimately needs from the machine — not which
- * of the machine's variables we remembered to name. The server host reaches
- * the same conclusion in `runs/cliSubprocessEnv.ts`, and a denylist here would
- * have let `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` and `NODE_OPTIONS`
- * through, each of which redirects a run somewhere the control plane did not
- * choose.
+ * of the machine's variables we remembered to name. The deleted server-host
+ * path reached the same conclusion; a denylist here would have let
+ * `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` and `NODE_OPTIONS` through, each
+ * of which redirects a run somewhere the control plane did not choose.
  *
- * A run on this machine's own login does **not** come through here; it keeps
- * the machine's environment minus the state-root variables above, which is
- * what B67's closing rule says and what leaves a paired machine's git and ssh
- * configuration reachable.
+ * On a **trusted** host, a run on the machine's own login does **not** come
+ * through here; it keeps the machine's environment minus the state-root
+ * variables above, which is what B67's closing rule says and what leaves a
+ * paired machine's git and ssh configuration reachable. On a **strict** host
+ * that exemption does not apply: `planStrictLaunch` filters every run's
+ * environment through this same allowlist, bound or not, because the container
+ * is nobody's machine.
  */
 const ALLOWED_AMBIENT_KEYS = new Set([
   "PATH",

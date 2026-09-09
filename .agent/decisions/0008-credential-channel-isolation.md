@@ -1,11 +1,16 @@
 # ADR 0008: Credential Channel Isolation
 
-Date: 2026-06-02
+Date: 2026-06-02 · revised 2026-09-08
 
 ## Status
 
 Accepted. Storage detail lives in
 [`architecture/CREDENTIAL_STORAGE.md`](../architecture/CREDENTIAL_STORAGE.md).
+Revised 2026-09-08: the invariant is unchanged, but the CLI channel it
+describes moved off the server. [ADR 0016](0016-control-plane-execution-hosts.md)
+retired the credential broker, the CLI credential profiles and the server-side
+subprocess allowlist; the enforcement point named below is the host daemon's
+environment filter now.
 
 ## Context
 
@@ -18,11 +23,19 @@ with the CLI's own OAuth login state.
 Three model-execution credential channels exist and are architecturally
 separate:
 
-- **CLI channel.** Local CLIs run as subprocesses whose environment is
-  rebuilt from an allowlist (`server/src/modules/runs/cliSubprocessEnv.ts`,
-  `buildSubprocessEnv`): `PATH`, `TERM`, `SHELL`, `LANG`, `LC_*`, plus keys the
-  `CredentialBroker` injects for a granted credential profile. Ambient
-  `process.env` is never inherited wholesale.
+- **CLI channel.** Local CLIs run on an execution host, never in the server
+  process. Since [ADR 0016](0016-control-plane-execution-hosts.md) the control
+  plane brokers no CLI credential at all: a CLI's login lives with the copy on
+  the host. The environment rule moved to the daemon
+  (`packages/host-daemon/src/execution.ts`,
+  `packages/host-daemon/src/providerBinding.ts`), and the rule differs by trust
+  mode. On a **strict** host every Run's environment is allowlist-filtered,
+  bound or not — the container is nobody's machine, so it contributes nothing.
+  On a **trusted** host, a Run **bound to a ModelProvider** is filtered and
+  given the lease the control plane injected, so the machine contributes no
+  backend or credential (B67); an unbound Run there keeps the owner's own
+  environment and spends the copy's own login, which is the point of pairing
+  it.
 - **In-process API channel.** Provider tasks, `/api/v1/providers/chat`, and
   the `model_api` / `ts_agent_host` adapters resolve the key from the
   encrypted ModelProvider credential (`resolveProviderApiKey`) and pass it as a
@@ -61,13 +74,17 @@ Therefore:
 
 ### 2. Enforcement points
 
-- `claude_code` and every other local CLI remain `local_cli` specs using
-  `cli_profile` credentials granted through `CredentialBroker`.
+- `claude_code` and every other local CLI remain `local_cli` specs. They carry
+  no credential reference: the control plane refuses a `credential_profile_id`
+  on an Agent runtime profile outright (`agents/routes.ts`,
+  `agents/repository.ts`), because a CLI Agent names an execution host and an
+  installation on it instead.
 - There is no ambient `ANTHROPIC_API_KEY` fallback for CLI execution, and no
-  canonical adapter reads provider keys from ambient env or settings; the
-  allowlist builder is the enforcement point and is guarded by
-  `server/test/runVendorCliAdapter.test.ts` and
-  `server/test/providersCredentialsAuthority.test.ts`.
+  canonical adapter reads provider keys from ambient env or settings. The
+  enforcement point is now the daemon's environment filter, guarded by
+  `packages/host-daemon/test/providerBinding.test.ts` and
+  `packages/host-daemon/test/execution.test.ts`; the control-plane half is
+  guarded by `server/test/providersCredentialsAuthority.test.ts`.
 - Vendor CLI support is spec data, not Agent or provider foundation code.
 
 ### 3. Channel selection weighs execution shape and funding source equally
@@ -85,12 +102,14 @@ conversation:
   capacity rather than API budget;
 - conversation is therefore a supported CLI surface, not an API-only one.
 
-CLI credentials remain user-owned. A CLI-backed conversation resolves the
-signed-in speaker's own profile, never a Space-shared one, so one member's
-capacity is not spent on another member's instruction. The selected
-`(runtime_profile_id, credential_profile_id)` is stored on the user × session
-binding and frozen into each Run; `AgentRuntimeProfile` carries
-transport/model policy only and has no credential field.
+A CLI-backed conversation binds the signed-in speaker's own choice of host and
+installation, stored on the user × session binding and frozen into each Run.
+`AgentRuntimeProfile` carries transport/model policy only and has no credential
+field. On a **paired** host that choice is the owner's own machine, so one
+member's capacity is not spent on another's instruction. On the **built-in**
+host there is one copy per instance and everyone spends it — inherent to a
+shared host, and stated in [ADR 0016](0016-control-plane-execution-hosts.md) §3
+rather than papered over here.
 
 ### 4. A CLI in provider mode holds a lease, never the key
 

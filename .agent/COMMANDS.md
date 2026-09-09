@@ -81,10 +81,30 @@ SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 pnpm run schema:generate -- --name add_widget_color
 pnpm run schema:generate -- --custom --name enable_pg_trgm
 pnpm run schema:check
+
+# A migration that removes something the *running* release still reads cannot
+# be applied under a live server. Mark it with `-- rainver:maintenance` on a line of its own near the top
+# of the SQL file (the runner scans the first 20 lines): `start.sh` and the UI update then refuse it
+# and name the offline command instead (ADR 0016 §10). The distinction
+# is compatibility with the running version, not whether a database changes.
+SERVER_DATABASE_URL=postgresql://... node dist/db/migrateCli.js maintenance-pending  # exit 10 = pending
 ```
 
 For the default Docker Compose setup, Postgres is **not** published to the host, so prefer the
 ops helper below over direct host migrations.
+
+Offline maintenance upgrade — the only way a maintenance-marked migration is
+applied. It pulls images, waits for Runs to finish (never killing one), stops
+frontend/server/sandbox-runner/deployer while keeping PostgreSQL, takes the
+dump, applies the migration only if the dump succeeded, then starts again. On
+failure it leaves the applications stopped, keeps the dump, and rolls nothing
+back: restoring is an explicit decision, and changing image tags alone is not
+a recovery.
+
+```bash
+./ops/scripts/start.sh --prod --maintenance
+MAINTENANCE_DRAIN_SECONDS=1800 ./ops/scripts/start.sh --prod --maintenance
+```
 
 Default client-facing API (server): http://localhost:3000/api/v1
 
@@ -199,30 +219,41 @@ Their dev entrypoint hashes the root workspace files, `pnpm-lock.yaml`, and pack
 manifests, then runs `pnpm install --frozen-lockfile` automatically when those
 dependency inputs change.
 
-## Runtime CLI tools
+## Runtime CLI copies
 
-Vendor CLIs are installed as instance runtime tools, not into Docker images.
-Only the user whose email matches `INSTANCE_ADMIN_EMAIL` may install or activate
-versions. Use the server API after the stack is running:
+A vendor CLI is installed on an **execution host** — the built-in one inside
+`sandbox-runner`, or a paired machine — never into the server image and never
+into `$RAINVER_HOME`. The Command Center's host card is the place to do it:
+"Add agent…" installs a managed copy, "Log in" opens its login terminal, and
+"Roll back to <version>" undoes the last upgrade.
+
+The same actions over the API (host owner, or an instance admin for the
+built-in host):
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/runtime-tools/claude_code/install \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"version":"latest"}'
-
-curl -X POST http://localhost:3000/api/v1/runtime-tools/codex_cli/install \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"version":"latest"}'
-
-curl http://localhost:3000/api/v1/runtime-tools \
+# Install or upgrade the managed copy of one runtime on one host.
+curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_code \
   -H "Authorization: Bearer <token>"
+
+# Undo the last upgrade, promoting the version the host kept behind it —
+# with its own login, so nobody logs in again.
+curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_code/rollback \
+  -H "Authorization: Bearer <token>"
+
+# What each copy has left of its subscription (cached), and a fresh reading.
+curl http://localhost:3000/api/v1/hosts/<host-id>/usage -H "Authorization: Bearer <token>"
+curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_code/own/usage \
+  -H "Authorization: Bearer <token>"
+
+# What has changed about every host's runtimes, newest first.
+curl http://localhost:3000/api/v1/hosts/runtime-changes -H "Authorization: Bearer <token>"
 ```
 
-Tools are written under `$RAINVER_HOME/runtime-tools`; npm cache is under
-`$RAINVER_HOME/cache/npm`. Space owners/admins select enabled/default
-versions through `PUT /api/v1/runtime-tools/space-policy/{runtime}`.
+One current version per adapter per host, plus exactly one kept behind it as
+the rollback target. An upgrade drains that copy's Runs first and refuses
+rather than killing one, so "still in use" is an ordinary answer. There is no
+per-Space version policy: the copy a Run uses is decided by the Agent's host
+and installation.
 
 ## Linux execution host
 
@@ -279,12 +310,11 @@ development `POSTGRES_PASSWORD` values. Key vars:
 | `DATABASE_URL` | postgresql://... | Optional external DB URL for host-side DB scripts |
 | `DEFAULT_USER_ID` | `default_user` | Bootstrap owner; the default space is this owner's personal space (a generated UUID, no fixed space id) |
 | `REFLECTOR_MODE` | `pattern` | Set to `llm` to enable AI reflection |
-| `MAX_CONCURRENT_DOCKER_RUNS` | `3` | Sandbox concurrency cap |
+| `BUILTIN_HOST_MAX_CONCURRENT_RUNS` | `3` | Runs the built-in execution host executes at once; bubblewrap has no cgroups, so this and the `sandbox-runner` container's own `cpus`/`mem_limit` are the only capacity levers |
 | `ARTIFACT_STORAGE_ROOT` | `$RAINVER_HOME/storage/artifacts` | Managed artifact file storage root used by server artifact export |
 | `SERVER_DATABASE_URL` | generated by ops scripts | Server PostgreSQL owner/app URL for bundled compose |
 | `SERVER_INTERNAL_TOKEN` | generated by ops scripts | Service token for internal server routes |
 | `SERVER_DEBUG` | `false` | Server debug flag for local-only cookie defaults; legacy `DEBUG` is accepted only for old env files |
-| `RUNTIME_TOOLS_ROOT` | `$RAINVER_HOME/runtime-tools` | Instance runtime CLI install root |
 
 Providers/credentials, policy enforcement, public sessions, native auth/spaces,
 runs, chat turns, context assembly, memory read/proposal-create/apply,

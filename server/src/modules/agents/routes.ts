@@ -38,7 +38,6 @@ import { PgProposalRepository } from "../proposals/repository.js";
 import { PgAgentChatRepository, PgAgentRepository } from "./repository.js";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
-import { CliCredentialBroker } from "../providers/cli/credentialBroker.js";
 import { prepareHostConversationDispatch } from "../agentGroups/service.js";
 import { renderAgentIdentityPrompt } from "../agentGroups/agentIdentityPrompt.js";
 import { TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
@@ -556,10 +555,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!directAgent && !roomParticipant?.rows[0]?.present) {
       return reply.code(404).send({ detail: "Agent not found" });
     }
-    const repository = new PgConversationBackendRepository(
-      dbPool(context.config),
-      new CliCredentialBroker(context.config),
-    );
+    const repository = new PgConversationBackendRepository(dbPool(context.config));
     const [options, binding, sessionConfig] = await Promise.all([
       repository.listOptions(identity.spaceId, identity.userId, agentId),
       sessionId
@@ -1116,12 +1112,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 }
 
 function rejectRuntimeProfileCredential(body: Record<string, unknown>): void {
+  const config = optionalRecordBody(body, "runtime_config_json") ?? {};
+  // Refused rather than ignored: writing a runtime profile takes only read
+  // access to the Agent for an ordinary Agent, so a privilege set from here
+  // would be one any member could grant themselves. Saying so beats accepting
+  // the key and quietly not honouring it.
+  if (Object.hasOwn(body, "egress_profile") || Object.hasOwn(config, "egress_install")) {
+    throw new RunCreateValidationError(
+      "Package-install egress is granted per Run by the dispatcher, not on an Agent runtime profile",
+      422,
+    );
+  }
   if (
     Object.hasOwn(body, "credential_profile_id") ||
-    Object.hasOwn(optionalRecordBody(body, "runtime_config_json") ?? {}, "credential_profile_id")
+    Object.hasOwn(config, "credential_profile_id")
   ) {
     throw new RunCreateValidationError(
-      "CLI credentials are selected per user and conversation, not on Agent runtime profiles",
+      "Rainver brokers no CLI credential: a CLI Agent names an execution host and an installation on it",
       422,
     );
   }
@@ -1271,24 +1278,19 @@ async function latestConversationSessionConfig(
 function agentChatServices(context: ModuleContext): AgentChatServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
   const pool = dbPool(context.config);
-  const cliCredentials = new CliCredentialBroker(context.config);
   return {
     agents: PgAgentChatRepository.fromConfig(context.config),
-    ...agentChatUnitOfWork(pool, cliCredentials),
-    inTransaction: (work) =>
-      withTransaction(pool, (client) => work(agentChatUnitOfWork(client, cliCredentials))),
+    ...agentChatUnitOfWork(pool),
+    inTransaction: (work) => withTransaction(pool, (client) => work(agentChatUnitOfWork(client))),
   };
 }
 
-function agentChatUnitOfWork(
-  db: Pool | PoolClient,
-  cliCredentials: Pick<CliCredentialBroker, "availableProfiles">,
-): AgentChatUnitOfWork {
+function agentChatUnitOfWork(db: Pool | PoolClient): AgentChatUnitOfWork {
   const jobs = new PgJobQueueRepository(db);
   return {
     db,
     sessions: new PgSessionRepository(db),
-    backends: new PgConversationBackendRepository(db, cliCredentials),
+    backends: new PgConversationBackendRepository(db),
     runtimeSessions: new PgConversationRuntimeSessionRepository(db),
     runs: new PgRunRepository(db),
     hostThreads: new PgHostThreadRepository(db),
@@ -1311,15 +1313,10 @@ function agentChatUnitOfWork(
 
 function publicConversationBackend(
   backend: ResolvedConversationBackend,
-): {
-  runtime_profile_id: string;
-  adapter_type: string;
-  credential_profile_id: string | null;
-} {
+): { runtime_profile_id: string; adapter_type: string } {
   return {
     runtime_profile_id: backend.runtime_profile_id,
     adapter_type: backend.adapter_type,
-    credential_profile_id: backend.credential_profile_id ?? null,
   };
 }
 

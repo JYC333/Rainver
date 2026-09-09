@@ -68,16 +68,27 @@ export async function recordTaskCreated(
 }
 
 /**
- * Refuse a manual close that has not met what the Task declared.
+ * Refuse a close that has not met what the Task declared.
  *
  * The refusal is the point: a Task closed with its declared outputs missing
- * and its evaluation unread means the completion contract described nothing.
- * Overriding stays available — a person can always decide a requirement no
- * longer applies — but it names what it skipped, so the record says the Task
- * was closed early rather than that it met its bar.
+ * means the completion contract described nothing. Overriding stays available
+ * — a person can always decide a requirement no longer applies — but it names
+ * what it skipped, so the record says the Task was closed early rather than
+ * that it met its bar.
+ *
+ * **A missing evaluation is recorded, not refused.** An evaluation comes from
+ * an execution Run's review, and most Tasks never have one — work done inside
+ * a turn has none at all — so it was in `missing` for essentially every Task
+ * on the board. A prompt that fires on every close is not a gate: it trains
+ * the person to click through, and it buries the one reason that is a claim
+ * about deliverables under one that is only a process step. It still travels
+ * in `overridden`, so the record says the Task closed without a review.
  *
  * Runs before the row is written, so a refused close leaves nothing behind.
  */
+/** The one completion reason that is a review step rather than a deliverable. */
+const EVALUATION_REASON = "evaluation";
+
 export async function assertCompletionForClose(
   db: Queryable,
   context: UserTaskEventContext,
@@ -92,7 +103,9 @@ export async function assertCompletionForClose(
   );
   if (completion.ok) return { overridden: [] };
   const acknowledged = new Set(override?.acknowledged ?? []);
-  const unacknowledged = completion.missing.filter((reason) => !acknowledged.has(reason));
+  const unacknowledged = completion.missing
+    .filter((reason) => reason !== EVALUATION_REASON)
+    .filter((reason) => !acknowledged.has(reason));
   if (unacknowledged.length > 0) {
     throw new HttpError(422, "Task completion requirements are not met", {
       code: "completion_requirements_unmet",

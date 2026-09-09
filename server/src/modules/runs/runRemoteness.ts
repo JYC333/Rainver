@@ -13,20 +13,31 @@ interface RemotenessInput {
 /**
  * Whether a run is handed to a host daemon rather than executed in-process.
  *
- * A remote *Location* is not a remote *run*: `resolveExecutionPort` is
- * adapter-agnostic, but only a `local_cli` adapter is dispatched to the daemon
- * — a `model_api` run on a remote Folder still executes on the server
- * against the routed provider. Three places need this answer (the dispatch
- * itself, the execution-control preflight, and the Run read model), and when
- * they were three separate expressions they disagreed: the preflight was
- * corrected and the read model was not, which denied a provider that had in
- * fact been used. One function, so that cannot recur.
+ * This is the runtime's question, not the host's. Every `local_cli` adapter is
+ * dispatched to a daemon now — the built-in host's as much as a paired
+ * machine's, since the built-in host *is* a daemon — while every other family
+ * executes in-process on the server: a `model_api` run on a remote Folder
+ * still calls the routed provider from here, because there is no subprocess to
+ * hand anything to.
+ *
+ * That distinction decides more than where the process starts. A run handed to
+ * a daemon gets no server-brokered Runtime Context (its agent pulls what it
+ * needs through the `rainver` command in its work surface), no server-side CLI
+ * continuity (the vendor session in its Agent profile is the continuity), and
+ * no sandbox-level escalation (the daemon builds the namespace). A run that
+ * executes in-process keeps all three, because nothing else can supply them.
+ *
+ * It used to take a `hostKind` and answer false for the server host. That was
+ * the same question when the server host was an in-process boundary; it is the
+ * wrong one now that it is a daemon like any other, and `hostKind` is left
+ * meaning only *which machine* — which is still what decides whether a
+ * server-brokered credential is in play.
+ *
+ * Callers that were three separate expressions once disagreed: the preflight
+ * was corrected and the read model was not, which denied a provider that had
+ * in fact been used. One function, so that cannot recur.
  */
-export function dispatchesToHostDaemon(
-  adapterType: string | null | undefined,
-  hostKind: "server" | "remote",
-): boolean {
-  if (hostKind !== "remote") return false;
+export function dispatchesToHostDaemon(adapterType: string | null | undefined): boolean {
   return getRuntimeAdapterSpec(adapterType ?? undefined)?.executor_family === "local_cli";
 }
 
@@ -60,7 +71,7 @@ export async function resolveRunRemoteness(
 ): Promise<Set<string>> {
   // Every run reaching here already sits on a remote Location — that is what
   // the query below establishes — so the adapter is the remaining question.
-  const relevant = runs.filter((run) => hasRecordedModel(run) && dispatchesToHostDaemon(run.adapter_type, "remote"));
+  const relevant = runs.filter((run) => hasRecordedModel(run) && dispatchesToHostDaemon(run.adapter_type));
   if (relevant.length === 0) return new Set();
 
   const locationIds = [...new Set(relevant.flatMap((run) => run.workspace_location_id ? [run.workspace_location_id] : []))];

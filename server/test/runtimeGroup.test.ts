@@ -1,17 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { describe, expect, it } from "vitest";
 import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../src/modules/capabilities/runtimeSkillProvider.js";
 import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
-import type { CliExecutionResult } from "../src/modules/runs/localCliExecution.js";
 import { normalizeVendorEvents } from "../src/modules/runs/runtimeEventNormalization.js";
 import { getLocalCliRuntimeAdapterSpec, getRuntimeAdapterSpec, isVendorCliAdapter, listRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/specs.js";
-import { CONFORMANCE_CHECKS, type ConformanceCheck, RuntimeConformanceService } from "../src/modules/runtimeConformance/service.js";
-import { LocalCliConformanceProbeRunner, type LocalCliConformanceProbeRunnerDeps } from "../src/modules/runtimeConformance/probeRunner.js";
-import { resetTables } from "./support/resetTables.js";
-import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("runtimeAdapters", () => {
   describe("runtime adapter catalog", () => {
@@ -84,131 +75,6 @@ describe("runtimeAdapters", () => {
           ]),
         },
       });
-    });
-  });
-});
-
-describe("runtimeConformanceDb", () => {
-  const db = useTestDatabase(`${`${import.meta.filename}#runtimeConformanceGroup`}#runtimeConformanceDb`, { max: 2 });
-
-  beforeEach(async () => {
-    if (!db.available) return;
-    await resetTables(db.pool, ["runtime_conformance_results"]);
-  });
-
-  function allChecks(passed: boolean) {
-    return Object.fromEntries(CONFORMANCE_CHECKS.map((check) => [check, { passed }])) as Record<ConformanceCheck, { passed: boolean }>;
-  }
-
-  describe("runtime conformance persistence (real Postgres)", () => {
-    it("persists a failed result fail-closed, then replaces it with a complete pass", async () => {
-      if (!db.available) return;
-      const service = new RuntimeConformanceService(db.pool);
-      const failed = await service.record({
-        runtime_adapter_type: "opencode",
-        runtime_version: "1.0.0",
-        checks: { ...allChecks(true), credential_leakage: { passed: false, evidence: { leak: "detected" } } },
-      });
-      expect(failed).toMatchObject({ status: "partial", passed_checks: 4, failed_checks: 1, trust_level: "low" });
-
-      const passed = await service.record({
-        runtime_adapter_type: "opencode",
-        runtime_version: "1.0.0",
-        checks: allChecks(true),
-      });
-      expect(passed).toMatchObject({ status: "passed", passed_checks: 5, failed_checks: 0, trust_level: "low" });
-      expect(await service.list("opencode")).toHaveLength(1);
-    });
-
-    it("records runner exceptions as failed checks instead of granting trust", async () => {
-      if (!db.available) return;
-      const result = await new RuntimeConformanceService(db.pool).run({
-        runtime_adapter_type: "opencode",
-        runtime_version: "1.0.0",
-        runner: {
-          async runCheck(check) {
-            if (check === "file_scope_obedience") throw new Error("probe unavailable");
-            return { passed: true };
-          },
-        },
-      });
-      expect(result).toMatchObject({ status: "partial", passed_checks: 4, failed_checks: 1, trust_level: "low" });
-      expect(result.checks.file_scope_obedience).toMatchObject({ passed: false });
-    });
-  });
-});
-
-describe("runtimeConformanceProbe", () => {
-  const roots: string[] = [];
-
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
-
-  describe("LocalCliConformanceProbeRunner", () => {
-    it("runs the structured-output and credential-leakage probes through the executor boundary", async () => {
-      const root = await mkdtemp(join(tmpdir(), "rainver-conformance-"));
-      roots.push(root);
-      const executor = {
-        async runCommand(input: { command: string[]; cwd: string | null }): Promise<CliExecutionResult> {
-          expect(input.cwd).toContain(join(root, "sandboxes", "conformance"));
-          return {
-            returncode: 0,
-            stdout: '{"result":"PASS"}\n',
-            stderr: "",
-            timed_out: false,
-          };
-        },
-      };
-      const deps: LocalCliConformanceProbeRunnerDeps = {
-        executor,
-        toolRegistry: {
-          async resolveForExecution(runtime) {
-            return {
-              runtime,
-              executable_path: join(root, "runtime-tools", "opencode"),
-              version: "1.0.0",
-              source: "npm",
-              package_name: "opencode-ai",
-            };
-          },
-        },
-        credentialBroker: {
-          async grantForRun(runId, spaceId, runtime, executorMode) {
-            expect(runId).toContain("conformance-");
-            expect(spaceId).toBe("space-1");
-            expect(runtime).toBe("opencode");
-            expect(executorMode).toBe("worktree");
-            return {
-              granted: true,
-              profile_id: "profile-1",
-              runtime,
-              executor_mode: executorMode,
-              readonly: true,
-              temp_home: null,
-              host_source_path: null,
-              target_path: null,
-              env: {},
-              network_profile_id: null,
-              fallback_reason: null,
-            };
-          },
-          async cleanupRunHome() {},
-        },
-      };
-      const runner = new LocalCliConformanceProbeRunner(
-        loadConfig({ RAINVER_HOME: root }),
-        { spaceId: "space-1", userId: "user-1" },
-        deps,
-      );
-      const context = {
-        runtime_adapter_type: "opencode",
-        runtime_version: "1.0.0",
-        suite_version: "runtime_conformance.v1",
-      } as const;
-
-      await expect(runner.runCheck("structured_output_compliance", context)).resolves.toMatchObject({ passed: true });
-      await expect(runner.runCheck("credential_leakage", context)).resolves.toMatchObject({ passed: true });
     });
   });
 });
@@ -403,3 +269,5 @@ describe("runtimeSkillProvider", () => {
     });
   });
 });
+
+

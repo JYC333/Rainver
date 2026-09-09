@@ -43,7 +43,6 @@ class RunCreateSqlShapeDb implements Queryable {
           adapter_type: "codex_cli",
           model_provider_id: null,
           model_name: null,
-          credential_profile_id: null,
           runtime_config_json: { adapter_type: "codex_cli" },
           runtime_policy_json: {},
           enabled: true,

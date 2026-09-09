@@ -15,6 +15,20 @@
       "when": 1788800906436,
       "tag": "0001_deployment_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788832385185,
+      "tag": "0002_retire_server_cli_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788833810727,
+      "tag": "0003_host_runtime_usage_and_changes",
+      "breakpoints": true
     }
   ]
 }

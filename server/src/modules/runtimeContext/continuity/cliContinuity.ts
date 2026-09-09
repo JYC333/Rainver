@@ -75,12 +75,11 @@ interface BindingFingerprint {
     adapter_type: string;
     provider_id: string | null;
     model: string | null;
-    credential_profile_id: string | null;
+    /** Which copy on the host ran it (`own` / `managed:<version>`), the successor to the brokered credential profile. */
+    runtime_installation: string | null;
     sandbox_profile_ref: unknown;
     runtime_generation: unknown;
-    credential_generation: unknown;
     provider_generation: unknown;
-    runtime_tool_version: string | null;
   };
 }
 
@@ -95,12 +94,11 @@ export class RuntimeContextCliContinuityService {
     userId: string;
     agentId: string;
     runtimeProfileId: string;
-    credentialProfileId: string | null;
     adapterType: string;
     providerId: string | null;
     model: string | null;
     agentVersionId: string;
-    runtimeToolVersion: string | null;
+    runtimeInstallation: string | null;
     control: ExecutionControlSnapshot;
   }): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
@@ -140,18 +138,18 @@ export class RuntimeContextCliContinuityService {
       const created = await db.query<BindingRow>(
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-           runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+           runtime_profile_id,adapter_type,provider_id,model,
            runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,created_at,updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,$13,$14,$15::jsonb,
-                   0,'[]'::jsonb,$16,'active',$17,now(),now())
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,$13,$14::jsonb,
+                   0,'[]'::jsonb,$15,'active',$16,now(),now())
          RETURNING id,runtime_state_key,vendor_session_id,authority_fingerprint,
                    runtime_fingerprint,fingerprint_json,cli_known_cursor,
                    acknowledged_item_ids_json,generation,rotation_reason`,
         [randomUUID(), input.spaceId, input.workContextScopeId, scopeKind,
           input.userId, input.agentId, input.runtimeProfileId,
-          input.credentialProfileId, input.adapterType, input.providerId, input.model,
+          input.adapterType, input.providerId, input.model,
           randomUUID(), authorityFingerprint, runtimeFingerprint,
           JSON.stringify(fingerprint), (existing?.generation ?? 0) + 1, reason],
       );
@@ -177,12 +175,12 @@ export class RuntimeContextCliContinuityService {
       const created = await db.query<BindingRow>(
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-           runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+           runtime_profile_id,adapter_type,provider_id,model,
            runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
          ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-                  runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+                  runtime_profile_id,adapter_type,provider_id,model,
                   $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                   0,'[]'::jsonb,generation+1,'active','vendor_state_missing',
                   execution_lease_id,execution_lease_expires_at,now(),now()
@@ -315,12 +313,12 @@ export class RuntimeContextCliContinuityService {
         const replacement = await db.query<BindingRow & { work_context_scope_id: string; space_id: string; status: string }>(
           `INSERT INTO runtime_context_cli_bindings (
              id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-             runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+             runtime_profile_id,adapter_type,provider_id,model,
              runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
              fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
              status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
            ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-                    runtime_profile_id,credential_profile_id,adapter_type,provider_id,model,
+                    runtime_profile_id,adapter_type,provider_id,model,
                     $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                     0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,now(),now()
                FROM runtime_context_cli_bindings
@@ -642,17 +640,15 @@ function bindingFingerprint(input: {
   userId: string;
   agentId: string;
   runtimeProfileId: string;
-  credentialProfileId: string | null;
   adapterType: string;
   providerId: string | null;
   model: string | null;
   agentVersionId: string;
-  runtimeToolVersion: string | null;
+  runtimeInstallation: string | null;
   control: ExecutionControlSnapshot;
 }, generations: {
   egress: unknown;
   runtime: unknown;
-  credential: unknown;
   provider: unknown;
 }): BindingFingerprint {
   return {
@@ -675,12 +671,10 @@ function bindingFingerprint(input: {
       adapter_type: input.adapterType,
       provider_id: input.providerId,
       model: input.model,
-      credential_profile_id: input.credentialProfileId,
+      runtime_installation: input.runtimeInstallation,
       sandbox_profile_ref: input.control.sandbox_profile_ref,
       runtime_generation: generations.runtime,
-      credential_generation: generations.credential,
       provider_generation: generations.provider,
-      runtime_tool_version: input.runtimeToolVersion,
     },
   };
 }
@@ -689,7 +683,9 @@ function rotationReason(previous: unknown, next: BindingFingerprint): CliRotatio
   const before = record(previous) as Partial<BindingFingerprint>;
   if (hash(before.runtime) !== hash(next.runtime)) {
     const oldRuntime = record(before.runtime);
-    if (oldRuntime.credential_profile_id !== next.runtime.credential_profile_id) return "credential_changed";
+    // A different copy on the host is a different login, which is what the
+    // brokered credential profile used to stand for.
+    if (oldRuntime.runtime_installation !== next.runtime.runtime_installation) return "credential_changed";
     if (hash(oldRuntime.sandbox_profile_ref) !== hash(next.runtime.sandbox_profile_ref)) return "sandbox_changed";
     return "runtime_changed";
   }
@@ -727,10 +723,9 @@ async function loadBindingGenerations(db: Queryable, input: {
   userId: string;
   agentId: string;
   runtimeProfileId: string;
-  credentialProfileId: string | null;
   providerId: string | null;
-}): Promise<{ egress: unknown; runtime: unknown; credential: unknown; provider: unknown }> {
-  const [egress, runtime, credential, provider] = await Promise.all([
+}): Promise<{ egress: unknown; runtime: unknown; provider: unknown }> {
+  const [egress, runtime, provider] = await Promise.all([
     db.query(
       `SELECT settings_json FROM settings
         WHERE scope_type='space' AND scope_id=$1
@@ -744,20 +739,6 @@ async function loadBindingGenerations(db: Queryable, input: {
         WHERE id=$1 AND space_id=$2 AND agent_id=$3`,
       [input.runtimeProfileId, input.spaceId, input.agentId],
     ),
-    input.credentialProfileId
-      ? db.query(
-          `SELECT profile.updated_at AS profile_updated_at,profile.runtime,
-                  grant_row.updated_at AS grant_updated_at,grant_row.enabled,
-                  grant_row.is_default,grant_row.network_profile_id,
-                  network.updated_at AS network_updated_at,network.mode,network.enabled AS network_enabled
-             FROM cli_credential_profiles profile
-             JOIN cli_credential_space_grants grant_row
-               ON grant_row.profile_id=profile.id AND grant_row.space_id=$2
-             LEFT JOIN network_profiles network ON network.id=grant_row.network_profile_id
-            WHERE profile.id=$1 AND profile.owner_user_id=$3`,
-          [input.credentialProfileId, input.spaceId, input.userId],
-        )
-      : Promise.resolve({ rows: [] }),
     input.providerId
       ? db.query(
           `SELECT provider.updated_at AS provider_updated_at,provider.provider_type,provider.base_url,
@@ -780,16 +761,12 @@ async function loadBindingGenerations(db: Queryable, input: {
       : Promise.resolve({ rows: [] }),
   ]);
   if (!runtime.rows[0]) throw new HttpError(409, "CLI runtime profile is no longer authoritative");
-  if (input.credentialProfileId && !credential.rows[0]) {
-    throw new HttpError(409, "CLI credential profile grant is no longer authoritative");
-  }
   if (input.providerId && !provider.rows[0]) {
     throw new HttpError(409, "CLI provider configuration is no longer authoritative");
   }
   return {
     egress: jsonSafe(egress.rows[0] ?? { default_external_egress: true }),
     runtime: jsonSafe(runtime.rows[0]),
-    credential: jsonSafe(credential.rows[0] ?? null),
     provider: jsonSafe(provider.rows[0] ?? null),
   };
 }

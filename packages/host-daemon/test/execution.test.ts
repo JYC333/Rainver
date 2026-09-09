@@ -2,7 +2,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { connect } from "node:net";
 import { saveConfig } from "../src/config.js";
+import { startEgressProxy } from "../src/egressProxy.js";
 import { existsSync } from "node:fs";
 import {
   handleLaunch,
@@ -12,6 +14,7 @@ import {
   REMOTE_CWD_PLACEHOLDER,
   resolveAcpEntrypoint,
   resolveAcpLaunch,
+  setEgressProxy,
 } from "../src/execution.js";
 
 let configDir: string;
@@ -28,6 +31,7 @@ beforeEach(async () => {
   await saveConfig({
     server_url: "http://127.0.0.1:1",
     host_id: "host-1",
+    trust: "trusted",
     token: "secret-token",
     workspaces: { "folder-1": workspaceDir, "location-attached": attachedWorkspaceDir },
   });
@@ -656,5 +660,64 @@ describe("a retry that reuses the run id", () => {
     const output = sent.filter((f) => f.type === "output").map((f) => String(f.chunk)).join("");
     expect(output).toContain(join(configDir, "runs", "run-ph", "rainver", "SKILL.md"));
     expect(output).not.toContain("rainver:work-skill-path");
+  });
+});
+
+
+
+
+/**
+ * The refusal is the thing nobody can otherwise explain: the CLI sees a 403
+ * from a proxy it did not choose, and the reason lives on the host. It reaches
+ * the Run's history only if the completion frame carries it, and that link had
+ * no test — which is how a real `npm install`, refused and logged by the
+ * daemon, still produced no `egress_refused` event.
+ */
+describe("what a Run reports about its egress", () => {
+  afterEach(() => { setEgressProxy(null); });
+
+  /** One refused CONNECT, recorded exactly as a real one is. */
+  const refuse = (address: string, token: string) => new Promise<void>((resolve) => {
+    const [host, port] = address.split(":");
+    const socket = connect(Number(port), host);
+    const done = () => { socket.destroy(); resolve(); };
+    socket.setTimeout(5000, done);
+    socket.on("error", done);
+    socket.on("data", done);
+    socket.on("connect", () => {
+      const auth = Buffer.from(`run:${token}`).toString("base64");
+      socket.write(`CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
+    });
+  });
+
+  it("carries the proxy's refusals on the completion frame", async () => {
+    const proxy = await startEgressProxy(() => {});
+    setEgressProxy(proxy, "http://server:8010");
+    try {
+      const { send, complete } = collectSend();
+      const launched = handleLaunch(
+        {
+          run_id: "run-egress-1",
+          launch_id: "launch-egress-1",
+          workspace_location_id: "folder-1",
+          isolation: { sandbox_mode: "read_write", egress_profile: "default" },
+          argv: ["sh", "-c", "sleep 1"],
+        },
+        send,
+        () => {},
+      );
+      // While the Run is alive, exactly what a package install does: a CONNECT
+      // to a registry, which `default` refuses by name.
+      const grant = proxy.grant("run-egress-1", "default");
+      await refuse(proxy.address, grant.token);
+      await launched;
+
+      const done = await complete();
+      expect(done.egress).toEqual([
+        expect.objectContaining({ allowed: false, host: "registry.npmjs.org", port: 443 }),
+      ]);
+    } finally {
+      await proxy.close();
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { useState, useId } from 'react'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
-import { Settings, Sun, Moon, Plus, KeyRound, Terminal, BarChart3 } from 'lucide-react'
+import { Settings, Sun, Moon, Plus, KeyRound, BarChart3 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '../../contexts/AuthContext'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -92,23 +92,10 @@ export default function SettingsPage() {
           <KeyRound className="size-3.5" /> Model Providers
         </CardTitle>
         <p className="text-sm text-muted-foreground mb-3">
-          Configure LLM backends (OpenAI, Anthropic, OpenRouter, Ollama) separately from runtime tools.
+          Configure LLM backends (OpenAI, Anthropic, OpenRouter, Ollama). A CLI runtime is logged in on its execution host instead, from the Command Center.
         </p>
         <Button asChild variant="outline" size="sm">
           <Link to="/providers">Open Model Providers</Link>
-        </Button>
-      </Card>
-
-      {/* CLI runtime profiles */}
-      <Card>
-        <CardTitle className="flex items-center gap-2">
-          <Terminal className="size-3.5" /> CLI Runtime Profiles
-        </CardTitle>
-        <p className="text-sm text-muted-foreground mb-3">
-          Manage CLI login profiles, grants, and runtime login state separately from instance runtime tools.
-        </p>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/cli-profiles">Open CLI Profiles</Link>
         </Button>
       </Card>
 

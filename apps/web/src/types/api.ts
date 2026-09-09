@@ -41,7 +41,6 @@ import type {
   ClaimContradictionScanRequest,
   ClaimContradictionScanRequestInput,
   ClaimContradictionScanResponse,
-  CliUsageAutoRefreshSettings,
   ContextObservationItem,
   ContextObservationSeverity,
   ContextOpsArtifactSummary,
@@ -306,7 +305,6 @@ export type {
   ClaimContradictionScanRequest,
   ClaimContradictionScanRequestInput,
   ClaimContradictionScanResponse,
-  CliUsageAutoRefreshSettings,
   ContextObservationItem,
   ContextObservationSeverity,
   ContextOpsArtifactSummary,
@@ -847,100 +845,6 @@ export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
 
 export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'rainver_provider'
 
-export interface RuntimeToolManifest {
-  schema_version: 1
-  runtime: string
-  source: 'npm'
-  package_name: string
-  requested_version: string
-  version: string
-  bin_name: string
-  bin_relative_path: string
-  installed_at: string
-}
-
-export interface RuntimeToolDefinition {
-  runtime: string
-  label: string
-  source: 'npm'
-  package_name: string
-  bin_name: string
-  bin_relative_path: string
-  package_json_relative_path: string
-  default_version: string
-}
-
-export interface RuntimeToolStatus {
-  runtime: string
-  label: string
-  source: 'npm'
-  package_name: string
-  bin_name: string
-  installed: boolean
-  active_version: string | null
-  executable_path: string | null
-  executable_exists: boolean
-  manifest: RuntimeToolManifest | null
-  installed_versions: RuntimeToolInstalledVersion[]
-  warnings: string[]
-}
-
-export interface RuntimeToolInstalledVersion {
-  version: string
-  installed: boolean
-  executable_path: string | null
-  executable_exists: boolean
-  manifest: RuntimeToolManifest | null
-  warnings: string[]
-}
-
-export interface RuntimeToolInstallResult extends RuntimeToolStatus {
-  installed_version: string
-  activated: boolean
-}
-
-export interface RuntimeToolLatest {
-  runtime: string
-  package_name: string
-  latest_version: string | null
-}
-
-export interface SpaceRuntimeToolPolicyOut {
-  runtime: string
-  label: string
-  enabled: boolean
-  default_version: string | null
-  allowed_versions: string[]
-  policy_id: string | null
-  active_version: string | null
-  installed_versions: RuntimeToolInstalledVersion[]
-  warnings: string[]
-  updated_by_user_id: string | null
-  updated_at: string | null
-}
-
-// CLI Credentials / Login
-
-export type LoginMethod = 'cli'
-
-export interface CredentialLoginMethod {
-  runtime: string
-  method: LoginMethod
-  label: string
-  hint_cli: string
-  supports_cli: boolean
-}
-
-export interface CredentialStatus {
-  runtime: string
-  label: string
-  method: LoginMethod
-  profile_id: string | null
-  network_profile_id: string | null
-  logged_in: boolean
-  file_count: number
-}
-
 export type NetworkProfileMode = 'direct' | 'http_proxy'
 
 export interface NetworkProfileOut {
@@ -964,85 +868,6 @@ export interface NetworkProfileCreateBody {
 }
 
 export type NetworkProfileUpdateBody = Partial<NetworkProfileCreateBody>
-
-export interface CliCredentialProfileOut {
-  id: string
-  owner_user_id?: string | null
-  runtime: string
-  name: string
-  source_path: string
-  target_path: string
-  readonly: boolean
-  notes: string
-  network_profile_id: string | null
-  source_exists: boolean
-  logged_in: boolean
-  file_count: number
-  manageable?: boolean
-  grant_id?: string | null
-  grant_enabled?: boolean
-  is_default?: boolean
-}
-
-export interface CliCredentialAvailableProfileOut {
-  id: string
-  owner_user_id?: string | null
-  runtime: string
-  name: string
-  target_path: string
-  readonly: boolean
-  notes: string
-  network_profile_id: string | null
-  source_exists: boolean
-  logged_in: boolean
-  file_count: number
-  manageable: boolean
-  grant_id: string
-  is_default: boolean
-}
-
-export interface TokenUsage {
-  available: boolean
-  source: 'transcripts' | 'codex_sessions' | 'unsupported'
-  input_tokens: number
-  output_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  cost_usd: number
-  message_count: number
-  session_count: number
-}
-
-export interface QuotaUsage {
-  available: boolean
-  session_pct: number | null
-  session_resets: string | null
-  week_pct: number | null
-  week_resets: string | null
-  checked_at: string | null
-  error: string | null
-}
-
-export interface CliUsageEntry {
-  runtime: string
-  label: string
-  tokens: TokenUsage
-  quota: QuotaUsage | null
-}
-
-export type LoginEventType = 'output' | 'error' | 'warning' | 'hint' | 'profile' | 'synced' | 'done' | 'needs_input' | 'device_auth'
-
-export interface LoginEvent {
-  type: LoginEventType
-  text?: string
-  exit_code?: number
-  profile_id?: string
-  prompt?: string
-  step?: string
-  url?: string
-  code?: string
-  expires_in_minutes?: number
-}
 
 export interface Page<T> {
   items: T[]
@@ -3523,6 +3348,8 @@ export type {
   HostExecutionTargetAdapter,
   HostExecutionTargetLocation,
   HostExecutionTargetsResponse,
+  HostRuntimeChange,
+  HostRuntimeUsage,
   RuntimeAuthMethod,
   RuntimeInstallation,
   RuntimeOptionChoice,
@@ -3551,6 +3378,8 @@ export interface Host {
   provider_proxy_base_url?: string | null
   /** What a dispatched run will actually use, resolved server-side. */
   provider_proxy_effective_url?: string | null
+  /** How many Runs the built-in host executes at once; null for a paired host, whose owner sizes their own machine. */
+  max_concurrent_runs?: number | null
   capabilities_json: HostCapabilities | null
   managed_workspaces_json?: ManagedWorkspaceHeartbeat[] | null
   created_at: string

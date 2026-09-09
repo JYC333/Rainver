@@ -142,14 +142,39 @@ describe("hosts repository", () => {
     expect(staleHost?.status).toBe("offline");
   });
 
-  it("keeps the in-process server host online without a daemon heartbeat", async (ctx) => {
+  // The built-in host used to be reported permanently `online` because it was
+  // an in-process execution boundary with no heartbeat to be stale. It is a
+  // daemon connection now — `rainver-host` in strict mode inside
+  // `sandbox-runner` — so reporting that would hide the one failure an
+  // operator most needs to see: the instance's own execution host not being up.
+  it("reports the built-in host offline until its daemon has connected", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgHostRepository(db.pool);
     const serverHostId = await repo.ensureServerHostId();
 
     const visible = await repo.listVisibleTo(OWNER);
     const serverHost = visible.find((h) => h.id === serverHostId);
-    expect(serverHost).toMatchObject({ kind: "server", status: "online", last_heartbeat_at: null });
+    expect(serverHost).toMatchObject({ kind: "server", status: "offline", last_heartbeat_at: null });
+  });
+
+  it("issues the built-in host a bearer token its published credential authenticates with", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repo = new PgHostRepository(db.pool);
+    const serverHostId = await repo.ensureServerHostId();
+
+    const token = await repo.rotateBuiltinHostToken(serverHostId);
+    expect(await repo.builtinHostTokenMatches(serverHostId, token)).toBe(true);
+    // The daemon authenticates over the same WebSocket every host uses; there
+    // is no second protocol for the built-in one.
+    expect((await repo.authenticate(token))?.id).toBe(serverHostId);
+
+    // Rotation is what happens when the published copy is lost — the server
+    // stores only a hash, so re-publishing necessarily means a new token, and
+    // the old one must stop working at once.
+    const rotated = await repo.rotateBuiltinHostToken(serverHostId);
+    expect(rotated).not.toBe(token);
+    expect(await repo.builtinHostTokenMatches(serverHostId, token)).toBe(false);
+    expect(await repo.authenticate(token)).toBeNull();
   });
 
   it("scopes visibility to the server host plus the caller's own remote hosts", async (ctx) => {

@@ -21,11 +21,60 @@ stands today.**
 
 ## Purpose
 
-`hosts` is the control-plane registry of ExecutionHosts: the server host
-(exactly one row, seeded automatically, `owner_user_id` NULL) and any
-personal machine a user has paired in trusted-host mode. It owns pairing,
-authentication, and liveness for hosts — it does not execute anything itself
-and does not know any host's real filesystem paths.
+`hosts` is the control-plane registry of ExecutionHosts: the instance's
+built-in host (exactly one row, seeded automatically, `owner_user_id` NULL)
+and any personal machine a user has paired. It owns pairing, authentication,
+and liveness for hosts — it does not execute anything itself and does not know
+any host's real filesystem paths.
+
+Both kinds run the **same** daemon (`packages/host-daemon`), in one of two
+trust modes chosen at registration (ADR 0016 §2). A paired machine is
+`trusted`: native spawn, no namespace. The built-in host is `strict`: the
+daemon runs inside the `sandbox-runner` container and wraps every Run in its
+own rootless bubblewrap namespace.
+
+## The built-in host
+
+The instance's own execution host is the `rainver-host` daemon inside
+`sandbox-runner`. It is not paired: at startup the server publishes a
+registration credential into a directory both containers share
+(`<RAINVER_HOME>/cache/builtin-host/registration.json`, mounted read-only at
+`/runner/builtin-host`), and the daemon adopts it
+(`hosts/builtinRegistration.ts` on the server, `builtinRegistration.ts` on the
+daemon). Publishing is idempotent — the file is rewritten only when it is
+missing, unreadable, or no longer hashes to the row's `token_hash` — because a
+token rotated on every boot would cut the instance off from its own execution
+host at each restart. The server keeps only a hash, so a lost file necessarily
+means a new token; the daemon re-reads the file on every reconnect and, unlike
+a revoked paired host, never disables itself over a rejected token.
+
+The row is `kind = 'server'`, `owner_user_id` NULL, and its status now follows
+the daemon connection like any other host's. It used to be reported
+permanently `online` because it was an in-process boundary with no heartbeat
+to be stale; that would now hide the one failure an operator most needs to
+see. It cannot be revoked (`revoke` is `kind = 'remote'`-only, and
+`/hosts/me/revoke` refuses an ownerless host), and the pairing flow never
+lists it — a pairing code always creates a `remote` row.
+
+**Managing it is instance-admin work, dispatching to it is not.** There is one
+copy of a runtime per instance and everyone spends it, so installing,
+removing, and logging a copy in or out are admin actions:
+`resolveOwnedHost(..., { allowBuiltin: true })` marks the routes that reach it
+and falls through to `requireInstanceAdmin`. It answers 403 rather than 404
+there, unlike a paired host someone does not own, because the built-in host is
+on every member's host list already. The routes that stay 404 for it are the
+ones that mean nothing here: attaching an existing directory on the machine
+(ADR 0016 §4 — its Locations are always managed workspaces under the
+instance's workspace root), browsing its directories, its provider-proxy
+address (it reaches the proxy in-network), and its host×adapter model source —
+the built-in host's Runs are not provider-bound, so the card renders the
+copy's own account as text rather than a selector and asks for no binding.
+
+`BUILTIN_HOST_MAX_CONCURRENT_RUNS` (default 3) is how many Runs it executes at
+once, surfaced as `max_concurrent_runs` on `GET /api/v1/hosts` and shown on
+its card. bubblewrap has no cgroups, so this and the container's own
+`cpus`/`mem_limit` are the only levers, and both are sized per machine rather
+than per Run.
 
 ## Data model
 
@@ -372,10 +421,9 @@ inside one: Claude Code under `CLAUDE_CONFIG_DIR`, Codex under
 B67's allowlist and there would be nothing to point; an unbound run points the
 XDG roots instead and keeps the machine's `HOME` (below).
 Each profile's state-root variables are set so that every `home_subdir` a
-login spec names resolves inside it. On the server host their isolation comes
-from the credential broker, which does not exist on a trusted host, so
-environment injection alone would leave the machine's own `~/.claude` or
-`~/.codex` in play.
+login spec names resolves inside it. Nothing brokers a profile from the control
+plane on either host kind (ADR 0016), so environment injection alone would
+leave the machine's own `~/.claude` or `~/.codex` in play.
 
 The frame's `credential_source` tells the daemon which of two environment
 rules applies, and they are deliberately different:
@@ -561,15 +609,14 @@ default, `adapter_config.stall_timeout_seconds` per dispatch, never longer
 than the run budget. The remote path briefly used a third of the run budget
 instead — 100s for the default — which killed legitimate turns in the middle
 of a long tool call, since a runtime busy inside one emits nothing until it
-returns; the Run then retried from scratch on the same run id. The server-host
-path has had this stall budget all along; the remote path originally
-accepted the option and never implemented it, so a runtime that went quiet —
-an OpenCode turn waiting on a free-tier model that never answered — burned the
-entire timeout and then reported only that it "timed out", which is equally
-true of a run that worked the whole time. Both codes are retryable, like their
-`cli_adapter_timeout`/`cli_stall_timeout` twins on the server host; listing
-only the local pair meant an identical failure was retried automatically there
-and sent straight to human review on a paired machine.
+returns; the Run then retried from scratch on the same run id. The remote path
+originally accepted the option and never implemented it, so a runtime that went
+quiet — an OpenCode turn waiting on a free-tier model that never answered —
+burned the entire timeout and then reported only that it "timed out", which is
+equally true of a run that worked the whole time. Both codes are retryable.
+Their server-host twins `cli_adapter_timeout` and `cli_stall_timeout` went with
+the sandbox line (ADR 0016): nothing emits them, and the retry set no longer
+lists them.
 
 A bound run tells its runtime which model over ACP
 (`session/set_config_option`), and the value is the binding's resolved model
@@ -641,7 +688,7 @@ resolved by the acpAgents refresh loop, persisted in instance settings and
 read from memory, never fetched on the hello path; a registry agent carries
 a snapshot), and the `login` knowledge (`credentials.login` in the spec:
 command, `managed_command` inside a tree, `home_subdir`, `credential_file`).
-The server-host login adapters read the same spec fields. Every
+Every
 `heartbeat_ack` carries the current catalog again; when enabling an ACP agent
 changes it, the connected daemon adopts the new probes and immediately sends a
 fresh heartbeat, so installing an agent never requires a daemon reconnect.
@@ -681,6 +728,42 @@ staging rename, writes `manifest.json` (absolute command, args, env, `home`,
 the rendered `login_command`), answers `tool_result { installation }` and
 heartbeats. `DELETE .../installations/:adapterType/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
+
+An install of a *different* version is an upgrade, and an upgrade replaces the
+runtime every Run of that Agent is talking to. So the daemon drains that
+adapter's Runs first and, if the drain does not converge inside five minutes,
+refuses the upgrade rather than killing anything — "still in use" is an
+ordinary answer here, not a fault. It then keeps exactly one previous version
+directory (ADR 0016 §9). That directory still holds its own login, which is
+what makes `POST .../installations/:adapterType/rollback` (`rollback_tool`) a
+step rather than a re-login: it drains the same way, deletes the current copy,
+and the version behind it becomes current. The host reports only the current
+copy plus `rollback_version`, so an Agent has one version per host and one
+place to undo it. During a replacement — install, rollback or removal — that
+adapter's door is held closed on the host: a launch, a verification command
+and a usage probe are all refused with "being upgraded, retry in a moment"
+rather than started against a directory about to be renamed away. Draining
+alone would not do it, because a drain reports quiet and the download that
+follows takes long enough for the next dispatch to arrive.
+
+Install, upgrade, rollback and removal are recorded in
+`host_runtime_changes` and listed on the Updates page
+(`GET /api/v1/hosts/runtime-changes`); the host's own report stays the
+authority on what is installed now.
+
+**Subscription quota.** `usage_probe { adapter_type, installation, login,
+timeout_seconds }` asks a host what one copy has left; the daemon reads that
+copy's own login and answers `usage_probe_result { quota }` — percentages,
+reset text, and a reason when it could not read one. Never the credential.
+Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
+runs `codex -s read-only -a untrusted app-server` and asks
+`account/rateLimits/read`, recovering the numbers from the refusal an
+over-limit account gets. Anything else answers "no subscription quota" rather
+than launching a CLI to learn nothing. The control plane caches the answer in
+`host_runtime_usage`, refreshes every three hours, folds in the live reading a
+finished Run carries back, and shows it beside the copy on the host card.
+`GET /api/v1/hosts/:hostId/usage` is a cache read; `POST
+.../installations/:adapterType/:installation/usage` is the probe.
 
 What a dispatch may choose is decided where dispatch is validated — the
 admission resolves the backend and refuses an unusable one, so the caller
@@ -760,9 +843,10 @@ appearing silently stuck. When neither an explicit adapter login command nor a
 selected ACP method/CLI action exists, both the server route and daemon fail
 closed; the login endpoint never falls back to a host shell.
 One session per host × adapter × copy; a new stream supersedes the old, and a
-closed stream sends `login_close`. The server-host login engine
-(`providers/cli/loginEngine.ts`) is unchanged and still owns the server host's
-own profiles; the daemon terminal never reads or copies credential contents.
+closed stream sends `login_close`. This is the only login path there is — the
+server-side login engine that once owned the server host's own profiles is
+gone (ADR 0016 §7), and the built-in host logs in through this same terminal.
+The daemon terminal never reads or copies credential contents.
 It may **link** one owner's login file into that owner's Agent profiles on the
 same machine (above) — the CLI opens its own file and the daemon never holds
 the bytes.
@@ -828,10 +912,10 @@ CLIs and registry agents differ only in server-side capability (provider
 binding, subagent lockdown, usage), which is not a host concern.
 
 The instance admin's **ACP registry** panel on Instance Settings
-(`modules/runtime_tools/AcpRegistryPanel`) remains the instance-wide management
-surface next to the server-host runtime tools: enabled agents (Disable, refused
-while installed anywhere) and a registry search to Enable an entry without
-installing it on a particular host.
+(`modules/instance_settings/AcpRegistryPanel`) is the instance-wide management
+surface: enabled agents (Disable, refused while installed anywhere) and a
+registry search to Enable an entry without installing it on a particular
+host. Installing one on a machine is still a host action, on the host card.
 
 Direct Agent chat, Room, and Project sidecar expose the selected installation's
 generic ACP options through the shared composer. The request stores selected
@@ -864,7 +948,7 @@ rebuilds the environment from an **allowlist** rather than filtering a denylist
 — B67 states the rule positively for a reason, and a denylist of vendor
 prefixes lets `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` (OpenCode's credential
 store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
-The allowlist is the same shape the server host uses in `cliSubprocessEnv.ts`.
+The allowlist is the same shape the deleted server-host path used.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
@@ -918,9 +1002,8 @@ Two placeholders on the wire (`REMOTE_CWD_PLACEHOLDER`,
 executing machine knows; the daemon substitutes them in argv, the initial
 stdin, and every `stdin` frame, so a prompt can point at the Skill file by a
 path the server never had rather than an unexpanded `$RAINVER_SKILL_PATH`.
-The one hand-written mapping left is `sandbox/runner.mjs`, which runs with no
-dependencies; `server/test/sandboxRunnerClient.test.ts` pins it to
-`SandboxRuntimeEnvironment` field by field instead.
+No hand-written mapping is left anywhere on this wire: the Runner that held the
+last one is deleted, and every host speaks this contract.
 
 `hello` (authenticates the bearer token, marks `online`, records
 capabilities, applies the daemon's complete workspace Location reports, and
@@ -1138,7 +1221,7 @@ the binding's and the machine's, and removes the directory when the Run ends.
 `RAINVER_CLI` names a launcher the daemon generates there, pointing at the
 `rainver` command in `@rainver/agent-cli` through the same Node the daemon
 runs — the command is a script, not an executable, and nothing is installed
-onto `PATH` (ADR 0016 §6).
+onto `PATH` (ADR 0016 §7).
 
 Which Skill a Run gets is decided from the Run (`workSkillOptionsForRun`): a
 conversation turn — it has a Session — reads "your reply is the message the
@@ -1178,12 +1261,94 @@ never arrived is reported into the Task's own stream rather than dropped.
 both branch on `hostKind`: a remote run skips the Runtime Context Gateway
 entirely (no retrieval, no provider/model resolution — planning a
 Delivery would fail outright anyway, since there is no bound provider to
-resolve a default model from), skips CLI credential-profile/tool-version
-resolution, and never has its `required_sandbox_level` escalated past the
+resolve a default model from), and never has its
+`required_sandbox_level` escalated past the
 dispatch endpoint's `none` (`resolveSandboxLevelForRuntime` is server-host-only
 policy for a workspace the server itself provisions). The daemon runs the
 vendor CLI bare, auto-approving edits/commands in the workspace
 (trusted-host default — the user reviews the returned diff instead).
+
+## Dispatch: the runtime decides, not the machine
+
+Every `local_cli` runtime is dispatched to a host daemon —
+`dispatchesToHostDaemon(adapter_type)` (`runs/runRemoteness.ts`) is the one
+predicate, and it asks about the runtime, not the host. The built-in host is a
+daemon like any other, so a CLI Run on a server Location goes over the same
+WebSocket a paired machine's does. Every other executor family stays in-process
+on the server, because there is no subprocess to hand it to: `model_api` is an
+API call this server makes.
+
+That distinction decides more than where a process starts. A Run handed to a
+daemon gets **no server-brokered Runtime Context** — no retrieval, no
+Invocation Delivery, no provider/model resolution — and pulls what it needs
+through the `rainver` command in its work surface; **no server-side CLI
+continuity**, because the vendor session in its Agent profile is the
+continuity; **no sandbox-level escalation**, because the daemon builds the
+namespace from the dispatch's `isolation` policy; and **no Run Exchange**,
+because that is a directory pair the server stages and reads back. A Run that
+executes in-process keeps all four, since nothing else can supply them.
+`hostKind` is left meaning only *which machine*, which is still what decides
+whether a server-brokered credential is in play: the `runtime.use_credential`
+gate for a Run's **ModelProvider** is keyed on it, so the built-in host's Runs
+keep it. The second `runtime.use_credential` check, the one for a `cli_profile`
+credential, is gone with the server-host CLI branch that raised it — a daemon
+Run spends the copy's own login, which no server-side profile grants.
+
+`resolveExecutionPort` returns a `HostDaemonExecutionAdapter` for a CLI Run on
+either kind of host, and for a CLI Run with nothing bound only when its runtime
+profile snapshot carries a managed workspace: that names a Conversation or a
+direct owner, which is the container B68 keys a profile by. A CLI Run with
+neither a Location nor one of those has no container at all, and minting a
+per-run one is what B68 forbids — it reaches the adapter registry's fail-closed
+entry instead of executing somewhere undefined.
+
+**Who may dispatch** follows the host's trust mode, per the two safety models
+(ADR 0016 §3, B63). A paired host serves its own owner: `prepareRemoteTaskRun`
+rejects a caller who is not `host_owner_user_id`. The built-in host has no
+owner, so that check does not apply to it and the authorization is the Project
+write access the task-run admission already verified — the per-Run namespace is
+what makes serving every Space safe. The dispatch also states an `isolation`
+policy (`dispatchIsolation`): `sandbox_mode` from the Run's
+`required_sandbox_level`, and `default` egress unless the dispatch asked for
+`install` (`model_override_json.egress_profile`, which the server composes and
+no request body reaches). A *standing* grant on the Agent runtime profile is
+deliberately not read: writing a runtime profile takes only read access to an
+ordinary Agent and `runtime_config_json` is free-form, so a privilege honoured
+from there is one any member who can see the Agent could grant themselves.
+Nothing reads the key, and the two runtime-profile routes refuse it outright
+rather than accepting it silently — a config blob written through another
+route still carries it harmlessly, because there is no reader. Granting `install` through the
+product needs an authorization surface — ADR 0017 puts egress in the Exposure
+row — and that is in the deferred register.
+
+**Capacity.** `HostConnectionRegistry.dispatchLaunch` takes the built-in host's
+cap and queues past it, releasing a slot on every path that ends a Run — a
+`complete` frame, an offline host, a disconnect that outlasted its grace
+window. An uncapped dispatch still sends its `launch` synchronously: awaiting
+unconditionally would push the send and its pending entry into a microtask, a
+window in which a frame for that run has no dispatch to route to.
+
+## Where the sandbox line went
+
+`modules/sandbox.md` is retired. The dedicated Runner service, its private
+protocol (`server/src/modules/sandboxRunner/`), the server-side vendor CLI
+adapter and `sandbox/runner.mjs` are deleted: every CLI
+runtime is dispatched to a host daemon now, and the isolation that service
+provided is the strict-mode namespace documented above.
+
+Two things that document described still exist and moved here rather than
+disappearing. **Run Exchange** is server-host-only and no longer reachable from
+a CLI run at all — `HostDaemonExecutionAdapter`'s port throws, because the
+Exchange is a directory pair the server stages and reads back and there is none
+on another machine; a dispatched Run returns its work as a diff and as the
+files the daemon uploads from `$RAINVER_OUTPUT_DIR`, which
+`recordOutputArtifacts` matches against the Task's declared outputs.
+**`required_sandbox_level`** remains a routing and risk value on the Run, but it
+no longer selects an execution mechanism for a CLI run: the server escalates
+nothing it does not provision, and what the Run actually gets is the dispatch's
+`isolation` policy applied by the daemon. `projectFolders/sandbox.ts` and its
+B62 guard stay, because code-patch apply and rollback still touch server-host
+Locations.
 
 ## Host daemon (`packages/host-daemon`, binary `rainver-host`)
 
@@ -1191,7 +1356,148 @@ A deliberately thin bridge — no planner, no memory, no business logic (ADR
 0016 principle: "the daemon must not become a second Rainver"). Config at
 `~/.rainver-host/config.json` (override root via
 `RAINVER_HOST_CONFIG_DIR`), mode 0600, the **only** place a workspace's
-real local path is ever written down.
+real local path is ever written down. It also records the daemon's `trust`
+mode, written with the credential it registered with; a config that predates
+the field is a paired host, which is all a daemon could be then.
+
+### Strict mode (`strictNamespace.ts`)
+
+In strict mode `execution.ts` does not spawn the runtime — it spawns `bwrap`
+around it. The namespace is ported from the Runner it replaces
+(`sandbox/runner.mjs`'s `buildNamespaceCommand`): `--die-with-parent
+--new-session --unshare-pid`, a tmpfs root, `--proc`/`--dev`, a private
+`/tmp`, the system roots and the minimal `/etc` files bound read-only, and
+`--unshare-net` when the Run's egress profile is `none`. The child starts
+through `sh -c` so it can report `ready` on fd 3 before `exec`ing the runtime:
+"the namespace could not be built" and "the runtime exited immediately" are
+the same exit code otherwise, and the daemon says which in the `complete`
+frame's error.
+
+**One deliberate deviation from the Runner.** The Runner remapped every
+authority root onto a canonical target (`/workspace`, `/home/sandbox`,
+`/runtime-tool`) because the server addressed mounts by managed id and never
+knew a real path. The daemon is the opposite — it is the only component that
+resolves paths at all (B64), and everything it has already materialized for
+the Run is an absolute path on this machine — so each path is bound **at its
+own path**. The containment property is unchanged; what is dropped is a
+translation that would have to be undone again in every variable the daemon
+writes.
+
+What a Run sees, and nothing else: its workspace (read-only or read-write per
+`sandbox_mode`), its own `runs/<run_id>/` directory — which is also its HOME,
+one per Run — the Agent's runtime profile, the login home the profile links
+its credential out of, a managed copy's tree, and the daemon's own install
+root, where the ACP adapter and the `rainver` command live. The instance's
+other authority roots, the daemon's own registration, and every sibling
+workspace are simply absent.
+
+Two of those are deliberately read-only. The login home, because on a shared
+host it holds the instance's one subscription login: a Run that could rewrite
+it could point every other member's Runs at an account of its own choosing. A
+token refresh through the link therefore fails rather than succeeding
+quietly, and surfaces as the runtime's login prompt, which an instance admin
+answers through the host card — outside any namespace. The managed copy's
+tree, for the same reason and because nothing at runtime writes there: each
+runtime keeps its state under its own state-root variable, inside the profile.
+
+**The environment is an allowlist, not this container's own.** A trusted host
+keeps the machine's environment because it is the owner's machine; the built-in
+host is nobody's machine and its environment is the instance's. Strict mode
+therefore starts from `filterAmbientEnv`'s allowlist (the same one B67 already
+applies to a provider-bound run) and adds only what the daemon itself built for
+the Run. `planStrictLaunch` is the one place that decides this, and it is
+unit-tested for exactly that reason.
+
+The container no longer receives the control plane's internal token at all.
+`.runner.env` existed to give the Runner `SANDBOX_RUNNER_TOKEN`, which unlocks
+the internal credential and execution routes from the network this container is
+on; with the Runner gone the file, the variable and that reachability go with
+it, and the daemon holds a bearer token for its own Host row and nothing else.
+(`SANDBOX_RUNNER_SERVER_HOST` survives under its old name: it is the server's
+own in-network hostname, which the built-in host's control-plane URL and the
+provider proxy address both derive from. Renaming it would silently break an
+instance whose `.env` still spells it the old way.)
+
+HOME is `runs/<run_id>/home`, never the container's and never a managed copy's
+shared login home. The runtime reaches its own state through the state-root
+variable its profile sets, which is what B68 keys by Agent × container; HOME
+is only where a vendor CLI drops scratch, and one directory shared by every
+Run of every Space is precisely what a shared host must not have. The
+consequence: a runtime whose registry entry declares no state-root variable
+cannot be logged in through HOME here — which is the same
+`runtime_profile_isolation_unsupported` refusal that already gates dispatch
+for it.
+
+The launch frame's `isolation { sandbox_mode, egress_profile }` is the policy
+the control plane owns; everything else about the namespace is derived on the
+host. Three profiles:
+
+- **`none`** — `--unshare-net`. The namespace has loopback and nothing else,
+  and this is the only profile that *confines* a Run's network.
+- **`default`** — the general web, git and the vendor a subscription belongs
+  to, through the host's own egress proxy (`egressProxy.ts`, one CONNECT
+  server on the container's loopback, started once in strict mode). Package
+  registries are refused with a reason the runtime prints.
+- **`install`** — `default` plus package registries.
+
+`default` and `install` point the Run at the proxy with `HTTP_PROXY` and a
+per-Run credential, so one Run cannot borrow another's policy; the grant is
+revoked when the Run completes, after its log has been read. **Pointing is
+advisory.** Every vendor CLI, git and package manager honours the variable; a
+process that opens its own socket does not, because the namespace still shares
+the container's network stack. So these two are policy and a record, not
+containment — see `SECURITY_AND_ACCESS_BOUNDARIES` §10, and the deferred
+register for what a real boundary would take.
+
+The one part that holds regardless is the proxy's own refusal: no address
+inside this instance's network — RFC 1918, loopback, link-local, unique-local,
+CGNAT, or the cloud metadata endpoint — is dialled under any profile,
+`install` included, and it is the *resolved* address that is judged, so a
+public name pointing at a private one is refused too. The proxy also speaks
+CONNECT only: a plain proxied GET would put the request's own headers through
+the daemon, which is not something it should ever hold.
+
+What a Run reached and was refused comes back on the `complete` frame
+(`egress`, bounded at 200 entries) and orchestration turns the *refusals* into
+an `egress_refused` Run event. Only the refusals: an allowed request is the
+ordinary case, and a Run that fetches a hundred URLs would bury its own
+history. The refusal is the thing nobody could otherwise explain, since the
+CLI only saw a 403 from a proxy it did not choose.
+
+A frame without `isolation` falls closed on both axes — a read-only workspace
+and no network at all. A trusted host ignores the field entirely: it is its
+owner's machine, its Runs use the machine's own network, and it runs no proxy.
+
+`RAINVER_STRICT_SANDBOX=1` is exported into every strict namespace, marking it
+for anything that needs to know it is inside one. Relaxing the vendor CLI's own
+sandbox is the intent — one boundary, and it should be ours — but **it is not
+implemented**: nothing reads that variable, and the runtime-specific half (the
+per-adapter setting) has never been written. This is the one acceptance blocker
+carried out of the unified-host work; see `.agent/tasks/deferred-register.md`.
+
+What that actually costs was measured on 2026-09-08, inside this container,
+with a real `codex` 0.147.0 binary under the argv `buildStrictNamespaceCommand`
+produces — because the symptom previously written here was assumed rather than
+observed, and was wrong:
+
+- The vendor sandbox does **not** fail to start. User namespaces nest (the
+  kernel allows 32 levels; this container reports `max_user_namespaces` in the
+  six figures) and `codex sandbox` exits 0 inside the strict namespace.
+- It stacks its own policy. Its default is `read-only`, so the Run's working
+  directory and HOME — which this namespace binds read-write — answer
+  "Read-only file system" through it. A Run therefore *runs* and silently
+  cannot write, which is harder to diagnose than a refusal: nothing in its
+  output names the second sandbox.
+- The switch works and was verified in the same place:
+  `sandbox_mode = "workspace-write"` (or `"danger-full-access"`) in the copy's
+  `config.toml` restores writes. That file is already a channel the daemon
+  materializes for a bound Run (`binding.files`).
+- Claude Code 2.1.263 has no vendor sandbox to relax at all and launches here
+  unchanged, so this is a Codex-shaped problem, not a general one.
+
+Still unverified: we spawn our own pinned `codex-acp`, not the vendor CLI, so
+whether that adapter applies or forwards the setting needs the package
+installed on a host.
 
 - `rainver-host register --server <url> --code <pairing-code>` — exchanges
   the pairing code for a bearer token.
@@ -1294,10 +1600,10 @@ Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
 `git` plus every runtime binary the server named in `hello_ack.runtime_probes`
 (one per implemented ACP adapter spec — the daemon holds no list of its own,
 so the first hello of a fresh daemon reports only `git` until the heartbeat
-sent right after the ack). Absent binaries are silently omitted, never
-installed or version-managed by the daemon (that stays a `runtimeTools`-style
-server concern for the server host only — trusted hosts use whatever the
-machine already has).
+sent right after the ack). Absent binaries are silently omitted. A binary
+found on PATH is the machine's own copy and is never installed or upgraded by
+the daemon; installing and version-managing is only ever done to a *managed*
+copy, on either host kind, through `install_tool` (above).
 
 ## Known P1 gaps (not defects — explicitly deferred)
 
@@ -1322,3 +1628,24 @@ machine already has).
   detection, quota probing, and real Windows-native/WSL hardware verification
   remain deferred. Location `execution_ready` is persisted and heartbeat-
   driven now; it is deliberately not inferred from Host liveness.
+
+### Conformance probes: retired
+
+There were instance-admin C3 probes here, and they are gone (2026-09-09). They
+certified a vendor CLI by asking it five behavioural questions once — write
+only this file, do not print that secret, stop when told — and cached the
+verdict against `(adapter_type, runtime_version)`, which the router then
+required before any non-low-risk or file-shaped CLI work.
+
+Three things stopped holding at once. The behaviours are the *model's*, and the
+verdict carried no model, so a pass measured on one model spoke for every model
+that copy could select. One sample of a non-deterministic runtime is weak
+evidence for a permanent verdict. And the strongest question — will it write
+outside what it was given — became structural under ADR 0016: the daemon binds
+the workspace and nothing else, so a behaviour test now stood in front of a
+boundary that already held, measuring politeness while reading like a
+guarantee.
+
+What contains a CLI Run is the host's namespace, its egress profile and
+ADR 0008's credential channel. Fixed verification recipes keep using
+`command_run`, which is unaffected.

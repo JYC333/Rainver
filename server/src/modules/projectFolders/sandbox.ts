@@ -218,7 +218,12 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     if (!info?.isDirectory()) {
       throw new HttpError(404, "Project Folder directory not found on disk");
     }
-    if (!folder.allow_external_root && !isInside(root, this.config.workspaceRoot)) {
+    // No exception any more (ADR 0016 §4): a server Location is always under
+    // the instance's own workspace root. Attaching a directory that already
+    // exists on a machine is what a paired host is for — the built-in host has
+    // managed workspaces only, and an escape hatch that let a Folder point
+    // anywhere on the server was the one thing making that untrue.
+    if (!isInside(root, this.config.workspaceRoot)) {
       throw new HttpError(403, "Project Folder root is outside WORKSPACE_ROOT");
     }
     return root;

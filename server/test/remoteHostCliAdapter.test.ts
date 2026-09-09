@@ -984,4 +984,57 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       expect(result.success).toBe(true);
     }, 30_000);
   });
+  it("carries the host's egress refusals on the envelope, for the Run event", async () => {
+    // The refusal is the thing nobody can otherwise explain: the CLI saw a 403
+    // from a proxy it did not choose, and the reason lives on the host. It
+    // becomes an `egress_refused` Run event only by riding out on this
+    // envelope, and that link had no test.
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+
+    const executePromise = executeRemoteHostCliAdapter(
+      {
+        run: run({ adapter_type: "opencode", prompt: "install a package" }),
+        prompt: "install a package",
+        model: null,
+        resume_session_id: null,
+      },
+      "host-1",
+      "folder-1",
+      { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
+    );
+
+    await vi.waitUntil(() => sink.sent.length === 1);
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink, "run-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`, launchIdOf(sink, "run-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const refusal = {
+      allowed: false,
+      host: "registry.npmjs.org",
+      port: 443,
+      reason: "Package installs are not allowed for this Run.",
+      at: "2026-09-09T02:00:00.000Z",
+    };
+    registry.receiveComplete(
+      "host-1",
+      "run-1",
+      { exit_code: 0, timed_out: false, error: null, egress: [refusal] },
+      launchIdOf(sink, "run-1"),
+    );
+
+    const result = await executePromise;
+    expect((result.metadata_json as { egress?: unknown[] } | undefined)?.egress).toEqual([refusal]);
+  });
+
 });
