@@ -1,4 +1,4 @@
-import { Loader2, RefreshCw } from 'lucide-react'
+import { CircleArrowUp, Loader2, RefreshCw } from 'lucide-react'
 import type { ModelProviderOut } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -33,6 +33,14 @@ function versionLabel(version: string | null): string {
   if (!version) return 'unknown version'
   const numeric = version.match(/\bv?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0]
   return numeric?.replace(/^v/, '') ?? version
+}
+
+function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRuntimeAdapterOption): string {
+  if (entry.id === 'own') return `own · ${versionLabel(entry.version)}`
+  if (entry.runtime_version) return `managed · ${versionLabel(entry.runtime_version)}`
+  return adapter.reports_managed_cli_version
+    ? 'managed · CLI version unavailable'
+    : `managed · ${versionLabel(entry.version)}`
 }
 
 /**
@@ -147,7 +155,7 @@ export default function HostAgentRow({
           const quota = usageLabel(usage.get(entry.id))
           const badge = (
             <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
-              {entry.id === 'own' ? 'own' : 'managed'} · {versionLabel(entry.version)}
+              {installationVersionLabel(entry, adapter)}
               {multiAccount ? ` · ${accountSummary}` : entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
             </Badge>
           )
@@ -175,11 +183,27 @@ export default function HostAgentRow({
                 <Button
                   size="sm"
                   variant="ghost"
+                  className="h-7 w-7 p-0"
                   aria-label={`Refresh usage for ${entry.id} of ${adapter.display_name} on ${host.name}`}
                   disabled={host.status !== 'online' || usageBusy.has(entry.id)}
                   onClick={() => onRefreshUsage(entry.id)}
                 >
                   {usageBusy.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                </Button>
+              )}
+              {manageable && entry.id !== 'own' && adapter.latest_managed_version && adapter.latest_managed_version !== entry.version && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0"
+                  aria-label={`Upgrade ${adapter.display_name} on ${host.name}`}
+                  title={`Upgrade ${adapter.display_name}`}
+                  disabled={host.status !== 'online' || installBusy.has(adapter.adapter_type)}
+                  onClick={onInstall}
+                >
+                  {installBusy.has(adapter.adapter_type)
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
               )}
               {manageable && authMethods.length === 0 && !entry.options?.cli_login_available && entry.logged_in !== null && (
@@ -229,8 +253,8 @@ export default function HostAgentRow({
                 </Button>
               )}
               {manageable && entry.rollback_version && (
-                // The previous copy is still on the host with its own login,
-                // so undoing an upgrade asks nobody to log in again.
+                // The previous binaries are still on the host and reuse the
+                // adapter's stable managed HOME after rollback.
                 <Button
                   size="sm"
                   variant="ghost"
@@ -302,7 +326,7 @@ export default function HostAgentRow({
         ) : (
           <span
             className="flex h-7 items-center whitespace-nowrap text-muted-foreground"
-            title="This Agent may support its own provider settings, but ACP does not expose a generic way for Rainver to inject a ModelProvider."
+            title="This Agent may support its own provider settings, but it does not provide a generic way for Rainver to inject a ModelProvider."
           >
             Agent-managed · no Rainver override
           </span>

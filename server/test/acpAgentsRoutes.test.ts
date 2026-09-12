@@ -172,7 +172,10 @@ describe("ACP registry agents", () => {
     // dispatch until the registry can describe an Agent-isolated login/state
     // root contract.
     const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-adapters", headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
-    expect(adapters.json().items).toContainEqual(expect.objectContaining({ adapter_type: "acp_goose", capability_probe: "acp_goose", remote_eligible: false }));
+    expect(adapters.json().items).toContainEqual(expect.objectContaining({
+      adapter_type: "acp_goose", capability_probe: "acp_goose", remote_eligible: false,
+      latest_managed_version: "1.2.3",
+    }));
 
     const listed = await app.inject({ method: "GET", url: "/api/v1/acp-agents" });
     expect(listed.json().items).toEqual([expect.objectContaining({ id: "goose", installed_on: [] })]);

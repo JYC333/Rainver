@@ -577,10 +577,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         }
         case "login_open": {
           try {
-            // A managed copy's login state lives inside its tool directory, so
-            // a rollback or removal mid-login deletes the very tree the
-            // terminal is writing into. Refused rather than raced, like a
-            // launch.
+            // The login process executes versioned binaries even though its
+            // state lives in the stable managed HOME. Refuse replacement while
+            // that process is active, like a launch.
             if (adapterIsBeingReplaced(frame.adapter_type)) {
               throw new Error(`${frame.adapter_type} is being upgraded on this host; retry in a moment.`);
             }

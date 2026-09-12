@@ -3421,6 +3421,10 @@ export interface HostRuntimeAdapterOption {
   remote_eligible: boolean
   /** The ACP registry entry this adapter's managed copy is installed from, when it has one. */
   registry_id?: string | null
+  /** Current ACP package version available for a managed install. */
+  latest_managed_version?: string | null
+  /** Whether a managed copy reports a distinct bundled vendor CLI version. */
+  reports_managed_cli_version?: boolean
   /** Whether a ModelProvider can be bound to it; false for a registry agent, which runs on the copy's own login only. */
   provider_binding?: boolean
   /** Which ModelProvider endpoint it speaks — the `<provider_api>_base_url` a binding needs. */

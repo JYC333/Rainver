@@ -50,7 +50,7 @@ vi.mock('../../../api/client', async importOriginal => {
 })
 
 const ADAPTERS: HostRuntimeAdapterOption[] = [
-  { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp' },
+  { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp', reports_managed_cli_version: true },
   { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', provider_binding: true, provider_api: 'openai_compatible' },
   { adapter_type: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true },
   // What the server really reports for a registry agent: installable and
@@ -245,7 +245,7 @@ describe('HostAgents', () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
     expect(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
-    const search = await screen.findByLabelText('Search ACP registry')
+    const search = await screen.findByLabelText('Search agent registry')
     await userEvent.type(search, 'goose')
     // One occurrence is the installed host row; the second proves the
     // registry search did not hide the installed entry.

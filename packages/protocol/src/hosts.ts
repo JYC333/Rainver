@@ -127,6 +127,8 @@ export const RuntimeInstallationSchema = z.object({
   /** `own` or `managed:<version>`. */
   id: z.string(),
   version: z.string().nullable(),
+  /** Vendor CLI version; distinct from the managed ACP package version above. */
+  runtime_version: z.string().nullable().optional(),
   /** Whether its login state exists; ACP session setup is the generic fallback signal. */
   logged_in: z.boolean().nullable(),
   /** Null when the copy could not be asked and has no configured model either. */
@@ -134,8 +136,8 @@ export const RuntimeInstallationSchema = z.object({
   /** Present only for a CLI whose login spec declares an accounts format; the list may be empty. */
   accounts: z.array(RuntimeAccountSchema).optional(),
   /**
-   * The version this copy can be rolled back to, kept on the host with its own
-   * login so undoing an upgrade asks nobody to log in again. Null when this is
+   * The ACP package version this copy can be rolled back to. Its binaries are
+   * kept on the host and share the stable managed HOME. Null when this is
    * the first version installed, or when the copy is the machine's own.
    */
   rollback_version: z.string().nullable().optional(),

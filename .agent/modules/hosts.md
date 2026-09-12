@@ -517,8 +517,8 @@ usable for them — and a login per Agent × container profile would multiply
 logins by Agents × Rooms. So the login stays where it was:
 
 - each host × installation has exactly one **login home** — the machine's own
-  `~/.claude` / `~/.codex` / OpenCode data directory for `own`, the copy's
-  `home/` for `managed:<version>` — and login happens there, once, through the
+  `~/.claude` / `~/.codex` / OpenCode data directory for `own`, the adapter's
+  stable managed HOME for `managed:<version>` — and login happens there through the
   existing login stream;
 - when the daemon materializes a profile for an **unbound** run, it links
   **only** the runtime's credential file (the `credential_file` under
@@ -542,8 +542,8 @@ logins by Agents × Rooms. So the login stays where it was:
 - missing login file → the profile is created without the link, and the first
   dispatch surfaces the runtime's own login prompt. That is the intended
   behavior. A symlink already at the target is removed then, because it points
-  into a login home that has no credential any more (a managed copy that was
-  uninstalled) and the runtime's own login would otherwise write through it
+  into a login home that has no credential any more (for example after logout)
+  and the runtime's own login would otherwise write through it
   into a removed directory; a regular file there is a credential this profile
   holds itself and is left alone;
 - a symlink at the target is followed and checked: while it still resolves to
@@ -707,8 +707,16 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
   reconfigured by the daemon. Its login state is the machine's.
 - **`managed:<version>`** — a copy the daemon installed on the owner's
   request into `<config dir>/tools/<adapter_type>/<version>/`, with its own
-  `home/` so its login state is separate from the machine's and from every
-  other copy. Removal deletes the directory.
+  stable HOME at `<config dir>/managed-state/<adapter_type>/home/`, separate
+  from the machine's own CLI and other adapters. Removal deletes binaries,
+  retaining managed user state for reinstallation.
+
+For a managed Claude or Codex copy, `<version>` is the ACP adapter package
+version. The adapter spec also declares a fixed command for reading the vendor
+CLI bundled inside that package. Installation records that answer separately as
+`runtime_version`. The Host card displays only that vendor CLI version; the ACP
+package and its version remain internal installation details. A failed metadata
+probe does not fail the installation and is shown as an unavailable CLI version.
 
 `hello_ack.runtime_probes` is the daemon's initial whole catalog, one entry per
 adapter: the PATH binary to look for (`runtime`, null for a registry agent),
@@ -750,7 +758,8 @@ server validates what it stores and serves. Daemon and server deploy together;
 not translate obsolete heartbeat layouts.
 
 Install (`POST /api/v1/hosts/:hostId/installations/:adapterType`, host owner)
-sends `install_tool { request_id, adapter_type, version, distribution, login }`;
+sends `install_tool { request_id, adapter_type, version, distribution, login,
+runtime_version_command }`;
 the daemon materializes the distribution — `npx` as a pinned `npm install
 --prefix`, `uvx` as `uv tool install` with a private `UV_TOOL_DIR`, `binary`
 as an https download verified against its sha256 and extracted — behind a
@@ -764,10 +773,11 @@ runtime every Run of that Agent is talking to. So the daemon drains that
 adapter's Runs first and, if the drain does not converge inside five minutes,
 refuses the upgrade rather than killing anything — "still in use" is an
 ordinary answer here, not a fault. It then keeps exactly one previous version
-directory (ADR 0016 §9). That directory still holds its own login, which is
-what makes `POST .../installations/:adapterType/rollback` (`rollback_tool`) a
-step rather than a re-login: it drains the same way, deletes the current copy,
-and the version behind it becomes current. The host reports only the current
+directory (ADR 0016 §9). Both versions use the same managed HOME: login, native
+history, Skills and configuration survive upgrade, reinstall and pruning.
+`POST .../installations/:adapterType/rollback` (`rollback_tool`) drains the same
+way, deletes the current binaries, and promotes the previous version without
+rewinding user data. The host reports only the current
 copy plus `rollback_version`, so an Agent has one version per host and one
 place to undo it. During a replacement — install, rollback or removal — that
 adapter's door is held closed on the host: a launch, a verification command
@@ -780,6 +790,13 @@ Install, upgrade, rollback and removal are recorded in
 `host_runtime_changes` and listed on the Updates page
 (`GET /api/v1/hosts/runtime-changes`); the host's own report stays the
 authority on what is installed now.
+`GET /api/v1/hosts/runtime-adapters` also exposes each adapter's current
+registry version. The Host card compares it with the installed package and
+shows its compact CLI upgrade control only while they differ; neither internal
+package version is exposed in that UI.
+
+The stable HOME protects files, not a vendor guarantee that older binaries can
+read newer session formats.
 
 **Subscription quota.** `usage_probe { adapter_type, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that

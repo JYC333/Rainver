@@ -68,7 +68,7 @@ export default function AcpRegistryPanel() {
   return (
     <Card className="space-y-3 p-4" data-testid="acp-registry">
       <div>
-        <CardTitle className="text-sm">ACP registry</CardTitle>
+        <CardTitle className="text-sm">Agent registry</CardTitle>
         <p className="text-xs text-muted-foreground">
           Agents enabled here can be added to any host. They run at low trust on the host&apos;s own login, with no ModelProvider binding.
         </p>
@@ -116,7 +116,7 @@ export default function AcpRegistryPanel() {
           <p className="text-xs text-muted-foreground"><Loader2 className="inline size-3 animate-spin mr-1" />Loading registry…</p>
         ) : (
           <>
-            <Input placeholder="Search agents" value={query} onChange={event => setQuery(event.target.value)} aria-label="Search ACP registry" />
+            <Input placeholder="Search agents" value={query} onChange={event => setQuery(event.target.value)} aria-label="Search agent registry" />
             <ul className="max-h-64 overflow-y-auto divide-y divide-border">
               {candidates.map(entry => (
                 <li key={entry.id} className="flex items-center justify-between gap-2 py-2 text-xs">

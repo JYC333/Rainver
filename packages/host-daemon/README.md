@@ -122,6 +122,13 @@ sudo loginctl enable-linger "$USER"
 
 ## Rolling release model
 
+Managed CLI programs use versioned directories under the host config's `tools/`.
+Their login, native history, Skills and user configuration use the stable
+`managed-state/<adapter_type>/home/`; upgrading, reinstalling, rolling back or
+removing binaries does not delete it. Agent-run native sessions remain under
+`agents/<agent_id>/profiles/`. Include both directories in host-state backups.
+Binary rollback does not roll back the vendor data format.
+
 There are three fixed rolling build tags: `host-stable` from `master`,
 `host-edge` from every relevant `dev` push, and `host-nightly` from the nightly
 scheduled `dev` build. The channel-neutral `host-installer` bootstrap is

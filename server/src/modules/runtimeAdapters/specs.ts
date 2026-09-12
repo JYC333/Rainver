@@ -125,6 +125,8 @@ export interface RuntimeAdapterSpec {
   };
   /** How an execution host obtains a managed copy; absent = only the machine's own install. */
   distribution?: RuntimeDistribution | { registry_id: string };
+  /** Fixed argv inside a managed tree that prints the bundled vendor CLI version. */
+  managed_runtime_version_command?: string[];
   credentials: {
     credential_mode: CredentialMode;
     login?: RuntimeLoginSpec;
@@ -358,6 +360,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     baseline_trust_level: "low",
     executable: { command: "claude-agent-acp", allow_path_override: true },
     distribution: { registry_id: "claude-acp" },
+    managed_runtime_version_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "--version"],
     invocation: {
       headless_command_template: ["{executable}"],
       resume_command_template: ["{executable}"],
@@ -439,6 +442,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     // host actually reports.
     executable: { command: "codex-acp", allow_path_override: true },
     distribution: { registry_id: "codex-acp" },
+    managed_runtime_version_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "--version"],
     invocation: {
       headless_command_template: ["{executable}"],
       protocol: "acp",

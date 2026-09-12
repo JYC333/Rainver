@@ -58,7 +58,7 @@ export const importedSessions = pgTable("imported_sessions", {
 	/** The host owner: the only person who may import from that machine (ADR 0016). */
 	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
 	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
-	/** `own` or `managed:<version>` — the copy whose login the session lives in. */
+	/** `own` or `managed:<version>` — the selected runtime installation. */
 	installation: varchar({ length: 64 }).notNull(),
 	/** The runtime's own opaque session id, in its own format. */
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }).notNull(),

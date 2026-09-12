@@ -25,6 +25,8 @@ export interface RuntimeInstallation {
   /** `own` or `managed:<version>`. */
   id: string;
   version: string | null;
+  /** Vendor CLI version, when the managed adapter bundles a separate CLI. */
+  runtime_version: string | null;
   /** Whether its login state exists; null when the runtime declares no login. */
   logged_in: boolean | null;
   /** What this copy reports through ACP; null when it could not be asked. */
@@ -231,6 +233,7 @@ export async function detectCapabilities(
         found.push({
           id: OWN_INSTALLATION,
           version,
+          runtime_version: version,
           logged_in: loginState(homedir(), lookup.login, asked),
           options: reportedOptions(lookup.login, asked),
           ...(ownAccounts ? { accounts: ownAccounts } : {}),
@@ -245,6 +248,7 @@ export async function detectCapabilities(
       found.push({
         id,
         version: manifest.version,
+        runtime_version: manifest.runtime_version ?? null,
         logged_in: loginState(manifest.home, manifest.login, asked),
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
         ...(managedAccounts ? { accounts: managedAccounts } : {}),

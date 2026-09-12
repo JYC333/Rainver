@@ -25,8 +25,8 @@ export function hasSubscriptionQuota(adapterType: string): boolean {
 /**
  * What a host can run, in the one shape every reader uses. A runtime on a
  * host has one identity — the adapter type and the copy (`own` or
- * `managed:<version>`) — and everything about a copy (version, login state,
- * the options it reports) lives on the copy.
+ * `managed:<version>`) — and everything reported about a copy (version, login
+ * state, options) is resolved from that installation and its stable HOME.
  *
  * Normalized once when a daemon's hello/heartbeat is recorded. The daemon and
  * server ship together, so obsolete capability layouts are rejected instead
@@ -117,6 +117,7 @@ function installation(value: unknown, reportsSubscriptionQuota: boolean): Runtim
   return {
     id: entry.id,
     version: typeof entry.version === "string" ? entry.version : null,
+    runtime_version: typeof entry.runtime_version === "string" ? entry.runtime_version : null,
     logged_in: typeof entry.logged_in === "boolean" ? entry.logged_in : null,
     options: options(entry.options),
     ...(held ? { accounts: held } : {}),

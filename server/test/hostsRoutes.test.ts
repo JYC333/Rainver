@@ -632,6 +632,7 @@ describe("hosts routes", () => {
         installations: {
           claude_code: [{
             id: "own", version: "2.1.0", logged_in: true,
+            runtime_version: "2.1.0",
             options: { config_options: [{
               id: "model", name: "Model", description: null, category: "model", type: "select",
               current_value: "sonnet",
@@ -655,6 +656,7 @@ describe("hosts routes", () => {
       installations: {
         claude_code: [{
           id: "own", version: "2.1.0", logged_in: true,
+          runtime_version: "2.1.0",
           // The version this copy could be rolled back to, carried through
           // normalization — the host card's rollback button reads it, and a
           // field dropped here is a field the product never sees. Null for the

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -210,6 +211,7 @@ describe("host release installer", () => {
         "#!/bin/sh\nexit 0\n",
         { mode: 0o755 },
       );
+      await symlink(process.execPath, join(fakeBin, "node"));
 
       await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host"], process.env);
       await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-adapters-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host-adapters"], process.env);
@@ -235,6 +237,12 @@ describe("host release installer", () => {
 
       const unit = await readFile(join(systemdDir, "rainver-host.service"), "utf8");
       expect(unit).not.toContain("EnvironmentFile=");
+      const cliLauncher = await readFile(join(binDir, "rainver-host"), "utf8");
+      const daemonLauncher = await readFile(join(installRoot, "rainver-host-daemon"), "utf8");
+      expect(cliLauncher).toContain(realpathSync(process.execPath));
+      expect(daemonLauncher).toContain(realpathSync(process.execPath));
+      expect(cliLauncher).not.toContain(join(fakeBin, "node"));
+      expect(daemonLauncher).not.toContain(join(fakeBin, "node"));
       await runCommand(join(installRoot, "rainver-host-daemon"), [], {
         PATH: "/usr/bin:/bin",
         RAINVER_TEST_OUTPUT: daemonEnvironment,

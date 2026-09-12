@@ -306,10 +306,10 @@ host has managed copies only; it is a container, and there is no person's own
 install on it to respect. For any ACP adapter with a distribution, the daemon
 installs on request (`install_tool`) into
 `<config dir>/tools/<adapter_type>/<version>/` — never onto PATH or into
-global package trees — gives it a private `home/`, launches it by the absolute
-path its manifest records, and removes it on request. A thread pins the
-installation it runs on, since the vendor session lives in that copy's login
-state.
+global package trees — launches it by the absolute path its manifest records,
+and removes program versions on request. Managed user state has a stable private
+HOME at `<config dir>/managed-state/<adapter_type>/home/`; it is not versioned
+with the executable. Agent sessions remain in their separate Agent profiles.
 
 **Credentials live with the copy**, on every host. Logging a copy in is the
 host owner's action on a trusted host and an instance admin's on the built-in
@@ -348,10 +348,12 @@ its active Runs first, keeping the previous version directory for a one-step
 rollback, and recording both in Updates.
 
 The host reports only the current copy, so an Agent has one version per host,
-not a list. The version kept behind it is a rollback target and nothing else:
-it holds its own login, which is why undoing an upgrade is a step rather than
-a re-login. A drain that does not converge abandons the upgrade rather than
-killing a Run.
+not a list. The version kept behind it is a binary rollback target. Upgrade,
+reinstall, rollback, pruning and binary removal retain the same managed HOME,
+including login, native CLI history, Skills and user settings. Older binaries
+may not understand a newer vendor data format; rollback never rewinds that data.
+A drain that does not converge abandons the upgrade rather than killing a Run.
+This does not authorize importing the machine's own CLI state.
 
 ### 10. Retiring a mechanism may require an offline upgrade
 

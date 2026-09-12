@@ -31,13 +31,15 @@ export type ToolLoginSpec = RuntimeLoginSpec;
 export interface ToolManifest {
   adapter_type: string;
   version: string;
+  /** Version reported by the vendor CLI bundled inside this ACP package. */
+  runtime_version: string | null;
   /** How to launch: the command, resolved to an absolute path where one exists. */
   command: string;
   args: string[];
   /** Args required to enter the installed CLI, before protocol/login args. */
   entry_args?: string[];
   env: Record<string, string>;
-  /** This installation's own HOME — its login state lives here, apart from the machine's. */
+  /** Stable managed HOME for this adapter, separate from binaries and the machine's own CLI. */
   home: string;
   /** The login command inside this tree, rendered; null when the runtime declares none. */
   login_command: string[] | null;
@@ -53,6 +55,12 @@ const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function toolsDir(): string {
   return join(configDir(), "tools");
+}
+
+/** Persistent vendor-owned data for one managed adapter, outside versioned binaries. */
+export function managedToolHome(adapterType: string): string {
+  if (!SAFE_SEGMENT.test(adapterType)) throw new Error(`Unusable managed adapter: ${adapterType}`);
+  return join(configDir(), "managed-state", adapterType, "home");
 }
 
 /** `managed:<version>` → the version, or null for `own` and anything malformed. */
@@ -166,8 +174,7 @@ export async function uninstallTool(frame: UninstallToolFrame): Promise<boolean>
  *
  * The current copy is the newest; at most one older copy is kept behind it, as
  * the one-step rollback target (ADR 0016 §9). Older than that is
- * deleted on the next install — a version nobody can roll back to is only a
- * login state nobody remembers.
+ * deleted on the next install. User state is kept outside those directories.
  */
 export function managedVersionsFor(adapterType: string): ToolManifest[] {
   if (!SAFE_SEGMENT.test(adapterType)) return [];
@@ -199,9 +206,8 @@ export function rollbackTargetFor(adapterType: string): ToolManifest | null {
  * Undoes the last upgrade by deleting the current copy, promoting the one
  * kept behind it.
  *
- * Deliberately not a re-install: the point of keeping the directory is that
- * the previous copy still holds its own login, so rolling back does not ask
- * anyone to log in again.
+ * Only binaries roll back: the latest login, native history and configuration
+ * remain in the adapter's stable HOME.
  */
 export async function rollbackTool(adapterType: string): Promise<ToolManifest | null> {
   const versions = managedVersionsFor(adapterType);
@@ -218,17 +224,25 @@ export async function rollbackTool(adapterType: string): Promise<ToolManifest | 
  */
 export async function installTool(frame: InstallToolFrame, log: (line: string) => void): Promise<ToolManifest> {
   const finalDir = toolDir(frame.adapter_type, frame.version);
+  const home = managedToolHome(frame.adapter_type);
   const stagingDir = `${finalDir}.installing`;
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
     const launch = await materialize(frame.distribution, stagingDir, log);
-    // Its own HOME, so this copy's login state never mixes with the machine's.
-    const home = join(stagingDir, "home");
+    // User data is outside the version directory, so replacing or pruning
+    // binaries cannot remove login, native history, settings, or Skills.
     await mkdir(home, { recursive: true, mode: 0o700 });
+    const runtimeVersion = await probeManagedRuntimeVersion(
+      stagingDir,
+      frame.runtime_version_command,
+      home,
+      launch.env,
+    );
     const manifest: ToolManifest = {
       adapter_type: frame.adapter_type,
       version: frame.version,
+      runtime_version: runtimeVersion,
       ...launch,
       home,
       login_command: renderManagedLoginCommand(stagingDir, frame.login),
@@ -239,8 +253,8 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
     await rm(finalDir, { recursive: true, force: true });
     await rename(stagingDir, finalDir);
     // One current copy per adapter, plus exactly one kept behind it so the
-    // upgrade has something to be undone to (ADR 0016 §9). Anything older goes:
-    // a version nobody can roll back to is a login state nobody remembers.
+    // upgrade has something to be undone to (ADR 0016 §9). User state is outside
+    // this tree.
     const keep = new Set([frame.version, ...managedVersionsFor(frame.adapter_type)
       .filter((manifest) => manifest.version !== frame.version)
       .slice(0, 1)
@@ -263,6 +277,47 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
     await rm(stagingDir, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** A version label is useful metadata, but failure to print it must not abort a valid install. */
+function probeManagedRuntimeVersion(
+  tree: string,
+  commandTemplate: string[] | null | undefined,
+  home: string,
+  toolEnv: Record<string, string>,
+  timeoutMs = 4_000,
+): Promise<string | null> {
+  const rendered = renderManagedCommand(tree, commandTemplate ?? undefined);
+  if (!rendered?.[0]) return Promise.resolve(null);
+  const [command, ...args] = rendered;
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    let output = "";
+    const child = spawn(command, args, {
+      cwd: tree,
+      env: { ...helperProcessEnv(process.env), ...toolEnv, HOME: home },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(value);
+    };
+    const collect = (chunk: Buffer) => { output = (output + chunk.toString("utf8")).slice(-2_000); };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    child.on("error", () => finish(null));
+    child.on("close", (code) => {
+      const firstLine = output.trim().split("\n").find(Boolean)?.slice(0, 200) ?? null;
+      finish(code === 0 ? firstLine : null);
+    });
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      finish(null);
+    }, timeoutMs);
+    timer.unref?.();
+  });
 }
 
 async function materialize(

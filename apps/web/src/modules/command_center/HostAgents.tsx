@@ -305,7 +305,7 @@ export default function HostAgents({
       {adding && (
         <div className="space-y-2 rounded-md border border-border p-2" data-testid={`host-add-agent-${host.id}`}>
           <section className="space-y-1">
-              <p className="text-xs font-medium">Install from ACP registry</p>
+              <p className="text-xs font-medium">Install managed agent</p>
               <p className="text-xs text-muted-foreground">
                 {isInstanceAdmin
                   ? <>Installs a managed copy on {host.name}; an agent not yet enabled for the instance is enabled first. Registry agents run at low trust using their own host login.</>
@@ -321,7 +321,7 @@ export default function HostAgents({
               ) : registry !== null ? (
                 <>
                   <Input
-                    aria-label="Search ACP registry"
+                    aria-label="Search agent registry"
                     placeholder="Search agents"
                     value={registryQuery}
                     onChange={event => setRegistryQuery(event.target.value)}

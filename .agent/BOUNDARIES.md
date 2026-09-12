@@ -553,11 +553,12 @@ subscription percentages with reset times. Never the credential, its contents,
 or its path (B64). The host reads it, spends it against the vendor's own
 endpoint, and returns numbers.
 
-**B48** — A managed copy's login state lives inside that copy's own directory,
-which is why an upgrade keeps the previous version's directory: a rollback
-promotes a copy that is still logged in, rather than asking someone to log in
-again. Removing a copy removes its login with it, and nothing propagates a
-login between copies or hosts.
+**B48** — A managed adapter's login, native history and user configuration live
+in its stable host-local HOME, outside versioned program directories. Upgrade,
+reinstall, rollback, pruning and binary removal preserve that state; rollback
+changes binaries, not user data. The machine's `own` CLI and other adapters or
+hosts remain separate. Credentials never travel through the server; this is
+local continuity of one managed installation.
 
 **B49** — No API of Rainver's returns a runtime credential's value, and none
 returns a path to one. A managed subscription reports connection state and

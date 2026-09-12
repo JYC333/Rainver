@@ -236,7 +236,7 @@ curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_c
   -H "Authorization: Bearer <token>"
 
 # Undo the last upgrade, promoting the version the host kept behind it —
-# with its own login, so nobody logs in again.
+# keeping the latest login and native history in the stable managed HOME.
 curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_code/rollback \
   -H "Authorization: Bearer <token>"
 

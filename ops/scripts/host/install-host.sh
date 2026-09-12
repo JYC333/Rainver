@@ -264,6 +264,11 @@ if [[ -n "$node_command" ]]; then
 fi
 shared_node="$INSTALL_ROOT/runtime/node-current/bin/node"
 if [[ "$node_major" == "24" ]]; then
+  # Version managers such as fnm expose Node through a per-shell path under
+  # the runtime directory. That shim disappears when the shell ends, so never
+  # persist it in the CLI or systemd launchers. The resolved binary lives in
+  # the version manager's stable installation directory.
+  node_command="$(readlink -f -- "$node_command")"
   echo "Using system Node.js ${node_version}: $node_command"
 elif [[ -x "$shared_node" && "$(node_major_of "$shared_node")" == "24" ]]; then
   if [[ -n "$node_version" ]]; then

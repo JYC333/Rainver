@@ -14,7 +14,7 @@ vi.mock('../../../api/client', () => ({
     listProviderBindings: vi.fn(), setProviderBinding: vi.fn(), clearProviderBinding: vi.fn(),
     // Subscription quota is read on the host and cached server-side; the card
     // reads the cache when it mounts.
-    usage: vi.fn(), refreshUsage: vi.fn(), rollbackRuntime: vi.fn(),
+    usage: vi.fn(), refreshUsage: vi.fn(), installRuntime: vi.fn(), rollbackRuntime: vi.fn(),
   },
   providersApi: { list: vi.fn() },
 }))
@@ -31,11 +31,11 @@ const REMOTE_HOST = {
   daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude', 'git'], versions: {}, installations: { claude_code: [{ id: 'own', version: null, logged_in: null, options: null }] } }, created_at: '', updated_at: '',
 }
 
-const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, provider_api: 'claude_compatible' as const }
+const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, provider_api: 'claude_compatible' as const }
 // ACP runtime replatform P3: codex_cli's own executable is the pinned
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
-const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, provider_api: 'openai_compatible' as const }
+const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, reports_managed_cli_version: true, provider_api: 'openai_compatible' as const }
 const CLAUDE_PROVIDER = {
   id: 'provider-1', space_id: 'space-1', name: 'Claude proxy', provider_type: 'anthropic', base_url: 'https://example.test',
   network_profile_id: null, claude_compatible_base_url: 'https://example.test', openai_compatible_base_url: null,
@@ -257,6 +257,42 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     await waitFor(() => expect(hostsApi.rollbackRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
   })
 
+  it('shows only the vendor CLI version, and offers upgrade when the internal package has changed', async () => {
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+      items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '3.0.0', reports_managed_cli_version: true }],
+    })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{
+      ...CLAUDE_HOST,
+      capabilities_json: {
+        ...CLAUDE_HOST.capabilities_json,
+        installations: { claude_code: [{
+          ...CLAUDE_HOST.capabilities_json.installations.claude_code[0],
+          runtime_version: 'claude 2.1.4 (Claude Code)',
+        }] },
+      },
+    }] })
+    vi.mocked(hostsApi.installRuntime).mockResolvedValue({
+      host_id: 'host-1', adapter_type: 'claude_code', ok: true, error: null, installation: 'managed:3.0.0',
+    })
+    render(<HostsPanel />)
+
+    expect(await screen.findByText('managed · 2.1.4 · logged in')).toBeInTheDocument()
+    expect(screen.queryByText(/ACP/i)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Upgrade Claude Code on Laptop' }))
+    await waitFor(() => expect(hostsApi.installRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
+  })
+
+  it('hides the upgrade icon when the managed package is current', async () => {
+    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+      items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '2.0.0', reports_managed_cli_version: true }],
+    })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
+    render(<HostsPanel />)
+
+    await screen.findByText('managed · CLI version unavailable · logged in')
+    expect(screen.queryByRole('button', { name: /upgrade claude code/i })).toBeNull()
+  })
+
   it('offers no rollback for the first version installed', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{
       ...CLAUDE_HOST,
@@ -268,7 +304,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
     render(<HostsPanel />)
 
-    await screen.findByText('managed · 1.0.0 · logged in')
+    await screen.findByText('managed · CLI version unavailable · logged in')
     expect(screen.queryByRole('button', { name: /roll .* back to/i })).toBeNull()
   })
 })

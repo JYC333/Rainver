@@ -342,6 +342,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
+    const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.adapter_type, probe.version]));
     const items = listRuntimeAdapterSpecs()
       .filter((spec) => spec.runtime_kind === "local_cli" && spec.executable?.command)
       .map((spec) => ({
@@ -356,6 +357,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // A builtin adapter's managed copy comes from this ACP registry entry;
         // the registry picker hides it so the same agent is not offered twice.
         registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
+        /** Current ACP package version available to install from the registry. */
+        latest_managed_version: latestManagedVersions.get(spec.adapter_type) ?? null,
+        /** Whether this adapter bundles a distinct vendor CLI whose version the host reports. */
+        reports_managed_cli_version: Boolean(spec.managed_runtime_version_command),
         // Whether a ModelProvider can be bound to it at all; a registry agent
         // runs on the copy's own login only.
         provider_binding: !spec.invocation?.remote_host_only,
@@ -456,6 +461,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       version: probe.version ?? "latest",
       distribution: probe.distribution,
       login: probe.login,
+      runtime_version_command: getRuntimeAdapterSpec(adapterType)?.managed_runtime_version_command ?? null,
     });
     if (result.ok) {
       await recordHostRuntimeChange(resolved.pool, {
@@ -476,7 +482,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   /**
    * Undoes the last upgrade of a managed copy by promoting the version the
-   * host kept behind it — with its own login, so nobody logs in again.
+   * host kept behind it; both versions use the adapter's stable managed HOME.
    */
   app.post("/api/v1/hosts/:hostId/installations/:adapterType/rollback", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });

@@ -531,7 +531,7 @@ export function providerProfileDir(profileKey: string): string {
  * credential rather than logging in per profile: an Agent × container profile
  * per Room would otherwise multiply logins by Agents × Rooms. `own` is the
  * machine's own home directory — the CLI the user already logged into — and a
- * managed copy has its own `home/` so its login never mixes with the
+ * managed adapter has a stable private HOME so its login never mixes with the
  * machine's.
  */
 function loginHomeFor(adapterType: string, installation: string): string | null {

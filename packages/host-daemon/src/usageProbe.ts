@@ -53,7 +53,7 @@ function pct(value: number): number {
   return Math.max(0, Math.round(value));
 }
 
-/** Where this copy keeps its login: the machine's own home for `own`, the copy's own home otherwise. */
+/** Where this copy keeps its login: machine HOME for `own`, stable managed HOME otherwise. */
 function copyHome(adapterType: string, installation: string): { home: string; manifest: ToolManifest | null } | null {
   if (installation === OWN_INSTALLATION) return { home: homedir(), manifest: null };
   const manifest = readToolManifestSync(adapterType, installation);

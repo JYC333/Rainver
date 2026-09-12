@@ -417,6 +417,8 @@ export const HostInstallToolFrameSchema = z.object({
   version: z.string().min(1),
   distribution: RuntimeDistributionSchema,
   login: RuntimeLoginSpecSchema.nullable(),
+  /** Fixed argv for reading the bundled vendor CLI version after installation. */
+  runtime_version_command: z.array(z.string()).nullable().optional(),
 });
 export const HostUninstallToolFrameSchema = z.object({
   type: z.literal("uninstall_tool"),
